@@ -8,12 +8,18 @@ ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
 - Mehrere Links auf einmal (ein Link pro Zeile)
 - Nutzt die Real-Debrid API (`/unrestrict/link`)
 - Download-Status pro Link
+- Paket-Ansicht: Paket ist aufklappbar, darunter alle Einzel-Links
 - Download-Speed pro Link und gesamt
 - Gesamt-Fortschritt
 - Download-Ordner und Paketname waehlbar
 - Einstellbare Parallel-Downloads (z. B. 20 gleichzeitig)
 - Parallel-Wert kann waehrend laufender Downloads live angepasst werden
+- Retry-Counter pro Link in der Tabelle
 - Automatisches Entpacken nach dem Download
+- Hybrid-Entpacken: entpackt sofort, sobald ein Archivsatz komplett ist
+- Optionales Auto-Cleanup: Archivteile nach erfolgreichem Entpacken loeschen
+- Speed-Limit (global oder pro Download), live aenderbar
+- Linklisten als `.txt` speichern/laden
 - `Entpacken nach` + optional `Unterordner erstellen (Paketname)` wie bei JDownloader
 - ZIP-Passwort-Check mit `serienfans.org` und `serienjunkies.net`
 - Multi-Part-RAR wird ueber `part1` entpackt (nur wenn alle Parts vorhanden sind)
@@ -47,9 +53,11 @@ python real_debrid_downloader_gui.py
 3. Optional Paketname setzen (sonst wird automatisch einer erzeugt)
 4. Optional Entpack-Ordner waehlen (`Entpacken nach`)
 5. Optional `Unterordner erstellen (Paketname)` aktiv lassen
-6. Parallel-Wert setzen (z. B. 20)
-7. Links in das Textfeld eintragen (pro Zeile ein Link)
-8. `Download starten` klicken
+6. Optional `Hybrid-Entpacken` und `Cleanup` setzen
+7. Parallel-Wert setzen (z. B. 20)
+8. Optional Speed-Limit setzen (KB/s, Modus `global` oder `per_download`)
+9. Links einfuegen oder per `Links laden` aus `.txt` importieren
+10. `Download starten` klicken
 
 Wenn du 20 Links einfuegst, werden sie als ein Paket behandelt. Downloads landen in einem Paketordner. Beim Entpacken kann derselbe Paketname automatisch als Unterordner genutzt werden.
 
@@ -65,11 +73,10 @@ Hinweis: Beim Python-Skript gibt es nur einen Release-Hinweis, kein Self-Replace
 ## Release Build (.exe)
 
 ```bash
-pip install pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name "Real-Debrid-Downloader" real_debrid_downloader_gui.py
+./build_exe.ps1 -Version 1.0.9
 ```
 
-Danach liegt die EXE in `dist/`.
+Danach liegt die App unter `dist/Real-Debrid-Downloader/`.
 
 ## GitHub Release Workflow
 
@@ -88,6 +95,7 @@ Danach liegt die EXE in `dist/`.
 ## App-Icon
 
 - Das Projekt nutzt `assets/app_icon.png` (aus deinem `Downloads/abc.png`)
+- Das Projekt nutzt `assets/app_icon.png` (aus deinem aktuellen Downloads-Icon)
 - Beim Build wird automatisch `assets/app_icon.ico` erzeugt
 
 Beispiel:
