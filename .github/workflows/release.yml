@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DMySourceExe=dist\\Real-Debrid-Downloader.exe" "/DMyOutputDir=release" "installer\\RealDebridDownloader.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DMySourceExe=..\\dist\\Real-Debrid-Downloader.exe" "/DMyOutputDir=..\\release" "installer\\RealDebridDownloader.iss"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
