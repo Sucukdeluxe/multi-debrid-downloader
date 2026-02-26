@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.venv/
+venv/
+
+build/
+dist/
+*.spec
+
+rd_downloader_config.json
+_update_staging/
+apply_update.cmd
