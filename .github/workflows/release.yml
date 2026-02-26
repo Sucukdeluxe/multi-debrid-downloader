@@ -25,18 +25,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller pillow
+
+      - name: Prepare release metadata
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          python scripts/set_version.py $version
+          python scripts/prepare_icon.py
 
       - name: Build exe
         run: |
-          pyinstaller --noconfirm --onefile --windowed --name "Real-Debrid-Downloader" real_debrid_downloader_gui.py
+          pyinstaller --noconfirm --windowed --onedir --name "Real-Debrid-Downloader" --icon "assets/app_icon.ico" real_debrid_downloader_gui.py
 
       - name: Pack release zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release -Force | Out-Null
-          Copy-Item "dist/Real-Debrid-Downloader.exe" "release/Real-Debrid-Downloader.exe"
-          Compress-Archive -Path "release/*" -DestinationPath "Real-Debrid-Downloader-win64.zip" -Force
+          Compress-Archive -Path "dist/Real-Debrid-Downloader/*" -DestinationPath "Real-Debrid-Downloader-win64.zip" -Force
 
       - name: Install Inno Setup
         shell: pwsh
@@ -47,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DMySourceExe=..\\dist\\Real-Debrid-Downloader.exe" "/DMyOutputDir=..\\release" "installer\\RealDebridDownloader.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DMySourceDir=..\\dist\\Real-Debrid-Downloader" "/DMyOutputDir=..\\release" "/DMyIconFile=..\\assets\\app_icon.ico" "installer\\RealDebridDownloader.iss"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

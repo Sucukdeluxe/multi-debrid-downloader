@@ -5,12 +5,16 @@
   #define MyAppVersion "1.0.0"
 #endif
 
-#ifndef MySourceExe
-  #define MySourceExe "dist\\Real-Debrid-Downloader.exe"
+#ifndef MySourceDir
+  #define MySourceDir "..\\dist\\Real-Debrid-Downloader"
 #endif
 
 #ifndef MyOutputDir
   #define MyOutputDir "release"
+#endif
+
+#ifndef MyIconFile
+  #define MyIconFile "..\\assets\\app_icon.ico"
 #endif
 
 [Setup]
@@ -25,23 +29,22 @@ OutputBaseFilename=Real-Debrid-Downloader-Setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile={#MyIconFile}
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[Tasks]
-Name: "desktopicon"; Description: "Desktop-Verknuepfung erstellen"; GroupDescription: "Zusaetzliche Aufgaben:"; Flags: unchecked
-
 [Files]
-Source: "{#MySourceExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MySourceDir}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyIconFile}"; DestDir: "{app}"; DestName: "app_icon.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app_icon.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app_icon.ico"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{#MyAppName} starten"; Flags: nowait postinstall skipifsilent

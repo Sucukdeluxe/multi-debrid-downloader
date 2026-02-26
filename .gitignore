@@ -8,6 +8,7 @@ venv/
 
 build/
 dist/
+release/
 *.spec
 
 rd_downloader_config.json

@@ -29,7 +29,7 @@ API_BASE_URL = "https://api.real-debrid.com/rest/1.0"
 CONFIG_FILE = Path(__file__).with_name("rd_downloader_config.json")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.5"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 REQUEST_RETRIES = 3
@@ -223,19 +223,12 @@ def fetch_latest_release(session: requests.Session, repo: str, preferred_asset: 
 
     chosen = None
     for asset in assets:
-        if asset.get("name") == preferred_asset:
+        if str(asset.get("name", "")).strip() == preferred_asset:
             chosen = asset
             break
 
     if chosen is None:
-        for asset in assets:
-            name = str(asset.get("name", "")).lower()
-            if name.endswith(".zip"):
-                chosen = asset
-                break
-
-    if chosen is None:
-        chosen = assets[0]
+        raise RuntimeError(f"Release-Asset '{preferred_asset}' nicht gefunden")
 
     return ReleaseInfo(
         version=normalize_version(str(payload.get("tag_name", "0.0.0"))),
