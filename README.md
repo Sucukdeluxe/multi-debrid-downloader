@@ -6,6 +6,7 @@ ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
 ## Features
 
 - Mehrere Links auf einmal (ein Link pro Zeile)
+- DLC Import (`.dlc`) ueber dcrypt.it inklusive Paket-Gruppierung
 - Nutzt die Real-Debrid API (`/unrestrict/link`)
 - Download-Status pro Link
 - Paket-Ansicht: Paket ist aufklappbar, darunter alle Einzel-Links
@@ -20,7 +21,11 @@ ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
 - Optionales Auto-Cleanup: Archivteile nach erfolgreichem Entpacken loeschen
 - Speed-Limit (global oder pro Download), live aenderbar
 - Linklisten als `.txt` speichern/laden
+- DLC-Dateien als Paketliste importieren (`DLC import`)
 - `Entpacken nach` + optional `Unterordner erstellen (Paketname)` wie bei JDownloader
+- `Settings` (JDownloader-Style):
+  - Nach erfolgreichem Entpacken: keine / Papierkorb / unwiderruflich loeschen
+  - Bei Konflikten: ueberschreiben / ueberspringen / umbenennen
 - ZIP-Passwort-Check mit `serienfans.org` und `serienjunkies.net`
 - Multi-Part-RAR wird ueber `part1` entpackt (nur wenn alle Parts vorhanden sind)
 - Auto-Update Check ueber GitHub Releases (fuer .exe)
@@ -56,10 +61,12 @@ python real_debrid_downloader_gui.py
 6. Optional `Hybrid-Entpacken` und `Cleanup` setzen
 7. Parallel-Wert setzen (z. B. 20)
 8. Optional Speed-Limit setzen (KB/s, Modus `global` oder `per_download`)
-9. Links einfuegen oder per `Links laden` aus `.txt` importieren
+9. Links einfuegen oder per `Links laden` / `DLC import` importieren
 10. `Download starten` klicken
 
 Wenn du 20 Links einfuegst, werden sie als ein Paket behandelt. Downloads landen in einem Paketordner. Beim Entpacken kann derselbe Paketname automatisch als Unterordner genutzt werden.
+
+Bei DLC-Import mit vielen Paketen setzt die App automatisch Paketmarker (`# package: ...`) und verarbeitet die Pakete in einer Queue.
 
 ## Auto-Update (GitHub)
 
@@ -73,7 +80,7 @@ Hinweis: Beim Python-Skript gibt es nur einen Release-Hinweis, kein Self-Replace
 ## Release Build (.exe)
 
 ```bash
-./build_exe.ps1 -Version 1.0.9
+./build_exe.ps1 -Version 1.1.0
 ```
 
 Danach liegt die App unter `dist/Real-Debrid-Downloader/`.
@@ -94,7 +101,6 @@ Danach liegt die App unter `dist/Real-Debrid-Downloader/`.
 
 ## App-Icon
 
-- Das Projekt nutzt `assets/app_icon.png` (aus deinem `Downloads/abc.png`)
 - Das Projekt nutzt `assets/app_icon.png` (aus deinem aktuellen Downloads-Icon)
 - Beim Build wird automatisch `assets/app_icon.ico` erzeugt
 
