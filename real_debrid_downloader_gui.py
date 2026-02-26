@@ -9,7 +9,7 @@ import threading
 import webbrowser
 import zipfile
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +29,7 @@ API_BASE_URL = "https://api.real-debrid.com/rest/1.0"
 CONFIG_FILE = Path(__file__).with_name("rd_downloader_config.json")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 REQUEST_RETRIES = 3
@@ -268,6 +268,19 @@ def merge_directory(source_dir: Path, destination_dir: Path) -> None:
         shutil.move(str(item), str(target))
 
 
+def hidden_subprocess_kwargs() -> dict:
+    if not sys.platform.startswith("win"):
+        return {}
+
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startup,
+    }
+
+
 class RealDebridClient:
     def __init__(self, token: str):
         self.session = requests.Session()
@@ -343,6 +356,8 @@ class DownloaderApp(tk.Tk):
         self.ui_queue: queue.Queue = queue.Queue()
         self.row_map: dict[int, str] = {}
         self.speed_events: deque[tuple[float, int]] = deque()
+        self.parallel_limit_lock = threading.Lock()
+        self.current_parallel_limit = 4
         self.path_lock = threading.Lock()
         self.reserved_target_keys: set[str] = set()
         self.update_lock = threading.Lock()
@@ -353,6 +368,8 @@ class DownloaderApp(tk.Tk):
 
         self._build_ui()
         self._load_config()
+        self.max_parallel_var.trace_add("write", self._on_parallel_spinbox_change)
+        self._sync_parallel_limit(self.max_parallel_var.get())
         self.after(100, self._process_ui_queue)
         self.after(1500, self._auto_check_updates)
 
@@ -516,6 +533,35 @@ class DownloaderApp(tk.Tk):
 
     def _clear_links(self) -> None:
         self.links_text.delete("1.0", "end")
+
+    @staticmethod
+    def _normalize_parallel_value(value: int) -> int:
+        return max(1, min(int(value), 50))
+
+    def _sync_parallel_limit(self, value: int) -> None:
+        normalized = self._normalize_parallel_value(value)
+        with self.parallel_limit_lock:
+            self.current_parallel_limit = normalized
+
+    def _active_parallel_limit(self, total_links: int) -> int:
+        with self.parallel_limit_lock:
+            current = self.current_parallel_limit
+        return max(1, min(current, 50, max(total_links, 1)))
+
+    def _on_parallel_spinbox_change(self, *_: object) -> None:
+        try:
+            raw_value = int(self.max_parallel_var.get())
+        except Exception:
+            return
+
+        normalized = self._normalize_parallel_value(raw_value)
+        if raw_value != normalized:
+            self.max_parallel_var.set(normalized)
+            return
+
+        self._sync_parallel_limit(normalized)
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._queue_status(f"Parallel live angepasst: {normalized}")
 
     def _auto_check_updates(self) -> None:
         if self.auto_update_check_var.get():
@@ -760,8 +806,9 @@ class DownloaderApp(tk.Tk):
             parallel_raw = int(self.max_parallel_var.get())
         except Exception:
             parallel_raw = 4
-        max_parallel = max(1, min(parallel_raw, 50, len(links)))
+        max_parallel = min(self._normalize_parallel_value(parallel_raw), len(links))
         self.max_parallel_var.set(max_parallel)
+        self._sync_parallel_limit(max_parallel)
 
         detected_package = infer_package_name_from_links(links)
         package_name_raw = self.package_name_var.get().strip() or detected_package or f"Paket-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -826,46 +873,60 @@ class DownloaderApp(tk.Tk):
         package_dir: Path,
         links: list[str],
         extract_target_dir: Path | None,
-        max_parallel: int,
+        initial_parallel: int,
     ) -> None:
+        self._sync_parallel_limit(initial_parallel)
         total = len(links)
         processed = 0
         success = 0
         failed = 0
         downloaded_files: list[Path] = []
 
-        future_index_map: dict = {}
-        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
-            for index, link in enumerate(links, start=1):
-                future = executor.submit(self._download_single_link, token, package_dir, index, link)
-                future_index_map[future] = index
+        pending_links: deque[tuple[int, str]] = deque((index, link) for index, link in enumerate(links, start=1))
+        running_futures: dict = {}
+        with ThreadPoolExecutor(max_workers=max(1, min(50, total))) as executor:
+            while (pending_links or running_futures) and not self.stop_event.is_set():
+                desired_parallel = self._active_parallel_limit(total)
 
-            for future in as_completed(future_index_map):
-                index = future_index_map[future]
-                if self.stop_event.is_set():
-                    break
+                while pending_links and len(running_futures) < desired_parallel and not self.stop_event.is_set():
+                    index, link = pending_links.popleft()
+                    future = executor.submit(self._download_single_link, token, package_dir, index, link)
+                    running_futures[future] = index
 
-                try:
-                    target_path = future.result()
-                    if target_path is not None:
-                        downloaded_files.append(target_path)
-                        success += 1
-                    else:
+                if not running_futures:
+                    sleep(0.1)
+                    continue
+
+                done, _ = wait(tuple(running_futures.keys()), timeout=0.3, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+
+                for future in done:
+                    index = running_futures.pop(future)
+                    if self.stop_event.is_set():
+                        break
+
+                    try:
+                        target_path = future.result()
+                        if target_path is not None:
+                            downloaded_files.append(target_path)
+                            success += 1
+                        else:
+                            failed += 1
+                    except InterruptedError:
+                        self._queue_row(index, status="Gestoppt", progress="-", speed="0 B/s")
+                        self.stop_event.set()
+                        break
+                    except Exception as exc:
+                        self._queue_row(index, status=f"Fehler: {exc}", progress="-", speed="0 B/s")
                         failed += 1
-                except InterruptedError:
-                    self._queue_row(index, status="Gestoppt", progress="-", speed="0 B/s")
-                    self.stop_event.set()
-                    break
-                except Exception as exc:
-                    self._queue_row(index, status=f"Fehler: {exc}", progress="-", speed="0 B/s")
-                    failed += 1
-                finally:
-                    processed += 1
-                    self._queue_overall(processed, total)
+                    finally:
+                        processed += 1
+                        self._queue_overall(processed, total)
 
             if self.stop_event.is_set():
-                for pending in future_index_map:
-                    pending.cancel()
+                for pending_future in running_futures:
+                    pending_future.cancel()
 
         extracted = 0
         extract_failed = 0
@@ -1070,6 +1131,7 @@ class DownloaderApp(tk.Tk):
                         capture_output=True,
                         text=True,
                         timeout=1800,
+                        **hidden_subprocess_kwargs(),
                     )
                 except subprocess.TimeoutExpired as exc:
                     raise RuntimeError("Entpacken hat zu lange gedauert") from exc
@@ -1105,6 +1167,7 @@ class DownloaderApp(tk.Tk):
                         capture_output=True,
                         text=True,
                         timeout=1800,
+                        **hidden_subprocess_kwargs(),
                     )
                 except subprocess.TimeoutExpired as exc:
                     raise RuntimeError("Entpacken hat zu lange gedauert") from exc

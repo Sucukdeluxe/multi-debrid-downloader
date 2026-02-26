@@ -12,6 +12,7 @@ ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
 - Gesamt-Fortschritt
 - Download-Ordner und Paketname waehlbar
 - Einstellbare Parallel-Downloads (z. B. 20 gleichzeitig)
+- Parallel-Wert kann waehrend laufender Downloads live angepasst werden
 - Automatisches Entpacken nach dem Download
 - `Entpacken nach` + optional `Unterordner erstellen (Paketname)` wie bei JDownloader
 - ZIP-Passwort-Check mit `serienfans.org` und `serienjunkies.net`
