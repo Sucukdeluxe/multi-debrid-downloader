@@ -75,6 +75,13 @@ Danach liegt die EXE in `dist/`.
 - Workflow-Datei: `.github/workflows/release.yml`
 - Bei Tag-Push wie `v1.0.1` wird automatisch eine Windows-EXE gebaut
 - Release-Asset fuer Auto-Update: `Real-Debrid-Downloader-win64.zip`
+- Zusaetzlich wird ein Installer gebaut: `Real-Debrid-Downloader-Setup-<version>.exe`
+
+## Auto-Installer
+
+- Im GitHub Release findest du direkt die Setup-Datei (`...Setup-<version>.exe`)
+- Setup installiert die App unter `Programme/Real-Debrid Downloader`
+- Optional erstellt Setup eine Desktop-Verknuepfung
 
 Beispiel:
 

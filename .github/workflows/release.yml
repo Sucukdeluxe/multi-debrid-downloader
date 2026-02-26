@@ -35,9 +35,22 @@ jobs:
           Copy-Item "dist/Real-Debrid-Downloader.exe" "release/Real-Debrid-Downloader.exe"
           Compress-Archive -Path "release/*" -DestinationPath "Real-Debrid-Downloader-win64.zip" -Force
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DMySourceExe=dist\\Real-Debrid-Downloader.exe" "/DMyOutputDir=release" "installer\\RealDebridDownloader.iss"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: Real-Debrid-Downloader-win64.zip
+          files: |
+            Real-Debrid-Downloader-win64.zip
+            release/Real-Debrid-Downloader-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
