@@ -29,7 +29,7 @@ API_BASE_URL = "https://api.real-debrid.com/rest/1.0"
 CONFIG_FILE = Path(__file__).with_name("rd_downloader_config.json")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 REQUEST_RETRIES = 3
@@ -318,8 +318,8 @@ class DownloaderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} v{APP_VERSION}")
-        self.geometry("1180x720")
-        self.minsize(950, 600)
+        self.geometry("1180x780")
+        self.minsize(980, 680)
 
         self.token_var = tk.StringVar()
         self.output_dir_var = tk.StringVar(value=str(Path.home() / "Downloads" / "RealDebrid"))
@@ -368,7 +368,8 @@ class DownloaderApp(tk.Tk):
         root.pack(fill="both", expand=True)
 
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(4, weight=1)
+        root.rowconfigure(2, weight=3)
+        root.rowconfigure(4, weight=2)
 
         token_frame = ttk.LabelFrame(root, text="Authentifizierung", padding=10)
         token_frame.grid(row=0, column=0, sticky="ew")
@@ -443,9 +444,7 @@ class DownloaderApp(tk.Tk):
         links_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         links_frame.columnconfigure(0, weight=1)
         links_frame.rowconfigure(0, weight=1)
-        root.rowconfigure(2, weight=1)
-
-        self.links_text = tk.Text(links_frame, height=8, wrap="none")
+        self.links_text = tk.Text(links_frame, height=14, wrap="none")
         self.links_text.grid(row=0, column=0, sticky="nsew")
         links_scroll = ttk.Scrollbar(links_frame, orient="vertical", command=self.links_text.yview)
         links_scroll.grid(row=0, column=1, sticky="ns")
