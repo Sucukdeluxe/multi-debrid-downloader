@@ -1,0 +1,408 @@
+import { AppSettings, DebridProvider } from "../shared/types";
+import { REQUEST_RETRIES } from "./constants";
+import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
+import { compactErrorText, filenameFromUrl, sleep } from "./utils";
+
+const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
+const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
+const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
+
+const PROVIDER_LABELS: Record<DebridProvider, string> = {
+  realdebrid: "Real-Debrid",
+  megadebrid: "Mega-Debrid",
+  bestdebrid: "BestDebrid",
+  alldebrid: "AllDebrid"
+};
+
+interface ProviderUnrestrictedLink extends UnrestrictedLink {
+  provider: DebridProvider;
+  providerLabel: string;
+}
+
+type BestDebridRequest = {
+  url: string;
+  useAuthHeader: boolean;
+};
+
+function shouldRetryStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function retryDelay(attempt: number): number {
+  return Math.min(5000, 400 * 2 ** attempt);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function pickString(payload: Record<string, unknown> | null, keys: string[]): string {
+  if (!payload) {
+    return "";
+  }
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function pickNumber(payload: Record<string, unknown> | null, keys: string[]): number | null {
+  if (!payload) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = Number(payload[key] ?? NaN);
+    if (Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+  }
+  return null;
+}
+
+function parseError(status: number, responseText: string, payload: Record<string, unknown> | null): string {
+  const fromPayload = pickString(payload, ["response_text", "error", "message", "detail", "error_description"]);
+  if (fromPayload) {
+    return fromPayload;
+  }
+  const compact = compactErrorText(responseText);
+  if (compact && compact !== "Unbekannter Fehler") {
+    return compact;
+  }
+  return `HTTP ${status}`;
+}
+
+function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
+  const seen = new Set<DebridProvider>();
+  const result: DebridProvider[] = [];
+  for (const provider of order) {
+    if (seen.has(provider)) {
+      continue;
+    }
+    seen.add(provider);
+    result.push(provider);
+  }
+  return result;
+}
+
+function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
+  const linkParam = encodeURIComponent(link);
+  const authParam = encodeURIComponent(token);
+  return [
+    {
+      url: `${BEST_DEBRID_API_BASE}/generateLink?link=${linkParam}`,
+      useAuthHeader: true
+    },
+    {
+      url: `${BEST_DEBRID_API_BASE}/generateLink?auth=${authParam}&link=${linkParam}`,
+      useAuthHeader: false
+    }
+  ];
+}
+
+class MegaDebridClient {
+  private token: string;
+
+  public constructor(token: string) {
+    this.token = token;
+  }
+
+  public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
+    let lastError = "";
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      try {
+        const body = new URLSearchParams({ link });
+        const response = await fetch(`${MEGA_DEBRID_API}?action=getLink&token=${encodeURIComponent(this.token)}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "RD-Node-Downloader/1.1.12"
+          },
+          body
+        });
+        const text = await response.text();
+        const payload = asRecord(parseJson(text));
+
+        if (!response.ok) {
+          const reason = parseError(response.status, text, payload);
+          if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+            await sleep(retryDelay(attempt));
+            continue;
+          }
+          throw new Error(reason);
+        }
+
+        const responseCode = pickString(payload, ["response_code"]);
+        if (responseCode && responseCode.toLowerCase() !== "ok") {
+          throw new Error(pickString(payload, ["response_text"]) || responseCode);
+        }
+
+        const directUrl = pickString(payload, ["debridLink", "download", "link"]);
+        if (!directUrl) {
+          throw new Error("Mega-Debrid Antwort ohne debridLink");
+        }
+
+        const fileName = pickString(payload, ["filename", "fileName"]) || filenameFromUrl(link);
+        const fileSize = pickNumber(payload, ["filesize", "size"]);
+        return {
+          fileName,
+          directUrl,
+          fileSize,
+          retriesUsed: attempt - 1
+        };
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (attempt >= REQUEST_RETRIES) {
+          break;
+        }
+        await sleep(retryDelay(attempt));
+      }
+    }
+    throw new Error(lastError || "Mega-Debrid Unrestrict fehlgeschlagen");
+  }
+}
+
+class BestDebridClient {
+  private token: string;
+
+  public constructor(token: string) {
+    this.token = token;
+  }
+
+  public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
+    const requests = buildBestDebridRequests(link, this.token);
+    let lastError = "";
+
+    for (const request of requests) {
+      try {
+        return await this.tryRequest(request, link);
+      } catch (error) {
+        lastError = compactErrorText(error);
+      }
+    }
+
+    throw new Error(lastError || "BestDebrid Unrestrict fehlgeschlagen");
+  }
+
+  private async tryRequest(request: BestDebridRequest, originalLink: string): Promise<UnrestrictedLink> {
+    let lastError = "";
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      try {
+        const headers: Record<string, string> = {
+          "User-Agent": "RD-Node-Downloader/1.1.12"
+        };
+        if (request.useAuthHeader) {
+          headers.Authorization = this.token;
+        }
+
+        const response = await fetch(request.url, {
+          method: "GET",
+          headers
+        });
+        const text = await response.text();
+        const parsed = parseJson(text);
+        const payload = Array.isArray(parsed) ? asRecord(parsed[0]) : asRecord(parsed);
+
+        if (!response.ok) {
+          const reason = parseError(response.status, text, payload);
+          if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+            await sleep(retryDelay(attempt));
+            continue;
+          }
+          throw new Error(reason);
+        }
+
+        const directUrl = pickString(payload, ["download", "debridLink", "link"]);
+        if (directUrl) {
+          const fileName = pickString(payload, ["filename", "fileName"]) || filenameFromUrl(originalLink);
+          const fileSize = pickNumber(payload, ["filesize", "size", "bytes"]);
+          return {
+            fileName,
+            directUrl,
+            fileSize,
+            retriesUsed: attempt - 1
+          };
+        }
+
+        const message = pickString(payload, ["response_text", "message", "error"]);
+        if (message) {
+          throw new Error(message);
+        }
+
+        throw new Error("BestDebrid Antwort ohne Download-Link");
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (attempt >= REQUEST_RETRIES) {
+          break;
+        }
+        await sleep(retryDelay(attempt));
+      }
+    }
+    throw new Error(lastError || "BestDebrid Request fehlgeschlagen");
+  }
+}
+
+class AllDebridClient {
+  private token: string;
+
+  public constructor(token: string) {
+    this.token = token;
+  }
+
+  public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
+    let lastError = "";
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      try {
+        const response = await fetch(`${ALL_DEBRID_API_BASE}/link/unlock`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "RD-Node-Downloader/1.1.12"
+          },
+          body: new URLSearchParams({ link })
+        });
+        const text = await response.text();
+        const payload = asRecord(parseJson(text));
+
+        if (!response.ok) {
+          const reason = parseError(response.status, text, payload);
+          if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+            await sleep(retryDelay(attempt));
+            continue;
+          }
+          throw new Error(reason);
+        }
+
+        const status = pickString(payload, ["status"]);
+        if (status && status.toLowerCase() === "error") {
+          const errorObj = asRecord(payload?.error);
+          throw new Error(pickString(errorObj, ["message", "code"]) || "AllDebrid API error");
+        }
+
+        const data = asRecord(payload?.data);
+        const directUrl = pickString(data, ["link"]);
+        if (!directUrl) {
+          throw new Error("AllDebrid Antwort ohne Download-Link");
+        }
+
+        return {
+          fileName: pickString(data, ["filename"]) || filenameFromUrl(link),
+          directUrl,
+          fileSize: pickNumber(data, ["filesize"]),
+          retriesUsed: attempt - 1
+        };
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (attempt >= REQUEST_RETRIES) {
+          break;
+        }
+        await sleep(retryDelay(attempt));
+      }
+    }
+
+    throw new Error(lastError || "AllDebrid Unrestrict fehlgeschlagen");
+  }
+}
+
+export class DebridService {
+  private settings: AppSettings;
+
+  private realDebridClient: RealDebridClient;
+
+  private allDebridClient: AllDebridClient;
+
+  public constructor(settings: AppSettings) {
+    this.settings = settings;
+    this.realDebridClient = new RealDebridClient(settings.token);
+    this.allDebridClient = new AllDebridClient(settings.allDebridToken);
+  }
+
+  public setSettings(next: AppSettings): void {
+    this.settings = next;
+    this.realDebridClient = new RealDebridClient(next.token);
+    this.allDebridClient = new AllDebridClient(next.allDebridToken);
+  }
+
+  public async unrestrictLink(link: string): Promise<ProviderUnrestrictedLink> {
+    const order = uniqueProviderOrder([
+      this.settings.providerPrimary,
+      this.settings.providerSecondary,
+      this.settings.providerTertiary,
+      "realdebrid",
+      "megadebrid",
+      "bestdebrid",
+      "alldebrid"
+    ]);
+
+    let configuredFound = false;
+    const attempts: string[] = [];
+
+    for (const provider of order) {
+      const token = this.getProviderToken(provider).trim();
+      if (!token) {
+        continue;
+      }
+      configuredFound = true;
+      if (!this.settings.autoProviderFallback && attempts.length > 0) {
+        break;
+      }
+
+      try {
+        const result = await this.unrestrictViaProvider(provider, link, token);
+        return {
+          ...result,
+          provider,
+          providerLabel: PROVIDER_LABELS[provider]
+        };
+      } catch (error) {
+        attempts.push(`${PROVIDER_LABELS[provider]}: ${compactErrorText(error)}`);
+      }
+    }
+
+    if (!configuredFound) {
+      throw new Error("Kein Debrid-Provider konfiguriert (API-Key fehlt)");
+    }
+
+    throw new Error(`Unrestrict fehlgeschlagen: ${attempts.join(" | ")}`);
+  }
+
+  private getProviderToken(provider: DebridProvider): string {
+    if (provider === "realdebrid") {
+      return this.settings.token;
+    }
+    if (provider === "megadebrid") {
+      return this.settings.megaToken;
+    }
+    if (provider === "alldebrid") {
+      return this.settings.allDebridToken;
+    }
+    return this.settings.bestToken;
+  }
+
+  private async unrestrictViaProvider(provider: DebridProvider, link: string, token: string): Promise<UnrestrictedLink> {
+    if (provider === "realdebrid") {
+      return this.realDebridClient.unrestrictLink(link);
+    }
+    if (provider === "megadebrid") {
+      return new MegaDebridClient(token).unrestrictLink(link);
+    }
+    if (provider === "alldebrid") {
+      return this.allDebridClient.unrestrictLink(link);
+    }
+    return new BestDebridClient(token).unrestrictLink(link);
+  }
+}

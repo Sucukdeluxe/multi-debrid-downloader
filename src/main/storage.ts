@@ -4,6 +4,8 @@ import { AppSettings, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
+const VALID_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
+
 export interface StoragePaths {
   baseDir: string;
   configFile: string;
@@ -33,6 +35,16 @@ export function loadSettings(paths: StoragePaths): AppSettings {
       ...defaultSettings(),
       ...parsed
     };
+    if (!VALID_PROVIDERS.has(merged.providerPrimary)) {
+      merged.providerPrimary = "realdebrid";
+    }
+    if (!VALID_PROVIDERS.has(merged.providerSecondary)) {
+      merged.providerSecondary = "megadebrid";
+    }
+    if (!VALID_PROVIDERS.has(merged.providerTertiary)) {
+      merged.providerTertiary = "bestdebrid";
+    }
+    merged.autoProviderFallback = Boolean(merged.autoProviderFallback);
     merged.maxParallel = Math.max(1, Math.min(50, Number(merged.maxParallel) || 4));
     merged.speedLimitKbps = Math.max(0, Math.min(500000, Number(merged.speedLimitKbps) || 0));
     merged.reconnectWaitSeconds = Math.max(10, Math.min(600, Number(merged.reconnectWaitSeconds) || 45));
