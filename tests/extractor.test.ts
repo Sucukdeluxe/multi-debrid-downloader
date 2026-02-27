@@ -19,6 +19,7 @@ describe("extractor", () => {
       "x",
       "-y",
       "-aoa",
+      "-p",
       "archive.rar",
       "-oC:\\target"
     ]);
@@ -26,6 +27,15 @@ describe("extractor", () => {
       "x",
       "-y",
       "-aos",
+      "-p",
+      "archive.rar",
+      "-oC:\\target"
+    ]);
+    expect(buildExternalExtractArgs("7z", "archive.rar", "C:\\target", "ask", "serienfans.org")).toEqual([
+      "x",
+      "-y",
+      "-aos",
+      "-pserienfans.org",
       "archive.rar",
       "-oC:\\target"
     ]);
@@ -33,7 +43,8 @@ describe("extractor", () => {
     const unrarRename = buildExternalExtractArgs("unrar", "archive.rar", "C:\\target", "rename");
     expect(unrarRename[0]).toBe("x");
     expect(unrarRename[1]).toBe("-or");
-    expect(unrarRename[2]).toBe("archive.rar");
+    expect(unrarRename[2]).toBe("-p-");
+    expect(unrarRename[3]).toBe("archive.rar");
   });
 
   it("deletes only successfully extracted archives", async () => {
