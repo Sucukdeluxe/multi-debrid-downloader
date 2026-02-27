@@ -671,6 +671,12 @@ export class DownloadManager extends EventEmitter {
 
           if (removed > 0) {
             logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: ${removed} Datei(en) geloescht`);
+            if (!this.directoryHasAnyFiles(pkg.outputDir)) {
+              const removedDirs = this.removeEmptyDirectoryTree(pkg.outputDir);
+              if (removedDirs > 0) {
+                logger.info(`Nachtraegliches Cleanup entfernte leere Download-Ordner fuer ${pkg.name}: ${removedDirs}`);
+              }
+            }
           } else {
             logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: keine Dateien entfernt`);
           }
@@ -705,6 +711,46 @@ export class DownloadManager extends EventEmitter {
       }
     }
     return false;
+  }
+
+  private removeEmptyDirectoryTree(rootDir: string): number {
+    if (!rootDir || !fs.existsSync(rootDir)) {
+      return 0;
+    }
+
+    const dirs = [rootDir];
+    const stack = [rootDir];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const full = path.join(current, entry.name);
+          dirs.push(full);
+          stack.push(full);
+        }
+      }
+    }
+
+    dirs.sort((a, b) => b.length - a.length);
+    let removed = 0;
+    for (const dirPath of dirs) {
+      try {
+        const entries = fs.readdirSync(dirPath);
+        if (entries.length === 0) {
+          fs.rmdirSync(dirPath);
+          removed += 1;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return removed;
   }
 
   public cancelPackage(packageId: string): void {

@@ -379,6 +379,72 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
   return removed;
 }
 
+function hasAnyFilesRecursive(rootDir: string): boolean {
+  if (!fs.existsSync(rootDir)) {
+    return false;
+  }
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        return true;
+      }
+      if (entry.isDirectory()) {
+        stack.push(path.join(current, entry.name));
+      }
+    }
+  }
+  return false;
+}
+
+function removeEmptyDirectoryTree(rootDir: string): number {
+  if (!fs.existsSync(rootDir)) {
+    return 0;
+  }
+
+  const dirs = [rootDir];
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const full = path.join(current, entry.name);
+        dirs.push(full);
+        stack.push(full);
+      }
+    }
+  }
+
+  dirs.sort((a, b) => b.length - a.length);
+  let removed = 0;
+  for (const dirPath of dirs) {
+    try {
+      const entries = fs.readdirSync(dirPath);
+      if (entries.length === 0) {
+        fs.rmdirSync(dirPath);
+        removed += 1;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return removed;
+}
+
 export async function extractPackageArchives(options: ExtractOptions): Promise<{ extracted: number; failed: number; lastError: string }> {
   const candidates = findArchiveCandidates(options.packageDir);
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
@@ -444,6 +510,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       if (options.removeSamples) {
         const removedSamples = removeSampleArtifacts(options.targetDir);
         logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
+      }
+
+      if (options.cleanupMode === "delete" && !hasAnyFilesRecursive(options.packageDir)) {
+        const removedDirs = removeEmptyDirectoryTree(options.packageDir);
+        if (removedDirs > 0) {
+          logger.info(`Leere Download-Ordner entfernt: ${removedDirs} (root=${options.packageDir})`);
+        }
       }
     }
   } else {

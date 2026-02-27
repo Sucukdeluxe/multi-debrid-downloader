@@ -131,6 +131,63 @@ describe("extractor", () => {
     expect(fs.existsSync(path.join(targetDir, "episode.txt"))).toBe(true);
   });
 
+  it("removes empty package directory after archive cleanup", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zipPath = path.join(packageDir, "release.zip");
+    const zip = new AdmZip();
+    zip.addFile("video.mkv", Buffer.from("ok"));
+    zip.writeZip(zipPath);
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "delete",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(fs.existsSync(packageDir)).toBe(false);
+    expect(fs.existsSync(path.join(targetDir, "video.mkv"))).toBe(true);
+  });
+
+  it("keeps package directory when non-archive files remain", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zipPath = path.join(packageDir, "release.zip");
+    const keepPath = path.join(packageDir, "notes.nfo");
+    const zip = new AdmZip();
+    zip.addFile("video.mkv", Buffer.from("ok"));
+    zip.writeZip(zipPath);
+    fs.writeFileSync(keepPath, "keep", "utf8");
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "delete",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(fs.existsSync(packageDir)).toBe(true);
+    expect(fs.existsSync(keepPath)).toBe(true);
+    expect(fs.existsSync(path.join(targetDir, "video.mkv"))).toBe(true);
+  });
+
   it("treats ask conflict mode as skip in zip extraction", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
     tempDirs.push(root);
