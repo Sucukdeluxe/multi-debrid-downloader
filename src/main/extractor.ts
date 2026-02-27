@@ -36,6 +36,9 @@ export interface ExtractProgressUpdate {
 
 const MAX_EXTRACT_OUTPUT_BUFFER = 48 * 1024;
 const EXTRACT_PROGRESS_FILE = ".rd_extract_progress.json";
+const EXTRACT_BASE_TIMEOUT_MS = 6 * 60 * 1000;
+const EXTRACT_PER_GIB_TIMEOUT_MS = 7 * 60 * 1000;
+const EXTRACT_MAX_TIMEOUT_MS = 40 * 60 * 1000;
 
 type ExtractResumeState = {
   completedArchives: string[];
@@ -107,6 +110,17 @@ function shouldPreferExternalZip(archivePath: string): boolean {
     return stat.size >= 64 * 1024 * 1024;
   } catch {
     return true;
+  }
+}
+
+function computeExtractTimeoutMs(archivePath: string): number {
+  try {
+    const stat = fs.statSync(archivePath);
+    const gib = stat.size / (1024 * 1024 * 1024);
+    const dynamicMs = EXTRACT_BASE_TIMEOUT_MS + Math.floor(gib * EXTRACT_PER_GIB_TIMEOUT_MS);
+    return Math.max(EXTRACT_BASE_TIMEOUT_MS, Math.min(EXTRACT_MAX_TIMEOUT_MS, dynamicMs));
+  } catch {
+    return EXTRACT_BASE_TIMEOUT_MS;
   }
 }
 
@@ -215,6 +229,7 @@ type ExtractSpawnResult = {
   ok: boolean;
   missingCommand: boolean;
   aborted: boolean;
+  timedOut: boolean;
   errorText: string;
 };
 
@@ -222,27 +237,50 @@ function runExtractCommand(
   command: string,
   args: string[],
   onChunk?: (chunk: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs?: number
 ): Promise<ExtractSpawnResult> {
   if (signal?.aborted) {
-    return Promise.resolve({ ok: false, missingCommand: false, aborted: true, errorText: "aborted:extract" });
+    return Promise.resolve({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
   }
 
   return new Promise((resolve) => {
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
+    let timeoutId: NodeJS.Timeout | null = null;
 
     const finish = (result: ExtractSpawnResult): void => {
       if (settled) {
         return;
       }
       settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       if (signal && onAbort) {
         signal.removeEventListener("abort", onAbort);
       }
       resolve(result);
     };
+
+    if (timeoutMs && timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+        finish({
+          ok: false,
+          missingCommand: false,
+          aborted: false,
+          timedOut: true,
+          errorText: `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`
+        });
+      }, timeoutMs);
+    }
 
     const onAbort = signal
       ? (): void => {
@@ -251,7 +289,7 @@ function runExtractCommand(
         } catch {
           // ignore
         }
-        finish({ ok: false, missingCommand: false, aborted: true, errorText: "aborted:extract" });
+        finish({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
       }
       : null;
     if (signal && onAbort) {
@@ -275,13 +313,14 @@ function runExtractCommand(
         ok: false,
         missingCommand: text.toLowerCase().includes("enoent"),
         aborted: false,
+        timedOut: false,
         errorText: text
       });
     });
 
     child.on("close", (code) => {
       if (code === 0 || code === 1) {
-        finish({ ok: true, missingCommand: false, aborted: false, errorText: "" });
+        finish({ ok: true, missingCommand: false, aborted: false, timedOut: false, errorText: "" });
         return;
       }
       const cleaned = cleanErrorText(output);
@@ -289,6 +328,7 @@ function runExtractCommand(
         ok: false,
         missingCommand: false,
         aborted: false,
+        timedOut: false,
         errorText: cleaned || `Exit Code ${String(code ?? "?")}`
       });
     });
@@ -353,6 +393,7 @@ async function runExternalExtract(
   const command = await resolveExtractorCommand();
   const passwords = passwordCandidates;
   let lastError = "";
+  const timeoutMs = computeExtractTimeoutMs(archivePath);
 
   fs.mkdirSync(targetDir, { recursive: true });
 
@@ -375,7 +416,7 @@ async function runExternalExtract(
       }
       bestPercent = parsed;
       onArchiveProgress?.(bestPercent);
-    }, signal);
+    }, signal, timeoutMs);
     if (result.ok) {
       onArchiveProgress?.(100);
       return password;
@@ -383,6 +424,11 @@ async function runExternalExtract(
 
     if (result.aborted) {
       throw new Error("aborted:extract");
+    }
+
+    if (result.timedOut) {
+      lastError = result.errorText;
+      break;
     }
 
     if (result.missingCommand) {

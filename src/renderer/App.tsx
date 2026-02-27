@@ -205,22 +205,51 @@ export function App(): ReactElement {
   }, []);
 
   const downloadsTabActive = tab === "downloads";
+  const deferredDownloadSearch = useDeferredValue(downloadSearch);
+  const downloadSearchQuery = deferredDownloadSearch.trim().toLowerCase();
+  const downloadSearchActive = downloadSearchQuery.length > 0;
+  const totalPackageCount = snapshot.session.packageOrder.length;
+  const shouldLimitPackageRendering = downloadsTabActive
+    && snapshot.session.running
+    && !downloadSearchActive
+    && totalPackageCount > AUTO_RENDER_PACKAGE_LIMIT
+    && !showAllPackages;
 
-  const packages = useMemo(() => {
+  const packageIdsForView = useMemo(() => {
     if (!downloadsTabActive) {
-      return [] as PackageEntry[];
+      return [] as string[];
     }
-    return snapshot.session.packageOrder
-      .map((id: string) => snapshot.session.packages[id])
-      .filter(Boolean);
-  }, [downloadsTabActive, snapshot.session.packageOrder, snapshot.session.packages]);
+    if (downloadSearchActive) {
+      return snapshot.session.packageOrder;
+    }
+    if (shouldLimitPackageRendering) {
+      return snapshot.session.packageOrder.slice(0, AUTO_RENDER_PACKAGE_LIMIT);
+    }
+    return snapshot.session.packageOrder;
+  }, [downloadsTabActive, downloadSearchActive, shouldLimitPackageRendering, snapshot.session.packageOrder]);
 
   const packageOrderKey = useMemo(() => {
     if (!downloadsTabActive) {
       return "";
     }
-    return snapshot.session.packageOrder.join("|");
-  }, [downloadsTabActive, snapshot.session.packageOrder]);
+    return packageIdsForView.join("|");
+  }, [downloadsTabActive, packageIdsForView]);
+
+  const packages = useMemo(() => {
+    if (!downloadsTabActive) {
+      return [] as PackageEntry[];
+    }
+
+    if (downloadSearchActive) {
+      return snapshot.session.packageOrder
+        .map((id: string) => snapshot.session.packages[id])
+        .filter((pkg): pkg is PackageEntry => Boolean(pkg) && pkg.name.toLowerCase().includes(downloadSearchQuery));
+    }
+
+    return packageIdsForView
+      .map((id) => snapshot.session.packages[id])
+      .filter((pkg): pkg is PackageEntry => Boolean(pkg));
+  }, [downloadsTabActive, downloadSearchActive, downloadSearchQuery, packageIdsForView, snapshot.session.packageOrder, snapshot.session.packages]);
 
   const packagePosition = useMemo(() => {
     if (!downloadsTabActive) {
@@ -238,18 +267,14 @@ export function App(): ReactElement {
       return new Map<string, DownloadItem[]>();
     }
     const map = new Map<string, DownloadItem[]>();
-    for (const packageId of snapshot.session.packageOrder) {
-      const pkg = snapshot.session.packages[packageId];
-      if (!pkg) {
-        continue;
-      }
+    for (const pkg of packages) {
       const items = pkg.itemIds
         .map((id) => snapshot.session.items[id])
         .filter(Boolean) as DownloadItem[];
-      map.set(packageId, items);
+      map.set(pkg.id, items);
     }
     return map;
-  }, [downloadsTabActive, packageOrderKey, snapshot.session.items, snapshot.session.packages, snapshot.session.packageOrder]);
+  }, [downloadsTabActive, packageOrderKey, packages, snapshot.session.items]);
 
   useEffect(() => {
     if (!downloadsTabActive) {
@@ -257,38 +282,18 @@ export function App(): ReactElement {
     }
     setCollapsedPackages((prev) => {
       const next: Record<string, boolean> = {};
-      const defaultCollapsed = snapshot.session.packageOrder.length >= 24;
-      for (const packageId of snapshot.session.packageOrder) {
+      const defaultCollapsed = totalPackageCount >= 24;
+      for (const packageId of packageIdsForView) {
         next[packageId] = prev[packageId] ?? defaultCollapsed;
       }
       return next;
     });
-  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder.length]);
+  }, [downloadsTabActive, packageOrderKey, totalPackageCount, packageIdsForView]);
 
-  const deferredDownloadSearch = useDeferredValue(downloadSearch);
-
-  const filteredPackages = useMemo(() => {
-    const query = deferredDownloadSearch.trim().toLowerCase();
-    if (!query) {
-      return packages;
-    }
-    return packages.filter((pkg) => pkg.name.toLowerCase().includes(query));
-  }, [packages, deferredDownloadSearch]);
-
-  const downloadSearchActive = deferredDownloadSearch.trim().length > 0;
-  const shouldLimitPackageRendering = snapshot.session.running
-    && !downloadSearchActive
-    && filteredPackages.length > AUTO_RENDER_PACKAGE_LIMIT
-    && !showAllPackages;
-
-  const visiblePackages = useMemo(() => {
-    if (!shouldLimitPackageRendering) {
-      return filteredPackages;
-    }
-    return filteredPackages.slice(0, AUTO_RENDER_PACKAGE_LIMIT);
-  }, [filteredPackages, shouldLimitPackageRendering]);
-
-  const hiddenPackageCount = filteredPackages.length - visiblePackages.length;
+  const hiddenPackageCount = shouldLimitPackageRendering
+    ? Math.max(0, totalPackageCount - packages.length)
+    : 0;
+  const visiblePackages = packages;
 
   useEffect(() => {
     if (!snapshot.session.running) {
@@ -855,8 +860,8 @@ export function App(): ReactElement {
               <span>Dateien: {snapshot.stats.totalFiles} fertig</span>
               <span>Gesamt: {humanSize(snapshot.stats.totalDownloaded)}</span>
             </div>
-            {packages.length === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
-            {packages.length > 0 && filteredPackages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
+            {totalPackageCount === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
+            {totalPackageCount > 0 && packages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
             {hiddenPackageCount > 0 && (
               <div className="reconnect-banner">
                 Performance-Modus aktiv: {hiddenPackageCount} Paket(e) sind temporar ausgeblendet.
