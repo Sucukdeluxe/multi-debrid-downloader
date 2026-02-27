@@ -821,6 +821,76 @@ describe("download manager", () => {
     expect(snapshot.canStart).toBe(true);
   });
 
+  it("cleans leftover split archives on startup for already extracted packages", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageDir = path.join(root, "downloads", "legacy");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const part1 = path.join(packageDir, "legacy.release.part01.rar");
+    const part2 = path.join(packageDir, "legacy.release.part02.rar");
+    const part3 = path.join(packageDir, "legacy.release.part03.rar");
+    const keep = path.join(packageDir, "keep.txt");
+    fs.writeFileSync(part2, "part2", "utf8");
+    fs.writeFileSync(part3, "part3", "utf8");
+    fs.writeFileSync(keep, "keep", "utf8");
+
+    const session = emptySession();
+    const packageId = "legacy-pkg";
+    const itemId = "legacy-item";
+    const createdAt = Date.now() - 20_000;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "legacy",
+      outputDir: packageDir,
+      extractDir: path.join(root, "extract", "legacy"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/legacy",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: path.basename(part1),
+      targetPath: part1,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => !fs.existsSync(part2) && !fs.existsSync(part3), 5000);
+    expect(fs.existsSync(keep)).toBe(true);
+  });
+
   it("resets run counters and reconnect state on start", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
