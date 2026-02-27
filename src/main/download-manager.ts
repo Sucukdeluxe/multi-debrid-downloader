@@ -7,7 +7,7 @@ import { AppSettings, DownloadItem, DownloadStats, DownloadSummary, DownloadStat
 import { REQUEST_RETRIES } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor } from "./debrid";
-import { extractPackageArchives } from "./extractor";
+import { collectArchiveCleanupTargets, extractPackageArchives } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { StoragePaths, saveSession } from "./storage";
@@ -179,12 +179,14 @@ export class DownloadManager extends EventEmitter {
     this.normalizeSessionStatuses();
     this.recoverPostProcessingOnStartup();
     this.resolveExistingQueuedOpaqueFilenames();
+    this.cleanupExistingExtractedArchives();
   }
 
   public setSettings(next: AppSettings): void {
     this.settings = next;
     this.debridService.setSettings(next);
     this.resolveExistingQueuedOpaqueFilenames();
+    this.cleanupExistingExtractedArchives();
     this.emitState();
   }
 
@@ -578,6 +580,77 @@ export class DownloadManager extends EventEmitter {
     if (unresolvedByLink.size > 0) {
       void this.resolveQueuedFilenames(unresolvedByLink);
     }
+  }
+
+  private cleanupExistingExtractedArchives(): void {
+    if (this.settings.cleanupMode === "none") {
+      return;
+    }
+
+    const cleanupTargetsByPackage = new Map<string, Set<string>>();
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || pkg.status !== "completed") {
+        continue;
+      }
+
+      const items = pkg.itemIds
+        .map((itemId) => this.session.items[itemId])
+        .filter(Boolean) as DownloadItem[];
+      if (items.length === 0 || !items.every((item) => item.status === "completed")) {
+        continue;
+      }
+
+      const extractedItems = items.filter((item) => item.fullStatus === "Entpackt");
+      if (extractedItems.length === 0) {
+        continue;
+      }
+
+      const packageTargets = cleanupTargetsByPackage.get(packageId) ?? new Set<string>();
+      for (const item of extractedItems) {
+        const targetPath = String(item.targetPath || "").trim();
+        if (!targetPath) {
+          continue;
+        }
+        for (const cleanupTarget of collectArchiveCleanupTargets(targetPath)) {
+          packageTargets.add(cleanupTarget);
+        }
+      }
+      if (packageTargets.size > 0) {
+        cleanupTargetsByPackage.set(packageId, packageTargets);
+      }
+    }
+
+    if (cleanupTargetsByPackage.size === 0) {
+      return;
+    }
+
+    this.cleanupQueue = this.cleanupQueue
+      .then(async () => {
+        for (const [packageId, targets] of cleanupTargetsByPackage.entries()) {
+          const pkg = this.session.packages[packageId];
+          if (!pkg) {
+            continue;
+          }
+
+          let removed = 0;
+          for (const targetPath of targets) {
+            try {
+              await fs.promises.rm(targetPath, { force: true });
+              removed += 1;
+            } catch {
+              // ignore
+            }
+          }
+
+          if (removed > 0) {
+            logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: ${removed} Datei(en) geloescht`);
+          }
+        }
+      })
+      .catch((error) => {
+        logger.warn(`Nachtraegliches Archive-Cleanup fehlgeschlagen: ${compactErrorText(error)}`);
+      });
   }
 
   public cancelPackage(packageId: string): void {
