@@ -1,7 +1,10 @@
 import { AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
 import { REQUEST_RETRIES } from "./constants";
+import { logger } from "./logger";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
+
+const API_TIMEOUT_MS = 30000;
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
 const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
@@ -216,11 +219,19 @@ async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (i
   }
   const size = Math.max(1, Math.min(concurrency, items.length));
   let index = 0;
+  const next = (): T | undefined => {
+    if (index >= items.length) {
+      return undefined;
+    }
+    const item = items[index];
+    index += 1;
+    return item;
+  };
   const runners = Array.from({ length: size }, async () => {
-    while (index < items.length) {
-      const current = items[index];
-      index += 1;
+    let current = next();
+    while (current !== undefined) {
       await worker(current);
+      current = next();
     }
   });
   await Promise.all(runners);
@@ -243,7 +254,8 @@ async function resolveRapidgatorFilename(link: string): Promise<string> {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
-        }
+        },
+        signal: AbortSignal.timeout(API_TIMEOUT_MS)
       });
       if (!response.ok) {
         if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES + 2) {
@@ -348,7 +360,8 @@ class BestDebridClient {
 
         const response = await fetch(request.url, {
           method: "GET",
-          headers
+          headers,
+          signal: AbortSignal.timeout(API_TIMEOUT_MS)
         });
         const text = await response.text();
         const parsed = parseJson(text);
@@ -432,7 +445,8 @@ class AllDebridClient {
           "Content-Type": "application/x-www-form-urlencoded",
           "User-Agent": "RD-Node-Downloader/1.1.15"
         },
-        body
+        body,
+        signal: AbortSignal.timeout(API_TIMEOUT_MS)
       });
 
       const text = await response.text();
@@ -484,7 +498,8 @@ class AllDebridClient {
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": "RD-Node-Downloader/1.1.12"
           },
-          body: new URLSearchParams({ link })
+          body: new URLSearchParams({ link }),
+          signal: AbortSignal.timeout(API_TIMEOUT_MS)
         });
         const text = await response.text();
         const payload = asRecord(parseJson(text));

@@ -40,7 +40,8 @@ export class RealDebridClient {
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": "RD-Node-Downloader/1.1.12"
           },
-          body
+          body,
+          signal: AbortSignal.timeout(30000)
         });
 
         const text = await response.text();
@@ -53,7 +54,12 @@ export class RealDebridClient {
           throw new Error(parsed);
         }
 
-        const payload = JSON.parse(text) as Record<string, unknown>;
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          throw new Error(`Ungültige JSON-Antwort: ${text.slice(0, 120)}`);
+        }
         const directUrl = String(payload.download || payload.link || "").trim();
         if (!directUrl) {
           throw new Error("Unrestrict ohne Download-URL");

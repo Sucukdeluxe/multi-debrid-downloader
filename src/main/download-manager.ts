@@ -1851,7 +1851,11 @@ export class DownloadManager extends EventEmitter {
         item.provider = unrestricted.provider;
         item.retries += unrestricted.retriesUsed;
         item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
-        fs.mkdirSync(pkg.outputDir, { recursive: true });
+        try {
+          fs.mkdirSync(pkg.outputDir, { recursive: true });
+        } catch (mkdirError) {
+          throw new Error(`Zielordner kann nicht erstellt werden: ${compactErrorText(mkdirError)}`);
+        }
         const existingTargetPath = String(item.targetPath || "").trim();
         const canReuseExistingTarget = existingTargetPath
           && isPathInsideDir(existingTargetPath, pkg.outputDir)
