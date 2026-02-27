@@ -12,6 +12,8 @@ import { logger } from "./logger";
 
 const RELEASE_FETCH_TIMEOUT_MS = 12000;
 const CONNECT_TIMEOUT_MS = 30000;
+const RETRIES_PER_CANDIDATE = 3;
+const RETRY_DELAY_MS = 1500;
 const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 
 type ReleaseAsset = {
@@ -300,23 +302,46 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
   logger.info(`Update-Download abgeschlossen: ${targetPath}`);
 }
 
-async function downloadFromCandidates(candidates: string[], targetPath: string): Promise<void> {
-  let lastError: unknown = new Error("Update Download fehlgeschlagen");
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  logger.info(`Update-Download: ${candidates.length} Kandidat(en)`);
-  for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index];
+async function downloadWithRetries(url: string, targetPath: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= RETRIES_PER_CANDIDATE; attempt += 1) {
     try {
-      await downloadFile(candidate, targetPath);
+      await downloadFile(url, targetPath);
       return;
     } catch (error) {
       lastError = error;
-      logger.warn(`Update-Download Kandidat ${index + 1}/${candidates.length} fehlgeschlagen: ${compactErrorText(error)}`);
       try {
         await fs.promises.rm(targetPath, { force: true });
       } catch {
         // ignore
       }
+      if (attempt < RETRIES_PER_CANDIDATE && isRecoverableDownloadError(error)) {
+        logger.warn(`Update-Download Retry ${attempt}/${RETRIES_PER_CANDIDATE} für ${url}: ${compactErrorText(error)}`);
+        await sleep(RETRY_DELAY_MS * attempt);
+        continue;
+      }
+      break;
+    }
+  }
+  throw lastError;
+}
+
+async function downloadFromCandidates(candidates: string[], targetPath: string): Promise<void> {
+  let lastError: unknown = new Error("Update Download fehlgeschlagen");
+
+  logger.info(`Update-Download: ${candidates.length} Kandidat(en), je ${RETRIES_PER_CANDIDATE} Versuche`);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    try {
+      await downloadWithRetries(candidate, targetPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      logger.warn(`Update-Download Kandidat ${index + 1}/${candidates.length} endgültig fehlgeschlagen: ${compactErrorText(error)}`);
       if (index < candidates.length - 1 && isRecoverableDownloadError(error)) {
         continue;
       }
