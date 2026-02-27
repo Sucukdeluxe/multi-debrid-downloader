@@ -1241,8 +1241,9 @@ export class DownloadManager extends EventEmitter {
           removeSamples: this.settings.removeSamplesAfterExtract
         });
         if (result.failed > 0) {
+          const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
           for (const entry of completedItems) {
-            entry.fullStatus = "Entpack-Fehler";
+            entry.fullStatus = `Entpack-Fehler: ${reason}`;
             entry.updatedAt = nowMs();
           }
           pkg.status = "failed";

@@ -6,6 +6,8 @@ import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 
+const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
+
 export interface ExtractOptions {
   packageDir: string;
   targetDir: string;
@@ -39,39 +41,74 @@ function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip"
   return "skip";
 }
 
-export function buildExternalExtractArgs(command: string, archivePath: string, targetDir: string, conflictMode: ConflictMode): string[] {
+export function buildExternalExtractArgs(
+  command: string,
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  password = ""
+): string[] {
   const mode = effectiveConflictMode(conflictMode);
   const lower = command.toLowerCase();
   if (lower.includes("unrar")) {
     const overwrite = mode === "overwrite" ? "-o+" : mode === "rename" ? "-or" : "-o-";
-    return ["x", overwrite, archivePath, `${targetDir}${path.sep}`];
+    const pass = password ? `-p${password}` : "-p-";
+    return ["x", overwrite, pass, archivePath, `${targetDir}${path.sep}`];
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
-  return ["x", "-y", overwrite, archivePath, `-o${targetDir}`];
+  const pass = password ? `-p${password}` : "-p";
+  return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
 }
 
 function runExternalExtract(archivePath: string, targetDir: string, conflictMode: ConflictMode): Promise<void> {
   const candidates = ["7z", "C:\\Program Files\\7-Zip\\7z.exe", "C:\\Program Files (x86)\\7-Zip\\7z.exe", "unrar"];
+  const passwords = Array.from(new Set(DEFAULT_ARCHIVE_PASSWORDS));
   return new Promise((resolve, reject) => {
-    const tryExec = (idx: number): void => {
-      if (idx >= candidates.length) {
-        reject(new Error("Kein 7z/unrar gefunden"));
+    let lastError = "";
+
+    const cleanErrorText = (text: string): string => text.replace(/\s+/g, " ").trim().slice(0, 240);
+
+    const tryExec = (cmdIdx: number, passwordIdx: number): void => {
+      if (cmdIdx >= candidates.length) {
+        reject(new Error(lastError || "Kein 7z/unrar gefunden"));
         return;
       }
-      const cmd = candidates[idx];
-      const args = buildExternalExtractArgs(cmd, archivePath, targetDir, conflictMode);
+      fs.mkdirSync(targetDir, { recursive: true });
+      const cmd = candidates[cmdIdx];
+      const password = passwords[passwordIdx] || "";
+      const args = buildExternalExtractArgs(cmd, archivePath, targetDir, conflictMode, password);
       const child = spawn(cmd, args, { windowsHide: true });
-      child.on("error", () => tryExec(idx + 1));
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += String(chunk || "");
+      });
+      child.stderr.on("data", (chunk) => {
+        output += String(chunk || "");
+      });
+      child.on("error", (error) => {
+        lastError = cleanErrorText(String(error));
+        tryExec(cmdIdx + 1, 0);
+      });
       child.on("close", (code) => {
         if (code === 0 || code === 1) {
           resolve();
         } else {
-          tryExec(idx + 1);
+          const cleaned = cleanErrorText(output);
+          if (cleaned) {
+            lastError = cleaned;
+          } else {
+            lastError = `Exit Code ${String(code ?? "?")}`;
+          }
+          if (passwordIdx + 1 < passwords.length) {
+            tryExec(cmdIdx, passwordIdx + 1);
+            return;
+          }
+          tryExec(cmdIdx + 1, 0);
         }
       });
     };
-    tryExec(0);
+    tryExec(0, 0);
   });
 }
 
@@ -119,20 +156,25 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): void 
   }
 }
 
-export async function extractPackageArchives(options: ExtractOptions): Promise<{ extracted: number; failed: number }> {
+export async function extractPackageArchives(options: ExtractOptions): Promise<{ extracted: number; failed: number; lastError: string }> {
   const candidates = findArchiveCandidates(options.packageDir);
   if (candidates.length === 0) {
-    return { extracted: 0, failed: 0 };
+    return { extracted: 0, failed: 0, lastError: "" };
   }
 
   let extracted = 0;
   let failed = 0;
+  let lastError = "";
   const extractedArchives: string[] = [];
   for (const archivePath of candidates) {
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
-        extractZipArchive(archivePath, options.targetDir, options.conflictMode);
+        try {
+          extractZipArchive(archivePath, options.targetDir, options.conflictMode);
+        } catch {
+          await runExternalExtract(archivePath, options.targetDir, options.conflictMode);
+        }
       } else {
         await runExternalExtract(archivePath, options.targetDir, options.conflictMode);
       }
@@ -140,7 +182,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       extractedArchives.push(archivePath);
     } catch (error) {
       failed += 1;
-      logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${String(error)}`);
+      const errorText = String(error);
+      lastError = errorText;
+      logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${errorText}`);
     }
   }
 
@@ -162,5 +206,5 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
   }
 
-  return { extracted, failed };
+  return { extracted, failed, lastError };
 }

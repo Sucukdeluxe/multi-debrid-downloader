@@ -1,6 +1,6 @@
 {
   "name": "real-debrid-downloader",
-  "version": "1.1.27",
+  "version": "1.1.28",
   "description": "Real-Debrid Downloader Desktop (Electron + React + TypeScript)",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
