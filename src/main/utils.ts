@@ -51,8 +51,21 @@ export function humanSize(bytes: number): string {
 export function filenameFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
-    const name = path.basename(parsed.pathname || "");
-    return sanitizeFilename(name || "download.bin");
+    const queryName = parsed.searchParams.get("filename")
+      || parsed.searchParams.get("file")
+      || parsed.searchParams.get("name")
+      || parsed.searchParams.get("download")
+      || parsed.searchParams.get("title")
+      || "";
+    const rawName = queryName || path.basename(parsed.pathname || "");
+    const decoded = decodeURIComponent(rawName || "").trim();
+    const normalized = decoded
+      .replace(/\.(rar|zip|7z|tar|gz|bz2|xz|iso|part\d+\.rar|r\d{2})\.html$/i, ".$1")
+      .replace(/\.(mp4|mkv|avi|mp3|flac|srt)\.html$/i, ".$1");
+    if (/^[a-f0-9]{24,}$/i.test(normalized)) {
+      return "download.bin";
+    }
+    return sanitizeFilename(normalized || "download.bin");
   } catch {
     return "download.bin";
   }
