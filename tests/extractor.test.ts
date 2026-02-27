@@ -15,29 +15,30 @@ afterEach(() => {
 
 describe("extractor", () => {
   it("maps external extractor args by conflict mode", () => {
-    expect(buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "overwrite")).toEqual([
-      "x",
-      "-o+",
-      "-p-",
-      "-y",
-      "archive.rar",
-      "C:\\target\\"
-    ]);
-    expect(buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "ask", "serienfans.org")).toEqual([
-      "x",
-      "-o-",
-      "-pserienfans.org",
-      "-y",
-      "archive.rar",
-      "C:\\target\\"
-    ]);
+    const overwriteArgs = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "overwrite");
+    expect(overwriteArgs.slice(0, 4)).toEqual(["x", "-o+", "-p-", "-y"]);
+    expect(overwriteArgs).toContain("-idc");
+    expect(overwriteArgs.some((value) => /^-mt\d+$/i.test(value))).toBe(true);
+    expect(overwriteArgs[overwriteArgs.length - 2]).toBe("archive.rar");
+    expect(overwriteArgs[overwriteArgs.length - 1]).toBe("C:\\target\\");
+
+    const askArgs = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "ask", "serienfans.org");
+    expect(askArgs.slice(0, 4)).toEqual(["x", "-o-", "-pserienfans.org", "-y"]);
+    expect(askArgs).toContain("-idc");
+    expect(askArgs.some((value) => /^-mt\d+$/i.test(value))).toBe(true);
+    expect(askArgs[askArgs.length - 2]).toBe("archive.rar");
+    expect(askArgs[askArgs.length - 1]).toBe("C:\\target\\");
+
+    const compatibilityArgs = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "overwrite", "", false);
+    expect(compatibilityArgs).not.toContain("-idc");
+    expect(compatibilityArgs.some((value) => /^-mt\d+$/i.test(value))).toBe(false);
 
     const unrarRename = buildExternalExtractArgs("unrar", "archive.rar", "C:\\target", "rename");
     expect(unrarRename[0]).toBe("x");
     expect(unrarRename[1]).toBe("-or");
     expect(unrarRename[2]).toBe("-p-");
     expect(unrarRename[3]).toBe("-y");
-    expect(unrarRename[4]).toBe("archive.rar");
+    expect(unrarRename[unrarRename.length - 2]).toBe("archive.rar");
   });
 
   it("deletes only successfully extracted archives", async () => {
@@ -92,6 +93,74 @@ describe("extractor", () => {
     expect(targets.has(part2)).toBe(true);
     expect(targets.has(part3)).toBe(true);
     expect(targets.has(other)).toBe(false);
+  });
+
+  it("collects split 7z companion parts for cleanup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const part1 = path.join(packageDir, "release.7z.001");
+    const part2 = path.join(packageDir, "release.7z.002");
+    const part3 = path.join(packageDir, "release.7z.003");
+    const other = path.join(packageDir, "other.7z.001");
+
+    fs.writeFileSync(part1, "a", "utf8");
+    fs.writeFileSync(part2, "b", "utf8");
+    fs.writeFileSync(part3, "c", "utf8");
+    fs.writeFileSync(other, "x", "utf8");
+
+    const targets = new Set(collectArchiveCleanupTargets(part1));
+    expect(targets.has(part1)).toBe(true);
+    expect(targets.has(part2)).toBe(true);
+    expect(targets.has(part3)).toBe(true);
+    expect(targets.has(other)).toBe(false);
+  });
+
+  it("extracts archives in natural episode order", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zip10 = new AdmZip();
+    zip10.addFile("e10.txt", Buffer.from("10"));
+    zip10.writeZip(path.join(packageDir, "Show.S01E10.zip"));
+
+    const zip2 = new AdmZip();
+    zip2.addFile("e02.txt", Buffer.from("02"));
+    zip2.writeZip(path.join(packageDir, "Show.S01E02.zip"));
+
+    const zip1 = new AdmZip();
+    zip1.addFile("e01.txt", Buffer.from("01"));
+    zip1.writeZip(path.join(packageDir, "Show.S01E01.zip"));
+
+    const seenOrder: string[] = [];
+    await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onProgress: (update) => {
+        if (update.phase !== "extracting" || !update.archiveName) {
+          return;
+        }
+        if (seenOrder[seenOrder.length - 1] === update.archiveName) {
+          return;
+        }
+        seenOrder.push(update.archiveName);
+      }
+    });
+
+    expect(seenOrder.slice(0, 3)).toEqual([
+      "Show.S01E01.zip",
+      "Show.S01E02.zip",
+      "Show.S01E10.zip"
+    ]);
   });
 
   it("deletes split zip companion parts when cleanup is enabled", async () => {

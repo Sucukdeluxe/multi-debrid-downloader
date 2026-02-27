@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
 import { DownloadManager } from "../src/main/download-manager";
@@ -725,6 +725,115 @@ describe("download manager", () => {
       await once(server, "close");
     }
   }, 35000);
+
+  it("recovers when write stream backpressure never drains", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(180 * 1024, 19);
+    const previousStallTimeout = process.env.RD_STALL_TIMEOUT_MS;
+    process.env.RD_STALL_TIMEOUT_MS = "2200";
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/drain-stall") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      directCalls += 1;
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/drain-stall`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "drain-stall.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    const originalCreateWriteStream = fs.createWriteStream;
+    let writeStreamCalls = 0;
+    const fsMutable = fs as unknown as { createWriteStream: typeof fs.createWriteStream };
+    fsMutable.createWriteStream = ((...args: Parameters<typeof fs.createWriteStream>) => {
+      writeStreamCalls += 1;
+      if (writeStreamCalls === 1) {
+        class HangingWriteStream extends EventEmitter {
+          public closed = false;
+
+          public destroyed = false;
+
+          public write(): boolean {
+            return false;
+          }
+
+          public end(): void {
+            this.closed = true;
+            this.emit("close");
+          }
+        }
+        return new HangingWriteStream() as unknown as ReturnType<typeof fs.createWriteStream>;
+      }
+      return originalCreateWriteStream(...args);
+    }) as typeof fs.createWriteStream;
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "drain-stall", links: ["https://dummy/drain-stall"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 40000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(item?.retries).toBeGreaterThan(0);
+      expect(directCalls).toBeGreaterThan(1);
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+      expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+    } finally {
+      fsMutable.createWriteStream = originalCreateWriteStream;
+      if (previousStallTimeout === undefined) {
+        delete process.env.RD_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_STALL_TIMEOUT_MS = previousStallTimeout;
+      }
+      server.close();
+      await once(server, "close");
+    }
+  }, 45000);
 
   it("uses content-disposition filename when provider filename is opaque", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));

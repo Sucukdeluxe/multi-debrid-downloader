@@ -1349,6 +1349,8 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private lastSpeedPruneAt = 0;
+
   private recordSpeed(bytes: number): void {
     const now = nowMs();
     const bucket = now - (now % 120);
@@ -1359,7 +1361,10 @@ export class DownloadManager extends EventEmitter {
       this.speedEvents.push({ at: bucket, bytes });
     }
     this.speedBytesLastWindow += bytes;
-    this.pruneSpeedEvents(now);
+    if (now - this.lastSpeedPruneAt >= 1500) {
+      this.pruneSpeedEvents(now);
+      this.lastSpeedPruneAt = now;
+    }
   }
 
   private recordRunOutcome(itemId: string, status: "completed" | "failed" | "cancelled"): void {
@@ -2213,18 +2218,69 @@ export class DownloadManager extends EventEmitter {
               : 170;
         let lastUiEmitAt = 0;
         let lastProgressPercent = item.progressPercent;
+        const stallTimeoutMs = getDownloadStallTimeoutMs();
+        const drainTimeoutMs = Math.max(4000, Math.min(45000, stallTimeoutMs > 0 ? stallTimeoutMs : 15000));
 
         const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
-          const onDrain = (): void => {
+          if (active.abortController.signal.aborted) {
+            reject(new Error(`aborted:${active.abortReason}`));
+            return;
+          }
+
+          let settled = false;
+          let timeoutId: NodeJS.Timeout | null = setTimeout(() => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            stream.off("drain", onDrain);
             stream.off("error", onError);
+            active.abortController.signal.removeEventListener("abort", onAbort);
+            if (!active.abortController.signal.aborted) {
+              active.abortReason = "stall";
+              active.abortController.abort("stall");
+            }
+            reject(new Error("write_drain_timeout"));
+          }, drainTimeoutMs);
+
+          const cleanup = (): void => {
+            if (timeoutId) {
+              clearTimeout(timeoutId);
+              timeoutId = null;
+            }
+            stream.off("drain", onDrain);
+            stream.off("error", onError);
+            active.abortController.signal.removeEventListener("abort", onAbort);
+          };
+
+          const onDrain = (): void => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanup();
             resolve();
           };
           const onError = (streamError: Error): void => {
-            stream.off("drain", onDrain);
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanup();
             reject(streamError);
           };
+          const onAbort = (): void => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanup();
+            reject(new Error(`aborted:${active.abortReason}`));
+          };
+
           stream.once("drain", onDrain);
           stream.once("error", onError);
+          active.abortController.signal.addEventListener("abort", onAbort, { once: true });
         });
 
         try {
@@ -2233,7 +2289,6 @@ export class DownloadManager extends EventEmitter {
             throw new Error("Leerer Response-Body");
           }
           const reader = body.getReader();
-          const stallTimeoutMs = getDownloadStallTimeoutMs();
           let lastDataAt = nowMs();
           let lastIdleEmitAt = 0;
           const idlePulseMs = Math.max(1500, Math.min(3500, Math.floor(stallTimeoutMs / 4) || 2000));
