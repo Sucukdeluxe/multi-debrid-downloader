@@ -19,6 +19,7 @@ const emptyStats = (): DownloadStats => ({
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
     token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "",
+    archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
     autoExtract: true, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
@@ -45,14 +46,6 @@ const cleanupLabels: Record<string, string> = {
 const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid"
 };
-
-const fallbackProviderOptions: Array<{ value: DebridFallbackProvider; label: string }> = [
-  { value: "none", label: "Kein Fallback" },
-  { value: "realdebrid", label: providerLabels.realdebrid },
-  { value: "megadebrid", label: providerLabels.megadebrid },
-  { value: "bestdebrid", label: providerLabels.bestdebrid },
-  { value: "alldebrid", label: providerLabels.alldebrid }
-];
 
 function formatSpeedMbps(speedBps: number): string {
   const mbps = Math.max(0, speedBps) / (1024 * 1024);
@@ -85,6 +78,8 @@ export function App(): ReactElement {
   const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
   const activeCollectorTabRef = useRef(activeCollectorTab);
   const draggedPackageIdRef = useRef<string | null>(null);
+  const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
+  const [downloadSearch, setDownloadSearch] = useState("");
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -148,6 +143,91 @@ export function App(): ReactElement {
     .map((id: string) => snapshot.session.packages[id])
     .filter(Boolean), [snapshot]);
 
+  useEffect(() => {
+    setCollapsedPackages((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const pkg of packages) {
+        next[pkg.id] = prev[pkg.id] ?? false;
+      }
+      return next;
+    });
+  }, [packages]);
+
+  const filteredPackages = useMemo(() => {
+    const query = downloadSearch.trim().toLowerCase();
+    if (!query) {
+      return packages;
+    }
+    return packages.filter((pkg) => pkg.name.toLowerCase().includes(query));
+  }, [packages, downloadSearch]);
+
+  const allPackagesCollapsed = useMemo(() => (
+    packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
+  ), [packages, collapsedPackages]);
+
+  const configuredProviders = useMemo(() => {
+    const list: DebridProvider[] = [];
+    if (settingsDraft.token.trim()) {
+      list.push("realdebrid");
+    }
+    if (settingsDraft.megaLogin.trim() && settingsDraft.megaPassword.trim()) {
+      list.push("megadebrid");
+    }
+    if (settingsDraft.bestToken.trim()) {
+      list.push("bestdebrid");
+    }
+    if (settingsDraft.allDebridToken.trim()) {
+      list.push("alldebrid");
+    }
+    return list;
+  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken]);
+
+  const primaryProviderValue: DebridProvider = useMemo(() => {
+    if (configuredProviders.includes(settingsDraft.providerPrimary)) {
+      return settingsDraft.providerPrimary;
+    }
+    return configuredProviders[0] ?? "realdebrid";
+  }, [configuredProviders, settingsDraft.providerPrimary]);
+
+  const secondaryProviderChoices = useMemo(() => (
+    configuredProviders.filter((provider) => provider !== primaryProviderValue)
+  ), [configuredProviders, primaryProviderValue]);
+
+  const secondaryProviderValue: DebridFallbackProvider = useMemo(() => {
+    if (secondaryProviderChoices.includes(settingsDraft.providerSecondary as DebridProvider)) {
+      return settingsDraft.providerSecondary;
+    }
+    return "none";
+  }, [secondaryProviderChoices, settingsDraft.providerSecondary]);
+
+  const tertiaryProviderChoices = useMemo(() => {
+    const blocked = new Set<string>([primaryProviderValue]);
+    if (secondaryProviderValue !== "none") {
+      blocked.add(secondaryProviderValue);
+    }
+    return configuredProviders.filter((provider) => !blocked.has(provider));
+  }, [configuredProviders, primaryProviderValue, secondaryProviderValue]);
+
+  const tertiaryProviderValue: DebridFallbackProvider = useMemo(() => {
+    if (tertiaryProviderChoices.includes(settingsDraft.providerTertiary as DebridProvider)) {
+      return settingsDraft.providerTertiary;
+    }
+    return "none";
+  }, [tertiaryProviderChoices, settingsDraft.providerTertiary]);
+
+  const normalizedSettingsDraft: AppSettings = useMemo(() => ({
+    ...settingsDraft,
+    providerPrimary: primaryProviderValue,
+    providerSecondary: configuredProviders.length >= 2 ? secondaryProviderValue : "none",
+    providerTertiary: configuredProviders.length >= 3 ? tertiaryProviderValue : "none"
+  }), [
+    settingsDraft,
+    primaryProviderValue,
+    configuredProviders.length,
+    secondaryProviderValue,
+    tertiaryProviderValue
+  ]);
+
   const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
     if (result.error) {
       if (source === "manual") { showToast(`Update-Check fehlgeschlagen: ${result.error}`, 2800); }
@@ -166,11 +246,11 @@ export function App(): ReactElement {
 
   const onSaveSettings = async (): Promise<void> => {
     try {
-      const result = await window.rd.updateSettings(settingsDraft);
+      const result = await window.rd.updateSettings(normalizedSettingsDraft);
       setSettingsDraft(result);
       applyTheme(result.theme);
-      showToast("Settings gespeichert", 1800);
-    } catch (error) { showToast(`Settings konnten nicht gespeichert werden: ${String(error)}`, 2800); }
+      showToast("Einstellungen gespeichert", 1800);
+    } catch (error) { showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800); }
   };
 
   const onCheckUpdates = async (): Promise<void> => {
@@ -182,7 +262,7 @@ export function App(): ReactElement {
 
   const onAddLinks = async (): Promise<void> => {
     try {
-      await window.rd.updateSettings(settingsDraft);
+      await window.rd.updateSettings(normalizedSettingsDraft);
       const result = await window.rd.addLinks({ rawText: currentCollectorTab.text, packageName: settingsDraft.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
@@ -195,7 +275,7 @@ export function App(): ReactElement {
     try {
       const files = await window.rd.pickContainers();
       if (files.length === 0) { return; }
-      await window.rd.updateSettings(settingsDraft);
+      await window.rd.updateSettings(normalizedSettingsDraft);
       const result = await window.rd.addContainers(files);
       showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
     } catch (error) { showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600); }
@@ -209,7 +289,7 @@ export function App(): ReactElement {
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
     if (dlc.length > 0) {
       try {
-        await window.rd.updateSettings(settingsDraft);
+        await window.rd.updateSettings(normalizedSettingsDraft);
         const result = await window.rd.addContainers(dlc);
         showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
       } catch (error) { showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600); }
@@ -258,6 +338,10 @@ export function App(): ReactElement {
   const setBool = (key: keyof AppSettings, value: boolean): void => { setSettingsDraft((prev) => ({ ...prev, [key]: value })); };
   const setText = (key: keyof AppSettings, value: string): void => { setSettingsDraft((prev) => ({ ...prev, [key]: value })); };
   const setNum = (key: keyof AppSettings, value: number): void => { setSettingsDraft((prev) => ({ ...prev, [key]: value })); };
+  const setSpeedLimitMbps = (value: number): void => {
+    const mbps = Number.isFinite(value) ? Math.max(0, value) : 0;
+    setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
+  };
 
   const performQuickAction = async (action: () => Promise<unknown>): Promise<void> => {
     try { await action(); } catch (error) { showToast(`Fehler: ${String(error)}`, 2600); }
@@ -386,32 +470,34 @@ export function App(): ReactElement {
       <section className="control-strip">
         <div className="buttons">
           <button className="btn accent" disabled={!snapshot.canStart} onClick={async () => {
-            await performQuickAction(async () => { await window.rd.updateSettings(settingsDraft); await window.rd.start(); });
+            await performQuickAction(async () => { await window.rd.updateSettings(normalizedSettingsDraft); await window.rd.start(); });
           }}>Start</button>
           <button className="btn" disabled={!snapshot.canPause} onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}>
-            {snapshot.session.paused ? "Resume" : "Pause"}
+            {snapshot.session.paused ? "Fortsetzen" : "Pause"}
           </button>
           <button className="btn" disabled={!snapshot.canStop} onClick={() => { void performQuickAction(() => window.rd.stop()); }}>Stop</button>
-          <button className="btn" onClick={() => { void performQuickAction(() => window.rd.clearAll()); }}>Alles leeren</button>
+          <button
+            className="btn"
+            onClick={() => {
+              const confirmed = window.confirm("Wirklich alle Einträge aus der Queue löschen?");
+              if (!confirmed) {
+                return;
+              }
+              void performQuickAction(() => window.rd.clearAll());
+            }}
+          >
+            Alles leeren
+          </button>
           <button className={`btn${snapshot.clipboardActive ? " btn-active" : ""}`} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
             Clipboard {snapshot.clipboardActive ? "An" : "Aus"}
           </button>
-        </div>
-        <div className="speed-config">
-          <label><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(e) => setBool("speedLimitEnabled", e.target.checked)} /> Speed-Limit</label>
-          <input type="number" min={0} max={500000} value={settingsDraft.speedLimitKbps} onChange={(e) => setNum("speedLimitKbps", Number(e.target.value) || 0)} />
-          <span>KB/s</span>
-          <select value={settingsDraft.speedLimitMode} onChange={(e) => setText("speedLimitMode", e.target.value)}>
-            <option value="global">global</option>
-            <option value="per_download">per_download</option>
-          </select>
         </div>
       </section>
 
       <nav className="tabs">
         <button className={tab === "collector" ? "tab active" : "tab"} onClick={() => setTab("collector")}>Linksammler</button>
         <button className={tab === "downloads" ? "tab active" : "tab"} onClick={() => setTab("downloads")}>Downloads</button>
-        <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>Settings</button>
+        <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>Einstellungen</button>
       </nav>
 
       <main className="tab-content">
@@ -424,7 +510,7 @@ export function App(): ReactElement {
                   <button className="btn" onClick={onImportDlc}>DLC import</button>
                   <button className="btn" onClick={onExportQueue}>Queue Export</button>
                   <button className="btn" onClick={onImportQueue}>Queue Import</button>
-                  <button className="btn accent" onClick={onAddLinks}>Zur Queue hinzufugen</button>
+                  <button className="btn accent" onClick={onAddLinks}>Zur Queue hinzufügen</button>
                 </div>
               </div>
               <div className="collector-tabs">
@@ -454,25 +540,55 @@ export function App(): ReactElement {
                 {snapshot.session.reconnectReason && <span> ({snapshot.session.reconnectReason})</span>}
               </div>
             )}
+            <div className="downloads-toolbar">
+              <button
+                className="btn"
+                disabled={packages.length === 0}
+                onClick={() => {
+                  setCollapsedPackages((prev) => {
+                    const next: Record<string, boolean> = { ...prev };
+                    const targetState = !allPackagesCollapsed;
+                    for (const pkg of packages) {
+                      next[pkg.id] = targetState;
+                    }
+                    return next;
+                  });
+                }}
+              >
+                {allPackagesCollapsed ? "Alles ausklappen" : "Alles einklappen"}
+              </button>
+              <input
+                className="search-input"
+                type="search"
+                value={downloadSearch}
+                onChange={(event) => setDownloadSearch(event.target.value)}
+                placeholder="Pakete durchsuchen..."
+              />
+            </div>
             <div className="stats-bar">
               <span>Pakete: {snapshot.stats.totalPackages}</span>
               <span>Dateien: {snapshot.stats.totalFiles} fertig</span>
               <span>Gesamt: {humanSize(snapshot.stats.totalDownloaded)}</span>
             </div>
             {packages.length === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
-            {packages.map((pkg, idx) => (
+            {packages.length > 0 && filteredPackages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
+            {filteredPackages.map((pkg) => (
               <PackageCard
                 key={pkg.id}
                 pkg={pkg}
                 items={pkg.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean)}
                 packageSpeed={packageSpeedMap.get(pkg.id) ?? 0}
-                isFirst={idx === 0}
-                isLast={idx === packages.length - 1}
+                isFirst={snapshot.session.packageOrder.indexOf(pkg.id) === 0}
+                isLast={snapshot.session.packageOrder.indexOf(pkg.id) === snapshot.session.packageOrder.length - 1}
                 isEditing={editingPackageId === pkg.id}
                 editingName={editingName}
+                collapsed={collapsedPackages[pkg.id] ?? false}
                 onStartEdit={() => { setEditingPackageId(pkg.id); setEditingName(pkg.name); }}
                 onFinishEdit={(name) => { setEditingPackageId(null); if (name.trim()) { void window.rd.renamePackage(pkg.id, name); } }}
                 onEditChange={setEditingName}
+                onToggleCollapse={() => {
+                  setCollapsedPackages((prev) => ({ ...prev, [pkg.id]: !(prev[pkg.id] ?? false) }));
+                }}
                 onCancel={() => { void performQuickAction(() => window.rd.cancelPackage(pkg.id)); }}
                 onMoveUp={() => movePackage(pkg.id, "up")}
                 onMoveDown={() => movePackage(pkg.id, "down")}
@@ -494,7 +610,7 @@ export function App(): ReactElement {
                 <span>Kompakt, schnell auffindbar und direkt speicherbar.</span>
               </div>
               <div className="settings-toolbar-actions">
-                <button className="btn" onClick={onCheckUpdates}>Updates prufen</button>
+                <button className="btn" onClick={onCheckUpdates}>Updates prüfen</button>
                 <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
                   const next = settingsDraft.theme === "dark" ? "light" : "dark";
                   setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
@@ -502,7 +618,7 @@ export function App(): ReactElement {
                 }}>
                   {settingsDraft.theme === "dark" ? "Light Mode" : "Dark Mode"}
                 </button>
-                <button className="btn accent" onClick={onSaveSettings}>Settings speichern</button>
+                <button className="btn accent" onClick={onSaveSettings}>Einstellungen speichern</button>
               </div>
             </article>
 
@@ -519,18 +635,27 @@ export function App(): ReactElement {
                 <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
                 <label>AllDebrid API Key</label>
                 <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
-                <div className="field-grid three">
-                  <div><label>Primar</label><select value={settingsDraft.providerPrimary} onChange={(e) => setText("providerPrimary", e.target.value)}>
-                    {Object.entries(providerLabels).map(([key, label]) => (<option key={key} value={key}>{label}</option>))}
+                {configuredProviders.length === 0 && (
+                  <div className="hint">Füge mindestens einen Account hinzu, dann erscheint die Hoster-Auswahl.</div>
+                )}
+                {configuredProviders.length >= 1 && (
+                  <div><label>Hauptaccount</label><select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
+                    {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
                   </select></div>
-                  <div><label>Sekundar</label><select value={settingsDraft.providerSecondary} onChange={(e) => setText("providerSecondary", e.target.value)}>
-                    {fallbackProviderOptions.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                )}
+                {configuredProviders.length >= 2 && (
+                  <div><label>1. Hoster-Alternative</label><select value={secondaryProviderValue} onChange={(e) => setText("providerSecondary", e.target.value)}>
+                    <option value="none">Keine Alternative</option>
+                    {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
                   </select></div>
-                  <div><label>Tertiar</label><select value={settingsDraft.providerTertiary} onChange={(e) => setText("providerTertiary", e.target.value)}>
-                    {fallbackProviderOptions.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                )}
+                {configuredProviders.length >= 3 && (
+                  <div><label>2. Hoster-Alternative</label><select value={tertiaryProviderValue} onChange={(e) => setText("providerTertiary", e.target.value)}>
+                    <option value="none">Keine Alternative</option>
+                    {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
                   </select></div>
-                </div>
-                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehler/Fair-Use automatisch zum nachsten Provider wechseln</label>
+                )}
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
               </article>
 
@@ -539,17 +664,24 @@ export function App(): ReactElement {
                 <label>Download-Ordner</label>
                 <div className="input-row">
                   <input value={settingsDraft.outputDir} onChange={(e) => setText("outputDir", e.target.value)} />
-                  <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("outputDir", s); } }); }}>Wahlen</button>
+                  <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("outputDir", s); } }); }}>Wählen</button>
                 </div>
                 <label>Paketname (optional)</label>
                 <input value={settingsDraft.packageName} onChange={(e) => setText("packageName", e.target.value)} />
                 <label>Entpacken nach</label>
                 <div className="input-row">
                   <input value={settingsDraft.extractDir} onChange={(e) => setText("extractDir", e.target.value)} />
-                  <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("extractDir", s); } }); }}>Wahlen</button>
+                  <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("extractDir", s); } }); }}>Wählen</button>
                 </div>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Auto-Extract</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
+                <label>Passwortliste (eine Zeile pro Passwort)</label>
+                <textarea
+                  className="password-list"
+                  value={settingsDraft.archivePasswordList}
+                  onChange={(e) => setText("archivePasswordList", e.target.value)}
+                  placeholder={"serienfans.org\nserienjunkies.org\nmein-passwort"}
+                />
               </article>
 
               <article className="card settings-card">
@@ -559,9 +691,33 @@ export function App(): ReactElement {
                   <div><label>Reconnect-Wartezeit (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Number(e.target.value) || 45)} /></div>
                 </div>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(e) => setBool("speedLimitEnabled", e.target.checked)} /> Speed-Limit aktivieren</label>
+                <div className="field-grid two">
+                  <div>
+                    <label>Limit (MB/s)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={Number((settingsDraft.speedLimitKbps / 1024).toFixed(2))}
+                      onChange={(e) => setSpeedLimitMbps(Number(e.target.value) || 0)}
+                      disabled={!settingsDraft.speedLimitEnabled}
+                    />
+                  </div>
+                  <div>
+                    <label>Limit-Modus</label>
+                    <select
+                      value={settingsDraft.speedLimitMode}
+                      onChange={(e) => setText("speedLimitMode", e.target.value)}
+                      disabled={!settingsDraft.speedLimitEnabled}
+                    >
+                      <option value="global">Global</option>
+                      <option value="per_download">Pro Download</option>
+                    </select>
+                  </div>
+                </div>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(e) => setBool("autoReconnect", e.target.checked)} /> Automatischer Reconnect</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Auto-Resume beim Start</label>
-                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage uberwachen</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                 <h4>Bandbreitenplanung</h4>
                 {schedules.map((s, i) => (
@@ -570,18 +726,25 @@ export function App(): ReactElement {
                     <span>-</span>
                     <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => updateSchedule(i, "endHour", Number(e.target.value))} title="Bis (Stunde)" />
                     <span>Uhr</span>
-                    <input type="number" min={0} value={s.speedLimitKbps} onChange={(e) => updateSchedule(i, "speedLimitKbps", Number(e.target.value) || 0)} title="KB/s (0=unbegrenzt)" />
-                    <span>KB/s</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={Number((s.speedLimitKbps / 1024).toFixed(2))}
+                      onChange={(e) => updateSchedule(i, "speedLimitKbps", Math.floor((Number(e.target.value) || 0) * 1024))}
+                      title="MB/s (0=unbegrenzt)"
+                    />
+                    <span>MB/s</span>
                     <input type="checkbox" checked={s.enabled} onChange={(e) => updateSchedule(i, "enabled", e.target.checked)} />
                     <button className="btn danger" onClick={() => removeSchedule(i)}>X</button>
                   </div>
                 ))}
-                <button className="btn" onClick={addSchedule}>Zeitregel hinzufugen</button>
+                <button className="btn" onClick={addSchedule}>Zeitregel hinzufügen</button>
               </article>
 
               <article className="card settings-card">
-                <h3>Integritat, Cleanup & Updates</h3>
-                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(e) => setBool("enableIntegrityCheck", e.target.checked)} /> SFV/CRC/MD5/SHA1 prufen</label>
+                <h3>Integrität, Cleanup & Updates</h3>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(e) => setBool("enableIntegrityCheck", e.target.checked)} /> SFV/CRC/MD5/SHA1 prüfen</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeLinkFilesAfterExtract} onChange={(e) => setBool("removeLinkFilesAfterExtract", e.target.checked)} /> Link-Dateien nach Entpacken entfernen</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeSamplesAfterExtract} onChange={(e) => setBool("removeSamplesAfterExtract", e.target.checked)} /> Samples nach Entpacken entfernen</label>
                 <label>Fertiggestellte Downloads entfernen</label>
@@ -590,20 +753,20 @@ export function App(): ReactElement {
                 </select>
                 <div className="field-grid two">
                   <div><label>Cleanup nach Entpacken</label><select value={settingsDraft.cleanupMode} onChange={(e) => setText("cleanupMode", e.target.value)}>
-                    <option value="none">keine Archive loschen</option>
+                    <option value="none">keine Archive löschen</option>
                     <option value="trash">Archive in Papierkorb</option>
-                    <option value="delete">Archive loschen</option>
+                    <option value="delete">Archive löschen</option>
                   </select></div>
                   <div><label>Konfliktmodus</label><select value={settingsDraft.extractConflictMode} onChange={(e) => setText("extractConflictMode", e.target.value)}>
-                    <option value="overwrite">uberschreiben</option>
-                    <option value="skip">uberspringen</option>
+                    <option value="overwrite">überschreiben</option>
+                    <option value="skip">überspringen</option>
                     <option value="rename">umbenennen</option>
                     <option value="ask">nachfragen</option>
                   </select></div>
                 </div>
                 <label>GitHub Repo</label>
                 <input value={settingsDraft.updateRepo} onChange={(e) => setText("updateRepo", e.target.value)} />
-                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(e) => setBool("autoUpdateCheck", e.target.checked)} /> Beim Start auf Updates prufen</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(e) => setBool("autoUpdateCheck", e.target.checked)} /> Beim Start auf Updates prüfen</label>
               </article>
             </section>
           </section>
@@ -624,9 +787,11 @@ interface PackageCardProps {
   isLast: boolean;
   isEditing: boolean;
   editingName: string;
+  collapsed: boolean;
   onStartEdit: () => void;
   onFinishEdit: (name: string) => void;
   onEditChange: (name: string) => void;
+  onToggleCollapse: () => void;
   onCancel: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -637,7 +802,7 @@ interface PackageCardProps {
   onDragEnd: () => void;
 }
 
-function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, onStartEdit, onFinishEdit, onEditChange, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
@@ -673,6 +838,7 @@ function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, edi
           </span>
         </div>
         <div className="pkg-actions">
+          <button className="btn" onClick={onToggleCollapse}>{collapsed ? "Ausklappen" : "Einklappen"}</button>
           <button className="btn" disabled={isFirst} onClick={onMoveUp} title="Nach oben">&#9650;</button>
           <button className="btn" disabled={isLast} onClick={onMoveDown} title="Nach unten">&#9660;</button>
           <button className={`btn${pkg.enabled ? "" : " btn-active"}`} onClick={onToggle}>{pkg.enabled ? "Paket stoppen" : "Paket starten"}</button>
@@ -680,7 +846,7 @@ function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, edi
         </div>
       </header>
       <div className="progress"><div style={{ width: `${progress}%` }} /></div>
-      <table>
+      {!collapsed && <table>
         <thead><tr>
           <th className="col-file">Datei</th>
           <th className="col-provider">Provider</th>
@@ -697,13 +863,13 @@ function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, edi
               <td className="col-provider">{item.provider ? providerLabels[item.provider] : "-"}</td>
               <td className="col-status" title={item.fullStatus}>{item.fullStatus}</td>
               <td className="col-progress num">{item.progressPercent}%</td>
-              <td className="col-speed num">{formatSpeedMbps(item.speedBps)}</td>
+              <td className="col-speed num">{item.status === "completed" ? "-" : formatSpeedMbps(item.speedBps)}</td>
               <td className="col-retries num">{item.retries}</td>
               <td className="col-actions"><button className="btn-icon danger" onClick={() => onRemoveItem(item.id)} title="Entfernen">X</button></td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </table>}
     </article>
   );
 }

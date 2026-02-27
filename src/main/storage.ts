@@ -55,6 +55,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     megaPassword: asText(settings.megaPassword),
     bestToken: asText(settings.bestToken),
     allDebridToken: asText(settings.allDebridToken),
+    archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
     autoProviderFallback: Boolean(settings.autoProviderFallback),
     outputDir: asText(settings.outputDir) || defaults.outputDir,
@@ -115,7 +116,8 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
     megaLogin: "",
     megaPassword: "",
     bestToken: "",
-    allDebridToken: ""
+    allDebridToken: "",
+    archivePasswordList: ""
   };
 }
 

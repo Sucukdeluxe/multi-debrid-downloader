@@ -19,6 +19,16 @@ export interface ExtractOptions {
   conflictMode: ConflictMode;
   removeLinks: boolean;
   removeSamples: boolean;
+  passwordList?: string;
+  onProgress?: (update: ExtractProgressUpdate) => void;
+}
+
+export interface ExtractProgressUpdate {
+  current: number;
+  total: number;
+  percent: number;
+  archiveName: string;
+  phase: "extracting" | "done";
 }
 
 function findArchiveCandidates(packageDir: string): string[] {
@@ -49,12 +59,18 @@ function cleanErrorText(text: string): string {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
-function archivePasswords(): string[] {
-  const custom = String(process.env.RD_ARCHIVE_PASSWORDS || "")
+function archivePasswords(listInput: string): string[] {
+  const custom = String(listInput || "")
+    .split(/\r?\n/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const fromEnv = String(process.env.RD_ARCHIVE_PASSWORDS || "")
     .split(/[;,\n]/g)
     .map((part) => part.trim())
     .filter(Boolean);
-  return Array.from(new Set([...DEFAULT_ARCHIVE_PASSWORDS, ...custom]));
+
+  return Array.from(new Set(["", ...custom, ...fromEnv, ...DEFAULT_ARCHIVE_PASSWORDS]));
 }
 
 function winRarCandidates(): string[] {
@@ -188,9 +204,14 @@ async function resolveExtractorCommand(): Promise<string> {
   throw new Error(resolveFailureReason);
 }
 
-async function runExternalExtract(archivePath: string, targetDir: string, conflictMode: ConflictMode): Promise<void> {
+async function runExternalExtract(
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  passwordCandidates: string[]
+): Promise<void> {
   const command = await resolveExtractorCommand();
-  const passwords = archivePasswords();
+  const passwords = passwordCandidates;
   let lastError = "";
 
   fs.mkdirSync(targetDir, { recursive: true });
@@ -449,17 +470,32 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   const candidates = findArchiveCandidates(options.packageDir);
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
-    logger.info(`Entpacken uebersprungen (keine Archive gefunden): ${options.packageDir}`);
+    logger.info(`Entpacken übersprungen (keine Archive gefunden): ${options.packageDir}`);
     return { extracted: 0, failed: 0, lastError: "" };
   }
 
   const conflictMode = effectiveConflictMode(options.conflictMode);
+  const passwordCandidates = archivePasswords(options.passwordList || "");
   const beforeFingerprint = captureDirFingerprint(options.targetDir);
   let extracted = 0;
   let failed = 0;
   let lastError = "";
   const extractedArchives: string[] = [];
+
+  const emitProgress = (current: number, archiveName: string, phase: "extracting" | "done"): void => {
+    if (!options.onProgress) {
+      return;
+    }
+    const total = Math.max(1, candidates.length);
+    const percent = Math.max(0, Math.min(100, Math.floor((current / total) * 100)));
+    options.onProgress({ current, total, percent, archiveName, phase });
+  };
+
+  emitProgress(0, "", "extracting");
+
   for (const archivePath of candidates) {
+    const archiveName = path.basename(archivePath);
+    emitProgress(extracted + failed, archiveName, "extracting");
     logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}`);
     try {
       const ext = path.extname(archivePath).toLowerCase();
@@ -467,23 +503,26 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         try {
           extractZipArchive(archivePath, options.targetDir, options.conflictMode);
         } catch {
-          await runExternalExtract(archivePath, options.targetDir, options.conflictMode);
+          await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates);
         }
       } else {
-        await runExternalExtract(archivePath, options.targetDir, options.conflictMode);
+        await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates);
       }
       extracted += 1;
       extractedArchives.push(archivePath);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
+      emitProgress(extracted + failed, archiveName, "extracting");
     } catch (error) {
       failed += 1;
       const errorText = String(error);
       lastError = errorText;
       logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${errorText}`);
+      emitProgress(extracted + failed, archiveName, "extracting");
       if (isNoExtractorError(errorText)) {
         const remaining = candidates.length - (extracted + failed);
         if (remaining > 0) {
           failed += remaining;
+          emitProgress(candidates.length, archiveName, "extracting");
         }
         break;
       }
@@ -497,7 +536,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       lastError = "Keine entpackten Dateien erkannt";
       failed += extracted;
       extracted = 0;
-      logger.error(`Entpacken ohne neue Ausgabe erkannt: ${options.targetDir}. Cleanup wird NICHT ausgefuehrt.`);
+      logger.error(`Entpacken ohne neue Ausgabe erkannt: ${options.targetDir}. Cleanup wird NICHT ausgeführt.`);
     } else {
       const removedArchives = cleanupArchives(extractedArchives, options.cleanupMode);
       if (options.cleanupMode !== "none") {
@@ -528,6 +567,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       // ignore
     }
   }
+
+  emitProgress(candidates.length, "", "done");
 
   logger.info(`Entpacken beendet: extracted=${extracted}, failed=${failed}, targetDir=${options.targetDir}`);
 
