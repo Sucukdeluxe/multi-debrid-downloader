@@ -168,11 +168,13 @@ export class DownloadManager extends EventEmitter {
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
     this.recoverPostProcessingOnStartup();
+    this.resolveExistingQueuedOpaqueFilenames();
   }
 
   public setSettings(next: AppSettings): void {
     this.settings = next;
     this.debridService.setSettings(next);
+    this.resolveExistingQueuedOpaqueFilenames();
     this.emitState();
   }
 
@@ -535,6 +537,29 @@ export class DownloadManager extends EventEmitter {
       }
     } catch (error) {
       logger.warn(`Dateinamen-Resolve fehlgeschlagen: ${compactErrorText(error)}`);
+    }
+  }
+
+  private resolveExistingQueuedOpaqueFilenames(): void {
+    const unresolvedByLink = new Map<string, string[]>();
+    for (const item of Object.values(this.session.items)) {
+      if (!looksLikeOpaqueFilename(item.fileName)) {
+        continue;
+      }
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        continue;
+      }
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg || pkg.cancelled) {
+        continue;
+      }
+      const existing = unresolvedByLink.get(item.url) ?? [];
+      existing.push(item.id);
+      unresolvedByLink.set(item.url, existing);
+    }
+
+    if (unresolvedByLink.size > 0) {
+      void this.resolveQueuedFilenames(unresolvedByLink);
     }
   }
 
