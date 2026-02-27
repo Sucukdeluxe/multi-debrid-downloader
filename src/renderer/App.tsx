@@ -80,6 +80,8 @@ export function App(): ReactElement {
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const dragOverRef = useRef(false);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -283,6 +285,7 @@ export function App(): ReactElement {
 
   const onDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
     event.preventDefault();
+    dragOverRef.current = false;
     setDragOver(false);
     const files = Array.from(event.dataTransfer.files ?? []) as File[];
     const dlc = files.filter((f) => f.name.toLowerCase().endsWith(".dlc")).map((f) => (f as unknown as { path?: string }).path).filter((v): v is string => !!v);
@@ -344,7 +347,19 @@ export function App(): ReactElement {
   };
 
   const performQuickAction = async (action: () => Promise<unknown>): Promise<void> => {
-    try { await action(); } catch (error) { showToast(`Fehler: ${String(error)}`, 2600); }
+    if (actionBusy) {
+      return;
+    }
+    setActionBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      showToast(`Fehler: ${String(error)}`, 2600);
+    } finally {
+      setTimeout(() => {
+        setActionBusy(false);
+      }, 100);
+    }
   };
 
   const movePackage = useCallback((packageId: string, direction: "up" | "down") => {
@@ -449,8 +464,19 @@ export function App(): ReactElement {
   return (
     <div
       className={`app-shell${dragOver ? " drag-over" : ""}`}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-      onDragLeave={() => setDragOver(false)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!dragOverRef.current) {
+          dragOverRef.current = true;
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => {
+        if (dragOverRef.current) {
+          dragOverRef.current = false;
+          setDragOver(false);
+        }
+      }}
       onDrop={onDrop}
     >
       <header className="top-header">
@@ -469,15 +495,24 @@ export function App(): ReactElement {
 
       <section className="control-strip">
         <div className="buttons">
-          <button className="btn accent" disabled={!snapshot.canStart} onClick={async () => {
-            await performQuickAction(async () => { await window.rd.updateSettings(normalizedSettingsDraft); await window.rd.start(); });
+          <button className="btn accent" disabled={!snapshot.canStart || actionBusy} onClick={async () => {
+            await performQuickAction(async () => {
+              if (configuredProviders.length === 0) {
+                setTab("settings");
+                showToast("Bitte zuerst mindestens einen Hoster-Account eintragen", 3000);
+                return;
+              }
+              await window.rd.updateSettings(normalizedSettingsDraft);
+              await window.rd.start();
+            });
           }}>Start</button>
-          <button className="btn" disabled={!snapshot.canPause} onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}>
+          <button className="btn" disabled={!snapshot.canPause || actionBusy} onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}>
             {snapshot.session.paused ? "Fortsetzen" : "Pause"}
           </button>
-          <button className="btn" disabled={!snapshot.canStop} onClick={() => { void performQuickAction(() => window.rd.stop()); }}>Stop</button>
+          <button className="btn" disabled={!snapshot.canStop || actionBusy} onClick={() => { void performQuickAction(() => window.rd.stop()); }}>Stop</button>
           <button
             className="btn"
+            disabled={actionBusy}
             onClick={() => {
               const confirmed = window.confirm("Wirklich alle Einträge aus der Queue löschen?");
               if (!confirmed) {
@@ -488,7 +523,7 @@ export function App(): ReactElement {
           >
             Alles leeren
           </button>
-          <button className={`btn${snapshot.clipboardActive ? " btn-active" : ""}`} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
+          <button className={`btn${snapshot.clipboardActive ? " btn-active" : ""}`} disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
             Clipboard {snapshot.clipboardActive ? "An" : "Aus"}
           </button>
         </div>
