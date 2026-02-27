@@ -40,6 +40,8 @@ const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 30000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
+const DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS = 90000;
+
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
   if (Number.isFinite(fromEnv) && fromEnv >= 2000 && fromEnv <= 600000) {
@@ -54,6 +56,19 @@ function getDownloadConnectTimeoutMs(): number {
     return Math.floor(fromEnv);
   }
   return DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS;
+}
+
+function getGlobalStallWatchdogTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_GLOBAL_STALL_TIMEOUT_MS ?? NaN);
+  if (Number.isFinite(fromEnv)) {
+    if (fromEnv <= 0) {
+      return 0;
+    }
+    if (fromEnv >= 2000 && fromEnv <= 600000) {
+      return Math.floor(fromEnv);
+    }
+  }
+  return DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS;
 }
 
 type DownloadManagerOptions = {
@@ -212,6 +227,10 @@ export class DownloadManager extends EventEmitter {
   private lastSchedulerHeartbeatAt = 0;
 
   private lastReconnectMarkAt = 0;
+
+  private lastGlobalProgressBytes = 0;
+
+  private lastGlobalProgressAt = 0;
 
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
@@ -1044,6 +1063,8 @@ export class DownloadManager extends EventEmitter {
       this.session.reconnectReason = "";
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
+      this.lastGlobalProgressBytes = 0;
+      this.lastGlobalProgressAt = nowMs();
       this.summary = null;
       this.persistSoon();
       this.emitState(true);
@@ -1064,6 +1085,8 @@ export class DownloadManager extends EventEmitter {
     this.lastReconnectMarkAt = 0;
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
+    this.lastGlobalProgressBytes = 0;
+    this.lastGlobalProgressAt = nowMs();
     this.summary = null;
     this.persistSoon();
     this.emitState(true);
@@ -1075,6 +1098,8 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
+    this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
+    this.lastGlobalProgressAt = nowMs();
     this.abortPostProcessing("stop");
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
@@ -1090,6 +1115,8 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
+    this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
+    this.lastGlobalProgressAt = nowMs();
     this.abortPostProcessing("shutdown");
 
     let requeuedItems = 0;
@@ -1592,6 +1619,8 @@ export class DownloadManager extends EventEmitter {
           this.startItem(next.packageId, next.itemId);
         }
 
+        this.runGlobalStallWatchdog(now);
+
         if (this.activeTasks.size === 0 && !this.hasQueuedItems() && this.packagePostProcessTasks.size === 0) {
           this.finishRun();
           break;
@@ -1609,6 +1638,48 @@ export class DownloadManager extends EventEmitter {
 
   private reconnectActive(): boolean {
     return this.session.reconnectUntil > nowMs();
+  }
+
+  private runGlobalStallWatchdog(now: number): void {
+    const timeoutMs = getGlobalStallWatchdogTimeoutMs();
+    if (timeoutMs <= 0) {
+      return;
+    }
+
+    if (!this.session.running || this.session.paused || this.reconnectActive()) {
+      this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
+      this.lastGlobalProgressAt = now;
+      return;
+    }
+
+    if (this.session.totalDownloadedBytes !== this.lastGlobalProgressBytes) {
+      this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
+      this.lastGlobalProgressAt = now;
+      return;
+    }
+
+    if (now - this.lastGlobalProgressAt < timeoutMs) {
+      return;
+    }
+
+    const stalled = Array.from(this.activeTasks.values()).filter((active) => {
+      if (active.abortController.signal.aborted) {
+        return false;
+      }
+      const item = this.session.items[active.itemId];
+      return Boolean(item && item.status === "downloading");
+    });
+    if (stalled.length === 0) {
+      this.lastGlobalProgressAt = now;
+      return;
+    }
+
+    logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalled.length} Task(s) neu starten`);
+    for (const active of stalled) {
+      active.abortReason = "stall";
+      active.abortController.abort("stall");
+    }
+    this.lastGlobalProgressAt = now;
   }
 
   private requestReconnect(reason: string): void {
@@ -2757,6 +2828,8 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
+    this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
+    this.lastGlobalProgressAt = nowMs();
     this.persistNow();
     this.emitState();
   }
