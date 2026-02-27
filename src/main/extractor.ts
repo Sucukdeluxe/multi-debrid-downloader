@@ -571,6 +571,19 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   const candidates = findArchiveCandidates(options.packageDir);
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
+    const existingResume = readExtractResumeState(options.packageDir);
+    if (existingResume.size > 0 && hasAnyFilesRecursive(options.targetDir)) {
+      clearExtractResumeState(options.packageDir);
+      logger.info(`Entpacken übersprungen (Archive bereinigt, Ziel hat Dateien): ${options.packageDir}`);
+      options.onProgress?.({
+        current: existingResume.size,
+        total: existingResume.size,
+        percent: 100,
+        archiveName: "",
+        phase: "done"
+      });
+      return { extracted: existingResume.size, failed: 0, lastError: "" };
+    }
     clearExtractResumeState(options.packageDir);
     logger.info(`Entpacken übersprungen (keine Archive gefunden): ${options.packageDir}`);
     return { extracted: 0, failed: 0, lastError: "" };

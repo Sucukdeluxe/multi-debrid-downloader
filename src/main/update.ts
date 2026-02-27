@@ -8,9 +8,10 @@ import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { APP_VERSION, DEFAULT_UPDATE_REPO } from "./constants";
 import { UpdateCheckResult, UpdateInstallResult } from "../shared/types";
 import { compactErrorText } from "./utils";
+import { logger } from "./logger";
 
 const RELEASE_FETCH_TIMEOUT_MS = 12000;
-const DOWNLOAD_TIMEOUT_MS = 8 * 60 * 1000;
+const CONNECT_TIMEOUT_MS = 30000;
 const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 
 type ReleaseAsset = {
@@ -274,13 +275,15 @@ export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult
 }
 
 async function downloadFile(url: string, targetPath: string): Promise<void> {
-  const timeout = timeoutController(DOWNLOAD_TIMEOUT_MS);
+  logger.info(`Update-Download versucht: ${url}`);
+  const timeout = timeoutController(CONNECT_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(url, {
       headers: {
         "User-Agent": UPDATE_USER_AGENT
       },
+      redirect: "follow",
       signal: timeout.signal
     });
   } finally {
@@ -294,11 +297,13 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
   const source = Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>);
   const target = fs.createWriteStream(targetPath);
   await pipeline(source, target);
+  logger.info(`Update-Download abgeschlossen: ${targetPath}`);
 }
 
 async function downloadFromCandidates(candidates: string[], targetPath: string): Promise<void> {
   let lastError: unknown = new Error("Update Download fehlgeschlagen");
 
+  logger.info(`Update-Download: ${candidates.length} Kandidat(en)`);
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     try {
@@ -306,6 +311,7 @@ async function downloadFromCandidates(candidates: string[], targetPath: string):
       return;
     } catch (error) {
       lastError = error;
+      logger.warn(`Update-Download Kandidat ${index + 1}/${candidates.length} fehlgeschlagen: ${compactErrorText(error)}`);
       try {
         await fs.promises.rm(targetPath, { force: true });
       } catch {
@@ -373,6 +379,8 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
     } catch {
       // ignore
     }
-    return { started: false, message: compactErrorText(error) };
+    const releaseUrl = String(effectiveCheck.releaseUrl || "").trim();
+    const hint = releaseUrl ? ` – Manuell: ${releaseUrl}` : "";
+    return { started: false, message: `${compactErrorText(error)}${hint}` };
   }
 }
