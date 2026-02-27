@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkGitHubUpdate, normalizeUpdateRepo } from "../src/main/update";
+import { checkGitHubUpdate, installLatestUpdate, normalizeUpdateRepo } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
+import { UpdateCheckResult } from "../src/shared/types";
 
 const originalFetch = globalThis.fetch;
 
@@ -69,5 +71,40 @@ describe("update", () => {
     const result = await checkGitHubUpdate("owner/repo");
     expect(result.updateAvailable).toBe(true);
     expect(result.setupAssetUrl).toBe("https://example.invalid/setup.exe");
+    expect(result.setupAssetName).toBe("Real-Debrid-Downloader Setup 9.9.9.exe");
+  });
+
+  it("falls back to alternate download URL when setup asset URL returns 404", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    const requestedUrls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      requestedUrls.push(url);
+
+      if (url.includes("stale-setup.exe")) {
+        return new Response("missing", { status: 404 });
+      }
+      if (url.includes("/releases/latest/download/")) {
+        return new Response(executablePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" }
+        });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const prechecked: UpdateCheckResult = {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "v9.9.9",
+      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "https://example.invalid/stale-setup.exe",
+      setupAssetName: "Real-Debrid-Downloader Setup 9.9.9.exe"
+    };
+
+    const result = await installLatestUpdate("owner/repo", prechecked);
+    expect(result.started).toBe(true);
+    expect(requestedUrls.some((url) => url.includes("/releases/latest/download/"))).toBe(true);
   });
 });
