@@ -73,6 +73,8 @@ describe("settings storage", () => {
     const normalized = normalizeSettings({
       ...defaultSettings(),
       providerPrimary: "invalid-provider" as unknown as AppSettings["providerPrimary"],
+      providerSecondary: "invalid-provider" as unknown as AppSettings["providerSecondary"],
+      providerTertiary: "invalid-provider" as unknown as AppSettings["providerTertiary"],
       cleanupMode: "broken" as unknown as AppSettings["cleanupMode"],
       extractConflictMode: "broken" as unknown as AppSettings["extractConflictMode"],
       completedCleanupPolicy: "broken" as unknown as AppSettings["completedCleanupPolicy"],
@@ -86,6 +88,8 @@ describe("settings storage", () => {
     });
 
     expect(normalized.providerPrimary).toBe("realdebrid");
+    expect(normalized.providerSecondary).toBe("none");
+    expect(normalized.providerTertiary).toBe("none");
     expect(normalized.cleanupMode).toBe("none");
     expect(normalized.extractConflictMode).toBe("overwrite");
     expect(normalized.completedCleanupPolicy).toBe("never");
@@ -123,5 +127,16 @@ describe("settings storage", () => {
     expect(loaded.reconnectWaitSeconds).toBe(10);
     expect(loaded.speedLimitMode).toBe("global");
     expect(loaded.updateRepo).toBe(defaultSettings().updateRepo);
+  });
+
+  it("keeps explicit none as fallback provider choice", () => {
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      providerSecondary: "none",
+      providerTertiary: "none"
+    });
+
+    expect(normalized.providerSecondary).toBe("none");
+    expect(normalized.providerTertiary).toBe("none");
   });
 });

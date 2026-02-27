@@ -1,5 +1,5 @@
 import { DragEvent, ReactElement, useEffect, useMemo, useRef, useState } from "react";
-import type { AppSettings, DebridProvider, DownloadItem, PackageEntry, UiSnapshot, UpdateCheckResult } from "../shared/types";
+import type { AppSettings, DebridFallbackProvider, DebridProvider, DownloadItem, PackageEntry, UiSnapshot, UpdateCheckResult } from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
 
@@ -72,6 +72,14 @@ const providerLabels: Record<DebridProvider, string> = {
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid"
 };
+
+const fallbackProviderOptions: Array<{ value: DebridFallbackProvider; label: string }> = [
+  { value: "none", label: "Kein Fallback" },
+  { value: "realdebrid", label: providerLabels.realdebrid },
+  { value: "megadebrid", label: providerLabels.megadebrid },
+  { value: "bestdebrid", label: providerLabels.bestdebrid },
+  { value: "alldebrid", label: providerLabels.alldebrid }
+];
 
 function formatSpeedMbps(speedBps: number): string {
   const mbps = Math.max(0, speedBps) / (1024 * 1024);
@@ -397,16 +405,16 @@ export function App(): ReactElement {
                   <div>
                     <label>Sekundär</label>
                     <select value={settingsDraft.providerSecondary} onChange={(event) => setText("providerSecondary", event.target.value)}>
-                      {Object.entries(providerLabels).map(([key, label]) => (
-                        <option key={key} value={key}>{label}</option>
+                      {fallbackProviderOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
                   </div>
                   <div>
                     <label>Tertiär</label>
                     <select value={settingsDraft.providerTertiary} onChange={(event) => setText("providerTertiary", event.target.value)}>
-                      {Object.entries(providerLabels).map(([key, label]) => (
-                        <option key={key} value={key}>{label}</option>
+                      {fallbackProviderOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
                   </div>

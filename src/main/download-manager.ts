@@ -87,6 +87,31 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   return file.startsWith(withSep);
 }
 
+function directoryHasFiles(dirPath: string): boolean {
+  if (!fs.existsSync(dirPath)) {
+    return false;
+  }
+  const stack = [dirPath];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        return true;
+      }
+      if (entry.isDirectory()) {
+        stack.push(path.join(current, entry.name));
+      }
+    }
+  }
+  return false;
+}
+
 export class DownloadManager extends EventEmitter {
   private settings: AppSettings;
 
@@ -114,6 +139,10 @@ export class DownloadManager extends EventEmitter {
 
   private cleanupQueue: Promise<void> = Promise.resolve();
 
+  private packagePostProcessQueue: Promise<void> = Promise.resolve();
+
+  private packagePostProcessTasks = new Map<string, Promise<void>>();
+
   private reservedTargetPaths = new Map<string, string>();
 
   private claimedTargetPathByItem = new Map<string, string>();
@@ -134,6 +163,7 @@ export class DownloadManager extends EventEmitter {
     this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
+    this.recoverPostProcessingOnStartup();
   }
 
   public setSettings(next: AppSettings): void {
@@ -157,7 +187,8 @@ export class DownloadManager extends EventEmitter {
   public getSnapshot(): UiSnapshot {
     const now = nowMs();
     this.pruneSpeedEvents(now);
-    const speedBps = this.speedBytesLastWindow / 3;
+    const paused = this.session.running && this.session.paused;
+    const speedBps = paused ? 0 : this.speedBytesLastWindow / 3;
 
     let totalItems = Object.keys(this.session.items).length;
     let doneItems = Object.values(this.session.items).filter((item) => isFinishedStatus(item.status)).length;
@@ -185,7 +216,7 @@ export class DownloadManager extends EventEmitter {
       session: this.getSession(),
       summary: this.summary,
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
-      etaText: `ETA: ${formatEta(eta)}`,
+      etaText: paused ? "ETA: --" : `ETA: ${formatEta(eta)}`,
       canStart: !this.session.running,
       canStop: this.session.running,
       canPause: this.session.running
@@ -204,6 +235,8 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
+    this.packagePostProcessTasks.clear();
+    this.packagePostProcessQueue = Promise.resolve();
     this.summary = null;
     this.persistNow();
     this.emitState(true);
@@ -592,6 +625,95 @@ export class DownloadManager extends EventEmitter {
     this.claimedTargetPathByItem.delete(itemId);
   }
 
+  private runPackagePostProcessing(packageId: string): Promise<void> {
+    const existing = this.packagePostProcessTasks.get(packageId);
+    if (existing) {
+      return existing;
+    }
+
+    const task = this.packagePostProcessQueue
+      .catch(() => undefined)
+      .then(async () => {
+        await this.handlePackagePostProcessing(packageId);
+      })
+      .catch((error) => {
+        logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
+      })
+      .finally(() => {
+        this.packagePostProcessTasks.delete(packageId);
+        this.persistSoon();
+        this.emitState();
+      });
+
+    this.packagePostProcessTasks.set(packageId, task);
+    this.packagePostProcessQueue = task;
+    return task;
+  }
+
+  private recoverPostProcessingOnStartup(): void {
+    const packageIds = [...this.session.packageOrder];
+    if (packageIds.length === 0) {
+      return;
+    }
+
+    let changed = false;
+    for (const packageId of packageIds) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled) {
+        continue;
+      }
+
+      const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+      if (items.length === 0) {
+        continue;
+      }
+
+      const success = items.filter((item) => item.status === "completed").length;
+      const failed = items.filter((item) => item.status === "failed").length;
+      const cancelled = items.filter((item) => item.status === "cancelled").length;
+      if (success + failed + cancelled < items.length) {
+        continue;
+      }
+
+      if (this.settings.autoExtract && failed === 0 && success > 0) {
+        if (this.settings.createExtractSubfolder && directoryHasFiles(pkg.extractDir)) {
+          for (const item of items) {
+            if (item.status === "completed" && item.fullStatus !== "Entpackt") {
+              item.fullStatus = "Entpackt";
+              item.updatedAt = nowMs();
+              changed = true;
+            }
+          }
+          if (pkg.status !== "completed") {
+            pkg.status = "completed";
+            pkg.updatedAt = nowMs();
+            changed = true;
+          }
+          continue;
+        }
+
+        const needsPostProcess = pkg.status !== "completed"
+          || items.some((item) => item.status === "completed" && item.fullStatus !== "Entpackt");
+        if (needsPostProcess) {
+          void this.runPackagePostProcessing(packageId);
+        }
+        continue;
+      }
+
+      const targetStatus = failed > 0 ? "failed" : cancelled > 0 && success === 0 ? "cancelled" : "completed";
+      if (pkg.status !== targetStatus) {
+        pkg.status = targetStatus;
+        pkg.updatedAt = nowMs();
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.persistSoon();
+      this.emitState();
+    }
+  }
+
   private removePackageFromSession(packageId: string, itemIds: string[]): void {
     for (const itemId of itemIds) {
       delete this.session.items[itemId];
@@ -814,7 +936,7 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
         this.recordRunOutcome(item.id, "completed");
 
-        await this.handlePackagePostProcessing(pkg.id);
+        await this.runPackagePostProcessing(pkg.id);
         this.applyCompletedCleanupPolicy(pkg.id, item.id);
         this.persistSoon();
         this.emitState();
@@ -1140,29 +1262,43 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    if (this.settings.autoExtract && failed === 0 && success > 0) {
+    const completedItems = items.filter((item) => item.status === "completed");
+    const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => item.fullStatus === "Entpackt");
+
+    if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
       pkg.status = "extracting";
       this.emitState();
-      const result = await extractPackageArchives({
-        packageDir: pkg.outputDir,
-        targetDir: pkg.extractDir,
-        cleanupMode: this.settings.cleanupMode,
-        conflictMode: this.settings.extractConflictMode,
-        removeLinks: this.settings.removeLinkFilesAfterExtract,
-        removeSamples: this.settings.removeSamplesAfterExtract
-      });
-      if (result.failed > 0) {
-        pkg.status = "failed";
-      } else {
-        if (result.extracted > 0) {
-          for (const entry of items) {
-            if (entry.status === "completed") {
+      try {
+        const result = await extractPackageArchives({
+          packageDir: pkg.outputDir,
+          targetDir: pkg.extractDir,
+          cleanupMode: this.settings.cleanupMode,
+          conflictMode: this.settings.extractConflictMode,
+          removeLinks: this.settings.removeLinkFilesAfterExtract,
+          removeSamples: this.settings.removeSamplesAfterExtract
+        });
+        if (result.failed > 0) {
+          for (const entry of completedItems) {
+            entry.fullStatus = "Entpack-Fehler";
+            entry.updatedAt = nowMs();
+          }
+          pkg.status = "failed";
+        } else {
+          if (result.extracted > 0) {
+            for (const entry of completedItems) {
               entry.fullStatus = "Entpackt";
               entry.updatedAt = nowMs();
             }
           }
+          pkg.status = "completed";
         }
-        pkg.status = "completed";
+      } catch (error) {
+        const reason = compactErrorText(error);
+        for (const entry of completedItems) {
+          entry.fullStatus = `Entpack-Fehler: ${reason}`;
+          entry.updatedAt = nowMs();
+        }
+        pkg.status = "failed";
       }
     } else if (failed > 0) {
       pkg.status = "failed";

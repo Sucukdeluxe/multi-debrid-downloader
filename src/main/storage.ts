@@ -4,7 +4,8 @@ import { AppSettings, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
-const VALID_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
+const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
+const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
@@ -53,14 +54,14 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     updateRepo: asText(settings.updateRepo) || defaults.updateRepo
   };
 
-  if (!VALID_PROVIDERS.has(normalized.providerPrimary)) {
+  if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
     normalized.providerPrimary = defaults.providerPrimary;
   }
-  if (!VALID_PROVIDERS.has(normalized.providerSecondary)) {
-    normalized.providerSecondary = defaults.providerSecondary;
+  if (!VALID_FALLBACK_PROVIDERS.has(normalized.providerSecondary)) {
+    normalized.providerSecondary = "none";
   }
-  if (!VALID_PROVIDERS.has(normalized.providerTertiary)) {
-    normalized.providerTertiary = defaults.providerTertiary;
+  if (!VALID_FALLBACK_PROVIDERS.has(normalized.providerTertiary)) {
+    normalized.providerTertiary = "none";
   }
   if (!VALID_CLEANUP_MODES.has(normalized.cleanupMode)) {
     normalized.cleanupMode = defaults.cleanupMode;

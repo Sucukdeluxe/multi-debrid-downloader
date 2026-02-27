@@ -215,4 +215,39 @@ describe("debrid service", () => {
     await expect(service.unrestrictLink("https://rapidgator.net/file/example.part5.rar.html")).rejects.toThrow();
     expect(allDebridCalls).toBe(0);
   });
+
+  it("allows disabling secondary and tertiary providers", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      megaLogin: "user",
+      megaPassword: "pass",
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({ error: "traffic_limit" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const megaWeb = vi.fn(async () => ({
+      fileName: "unused.bin",
+      directUrl: "https://unused",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    await expect(service.unrestrictLink("https://rapidgator.net/file/example.part6.rar.html")).rejects.toThrow();
+    expect(megaWeb).toHaveBeenCalledTimes(0);
+  });
 });
