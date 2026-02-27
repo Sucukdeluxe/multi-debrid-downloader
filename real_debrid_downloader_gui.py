@@ -52,7 +52,7 @@ MANIFEST_FILE = Path(__file__).with_name("rd_download_manifest.json")
 LOG_FILE = Path(__file__).with_name("rd_downloader.log")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload"
@@ -1174,16 +1174,18 @@ class DownloaderApp(tk.Tk):
             LOGGER.error("Token aus Keyring konnte nicht geladen werden: %s", exc)
             return ""
 
-    def _store_token_in_keyring(self, token: str) -> None:
+    def _store_token_in_keyring(self, token: str) -> bool:
         if not self._can_store_token_securely():
-            return
+            return False
         try:
             if token:
                 keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
             else:
                 keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+            return True
         except Exception as exc:
             LOGGER.error("Token im Keyring konnte nicht gespeichert werden: %s", exc)
+            return False
 
     @staticmethod
     def _has_enough_disk_space(target_dir: Path, required_bytes: int, reserve_bytes: int = 200 * 1024 * 1024) -> bool:
@@ -1831,8 +1833,8 @@ class DownloaderApp(tk.Tk):
     def _save_config(self) -> None:
         token = self.token_var.get().strip() if self.remember_token_var.get() else ""
         if self.remember_token_var.get() and self._can_store_token_securely():
-            self._store_token_in_keyring(token)
-            token = ""
+            if self._store_token_in_keyring(token):
+                token = ""
         elif not self.remember_token_var.get() and self._can_store_token_securely():
             self._store_token_in_keyring("")
         data = {
@@ -2127,6 +2129,10 @@ class DownloaderApp(tk.Tk):
                     f"Paket {package_index}/{package_total}: {package_name} ({len(package_links)} Links, parallel {self._active_parallel_limit(len(package_links))})"
                 )
 
+                hybrid_extract_for_package = hybrid_extract and package_total <= 1
+                if hybrid_extract and package_total > 1 and package_index == 1:
+                    self._queue_status("Hinweis: Entpacken läuft paketweise im Hintergrund, während weitere Pakete laden")
+
                 package_result = self._download_worker(
                     token=token,
                     package_name=package_name,
@@ -2134,7 +2140,7 @@ class DownloaderApp(tk.Tk):
                     links=package_links,
                     extract_target_dir=extract_target_dir,
                     initial_parallel=max_parallel,
-                    hybrid_extract=hybrid_extract,
+                    hybrid_extract=hybrid_extract_for_package,
                     cleanup_mode=cleanup_mode,
                     extract_conflict_mode=extract_conflict_mode,
                     progress_offset=processed_offset,
