@@ -58,7 +58,7 @@ MANIFEST_FILE = Path(__file__).with_name("rd_download_manifest.json")
 LOG_FILE = Path(__file__).with_name("rd_downloader.log")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload"
@@ -644,137 +644,192 @@ class DownloaderApp(TkBase):
     def _build_ui(self) -> None:
         self._configure_modern_theme()
 
-        root = ttk.Frame(self, padding=10)
+        root = ttk.Frame(self, style="App.TFrame", padding=(16, 14, 16, 12))
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=1)
 
-        header = ttk.LabelFrame(root, text="Steuerung", padding=10)
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(9, weight=1)
+        title_row = ttk.Frame(root, style="App.TFrame")
+        title_row.grid(row=0, column=0, sticky="ew")
+        title_row.columnconfigure(1, weight=1)
 
-        self.start_button = ttk.Button(header, text="Start", command=self.start_downloads)
+        ttk.Label(title_row, text="Real-Debrid Download Manager", style="HeaderTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(title_row, text=f"v{APP_VERSION}", style="HeaderMeta.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
+
+        metrics = ttk.Frame(title_row, style="App.TFrame")
+        metrics.grid(row=0, column=2, sticky="e")
+        ttk.Label(metrics, textvariable=self.speed_var, style="HeaderValue.TLabel").pack(side="right", padx=(14, 0))
+        ttk.Label(metrics, textvariable=self.eta_var, style="HeaderMeta.TLabel").pack(side="right")
+
+        control_bar = ttk.Frame(root, style="Surface.TFrame", padding=(14, 10))
+        control_bar.grid(row=1, column=0, sticky="ew", pady=(10, 12))
+        control_bar.columnconfigure(12, weight=1)
+
+        self.start_button = ttk.Button(control_bar, text="Start", style="Accent.TButton", command=self.start_downloads)
         self.start_button.grid(row=0, column=0, sticky="w")
-        self.pause_button = ttk.Button(header, text="Pause", command=self.toggle_pause_downloads, state="disabled")
+        self.pause_button = ttk.Button(control_bar, text="Pause", style="Ghost.TButton", command=self.toggle_pause_downloads, state="disabled")
         self.pause_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        self.stop_button = ttk.Button(header, text="Stop", command=self.stop_downloads, state="disabled")
+        self.stop_button = ttk.Button(control_bar, text="Stop", style="Ghost.TButton", command=self.stop_downloads, state="disabled")
         self.stop_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
-        ttk.Button(header, text="Fortschritt leeren", command=self._clear_progress_only).grid(row=0, column=3, sticky="w", padx=(10, 0))
+        ttk.Button(control_bar, text="Fortschritt leeren", style="Ghost.TButton", command=self._clear_progress_only).grid(
+            row=0,
+            column=3,
+            sticky="w",
+            padx=(10, 0),
+        )
 
+        ttk.Separator(control_bar, orient="vertical").grid(row=0, column=4, sticky="ns", padx=(14, 14))
         ttk.Checkbutton(
-            header,
-            text="Speed-Limit aktiv",
+            control_bar,
+            text="Speed-Limit",
+            style="Surface.TCheckbutton",
             variable=self.speed_limit_enabled_var,
             command=self._on_speed_limit_enabled_toggle,
-        ).grid(row=0, column=4, sticky="w", padx=(16, 0))
-        self.speed_limit_spin = ttk.Spinbox(header, from_=0, to=500000, width=8, textvariable=self.speed_limit_kbps_var)
-        self.speed_limit_spin.grid(row=0, column=5, sticky="w", padx=(6, 0))
-        ttk.Label(header, text="KB/s").grid(row=0, column=6, sticky="w", padx=(4, 0))
+        ).grid(row=0, column=5, sticky="w")
+        self.speed_limit_spin = ttk.Spinbox(control_bar, from_=0, to=500000, width=8, textvariable=self.speed_limit_kbps_var)
+        self.speed_limit_spin.grid(row=0, column=6, sticky="w", padx=(8, 0))
+        ttk.Label(control_bar, text="KB/s", style="Surface.TLabel").grid(row=0, column=7, sticky="w", padx=(5, 0))
         self.speed_mode_box = ttk.Combobox(
-            header,
+            control_bar,
             textvariable=self.speed_limit_mode_var,
             values=SPEED_MODE_CHOICES,
             width=12,
             state="readonly",
         )
-        self.speed_mode_box.grid(row=0, column=7, sticky="w", padx=(8, 0))
-        ttk.Button(header, text="Update suchen", command=self._manual_check_updates).grid(row=0, column=8, sticky="w", padx=(10, 0))
-
-        ttk.Label(header, textvariable=self.speed_var).grid(row=0, column=9, sticky="e", padx=(10, 0))
-        ttk.Label(header, textvariable=self.eta_var).grid(row=0, column=10, sticky="e", padx=(10, 0))
+        self.speed_mode_box.grid(row=0, column=8, sticky="w", padx=(8, 0))
+        ttk.Button(control_bar, text="Update suchen", style="Ghost.TButton", command=self._manual_check_updates).grid(
+            row=0,
+            column=9,
+            sticky="w",
+            padx=(12, 0),
+        )
 
         self.main_tabs = ttk.Notebook(root)
-        self.main_tabs.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        self.main_tabs.grid(row=2, column=0, sticky="nsew")
 
-        collector_tab = ttk.Frame(self.main_tabs, padding=8)
-        downloads_tab = ttk.Frame(self.main_tabs, padding=8)
-        settings_tab = ttk.Frame(self.main_tabs, padding=8)
+        collector_tab = ttk.Frame(self.main_tabs, style="App.TFrame", padding=10)
+        downloads_tab = ttk.Frame(self.main_tabs, style="App.TFrame", padding=10)
+        settings_tab = ttk.Frame(self.main_tabs, style="App.TFrame", padding=10)
         self.main_tabs.add(collector_tab, text="Linksammler")
         self.main_tabs.add(downloads_tab, text="Downloads")
         self.main_tabs.add(settings_tab, text="Settings")
 
         collector_tab.columnconfigure(0, weight=1)
-        collector_tab.rowconfigure(2, weight=1)
+        collector_tab.rowconfigure(1, weight=1)
 
-        token_frame = ttk.LabelFrame(collector_tab, text="Authentifizierung & Update", padding=10)
-        token_frame.grid(row=0, column=0, sticky="ew")
-        token_frame.columnconfigure(1, weight=1)
+        collector_top = ttk.Frame(collector_tab, style="App.TFrame")
+        collector_top.grid(row=0, column=0, sticky="ew")
+        collector_top.columnconfigure(0, weight=1)
+        collector_top.columnconfigure(1, weight=1)
 
-        ttk.Label(token_frame, text="Real-Debrid API Token:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.token_entry = ttk.Entry(token_frame, textvariable=self.token_var, show="*", width=80)
+        auth_card, auth = self._create_card(
+            collector_top,
+            "Authentifizierung",
+            "Token, Update-Quelle und Startverhalten",
+        )
+        auth_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        auth.columnconfigure(1, weight=1)
+
+        ttk.Label(auth, text="API Token", style="CardLabel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.token_entry = ttk.Entry(auth, textvariable=self.token_var, show="*")
         self.token_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
         ttk.Checkbutton(
-            token_frame,
-            text="Token anzeigen",
+            auth,
+            text="anzeigen",
+            style="Card.TCheckbutton",
             variable=self.show_token_var,
             command=self._toggle_token_visibility,
         ).grid(row=0, column=2, sticky="w")
         ttk.Checkbutton(
-            token_frame,
+            auth,
             text="Token lokal speichern",
+            style="Card.TCheckbutton",
             variable=self.remember_token_var,
         ).grid(row=1, column=1, sticky="w", pady=(8, 0))
-        ttk.Label(token_frame, text="GitHub Repo (owner/name):").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(token_frame, textvariable=self.update_repo_var).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
+        ttk.Label(auth, text="GitHub Repo", style="CardLabel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(auth, textvariable=self.update_repo_var).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
         ttk.Checkbutton(
-            token_frame,
+            auth,
             text="Beim Start auf Updates prüfen",
+            style="Card.TCheckbutton",
             variable=self.auto_update_check_var,
-        ).grid(row=3, column=1, sticky="w", pady=(6, 0))
+        ).grid(row=3, column=1, sticky="w", pady=(8, 0))
 
-        output_frame = ttk.LabelFrame(collector_tab, text="Paketierung & Zielpfade", padding=10)
-        output_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        output_frame.columnconfigure(1, weight=1)
+        path_card, path = self._create_card(
+            collector_top,
+            "Paketierung & Zielpfade",
+            "Ordner, Entpacken und Paketoptionen",
+        )
+        path_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        path.columnconfigure(1, weight=1)
 
-        ttk.Label(output_frame, text="Download-Ordner:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(output_frame, textvariable=self.output_dir_var).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        ttk.Button(output_frame, text="Ordner wählen", command=self._browse_output_dir).grid(row=0, column=2)
-        ttk.Label(output_frame, text="Paketname (optional):").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(output_frame, textvariable=self.package_name_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
-
+        ttk.Label(path, text="Download-Ordner", style="CardLabel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(path, textvariable=self.output_dir_var).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(path, text="Wählen", style="Ghost.TButton", command=self._browse_output_dir).grid(row=0, column=2, sticky="w")
+        ttk.Label(path, text="Paketname", style="CardLabel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(path, textvariable=self.package_name_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(path, text="Entpacken nach", style="CardLabel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(path, textvariable=self.extract_dir_var).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
+        ttk.Button(path, text="Wählen", style="Ghost.TButton", command=self._browse_extract_dir).grid(row=2, column=2, sticky="w", pady=(8, 0))
         ttk.Checkbutton(
-            output_frame,
+            path,
             text="Nach Download automatisch entpacken",
+            style="Card.TCheckbutton",
             variable=self.auto_extract_var,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(output_frame, text="Entpacken nach:").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(output_frame, textvariable=self.extract_dir_var).grid(row=3, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
-        ttk.Button(output_frame, text="Ordner wählen", command=self._browse_extract_dir).grid(row=3, column=2, pady=(8, 0))
-
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Checkbutton(
-            output_frame,
+            path,
             text="Unterordner erstellen (Paketname)",
+            style="Card.TCheckbutton",
             variable=self.create_extract_subfolder_var,
         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Checkbutton(
-            output_frame,
-            text="Hybrid-Entpacken (sobald Parts komplett)",
+            path,
+            text="Hybrid-Entpacken sobald Parts komplett",
+            style="Card.TCheckbutton",
             variable=self.hybrid_extract_var,
         ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Label(output_frame, text="Auto-Passwörter: serienfans.org, serienjunkies.net").grid(
+        ttk.Label(path, text="Auto-Passwörter: serienfans.org, serienjunkies.net", style="CardSub.TLabel").grid(
             row=6,
             column=0,
             columnspan=3,
             sticky="w",
-            pady=(6, 0),
+            pady=(8, 0),
         )
 
-        links_frame = ttk.LabelFrame(collector_tab, text="Linksammler (ein Link pro Zeile)", padding=10)
-        links_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
-        links_frame.columnconfigure(0, weight=1)
-        links_frame.rowconfigure(1, weight=1)
+        links_card, links_body = self._create_card(
+            collector_tab,
+            "Linksammler",
+            "Container und Direktlinks prüfen, sammeln und in die Queue übernehmen",
+        )
+        links_card.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        links_body.columnconfigure(0, weight=1)
+        links_body.rowconfigure(1, weight=1)
 
-        links_actions = ttk.Frame(links_frame)
-        links_actions.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        ttk.Button(links_actions, text="Links laden", command=self._load_links_from_file).pack(side="left")
-        ttk.Button(links_actions, text="DLC import", command=self._import_dlc_file).pack(side="left", padx=(8, 0))
-        ttk.Button(links_actions, text="Links speichern", command=self._save_links_to_file).pack(side="left", padx=(8, 0))
-        ttk.Button(links_actions, text="Links leeren", command=self._clear_links).pack(side="left", padx=(8, 0))
-        ttk.Label(links_actions, text="Tipp: .dlc per Drag-and-Drop in dieses Feld").pack(side="right")
+        links_actions = ttk.Frame(links_body, style="Card.TFrame")
+        links_actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(links_actions, text="Links laden", style="Ghost.TButton", command=self._load_links_from_file).pack(side="left")
+        ttk.Button(links_actions, text="DLC import", style="Ghost.TButton", command=self._import_dlc_file).pack(side="left", padx=(8, 0))
+        ttk.Button(links_actions, text="Speichern", style="Ghost.TButton", command=self._save_links_to_file).pack(side="left", padx=(8, 0))
+        ttk.Button(links_actions, text="Leeren", style="Ghost.TButton", command=self._clear_links).pack(side="left", padx=(8, 0))
+        ttk.Label(links_actions, text=".dlc direkt hier droppen", style="CardSub.TLabel").pack(side="right")
 
-        self.links_text = tk.Text(links_frame, height=18, wrap="none", bg="#1e2329", fg="#e8edf4", insertbackground="#e8edf4")
+        self.links_text = tk.Text(
+            links_body,
+            height=18,
+            wrap="none",
+            bg="#0b1526",
+            fg="#e2e8f0",
+            insertbackground="#e2e8f0",
+            relief="flat",
+            padx=10,
+            pady=10,
+            highlightthickness=1,
+            highlightbackground="#253349",
+            highlightcolor="#253349",
+        )
         self.links_text.grid(row=1, column=0, sticky="nsew")
-        links_scroll = ttk.Scrollbar(links_frame, orient="vertical", command=self.links_text.yview)
+        links_scroll = ttk.Scrollbar(links_body, orient="vertical", command=self.links_text.yview)
         links_scroll.grid(row=1, column=1, sticky="ns")
         self.links_text.configure(yscrollcommand=links_scroll.set)
         self._setup_dlc_drag_and_drop()
@@ -782,28 +837,32 @@ class DownloaderApp(TkBase):
         downloads_tab.columnconfigure(0, weight=1)
         downloads_tab.rowconfigure(0, weight=1)
 
-        table_frame = ttk.LabelFrame(downloads_tab, text="Downloads", padding=10)
-        table_frame.grid(row=0, column=0, sticky="nsew")
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+        downloads_card, downloads_body = self._create_card(
+            downloads_tab,
+            "Downloads",
+            "Paket-Tree mit Download-, Entpack- und Integritätsstatus",
+        )
+        downloads_card.grid(row=0, column=0, sticky="nsew")
+        downloads_body.columnconfigure(0, weight=1)
+        downloads_body.rowconfigure(0, weight=1)
 
         columns = ("file", "status", "progress", "speed", "retries")
-        self.table = ttk.Treeview(table_frame, columns=columns, show="tree headings")
+        self.table = ttk.Treeview(downloads_body, columns=columns, show="tree headings")
         self.table.heading("#0", text="Paket / Datei")
         self.table.heading("file", text="Datei")
         self.table.heading("status", text="Status")
         self.table.heading("progress", text="Fortschritt")
         self.table.heading("speed", text="Speed")
         self.table.heading("retries", text="Retries")
-        self.table.column("#0", width=380, anchor="w")
-        self.table.column("file", width=260, anchor="w")
+        self.table.column("#0", width=340, anchor="w")
+        self.table.column("file", width=250, anchor="w")
         self.table.column("status", width=260, anchor="w")
         self.table.column("progress", width=100, anchor="center")
-        self.table.column("speed", width=100, anchor="center")
-        self.table.column("retries", width=80, anchor="center")
+        self.table.column("speed", width=110, anchor="center")
+        self.table.column("retries", width=85, anchor="center")
         self.table.grid(row=0, column=0, sticky="nsew")
 
-        table_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
+        table_scroll = ttk.Scrollbar(downloads_body, orient="vertical", command=self.table.yview)
         table_scroll.grid(row=0, column=1, sticky="ns")
         self.table.configure(yscrollcommand=table_scroll.set)
         self.table.bind("<Delete>", self._on_table_delete_key)
@@ -818,14 +877,32 @@ class DownloaderApp(TkBase):
         self.table_context_menu.add_command(label="Links komplett leeren", command=self._clear_links)
         self.table_context_menu.add_command(label="Alles leeren", command=self._clear_all_lists)
 
-        footer = ttk.Frame(downloads_tab)
-        footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        footer = ttk.Frame(downloads_body, style="Card.TFrame")
+        footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         footer.columnconfigure(0, weight=1)
-        ttk.Progressbar(footer, variable=self.overall_progress_var, maximum=100, mode="determinate").grid(row=0, column=0, sticky="ew")
-        ttk.Label(footer, textvariable=self.status_var).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Progressbar(footer, variable=self.overall_progress_var, maximum=100, mode="determinate").grid(
+            row=0,
+            column=0,
+            sticky="ew",
+        )
+        ttk.Label(footer, textvariable=self.status_var, style="CardSub.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         self._build_settings_tab(settings_tab)
         self._on_speed_limit_enabled_toggle()
+
+    def _create_card(self, parent: ttk.Widget, title: str, subtitle: str = "") -> tuple[ttk.Frame, ttk.Frame]:
+        card = ttk.Frame(parent, style="Card.TFrame", padding=(14, 12))
+        card.columnconfigure(0, weight=1)
+        ttk.Label(card, text=title, style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        if subtitle:
+            ttk.Label(card, text=subtitle, style="CardSub.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
+            body_row = 2
+        else:
+            body_row = 1
+
+        body = ttk.Frame(card, style="Card.TFrame")
+        body.grid(row=body_row, column=0, sticky="nsew", pady=(10, 0))
+        return card, body
 
     def _configure_modern_theme(self) -> None:
         style = ttk.Style(self)
@@ -834,98 +911,288 @@ class DownloaderApp(TkBase):
         except Exception:
             pass
 
-        bg = "#0f141b"
-        card = "#1a212c"
-        fg = "#e6edf3"
-        sub = "#b7c3d0"
-        accent = "#2f81f7"
+        bg = "#070b14"
+        surface = "#0e1626"
+        card = "#111d31"
+        field = "#081120"
+        fg = "#e2e8f0"
+        muted = "#8fa1b8"
+        border = "#24364f"
+        accent = "#38bdf8"
+        accent_hover = "#60d3ff"
+        accent_press = "#27a7de"
 
+        font_base = ("Segoe UI", 10)
+        self.option_add("*Font", "{Segoe UI} 10")
         self.configure(bg=bg)
+
+        style.configure(".", font=font_base)
+        style.configure("App.TFrame", background=bg)
+        style.configure("Surface.TFrame", background=surface)
+        style.configure("Card.TFrame", background=card)
         style.configure("TFrame", background=bg)
-        style.configure("TLabelframe", background=card, foreground=fg)
-        style.configure("TLabelframe.Label", background=card, foreground=fg)
+
+        style.configure("HeaderTitle.TLabel", background=bg, foreground=fg, font=("Segoe UI Semibold", 17))
+        style.configure("HeaderMeta.TLabel", background=bg, foreground=muted, font=("Segoe UI", 10))
+        style.configure("HeaderValue.TLabel", background=bg, foreground=fg, font=("Segoe UI Semibold", 10))
+
+        style.configure("Surface.TLabel", background=surface, foreground=fg)
+        style.configure("CardTitle.TLabel", background=card, foreground=fg, font=("Segoe UI Semibold", 11))
+        style.configure("CardSub.TLabel", background=card, foreground=muted, font=("Segoe UI", 9))
+        style.configure("CardLabel.TLabel", background=card, foreground=muted, font=("Segoe UI", 9))
         style.configure("TLabel", background=bg, foreground=fg)
-        style.configure("TButton", background=card, foreground=fg, borderwidth=0, padding=(10, 6))
-        style.map("TButton", background=[("active", accent), ("pressed", accent)])
+
+        style.configure(
+            "TButton",
+            background=surface,
+            foreground=fg,
+            bordercolor=border,
+            relief="flat",
+            borderwidth=1,
+            focusthickness=0,
+            padding=(11, 7),
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#17263c"), ("pressed", "#162338")],
+            bordercolor=[("active", accent)],
+        )
+
+        style.configure(
+            "Ghost.TButton",
+            background=surface,
+            foreground=fg,
+            bordercolor=border,
+            relief="flat",
+            borderwidth=1,
+            focusthickness=0,
+            padding=(11, 7),
+        )
+        style.map(
+            "Ghost.TButton",
+            background=[("active", "#17263c"), ("pressed", "#162338")],
+            bordercolor=[("active", accent)],
+        )
+
+        style.configure(
+            "Accent.TButton",
+            background=accent,
+            foreground="#041018",
+            bordercolor=accent,
+            relief="flat",
+            borderwidth=1,
+            focusthickness=0,
+            padding=(12, 7),
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", accent_hover), ("pressed", accent_press), ("disabled", "#334155")],
+            foreground=[("disabled", "#8b9fb5")],
+            bordercolor=[("active", accent_hover), ("pressed", accent_press)],
+        )
+
         style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.map("TCheckbutton", foreground=[("disabled", muted)])
+        style.configure("Surface.TCheckbutton", background=surface, foreground=fg)
+        style.configure("Card.TCheckbutton", background=card, foreground=fg)
+        style.map("Card.TCheckbutton", foreground=[("disabled", muted)], background=[("active", card)])
+        style.map("Surface.TCheckbutton", foreground=[("disabled", muted)], background=[("active", surface)])
+
+        style.configure(
+            "TEntry",
+            fieldbackground=field,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            insertcolor=fg,
+            relief="flat",
+            padding=6,
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=field,
+            foreground=fg,
+            background=field,
+            arrowcolor=muted,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            relief="flat",
+            padding=5,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", field)],
+            foreground=[("readonly", fg)],
+            selectbackground=[("readonly", field)],
+            selectforeground=[("readonly", fg)],
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=field,
+            foreground=fg,
+            background=field,
+            arrowcolor=muted,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            relief="flat",
+            padding=5,
+        )
+
         style.configure("TNotebook", background=bg, borderwidth=0)
-        style.configure("TNotebook.Tab", background=card, foreground=sub, padding=(14, 7))
-        style.map("TNotebook.Tab", background=[("selected", "#243041")], foreground=[("selected", fg)])
-        style.configure("Treeview", background=card, fieldbackground=card, foreground=fg, rowheight=24)
-        style.configure("Treeview.Heading", background="#243041", foreground=fg)
+        style.configure("TNotebook.Tab", background=surface, foreground=muted, padding=(16, 8), borderwidth=0)
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", card), ("active", "#15243a")],
+            foreground=[("selected", fg), ("active", fg)],
+        )
+
+        style.configure(
+            "Treeview",
+            background=field,
+            fieldbackground=field,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            rowheight=26,
+        )
+        style.configure("Treeview.Heading", background=surface, foreground=muted, relief="flat")
+        style.map(
+            "Treeview",
+            background=[("selected", "#1d4ed8")],
+            foreground=[("selected", "#f8fafc")],
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#17263c")],
+            foreground=[("active", fg)],
+        )
+
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor="#0b1524",
+            background=accent,
+            bordercolor="#0b1524",
+            lightcolor=accent,
+            darkcolor=accent,
+        )
 
     def _build_settings_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
 
-        queue_box = ttk.LabelFrame(parent, text="Queue & Reconnect", padding=10)
-        queue_box.grid(row=0, column=0, sticky="ew")
-        queue_box.columnconfigure(1, weight=1)
+        reconnect_card, reconnect = self._create_card(
+            parent,
+            "Queue & Reconnect",
+            "Parallele Downloads und IP-Limit-Strategie",
+        )
+        reconnect_card.grid(row=0, column=0, sticky="ew")
+        reconnect.columnconfigure(1, weight=1)
 
-        ttk.Label(queue_box, text="Max. gleichzeitige Downloads:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Spinbox(queue_box, from_=1, to=50, width=6, textvariable=self.max_parallel_var).grid(row=0, column=1, sticky="w")
+        ttk.Label(reconnect, text="Max. gleichzeitige Downloads", style="CardLabel.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+        )
+        ttk.Spinbox(reconnect, from_=1, to=50, width=7, textvariable=self.max_parallel_var).grid(row=0, column=1, sticky="w")
         ttk.Checkbutton(
-            queue_box,
+            reconnect,
             text="Automatischer Reconnect aktiv",
+            style="Card.TCheckbutton",
             variable=self.auto_reconnect_var,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(queue_box, text="Reconnect-Wartezeit (Sek.):").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Spinbox(queue_box, from_=10, to=600, width=8, textvariable=self.reconnect_wait_seconds_var).grid(
+        ttk.Label(reconnect, text="Reconnect-Wartezeit (Sek.)", style="CardLabel.TLabel").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=(8, 0),
+        )
+        ttk.Spinbox(reconnect, from_=10, to=600, width=9, textvariable=self.reconnect_wait_seconds_var).grid(
             row=2,
             column=1,
             sticky="w",
             pady=(8, 0),
         )
 
-        resume_box = ttk.LabelFrame(parent, text="Session & Persistenz", padding=10)
-        resume_box.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        resume_box.columnconfigure(1, weight=1)
+        session_card, session = self._create_card(
+            parent,
+            "Session & Persistenz",
+            "Automatisches Fortsetzen und Bereinigung fertiger Tasks",
+        )
+        session_card.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        session.columnconfigure(1, weight=1)
 
         ttk.Checkbutton(
-            resume_box,
+            session,
             text="Downloads beim Start automatisch fortsetzen",
+            style="Card.TCheckbutton",
             variable=self.auto_resume_on_start_var,
         ).grid(row=0, column=0, columnspan=2, sticky="w")
 
-        ttk.Label(resume_box, text="Fertiggestellte Downloads entfernen:").grid(row=1, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         cleanup_label_var = tk.StringVar(
             value=self._finished_cleanup_label(self._normalize_finished_cleanup_policy(self.completed_cleanup_policy_var.get()))
         )
-        cleanup_combo = ttk.Combobox(
-            resume_box,
+        ttk.Label(session, text="Fertiggestellte Downloads entfernen", style="CardLabel.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+            padx=(0, 8),
+        )
+        ttk.Combobox(
+            session,
             textvariable=cleanup_label_var,
             values=tuple(FINISHED_TASK_CLEANUP_LABELS.values()),
             state="readonly",
-            width=28,
-        )
-        cleanup_combo.grid(row=1, column=1, sticky="w", pady=(8, 0))
+            width=30,
+        ).grid(row=1, column=1, sticky="w", pady=(8, 0))
 
-        integrity_box = ttk.LabelFrame(parent, text="Integrität & Aufräumen", padding=10)
-        integrity_box.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        integrity_box.columnconfigure(0, weight=1)
+        integrity_card, integrity = self._create_card(
+            parent,
+            "Integrität & Cleanup",
+            "Datei-Prüfung und post-processing Verhalten",
+        )
+        integrity_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
         ttk.Checkbutton(
-            integrity_box,
-            text="Datei-Integrität (SFV/CRC/MD5/SHA1) nach Download prüfen",
+            integrity,
+            text="Integritätsprüfung (SFV/CRC/MD5/SHA1) nach Download",
+            style="Card.TCheckbutton",
             variable=self.enable_integrity_check_var,
         ).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
-            integrity_box,
-            text="Downloadlinks in Archiven nach erfolgreichem Entpacken entfernen",
+            integrity,
+            text="Downloadlink-Dateien nach Entpacken entfernen",
+            style="Card.TCheckbutton",
             variable=self.remove_link_files_after_extract_var,
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Checkbutton(
-            integrity_box,
-            text="Sample-Dateien/-Ordner nach dem Entpacken entfernen",
+            integrity,
+            text="Sample-Dateien/-Ordner nach Entpacken entfernen",
+            style="Card.TCheckbutton",
             variable=self.remove_samples_var,
         ).grid(row=2, column=0, sticky="w", pady=(6, 0))
 
-        extract_box = ttk.LabelFrame(parent, text="Entpacken", padding=10)
-        extract_box.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        extract_box.columnconfigure(1, weight=1)
+        extract_card, extract = self._create_card(
+            parent,
+            "Entpacken",
+            "Konflikt- und Cleanup-Verhalten für Archive",
+        )
+        extract_card.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        extract.columnconfigure(1, weight=1)
 
-        ttk.Label(extract_box, text="Nach erfolgreichem Entpacken:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(extract, text="Nach erfolgreichem Entpacken", style="CardLabel.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+        )
         self.cleanup_combo_settings_tab = ttk.Combobox(
-            extract_box,
+            extract,
             values=tuple(CLEANUP_LABELS.values()),
             state="readonly",
             width=42,
@@ -933,9 +1200,15 @@ class DownloaderApp(TkBase):
         self.cleanup_combo_settings_tab.set(self._cleanup_label(self._normalize_cleanup_mode(self.cleanup_mode_var.get())))
         self.cleanup_combo_settings_tab.grid(row=0, column=1, sticky="w")
 
-        ttk.Label(extract_box, text="Wenn Datei bereits existiert:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Label(extract, text="Wenn Datei bereits existiert", style="CardLabel.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=(8, 0),
+        )
         self.conflict_combo_settings_tab = ttk.Combobox(
-            extract_box,
+            extract,
             values=tuple(CONFLICT_LABELS.values()),
             state="readonly",
             width=42,
@@ -943,7 +1216,7 @@ class DownloaderApp(TkBase):
         self.conflict_combo_settings_tab.set(self._conflict_label(self._normalize_extract_conflict_mode(self.extract_conflict_mode_var.get())))
         self.conflict_combo_settings_tab.grid(row=1, column=1, sticky="w", pady=(8, 0))
 
-        buttons = ttk.Frame(parent)
+        buttons = ttk.Frame(parent, style="App.TFrame")
         buttons.grid(row=4, column=0, sticky="e", pady=(12, 0))
 
         def apply_settings() -> None:
@@ -953,7 +1226,7 @@ class DownloaderApp(TkBase):
             self._save_config()
             self.status_var.set("Settings gespeichert")
 
-        ttk.Button(buttons, text="Speichern", command=apply_settings).pack(side="right")
+        ttk.Button(buttons, text="Settings speichern", style="Accent.TButton", command=apply_settings).pack(side="right")
 
     def _on_speed_limit_enabled_toggle(self) -> None:
         enabled = bool(self.speed_limit_enabled_var.get())
