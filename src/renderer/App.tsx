@@ -235,6 +235,40 @@ export function App(): ReactElement {
       <main className="tab-content">
         {tab === "collector" && (
           <section className="grid-two">
+            <article className="card wide">
+              <h3>Linksammler</h3>
+              <div className="link-actions">
+                <button className="btn" onClick={onImportDlc}>DLC import</button>
+                <button className="btn accent" onClick={onAddLinks}>Zur Queue hinzufügen</button>
+              </div>
+              <textarea
+                value={linksRaw}
+                onChange={(event) => setLinksRaw(event.target.value)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={onDrop}
+                placeholder="# package: Release-Name\nhttps://...\nhttps://..."
+              />
+              <p className="hint">.dlc einfach auf das Feld ziehen oder per Button importieren.</p>
+            </article>
+          </section>
+        )}
+
+        {tab === "downloads" && (
+          <section className="downloads-view">
+            {packages.length === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
+            {packages.map((pkg) => (
+              <PackageCard
+                key={pkg.id}
+                pkg={pkg}
+                items={pkg.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean)}
+                onCancel={() => window.rd.cancelPackage(pkg.id)}
+              />
+            ))}
+          </section>
+        )}
+
+        {tab === "settings" && (
+          <section className="grid-two settings-grid">
             <article className="card">
               <h3>Debrid Provider</h3>
               <label>Real-Debrid API Token</label>
@@ -341,40 +375,6 @@ export function App(): ReactElement {
               <label><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(event) => setBool("hybridExtract", event.target.checked)} /> Hybrid-Extract</label>
             </article>
 
-            <article className="card wide">
-              <h3>Linksammler</h3>
-              <div className="link-actions">
-                <button className="btn" onClick={onImportDlc}>DLC import</button>
-                <button className="btn accent" onClick={onAddLinks}>Zur Queue hinzufügen</button>
-              </div>
-              <textarea
-                value={linksRaw}
-                onChange={(event) => setLinksRaw(event.target.value)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={onDrop}
-                placeholder="# package: Release-Name\nhttps://...\nhttps://..."
-              />
-              <p className="hint">.dlc einfach auf das Feld ziehen oder per Button importieren.</p>
-            </article>
-          </section>
-        )}
-
-        {tab === "downloads" && (
-          <section className="downloads-view">
-            {packages.length === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
-            {packages.map((pkg) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                items={pkg.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean)}
-                onCancel={() => window.rd.cancelPackage(pkg.id)}
-              />
-            ))}
-          </section>
-        )}
-
-        {tab === "settings" && (
-          <section className="grid-two settings-grid">
             <article className="card">
               <h3>Queue & Reconnect</h3>
               <label>Max. gleichzeitige Downloads</label>

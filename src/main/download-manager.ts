@@ -165,6 +165,7 @@ export class DownloadManager extends EventEmitter {
   public addPackages(packages: ParsedPackageInput[]): { addedPackages: number; addedLinks: number } {
     let addedPackages = 0;
     let addedLinks = 0;
+    const unresolvedByLink = new Map<string, string[]>();
     for (const pkg of packages) {
       const links = pkg.links.filter((link) => !!link.trim());
       if (links.length === 0) {
@@ -211,6 +212,11 @@ export class DownloadManager extends EventEmitter {
         };
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
+        if (fileName === "download.bin") {
+          const existing = unresolvedByLink.get(link) ?? [];
+          existing.push(itemId);
+          unresolvedByLink.set(link, existing);
+        }
         addedLinks += 1;
       }
 
@@ -221,7 +227,52 @@ export class DownloadManager extends EventEmitter {
 
     this.persistSoon();
     this.emitState();
+    if (unresolvedByLink.size > 0) {
+      void this.resolveQueuedFilenames(unresolvedByLink);
+    }
     return { addedPackages, addedLinks };
+  }
+
+  private async resolveQueuedFilenames(unresolvedByLink: Map<string, string[]>): Promise<void> {
+    try {
+      const resolved = await this.debridService.resolveFilenames(Array.from(unresolvedByLink.keys()));
+      if (resolved.size === 0) {
+        return;
+      }
+
+      let changed = false;
+      for (const [link, itemIds] of unresolvedByLink.entries()) {
+        const fileName = resolved.get(link);
+        if (!fileName || fileName.toLowerCase() === "download.bin") {
+          continue;
+        }
+        const normalized = sanitizeFilename(fileName);
+        if (!normalized || normalized.toLowerCase() === "download.bin") {
+          continue;
+        }
+
+        for (const itemId of itemIds) {
+          const item = this.session.items[itemId];
+          if (!item) {
+            continue;
+          }
+          if (item.fileName !== "download.bin") {
+            continue;
+          }
+          item.fileName = normalized;
+          item.targetPath = path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, normalized);
+          item.updatedAt = nowMs();
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        this.persistSoon();
+        this.emitState();
+      }
+    } catch (error) {
+      logger.warn(`Dateinamen-Resolve fehlgeschlagen: ${compactErrorText(error)}`);
+    }
   }
 
   public cancelPackage(packageId: string): void {
