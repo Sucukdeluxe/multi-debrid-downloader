@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AppSettings, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
@@ -10,6 +10,7 @@ const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
 const VALID_SPEED_MODES = new Set(["global", "per_download"]);
+const VALID_THEMES = new Set(["dark", "light"]);
 
 function asText(value: unknown): string {
   return String(value ?? "").trim();
@@ -21,6 +22,27 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
     return fallback;
   }
   return Math.max(min, Math.min(max, Math.floor(num)));
+}
+
+function normalizeBandwidthSchedules(raw: unknown): BandwidthScheduleEntry[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const normalized: BandwidthScheduleEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const value = entry as Partial<BandwidthScheduleEntry>;
+    normalized.push({
+      startHour: clampNumber(value.startHour, 0, 0, 23),
+      endHour: clampNumber(value.endHour, 8, 0, 23),
+      speedLimitKbps: clampNumber(value.speedLimitKbps, 0, 0, 500000),
+      enabled: value.enabled === undefined ? true : Boolean(value.enabled)
+    });
+  }
+  return normalized;
 }
 
 export function normalizeSettings(settings: AppSettings): AppSettings {
@@ -51,7 +73,11 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
     reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
     autoUpdateCheck: Boolean(settings.autoUpdateCheck),
-    updateRepo: asText(settings.updateRepo) || defaults.updateRepo
+    updateRepo: asText(settings.updateRepo) || defaults.updateRepo,
+    clipboardWatch: Boolean(settings.clipboardWatch),
+    minimizeToTray: Boolean(settings.minimizeToTray),
+    theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
+    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules)
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {

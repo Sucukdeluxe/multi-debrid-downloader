@@ -141,6 +141,71 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&gt;/g, ">");
 }
 
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function looksLikeFileName(value: string): boolean {
+  return /\.(?:part\d+\.rar|r\d{2}|rar|zip|7z|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|m2ts|ts|webm|mp3|flac|aac|srt|ass|sub)$/i.test(value);
+}
+
+function normalizeResolvedFilename(value: string): string {
+  const candidate = decodeHtmlEntities(String(value || ""))
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/^download\s+file\s+/i, "")
+    .replace(/\s*[-|]\s*rapidgator.*$/i, "")
+    .trim();
+  if (!candidate || !looksLikeFileName(candidate) || looksLikeOpaqueFilename(candidate)) {
+    return "";
+  }
+  return candidate;
+}
+
+function filenameFromRapidgatorUrlPath(link: string): string {
+  try {
+    const parsed = new URL(link);
+    const pathParts = parsed.pathname.split("/").filter(Boolean);
+    for (let index = pathParts.length - 1; index >= 0; index -= 1) {
+      const raw = safeDecode(pathParts[index]).replace(/\.html?$/i, "").trim();
+      const normalized = normalizeResolvedFilename(raw);
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+function extractRapidgatorFilenameFromHtml(html: string): string {
+  const patterns = [
+    /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["']/i,
+    /<title>([^<]+)<\/title>/i,
+    /(?:Dateiname|File\s*name)\s*[:\-]\s*<[^>]*>\s*([^<]+)\s*</i,
+    /(?:Dateiname|File\s*name)\s*[:\-]\s*([^<\r\n]+)/i,
+    /download\s+file\s+([^<\r\n]+)/i,
+    /([A-Za-z0-9][A-Za-z0-9._\-()[\] ]{2,220}\.(?:part\d+\.rar|r\d{2}|rar|zip|7z|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|m2ts|ts|webm|mp3|flac|aac|srt|ass|sub))/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    const normalized = normalizeResolvedFilename(match?.[1] || "");
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return "";
+}
+
 async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
   if (items.length === 0) {
     return;
@@ -161,31 +226,43 @@ async function resolveRapidgatorFilename(link: string): Promise<string> {
   if (!isRapidgatorLink(link)) {
     return "";
   }
-  try {
-    const response = await fetch(link, {
-      method: "GET",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
-      }
-    });
-    if (!response.ok) {
-      return "";
-    }
-    const html = await response.text();
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    const title = decodeHtmlEntities((titleMatch?.[1] || "").trim());
-    if (!title) {
-      return "";
-    }
-    const preferred = title.match(/download\s+file\s+(.+)$/i)?.[1]?.trim() || title;
-    if (!preferred) {
-      return "";
-    }
-    const withoutSuffix = preferred.replace(/\s*-\s*rapidgator.*$/i, "").trim();
-    return withoutSuffix;
-  } catch {
-    return "";
+  const fromUrl = filenameFromRapidgatorUrlPath(link);
+  if (fromUrl) {
+    return fromUrl;
   }
+
+  for (let attempt = 1; attempt <= REQUEST_RETRIES + 2; attempt += 1) {
+    try {
+      const response = await fetch(link, {
+        method: "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
+        }
+      });
+      if (!response.ok) {
+        if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES + 2) {
+          await sleep(retryDelay(attempt));
+          continue;
+        }
+        return "";
+      }
+      const html = await response.text();
+      const fromHtml = extractRapidgatorFilenameFromHtml(html);
+      if (fromHtml) {
+        return fromHtml;
+      }
+    } catch {
+      // retry below
+    }
+
+    if (attempt < REQUEST_RETRIES + 2) {
+      await sleep(retryDelay(attempt));
+    }
+  }
+
+  return "";
 }
 
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
@@ -492,7 +569,7 @@ export class DebridService {
     }
 
     const remaining = unresolved.filter((link) => !clean.has(link) && isRapidgatorLink(link));
-    await runWithConcurrency(remaining, 6, async (link) => {
+    await runWithConcurrency(remaining, 3, async (link) => {
       const fromPage = await resolveRapidgatorFilename(link);
       if (fromPage && !looksLikeOpaqueFilename(fromPage)) {
         clean.set(link, fromPage);
@@ -523,8 +600,16 @@ export class DebridService {
 
       try {
         const result = await this.unrestrictViaProvider(provider, link);
+        let fileName = result.fileName;
+        if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
+          const fromPage = await resolveRapidgatorFilename(link);
+          if (fromPage) {
+            fileName = fromPage;
+          }
+        }
         return {
           ...result,
+          fileName,
           provider,
           providerLabel: PROVIDER_LABELS[provider]
         };

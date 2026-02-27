@@ -14,7 +14,15 @@ export interface ElectronApi {
   stop: () => Promise<void>;
   togglePause: () => Promise<boolean>;
   cancelPackage: (packageId: string) => Promise<void>;
+  renamePackage: (packageId: string, newName: string) => Promise<void>;
+  reorderPackages: (packageIds: string[]) => Promise<void>;
+  removeItem: (itemId: string) => Promise<void>;
+  togglePackage: (packageId: string) => Promise<void>;
+  exportQueue: () => Promise<string>;
+  importQueue: (json: string) => Promise<{ addedPackages: number; addedLinks: number }>;
+  toggleClipboard: () => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
+  onClipboardDetected: (callback: (links: string[]) => void) => () => void;
 }

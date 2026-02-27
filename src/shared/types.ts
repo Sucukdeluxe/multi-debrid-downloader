@@ -16,6 +16,21 @@ export type SpeedMode = "global" | "per_download";
 export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "package_done";
 export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid";
 export type DebridFallbackProvider = DebridProvider | "none";
+export type AppTheme = "dark" | "light";
+
+export interface BandwidthScheduleEntry {
+  startHour: number;
+  endHour: number;
+  speedLimitKbps: number;
+  enabled: boolean;
+}
+
+export interface DownloadStats {
+  totalDownloaded: number;
+  totalFiles: number;
+  totalPackages: number;
+  sessionStartedAt: number;
+}
 
 export interface AppSettings {
   token: string;
@@ -49,6 +64,10 @@ export interface AppSettings {
   speedLimitMode: SpeedMode;
   updateRepo: string;
   autoUpdateCheck: boolean;
+  clipboardWatch: boolean;
+  minimizeToTray: boolean;
+  theme: AppTheme;
+  bandwidthSchedules: BandwidthScheduleEntry[];
 }
 
 export interface DownloadItem {
@@ -80,6 +99,7 @@ export interface PackageEntry {
   status: DownloadStatus;
   itemIds: string[];
   cancelled: boolean;
+  enabled: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -123,11 +143,14 @@ export interface UiSnapshot {
   settings: AppSettings;
   session: SessionState;
   summary: DownloadSummary | null;
+  stats: DownloadStats;
   speedText: string;
   etaText: string;
   canStart: boolean;
   canStop: boolean;
   canPause: boolean;
+  clipboardActive: boolean;
+  reconnectSeconds: number;
 }
 
 export interface AddLinksPayload {

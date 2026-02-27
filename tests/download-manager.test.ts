@@ -204,6 +204,79 @@ describe("download manager", () => {
     }
   });
 
+  it("uses content-disposition filename when provider filename is opaque", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(96 * 1024, 13);
+    const expectedName = "Banshee.S04E01.German.DL.720p.part01.rar";
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/content-name") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.setHeader("Content-Disposition", `attachment; filename="${expectedName}"`);
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/content-name`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "6f09df2984fe01378537c7cd8d7fa7ce",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "content-name", links: ["https://rapidgator.net/file/6f09df2984fe01378537c7cd8d7fa7ce"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(item?.fileName).toBe(expectedName);
+      expect(path.basename(item?.targetPath || "")).toBe(expectedName);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("reuses stored partial target path when queued item resumes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -281,6 +354,7 @@ describe("download manager", () => {
         status: "queued",
         itemIds: [itemId],
         cancelled: false,
+        enabled: true,
         createdAt,
         updatedAt: createdAt
       };
@@ -412,6 +486,7 @@ describe("download manager", () => {
         status: "queued",
         itemIds: [itemId],
         cancelled: false,
+        enabled: true,
         createdAt,
         updatedAt: createdAt
       };
@@ -484,6 +559,7 @@ describe("download manager", () => {
       status: "reconnect_wait",
       itemIds: [itemId],
       cancelled: false,
+      enabled: true,
       createdAt,
       updatedAt: createdAt
     };
@@ -650,6 +726,7 @@ describe("download manager", () => {
         status: "completed",
         itemIds: [oldItemId],
         cancelled: false,
+        enabled: true,
         createdAt: oldNow,
         updatedAt: oldNow
       };
@@ -1025,6 +1102,175 @@ describe("download manager", () => {
     }
   });
 
+  it("finishes run when remaining packages are disabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(96 * 1024, 8);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/enabled") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/enabled`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "enabled.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([
+        { name: "enabled", links: ["https://dummy/enabled"] },
+        { name: "disabled", links: ["https://dummy/disabled"] }
+      ]);
+      const initial = manager.getSnapshot();
+      const enabledPkgId = initial.session.packageOrder[0];
+      const disabledPkgId = initial.session.packageOrder[1];
+      const enabledItemId = initial.session.packages[enabledPkgId]?.itemIds[0] || "";
+      const disabledItemId = initial.session.packages[disabledPkgId]?.itemIds[0] || "";
+
+      manager.togglePackage(disabledPkgId);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const snapshot = manager.getSnapshot();
+      expect(snapshot.session.packages[disabledPkgId]?.enabled).toBe(false);
+      expect(snapshot.session.items[enabledItemId]?.status).toBe("completed");
+      expect(snapshot.session.items[disabledItemId]?.status).toBe("queued");
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("stops active package and keeps items queued", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(320 * 1024, 15);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/toggle") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      const half = Math.floor(binary.length / 2);
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.write(binary.subarray(0, half));
+      setTimeout(() => {
+        res.end(binary.subarray(half));
+      }, 1200);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/toggle`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "toggle.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "toggle", links: ["https://dummy/toggle"] }]);
+      const initial = manager.getSnapshot();
+      const pkgId = initial.session.packageOrder[0];
+      const itemId = initial.session.packages[pkgId]?.itemIds[0] || "";
+
+      manager.start();
+      await waitFor(() => {
+        const item = manager.getSnapshot().session.items[itemId];
+        return item?.status === "downloading";
+      }, 12000);
+
+      manager.togglePackage(pkgId);
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const snapshot = manager.getSnapshot();
+      const item = snapshot.session.items[itemId];
+      expect(snapshot.session.packages[pkgId]?.enabled).toBe(false);
+      expect(item?.status).toBe("queued");
+      expect(item?.fullStatus).toBe("Paket gestoppt");
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("shows stable ETA while paused", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -1129,6 +1375,7 @@ describe("download manager", () => {
       status: "downloading",
       itemIds: [itemId],
       cancelled: false,
+      enabled: true,
       createdAt,
       updatedAt: createdAt
     };
