@@ -1,116 +1,83 @@
-# Real-Debrid Downloader GUI
+# Real-Debrid Download Manager (Node/Electron)
 
-Kleine Desktop-App mit GUI (Tkinter), um mehrere Links (z. B. 20+) einzufuegen,
-ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
+Desktop-App auf **Node.js + Electron + React + TypeScript** mit JDownloader-Style Workflow, optimiert fuer Real-Debrid.
 
-## Features
+## Highlights
 
-- Mehrere Links auf einmal (ein Link pro Zeile)
-- DLC Import (`.dlc`) ueber dcrypt.it inklusive Paket-Gruppierung
-- DLC Drag-and-Drop: `.dlc` direkt in den Links-Bereich ziehen
-- Nutzt die Real-Debrid API (`/unrestrict/link`)
-- Download-Status pro Link
-- Paket-Ansicht: Paket ist aufklappbar, darunter alle Einzel-Links
-- Laufende Pakete koennen per Rechtsklick direkt abgebrochen/entfernt werden
-- Download-Speed pro Link und gesamt
-- Gesamt-Fortschritt
-- Download-Ordner und Paketname waehlbar
-- Einstellbare Parallel-Downloads (z. B. 20 gleichzeitig)
-- Parallel-Wert kann waehrend laufender Downloads live angepasst werden
-- Retry-Counter pro Link in der Tabelle
-- Automatisches Entpacken nach dem Download
-- Hybrid-Entpacken: entpackt sofort, sobald ein Archivsatz komplett ist
-- Optionales Auto-Cleanup: Archivteile nach erfolgreichem Entpacken loeschen
-- Speed-Limit (global oder pro Download), live aenderbar
-- Linklisten als `.txt` speichern/laden
-- DLC-Dateien als Paketliste importieren (`DLC import`)
-- `Entpacken nach` + optional `Unterordner erstellen (Paketname)` wie bei JDownloader
-- `Settings` (JDownloader-Style):
-  - Nach erfolgreichem Entpacken: keine / Papierkorb / unwiderruflich loeschen
-  - Bei Konflikten: ueberschreiben / ueberspringen / umbenennen
-- ZIP-Passwort-Check mit `serienfans.org` und `serienjunkies.net`
-- Multi-Part-RAR wird ueber `part1` entpackt (nur wenn alle Parts vorhanden sind)
-- Auto-Update Check ueber GitHub Releases (fuer .exe)
-- Optionales lokales Speichern vom API Token
+- Modernes, dunkles UI mit Header-Steuerung (Start, Pause, Stop, Speed, ETA)
+- Tabs: **Linksammler**, **Downloads**, **Settings**
+- Paketbasierte Queue mit Datei-Status, Progress, Speed, Retries
+- Paket-Abbruch waehrend laufender Downloads inklusive sicherem Archiv-Cleanup
+- `.dlc` Import (Dateidialog und Drag-and-Drop)
+- Session-Persistenz (robustes JSON-State-Management)
+- Auto-Resume beim Start (optional)
+- Reconnect-Basislogik (429/503, Wartefenster, resumable priorisiert)
+- Integritaetscheck (SFV/CRC32/MD5/SHA1) nach Download
+- Auto-Retry bei Integritaetsfehlern
+- Cleanup-Trigger fuer fertige Tasks:
+  - Nie
+  - Sofort
+  - Beim App-Start
+  - Sobald Paket fertig ist
 
-## Voraussetzung
+## Voraussetzungen
 
-- Python 3.10+
-- Optional, aber empfohlen: 7-Zip im PATH fuer RAR/7Z-Entpackung
-- Alternative fuer RAR: WinRAR `UnRAR.exe` (wird automatisch erkannt)
+- Node.js 20+ (empfohlen 22+)
+- Windows 10/11 (fuer Release-Build)
+- Optional: 7-Zip/UnRAR fuer RAR/7Z Entpacken
 
 ## Installation
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+npm install
 ```
 
-## Start
+## Entwicklung
 
 ```bash
-python real_debrid_downloader_gui.py
+npm run dev
 ```
 
-## Nutzung
-
-1. API Token von Real-Debrid eintragen (`https://real-debrid.com/apitoken`)
-2. Download-Ordner waehlen
-3. Optional Paketname setzen (sonst wird automatisch einer erzeugt)
-4. Optional Entpack-Ordner waehlen (`Entpacken nach`)
-5. Optional `Unterordner erstellen (Paketname)` aktiv lassen
-6. Optional `Hybrid-Entpacken` und `Cleanup` setzen
-7. Parallel-Wert setzen (z. B. 20)
-8. Optional Speed-Limit setzen (KB/s, Modus `global` oder `per_download`)
-9. Links einfuegen oder per `Links laden` / `DLC import` importieren
-10. `Download starten` klicken
-
-Wenn du 20 Links einfuegst, werden sie als ein Paket behandelt. Downloads landen in einem Paketordner. Beim Entpacken kann derselbe Paketname automatisch als Unterordner genutzt werden.
-
-Bei DLC-Import mit vielen Paketen setzt die App automatisch Paketmarker (`# package: ...`) und verarbeitet die Pakete in einer Queue.
-
-## Auto-Update (GitHub)
-
-1. Standard-Repo ist bereits gesetzt: `Sucukdeluxe/real-debrid-downloader`
-2. Optional kannst du es in der App mit `GitHub Repo (owner/name)` ueberschreiben
-3. Klicke `Update suchen` oder aktiviere `Beim Start auf Updates pruefen`
-4. In der .exe wird ein neues Release heruntergeladen und beim Neustart installiert
-
-Hinweis: Beim Python-Skript gibt es nur einen Release-Hinweis, kein Self-Replace.
-
-## Release Build (.exe)
+## Build
 
 ```bash
-./build_exe.ps1 -Version 1.1.0
+npm run build
 ```
 
-Danach liegt die App unter `dist/Real-Debrid-Downloader/`.
+Danach liegen die Artefakte in:
 
-## GitHub Release Workflow
+- `build/main`
+- `build/renderer`
 
-- Workflow-Datei: `.github/workflows/release.yml`
-- Bei Tag-Push wie `v1.0.1` wird automatisch eine Windows-EXE gebaut
-- Release-Asset fuer Auto-Update: `Real-Debrid-Downloader-win64.zip`
-- Zusaetzlich wird ein Installer gebaut: `Real-Debrid-Downloader-Setup-<version>.exe`
-- Installer legt automatisch eine Desktop-Verknuepfung an
-
-## Auto-Installer
-
-- Im GitHub Release findest du direkt die Setup-Datei (`...Setup-<version>.exe`)
-- Setup installiert die App unter `Programme/Real-Debrid Downloader`
-- Setup erstellt automatisch eine Desktop-Verknuepfung mit App-Icon
-
-## App-Icon
-
-- Das Projekt nutzt `assets/app_icon.png` (aus deinem aktuellen Downloads-Icon)
-- Beim Build wird automatisch `assets/app_icon.ico` erzeugt
-
-Beispiel:
+## Start (Production lokal)
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+npm run start
 ```
 
-Hinweis: Die App kann nur Links laden, die von Real-Debrid unterstuetzt werden.
+## Tests
+
+```bash
+npm test
+npm run self-check
+```
+
+- `npm test`: Unit-Tests fuer Parser/Cleanup/Integrity
+- `npm run self-check`: End-to-End-Checks mit lokalem Mock-Server (Queue, Pause/Resume, Reconnect, Paket-Cancel)
+
+## Projektstruktur
+
+- `src/main`: Electron Main Process + Download/Queue Logik
+- `src/preload`: sichere IPC Bridge
+- `src/renderer`: React UI
+- `src/shared`: gemeinsame Typen und IPC-Channel
+- `tests`: Unit- und Self-Check Tests
+
+## Hinweise
+
+- Runtime-Dateien liegen im Electron `userData` Verzeichnis:
+  - `rd_downloader_config.json`
+  - `rd_session_state.json`
+  - `rd_downloader.log`
+
+- Die bisherige Python-Datei bleibt vorerst als Legacy-Referenz im Repo, die aktive App ist jetzt Node/Electron.
