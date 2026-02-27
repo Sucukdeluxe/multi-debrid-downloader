@@ -36,7 +36,7 @@ type ActiveTask = {
   nonResumableCounted: boolean;
 };
 
-const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 120000;
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 60000;
 
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
@@ -197,6 +197,7 @@ export class DownloadManager extends EventEmitter {
     this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
+    this.recoverRetryableItems("startup");
     this.recoverPostProcessingOnStartup();
     this.resolveExistingQueuedOpaqueFilenames();
     this.cleanupExistingExtractedArchives();
@@ -253,7 +254,7 @@ export class DownloadManager extends EventEmitter {
 
     return {
       settings: this.settings,
-      session: this.getSession(),
+      session: this.session,
       summary: this.summary,
       stats: this.getStats(),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
@@ -946,6 +947,13 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
+
+    const recoveredItems = this.recoverRetryableItems("start");
+    if (recoveredItems > 0) {
+      this.persistSoon();
+      this.emitState(true);
+    }
+
     const runItems = Object.values(this.session.items)
       .filter((item) => {
         if (item.status !== "queued" && item.status !== "reconnect_wait") {
@@ -1193,10 +1201,20 @@ export class DownloadManager extends EventEmitter {
     if (this.stateEmitTimer) {
       return;
     }
+    const itemCount = Object.keys(this.session.items).length;
+    const emitDelay = this.session.running
+      ? itemCount >= 1500
+        ? 900
+        : itemCount >= 700
+          ? 650
+          : itemCount >= 250
+            ? 420
+            : 280
+      : 260;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
       this.emit("state", this.getSnapshot());
-    }, 260);
+    }, emitDelay);
   }
 
   private pruneSpeedEvents(now: number): void {
@@ -1210,7 +1228,13 @@ export class DownloadManager extends EventEmitter {
 
   private recordSpeed(bytes: number): void {
     const now = nowMs();
-    this.speedEvents.push({ at: now, bytes });
+    const bucket = now - (now % 120);
+    const last = this.speedEvents[this.speedEvents.length - 1];
+    if (last && last.at === bucket) {
+      last.bytes += bytes;
+    } else {
+      this.speedEvents.push({ at: bucket, bytes });
+    }
     this.speedBytesLastWindow += bytes;
     this.pruneSpeedEvents(now);
   }
@@ -1597,6 +1621,26 @@ export class DownloadManager extends EventEmitter {
               }
               throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
             }
+          }
+
+          const finalTargetPath = String(item.targetPath || "").trim();
+          const fileSizeOnDisk = finalTargetPath && fs.existsSync(finalTargetPath)
+            ? fs.statSync(finalTargetPath).size
+            : item.downloadedBytes;
+          const expectsNonEmptyFile = (item.totalBytes || 0) > 0 || isArchiveLikePath(finalTargetPath || item.fileName);
+          if (expectsNonEmptyFile && fileSizeOnDisk <= 0) {
+            try {
+              fs.rmSync(finalTargetPath, { force: true });
+            } catch {
+              // ignore
+            }
+            this.releaseTargetPath(item.id);
+            item.downloadedBytes = 0;
+            item.progressPercent = 0;
+            item.totalBytes = (item.totalBytes || 0) > 0 ? item.totalBytes : null;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            throw new Error("Leere Datei erkannt (0 B)");
           }
 
           done = true;
@@ -2032,6 +2076,151 @@ export class DownloadManager extends EventEmitter {
     }
 
     throw new Error(lastError || "Download fehlgeschlagen");
+  }
+
+  private recoverRetryableItems(trigger: "startup" | "start"): number {
+    let recovered = 0;
+    const touchedPackages = new Set<string>();
+
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled) {
+        continue;
+      }
+
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item || item.status === "cancelled") {
+          continue;
+        }
+
+        const is416Failure = this.isHttp416Failure(item);
+        const hasZeroByteArchive = this.hasZeroByteArchiveArtifact(item);
+
+        if (item.status === "failed") {
+          this.queueItemForRetry(item, {
+            hardReset: is416Failure || hasZeroByteArchive,
+            reason: is416Failure
+              ? "Wartet (Auto-Retry: HTTP 416)"
+              : hasZeroByteArchive
+                ? "Wartet (Auto-Retry: 0B-Datei)"
+                : "Wartet (Auto-Retry)"
+          });
+          recovered += 1;
+          touchedPackages.add(pkg.id);
+          continue;
+        }
+
+        if (item.status === "completed" && hasZeroByteArchive) {
+          this.queueItemForRetry(item, {
+            hardReset: true,
+            reason: "Wartet (Auto-Retry: 0B-Datei)"
+          });
+          recovered += 1;
+          touchedPackages.add(pkg.id);
+        }
+      }
+    }
+
+    if (recovered > 0) {
+      for (const packageId of touchedPackages) {
+        const pkg = this.session.packages[packageId];
+        if (!pkg) {
+          continue;
+        }
+        this.refreshPackageStatus(pkg);
+      }
+      logger.warn(`Auto-Retry-Recovery (${trigger}): ${recovered} Item(s) wieder in Queue gesetzt`);
+    }
+
+    return recovered;
+  }
+
+  private queueItemForRetry(item: DownloadItem, options: { hardReset: boolean; reason: string }): void {
+    const targetPath = String(item.targetPath || "").trim();
+    if (options.hardReset && targetPath) {
+      try {
+        fs.rmSync(targetPath, { force: true });
+      } catch {
+        // ignore
+      }
+      this.releaseTargetPath(item.id);
+      item.downloadedBytes = 0;
+      item.totalBytes = null;
+      item.progressPercent = 0;
+    }
+
+    item.status = "queued";
+    item.speedBps = 0;
+    item.attempts = 0;
+    item.lastError = "";
+    item.resumable = true;
+    item.fullStatus = options.reason;
+    item.updatedAt = nowMs();
+  }
+
+  private isHttp416Failure(item: DownloadItem): boolean {
+    const text = `${item.lastError} ${item.fullStatus}`;
+    return /(^|\D)416(\D|$)/.test(text);
+  }
+
+  private hasZeroByteArchiveArtifact(item: DownloadItem): boolean {
+    const targetPath = String(item.targetPath || "").trim();
+    const archiveCandidate = isArchiveLikePath(targetPath || item.fileName);
+    if (!archiveCandidate) {
+      return false;
+    }
+
+    if (targetPath && fs.existsSync(targetPath)) {
+      try {
+        return fs.statSync(targetPath).size <= 0;
+      } catch {
+        return false;
+      }
+    }
+
+    if (item.downloadedBytes <= 0 && item.progressPercent >= 100) {
+      return true;
+    }
+
+    return /\b0\s*B\b/i.test(item.fullStatus || "");
+  }
+
+  private refreshPackageStatus(pkg: PackageEntry): void {
+    const items = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter(Boolean) as DownloadItem[];
+    if (items.length === 0) {
+      return;
+    }
+
+    const hasPending = items.some((item) => (
+      item.status === "queued"
+      || item.status === "reconnect_wait"
+      || item.status === "validating"
+      || item.status === "downloading"
+      || item.status === "paused"
+      || item.status === "extracting"
+      || item.status === "integrity_check"
+    ));
+    if (hasPending) {
+      pkg.status = pkg.enabled ? "queued" : "paused";
+      pkg.updatedAt = nowMs();
+      return;
+    }
+
+    const success = items.filter((item) => item.status === "completed").length;
+    const failed = items.filter((item) => item.status === "failed").length;
+    const cancelled = items.filter((item) => item.status === "cancelled").length;
+
+    if (failed > 0) {
+      pkg.status = "failed";
+    } else if (cancelled > 0 && success === 0) {
+      pkg.status = "cancelled";
+    } else if (success > 0) {
+      pkg.status = "completed";
+    }
+    pkg.updatedAt = nowMs();
   }
 
   private getEffectiveSpeedLimitKbps(): number {

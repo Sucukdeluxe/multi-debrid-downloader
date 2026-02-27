@@ -1159,6 +1159,145 @@ describe("download manager", () => {
     expect(snapshot.canStart).toBe(true);
   });
 
+  it("requeues failed HTTP 416 items automatically on startup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "retry-416-pkg";
+    const itemId = "retry-416-item";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "retry-416");
+    const targetPath = path.join(outputDir, "broken.part03.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(12 * 1024, 1));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "retry-416",
+      outputDir,
+      extractDir: path.join(root, "extract", "retry-416"),
+      status: "failed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/retry-416",
+      provider: "megadebrid",
+      status: "failed",
+      retries: 4,
+      speedBps: 0,
+      downloadedBytes: 12 * 1024,
+      totalBytes: 8 * 1024,
+      progressPercent: 100,
+      fileName: "broken.part03.rar",
+      targetPath,
+      resumable: true,
+      attempts: 3,
+      lastError: "Error: HTTP 416",
+      fullStatus: "Fehler: Error: HTTP 416",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const snapshot = manager.getSnapshot();
+    const item = snapshot.session.items[itemId];
+    expect(item?.status).toBe("queued");
+    expect(item?.attempts).toBe(0);
+    expect(item?.downloadedBytes).toBe(0);
+    expect(item?.progressPercent).toBe(0);
+    expect(item?.fullStatus).toContain("Auto-Retry");
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
+  it("requeues completed zero-byte archive items automatically on startup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "zero-byte-pkg";
+    const itemId = "zero-byte-item";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "zero-byte");
+    const targetPath = path.join(outputDir, "archive.part01.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(0));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "zero-byte",
+      outputDir,
+      extractDir: path.join(root, "extract", "zero-byte"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/zero-byte",
+      provider: "megadebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 100,
+      fileName: "archive.part01.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (0 B)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const snapshot = manager.getSnapshot();
+    const item = snapshot.session.items[itemId];
+    expect(item?.status).toBe("queued");
+    expect(item?.downloadedBytes).toBe(0);
+    expect(item?.progressPercent).toBe(0);
+    expect(item?.fullStatus).toContain("0B-Datei");
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
   it("detects start conflicts when extract output already exists", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
