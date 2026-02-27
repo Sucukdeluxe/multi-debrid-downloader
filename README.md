@@ -80,4 +80,4 @@ npm run self-check
   - `rd_session_state.json`
   - `rd_downloader.log`
 
-- Die bisherige Python-Datei bleibt vorerst als Legacy-Referenz im Repo, die aktive App ist jetzt Node/Electron.
+- Das Repository enthält jetzt nur noch die aktive Node/Electron-Codebasis.
