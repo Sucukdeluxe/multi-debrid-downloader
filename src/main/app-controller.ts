@@ -1,12 +1,13 @@
 import path from "node:path";
 import { app } from "electron";
-import { AddLinksPayload, AppSettings, ParsedPackageInput, UiSnapshot } from "../shared/types";
+import { AddLinksPayload, AppSettings, ParsedPackageInput, UiSnapshot, UpdateCheckResult } from "../shared/types";
 import { importDlcContainers } from "./container";
 import { APP_VERSION, defaultSettings } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, logger } from "./logger";
 import { createStoragePaths, emptySession, loadSession, loadSettings, saveSettings } from "./storage";
+import { checkGitHubUpdate } from "./update";
 
 export class AppController {
   private settings: AppSettings;
@@ -62,6 +63,10 @@ export class AppController {
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     return this.settings;
+  }
+
+  public async checkUpdates(): Promise<UpdateCheckResult> {
+    return checkGitHubUpdate(this.settings.updateRepo);
   }
 
   public addLinks(payload: AddLinksPayload): { addedPackages: number; addedLinks: number; invalidCount: number } {
