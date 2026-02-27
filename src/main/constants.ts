@@ -1,9 +1,10 @@
 import path from "node:path";
 import os from "node:os";
 import { AppSettings } from "../shared/types";
+import packageJson from "../../package.json";
 
 export const APP_NAME = "Debrid Download Manager";
-export const APP_VERSION = "1.1.29";
+export const APP_VERSION: string = packageJson.version;
 export const API_BASE_URL = "https://api.real-debrid.com/rest/1.0";
 
 export const DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload";
