@@ -50,7 +50,12 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
       continue;
     }
     const filePath = path.join(packageDir, entry.name);
-    const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+    let lines: string[];
+    try {
+      lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+    } catch {
+      continue;
+    }
     for (const line of lines) {
       const parsed = parseHashLine(line);
       if (!parsed) {
@@ -93,9 +98,12 @@ async function hashFile(filePath: string, algorithm: "crc32" | "md5" | "sha1"): 
   }
 
   const hash = crypto.createHash(algorithm);
-  const data = fs.readFileSync(filePath);
-  hash.update(data);
-  return hash.digest("hex").toLowerCase();
+  const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+  return await new Promise<string>((resolve, reject) => {
+    stream.on("data", (chunk: string | Buffer) => hash.update(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex").toLowerCase()));
+  });
 }
 
 export async function validateFileAgainstManifest(filePath: string, packageDir: string): Promise<{ ok: boolean; message: string }> {

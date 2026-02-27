@@ -155,7 +155,8 @@ export class MegaWebFallback {
         password,
         remember: "on"
       }),
-      redirect: "manual"
+      redirect: "manual",
+      signal: AbortSignal.timeout(30000)
     });
 
     const cookie = parseSetCookieFromHeaders(response.headers);
@@ -169,7 +170,8 @@ export class MegaWebFallback {
         "User-Agent": "Mozilla/5.0",
         Cookie: cookie,
         Referer: DEBRID_REFERER
-      }
+      },
+      signal: AbortSignal.timeout(30000)
     });
     const verifyHtml = await verify.text();
     const hasDebridForm = /id=["']debridForm["']/i.test(verifyHtml) || /name=["']links["']/i.test(verifyHtml);
@@ -194,7 +196,8 @@ export class MegaWebFallback {
         links: link,
         password: "",
         showLinks: "1"
-      })
+      }),
+      signal: AbortSignal.timeout(30000)
     });
 
     const html = await page.text();
@@ -215,7 +218,8 @@ export class MegaWebFallback {
         body: new URLSearchParams({
           code,
           autodl: "0"
-        })
+        }),
+        signal: AbortSignal.timeout(15000)
       });
 
       const text = (await res.text()).trim();
