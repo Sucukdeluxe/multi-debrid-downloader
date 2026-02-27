@@ -14,10 +14,18 @@ export type CleanupMode = "none" | "trash" | "delete";
 export type ConflictMode = "overwrite" | "skip" | "rename" | "ask";
 export type SpeedMode = "global" | "per_download";
 export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "package_done";
+export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid";
 
 export interface AppSettings {
   token: string;
+  megaToken: string;
+  bestToken: string;
+  allDebridToken: string;
   rememberToken: boolean;
+  providerPrimary: DebridProvider;
+  providerSecondary: DebridProvider;
+  providerTertiary: DebridProvider;
+  autoProviderFallback: boolean;
   outputDir: string;
   packageName: string;
   autoExtract: boolean;
@@ -45,6 +53,7 @@ export interface DownloadItem {
   id: string;
   packageId: string;
   url: string;
+  provider: DebridProvider | null;
   status: DownloadStatus;
   retries: number;
   speedBps: number;

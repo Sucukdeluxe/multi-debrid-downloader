@@ -38,7 +38,7 @@ export class RealDebridClient {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "RD-Node-Downloader/1.1.9"
+            "User-Agent": "RD-Node-Downloader/1.1.12"
           },
           body
         });

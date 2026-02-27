@@ -4,6 +4,7 @@ import { AddLinksPayload, AppSettings } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { logger } from "./logger";
+import { APP_NAME } from "./constants";
 
 let mainWindow: BrowserWindow | null = null;
 const controller = new AppController();
@@ -19,7 +20,7 @@ function createWindow(): BrowserWindow {
     minWidth: 1120,
     minHeight: 760,
     backgroundColor: "#070b14",
-    title: `Real-Debrid Download Manager v${controller.getVersion()}`,
+    title: `${APP_NAME} v${controller.getVersion()}`,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -30,7 +31,7 @@ function createWindow(): BrowserWindow {
   if (isDevMode()) {
     void window.loadURL("http://localhost:5173");
   } else {
-    void window.loadFile(path.join(__dirname, "../renderer/index.html"));
+    void window.loadFile(path.join(app.getAppPath(), "build", "renderer", "index.html"));
   }
 
   return window;

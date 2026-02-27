@@ -1,12 +1,19 @@
 import { DragEvent, ReactElement, useEffect, useMemo, useState } from "react";
-import type { AppSettings, DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
+import type { AppSettings, DebridProvider, DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
     token: "",
+    megaToken: "",
+    bestToken: "",
+    allDebridToken: "",
     rememberToken: true,
+    providerPrimary: "realdebrid",
+    providerSecondary: "megadebrid",
+    providerTertiary: "bestdebrid",
+    autoProviderFallback: true,
     outputDir: "",
     packageName: "",
     autoExtract: true,
@@ -56,6 +63,13 @@ const cleanupLabels: Record<string, string> = {
   immediate: "Sofort",
   on_start: "Beim App-Start",
   package_done: "Sobald Paket fertig ist"
+};
+
+const providerLabels: Record<DebridProvider, string> = {
+  realdebrid: "Real-Debrid",
+  megadebrid: "Mega-Debrid",
+  bestdebrid: "BestDebrid",
+  alldebrid: "AllDebrid"
 };
 
 export function App(): ReactElement {
@@ -144,8 +158,8 @@ export function App(): ReactElement {
     <div className="app-shell">
       <header className="top-header">
         <div className="title-block">
-          <h1>Real-Debrid Download Manager</h1>
-          <span>JDownloader-Style Workflow</span>
+          <h1>Debrid Download Manager</h1>
+          <span>Multi-Provider Workflow</span>
         </div>
         <div className="metrics">
           <div>{snapshot.speedText}</div>
@@ -197,20 +211,64 @@ export function App(): ReactElement {
         {tab === "collector" && (
           <section className="grid-two">
             <article className="card">
-              <h3>Authentifizierung</h3>
-              <label>API Token</label>
+              <h3>Debrid Provider</h3>
+              <label>Real-Debrid API Token</label>
               <input
                 type="password"
                 value={settingsDraft.token}
                 onChange={(event) => setText("token", event.target.value)}
               />
+              <label>Mega-Debrid API Token</label>
+              <input
+                type="password"
+                value={settingsDraft.megaToken}
+                onChange={(event) => setText("megaToken", event.target.value)}
+              />
+              <label>BestDebrid API Token</label>
+              <input
+                type="password"
+                value={settingsDraft.bestToken}
+                onChange={(event) => setText("bestToken", event.target.value)}
+              />
+              <label>AllDebrid API Key</label>
+              <input
+                type="password"
+                value={settingsDraft.allDebridToken}
+                onChange={(event) => setText("allDebridToken", event.target.value)}
+              />
+              <label>Primärer Provider</label>
+              <select value={settingsDraft.providerPrimary} onChange={(event) => setText("providerPrimary", event.target.value)}>
+                {Object.entries(providerLabels).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+              <label>Sekundärer Provider</label>
+              <select value={settingsDraft.providerSecondary} onChange={(event) => setText("providerSecondary", event.target.value)}>
+                {Object.entries(providerLabels).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+              <label>Tertiärer Provider</label>
+              <select value={settingsDraft.providerTertiary} onChange={(event) => setText("providerTertiary", event.target.value)}>
+                {Object.entries(providerLabels).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.autoProviderFallback}
+                  onChange={(event) => setBool("autoProviderFallback", event.target.checked)}
+                />
+                Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln
+              </label>
               <label>
                 <input
                   type="checkbox"
                   checked={settingsDraft.rememberToken}
                   onChange={(event) => setBool("rememberToken", event.target.checked)}
                 />
-                Token lokal speichern
+                API Keys lokal speichern
               </label>
               <label>GitHub Repo</label>
               <input value={settingsDraft.updateRepo} onChange={(event) => setText("updateRepo", event.target.value)} />
@@ -363,6 +421,7 @@ function PackageCard({ pkg, items, onCancel }: { pkg: PackageEntry; items: Downl
         <thead>
           <tr>
             <th>Datei</th>
+            <th>Provider</th>
             <th>Status</th>
             <th>Fortschritt</th>
             <th>Speed</th>
@@ -373,6 +432,7 @@ function PackageCard({ pkg, items, onCancel }: { pkg: PackageEntry; items: Downl
           {items.map((item) => (
             <tr key={item.id}>
               <td>{item.fileName}</td>
+              <td>{item.provider ? providerLabels[item.provider] : "-"}</td>
               <td title={item.fullStatus}>{item.fullStatus}</td>
               <td>{item.progressPercent}%</td>
               <td>{item.speedBps > 0 ? `${Math.floor(item.speedBps / 1024)} KB/s` : "0 KB/s"}</td>

@@ -6,10 +6,10 @@ import { v4 as uuidv4 } from "uuid";
 import { AppSettings, DownloadItem, DownloadSummary, DownloadStatus, PackageEntry, ParsedPackageInput, SessionState, UiSnapshot } from "../shared/types";
 import { CHUNK_SIZE, REQUEST_RETRIES } from "./constants";
 import { cleanupCancelledPackageArtifacts, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
+import { DebridService } from "./debrid";
 import { extractPackageArchives } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
-import { RealDebridClient } from "./realdebrid";
 import { StoragePaths, saveSession } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, nowMs, sanitizeFilename, sleep } from "./utils";
 
@@ -47,6 +47,22 @@ function isFinishedStatus(status: DownloadStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+function providerLabel(provider: DownloadItem["provider"]): string {
+  if (provider === "realdebrid") {
+    return "Real-Debrid";
+  }
+  if (provider === "megadebrid") {
+    return "Mega-Debrid";
+  }
+  if (provider === "bestdebrid") {
+    return "BestDebrid";
+  }
+  if (provider === "alldebrid") {
+    return "AllDebrid";
+  }
+  return "Debrid";
+}
+
 function nextAvailablePath(targetPath: string): string {
   if (!fs.existsSync(targetPath)) {
     return targetPath;
@@ -69,7 +85,7 @@ export class DownloadManager extends EventEmitter {
 
   private storagePaths: StoragePaths;
 
-  private rdClient: RealDebridClient;
+  private debridService: DebridService;
 
   private activeTasks = new Map<string, ActiveTask>();
 
@@ -88,17 +104,14 @@ export class DownloadManager extends EventEmitter {
     this.settings = settings;
     this.session = cloneSession(session);
     this.storagePaths = storagePaths;
-    this.rdClient = new RealDebridClient(settings.token);
+    this.debridService = new DebridService(settings);
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
   }
 
   public setSettings(next: AppSettings): void {
-    const tokenChanged = next.token !== this.settings.token;
     this.settings = next;
-    if (tokenChanged) {
-      this.rdClient = new RealDebridClient(next.token);
-    }
+    this.debridService.setSettings(next);
     this.emitState();
   }
 
@@ -180,6 +193,7 @@ export class DownloadManager extends EventEmitter {
           id: itemId,
           packageId,
           url: link,
+          provider: null,
           status: "queued",
           retries: 0,
           speedBps: 0,
@@ -278,6 +292,9 @@ export class DownloadManager extends EventEmitter {
 
   private normalizeSessionStatuses(): void {
     for (const item of Object.values(this.session.items)) {
+      if (item.provider !== "realdebrid" && item.provider !== "megadebrid" && item.provider !== "bestdebrid" && item.provider !== "alldebrid") {
+        item.provider = null;
+      }
       if (item.status === "downloading" || item.status === "validating" || item.status === "extracting" || item.status === "integrity_check") {
         item.status = "queued";
         item.speedBps = 0;
@@ -440,7 +457,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     item.status = "validating";
-    item.fullStatus = "Link wird via Real-Debrid umgewandelt";
+    item.fullStatus = "Link wird umgewandelt";
     item.updatedAt = nowMs();
     pkg.status = "downloading";
     pkg.updatedAt = nowMs();
@@ -475,14 +492,15 @@ export class DownloadManager extends EventEmitter {
     }
 
     try {
-      const unrestricted = await this.rdClient.unrestrictLink(item.url);
+      const unrestricted = await this.debridService.unrestrictLink(item.url);
+      item.provider = unrestricted.provider;
       item.retries = unrestricted.retriesUsed;
       item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
       fs.mkdirSync(pkg.outputDir, { recursive: true });
       item.targetPath = nextAvailablePath(path.join(pkg.outputDir, item.fileName));
       item.totalBytes = unrestricted.fileSize;
       item.status = "downloading";
-      item.fullStatus = "Download läuft";
+      item.fullStatus = `Download läuft (${unrestricted.providerLabel})`;
       item.updatedAt = nowMs();
       this.emitState();
 
@@ -693,7 +711,7 @@ export class DownloadManager extends EventEmitter {
           item.speedBps = Math.max(0, Math.floor(speed));
           item.downloadedBytes = written;
           item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
-          item.fullStatus = "Download läuft";
+          item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
           item.updatedAt = nowMs();
           this.emitState();
         }

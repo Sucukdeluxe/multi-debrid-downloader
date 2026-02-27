@@ -28,11 +28,15 @@ export class AppController {
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
-      if (hasPending && this.settings.token.trim()) {
+      if (hasPending && this.hasAnyProviderToken(this.settings)) {
         this.manager.start();
         logger.info("Auto-Resume beim Start aktiviert");
       }
     }
+  }
+
+  private hasAnyProviderToken(settings: AppSettings): boolean {
+    return Boolean(settings.token.trim() || settings.megaToken.trim() || settings.bestToken.trim() || settings.allDebridToken.trim());
   }
 
   public onState: ((snapshot: UiSnapshot) => void) | null = null;
