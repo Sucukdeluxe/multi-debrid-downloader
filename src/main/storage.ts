@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { AppSettings, BandwidthScheduleEntry, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
@@ -209,4 +210,31 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
   const tempPath = `${paths.sessionFile}.tmp`;
   fs.writeFileSync(tempPath, payload, "utf8");
   fs.renameSync(tempPath, paths.sessionFile);
+}
+
+let asyncSaveRunning = false;
+let asyncSaveQueued: { paths: StoragePaths; session: SessionState } | null = null;
+
+export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
+  if (asyncSaveRunning) {
+    asyncSaveQueued = { paths, session };
+    return;
+  }
+  asyncSaveRunning = true;
+  try {
+    await fs.promises.mkdir(paths.baseDir, { recursive: true });
+    const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
+    const tempPath = `${paths.sessionFile}.tmp`;
+    await fsp.writeFile(tempPath, payload, "utf8");
+    await fsp.rename(tempPath, paths.sessionFile);
+  } catch (error) {
+    logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
+  } finally {
+    asyncSaveRunning = false;
+    if (asyncSaveQueued) {
+      const queued = asyncSaveQueued;
+      asyncSaveQueued = null;
+      void saveSessionAsync(queued.paths, queued.session);
+    }
+  }
 }
