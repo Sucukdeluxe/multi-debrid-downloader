@@ -143,6 +143,45 @@ describe("debrid service", () => {
     expect(result.fileSize).toBe(4096);
   });
 
+  it("retries Mega-Debrid with alternate request variants", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      megaToken: "mega-token",
+      bestToken: "",
+      allDebridToken: "",
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "megadebrid" as const,
+      providerTertiary: "megadebrid" as const,
+      autoProviderFallback: true
+    };
+
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      calls += 1;
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("mega-debrid.eu/api.php?action=getLink") && !url.includes("&link=")) {
+        return new Response(JSON.stringify({ response_code: "UNRESTRICTING_ERROR_1", response_text: "UNRESTRICTING_ERROR_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("mega-debrid.eu/api.php?action=getLink") && url.includes("&link=")) {
+        return new Response(JSON.stringify({ response_code: "ok", debridLink: "https://mega.example/file2.bin", filename: "file2.bin" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://rapidgator.net/file/abc/name.part1.rar.html");
+    expect(result.provider).toBe("megadebrid");
+    expect(result.fileName).toBe("file2.bin");
+    expect(calls).toBeGreaterThan(1);
+  });
+
   it("respects provider selection and does not append hidden fallback providers", async () => {
     const settings = {
       ...defaultSettings(),
