@@ -61,6 +61,8 @@ const cleanupLabels: Record<string, string> = {
   never: "Nie", immediate: "Sofort", on_start: "Beim App-Start", package_done: "Sobald Paket fertig ist"
 };
 
+const AUTO_RENDER_PACKAGE_LIMIT = 260;
+
 const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid"
 };
@@ -101,6 +103,7 @@ export function App(): ReactElement {
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
+  const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const actionBusyRef = useRef(false);
   const dragOverRef = useRef(false);
@@ -271,6 +274,27 @@ export function App(): ReactElement {
     }
     return packages.filter((pkg) => pkg.name.toLowerCase().includes(query));
   }, [packages, deferredDownloadSearch]);
+
+  const downloadSearchActive = deferredDownloadSearch.trim().length > 0;
+  const shouldLimitPackageRendering = snapshot.session.running
+    && !downloadSearchActive
+    && filteredPackages.length > AUTO_RENDER_PACKAGE_LIMIT
+    && !showAllPackages;
+
+  const visiblePackages = useMemo(() => {
+    if (!shouldLimitPackageRendering) {
+      return filteredPackages;
+    }
+    return filteredPackages.slice(0, AUTO_RENDER_PACKAGE_LIMIT);
+  }, [filteredPackages, shouldLimitPackageRendering]);
+
+  const hiddenPackageCount = filteredPackages.length - visiblePackages.length;
+
+  useEffect(() => {
+    if (!snapshot.session.running) {
+      setShowAllPackages(false);
+    }
+  }, [snapshot.session.running]);
 
   const allPackagesCollapsed = useMemo(() => (
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
@@ -833,7 +857,13 @@ export function App(): ReactElement {
             </div>
             {packages.length === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
             {packages.length > 0 && filteredPackages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
-            {filteredPackages.map((pkg) => (
+            {hiddenPackageCount > 0 && (
+              <div className="reconnect-banner">
+                Performance-Modus aktiv: {hiddenPackageCount} Paket(e) sind temporar ausgeblendet.
+                <button className="btn" onClick={() => setShowAllPackages(true)}>Alle trotzdem anzeigen</button>
+              </div>
+            )}
+            {visiblePackages.map((pkg) => (
               <PackageCard
                 key={pkg.id}
                 pkg={pkg}

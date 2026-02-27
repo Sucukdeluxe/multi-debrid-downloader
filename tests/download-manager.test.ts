@@ -2297,6 +2297,85 @@ describe("download manager", () => {
     }
   });
 
+  it("removes finished package when package_done cleanup policy is enabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const zip = new AdmZip();
+    zip.addFile("episode.txt", Buffer.from("ok"));
+    const archiveBinary = zip.toBuffer();
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/cleanup-package") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(archiveBinary.length));
+      res.end(archiveBinary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/cleanup-package`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "cleanup-package.zip",
+            filesize: archiveBinary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: true,
+          enableIntegrityCheck: false,
+          cleanupMode: "none",
+          completedCleanupPolicy: "package_done"
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "cleanup-package", links: ["https://dummy/cleanup-package"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const snapshot = manager.getSnapshot();
+      const summary = manager.getSummary();
+      expect(snapshot.session.packageOrder).toHaveLength(0);
+      expect(Object.keys(snapshot.session.items)).toHaveLength(0);
+      expect(summary).not.toBeNull();
+      expect(summary?.success).toBe(1);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("counts queued package cancellations in run summary", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

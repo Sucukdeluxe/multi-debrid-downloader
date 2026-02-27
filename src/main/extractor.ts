@@ -163,6 +163,21 @@ function archivePasswords(listInput: string): string[] {
   return Array.from(new Set(["", ...custom, ...fromEnv, ...DEFAULT_ARCHIVE_PASSWORDS]));
 }
 
+function prioritizePassword(passwords: string[], successful: string): string[] {
+  const target = String(successful || "");
+  if (!target || passwords.length <= 1) {
+    return passwords;
+  }
+  const index = passwords.findIndex((candidate) => candidate === target);
+  if (index <= 0) {
+    return passwords;
+  }
+  const next = [...passwords];
+  const [value] = next.splice(index, 1);
+  next.unshift(value);
+  return next;
+}
+
 function winRarCandidates(): string[] {
   const programFiles = process.env.ProgramFiles || "C:\\Program Files";
   const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
@@ -334,7 +349,7 @@ async function runExternalExtract(
   passwordCandidates: string[],
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal
-): Promise<void> {
+): Promise<string> {
   const command = await resolveExtractorCommand();
   const passwords = passwordCandidates;
   let lastError = "";
@@ -363,7 +378,7 @@ async function runExternalExtract(
     }, signal);
     if (result.ok) {
       onArchiveProgress?.(100);
-      return;
+      return password;
     }
 
     if (result.aborted) {
@@ -417,18 +432,20 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function collectArchiveCleanupTargets(sourceArchivePath: string): string[] {
+export function collectArchiveCleanupTargets(sourceArchivePath: string, directoryFiles?: string[]): string[] {
   const targets = new Set<string>([sourceArchivePath]);
   const dir = path.dirname(sourceArchivePath);
   const fileName = path.basename(sourceArchivePath);
 
-  let filesInDir: string[] = [];
-  try {
-    filesInDir = fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name);
-  } catch {
-    return Array.from(targets);
+  let filesInDir: string[] = directoryFiles ?? [];
+  if (!directoryFiles) {
+    try {
+      filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name);
+    } catch {
+      return Array.from(targets);
+    }
   }
 
   const addMatching = (pattern: RegExp): void => {
@@ -476,8 +493,22 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
   }
 
   const targets = new Set<string>();
+  const dirFilesCache = new Map<string, string[]>();
   for (const sourceFile of sourceFiles) {
-    for (const target of collectArchiveCleanupTargets(sourceFile)) {
+    const dir = path.dirname(sourceFile);
+    let filesInDir = dirFilesCache.get(dir);
+    if (!filesInDir) {
+      try {
+        filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map((entry) => entry.name);
+      } catch {
+        filesInDir = [];
+      }
+      dirFilesCache.set(dir, filesInDir);
+    }
+
+    for (const target of collectArchiveCleanupTargets(sourceFile, filesInDir)) {
       targets.add(target);
     }
   }
@@ -501,8 +532,14 @@ function hasAnyFilesRecursive(rootDir: string): boolean {
   if (!fs.existsSync(rootDir)) {
     return false;
   }
+  const deadline = Date.now() + 70;
+  let inspectedDirs = 0;
   const stack = [rootDir];
   while (stack.length > 0) {
+    inspectedDirs += 1;
+    if (inspectedDirs > 8000 || Date.now() > deadline) {
+      return true;
+    }
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
     try {
@@ -521,6 +558,17 @@ function hasAnyFilesRecursive(rootDir: string): boolean {
     }
   }
   return false;
+}
+
+function hasAnyEntries(rootDir: string): boolean {
+  if (!rootDir || !fs.existsSync(rootDir)) {
+    return false;
+  }
+  try {
+    return fs.readdirSync(rootDir).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function removeEmptyDirectoryTree(rootDir: string): number {
@@ -572,7 +620,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
     const existingResume = readExtractResumeState(options.packageDir);
-    if (existingResume.size > 0 && hasAnyFilesRecursive(options.targetDir)) {
+    if (existingResume.size > 0 && hasAnyEntries(options.targetDir)) {
       clearExtractResumeState(options.packageDir);
       logger.info(`Entpacken übersprungen (Archive bereinigt, Ziel hat Dateien): ${options.packageDir}`);
       options.onProgress?.({
@@ -590,7 +638,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   const conflictMode = effectiveConflictMode(options.conflictMode);
-  const passwordCandidates = archivePasswords(options.passwordList || "");
+  let passwordCandidates = archivePasswords(options.passwordList || "");
   const resumeCompleted = readExtractResumeState(options.packageDir);
   const resumeCompletedAtStart = resumeCompleted.size;
   const candidateNames = new Set(candidates.map((archivePath) => path.basename(archivePath)));
@@ -664,10 +712,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         const preferExternal = shouldPreferExternalZip(archivePath);
         if (preferExternal) {
           try {
-            await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
             }, options.signal);
+            passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
               extractZipArchive(archivePath, options.targetDir, options.conflictMode);
@@ -680,17 +729,19 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             extractZipArchive(archivePath, options.targetDir, options.conflictMode);
             archivePercent = 100;
           } catch {
-            await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
             }, options.signal);
+            passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
           }
         }
       } else {
-        await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+        const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
           archivePercent = Math.max(archivePercent, value);
           emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
         }, options.signal);
+        passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
       }
       extracted += 1;
       extractedArchives.add(archivePath);
@@ -722,7 +773,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   if (extracted > 0) {
-    const hasOutputAfter = hasAnyFilesRecursive(options.targetDir);
+    const hasOutputAfter = hasAnyEntries(options.targetDir);
     const hadResumeProgress = resumeCompletedAtStart > 0;
     if (!hasOutputAfter && conflictMode !== "skip" && !hadResumeProgress) {
       lastError = "Keine entpackten Dateien erkannt";

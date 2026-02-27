@@ -173,6 +173,10 @@ export class DownloadManager extends EventEmitter {
 
   private speedBytesLastWindow = 0;
 
+  private statsCache: DownloadStats | null = null;
+
+  private statsCacheAt = 0;
+
   private lastPersistAt = 0;
 
   private cleanupQueue: Promise<void> = Promise.resolve();
@@ -239,11 +243,10 @@ export class DownloadManager extends EventEmitter {
     const paused = this.session.running && this.session.paused;
     const speedBps = paused ? 0 : this.speedBytesLastWindow / 3;
 
-    let totalItems = Object.keys(this.session.items).length;
-    let doneItems = Object.values(this.session.items).filter((item) => isFinishedStatus(item.status)).length;
+    let totalItems = 0;
+    let doneItems = 0;
     if (this.session.running && this.runItemIds.size > 0) {
       totalItems = this.runItemIds.size;
-      doneItems = 0;
       for (const itemId of this.runItemIds) {
         if (this.runOutcomes.has(itemId)) {
           doneItems += 1;
@@ -251,6 +254,14 @@ export class DownloadManager extends EventEmitter {
         }
         const item = this.session.items[itemId];
         if (item && isFinishedStatus(item.status)) {
+          doneItems += 1;
+        }
+      }
+    } else {
+      const sessionItems = Object.values(this.session.items);
+      totalItems = sessionItems.length;
+      for (const item of sessionItems) {
+        if (isFinishedStatus(item.status)) {
           doneItems += 1;
         }
       }
@@ -266,7 +277,7 @@ export class DownloadManager extends EventEmitter {
       settings: this.settings,
       session: this.session,
       summary: this.summary,
-      stats: this.getStats(),
+      stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
       etaText: paused ? "ETA: --" : `ETA: ${formatEta(eta)}`,
       canStart: !this.session.running,
@@ -277,7 +288,12 @@ export class DownloadManager extends EventEmitter {
     };
   }
 
-  public getStats(): DownloadStats {
+  public getStats(now = nowMs()): DownloadStats {
+    const itemCount = Object.keys(this.session.items).length;
+    if (this.statsCache && this.session.running && itemCount >= 500 && now - this.statsCacheAt < 1500) {
+      return this.statsCache;
+    }
+
     let totalDownloaded = 0;
     let totalFiles = 0;
     for (const item of Object.values(this.session.items)) {
@@ -300,12 +316,15 @@ export class DownloadManager extends EventEmitter {
       totalDownloaded = Math.max(totalDownloaded, this.session.totalDownloadedBytes);
     }
 
-    return {
+    const stats = {
       totalDownloaded,
       totalFiles,
       totalPackages: Object.keys(this.session.packages).length,
       sessionStartedAt: this.session.runStartedAt
     };
+    this.statsCache = stats;
+    this.statsCacheAt = now;
+    return stats;
   }
 
   public renamePackage(packageId: string, newName: string): void {
@@ -771,6 +790,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     const cleanupTargetsByPackage = new Map<string, Set<string>>();
+    const dirFilesCache = new Map<string, string[]>();
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || pkg.status !== "completed") {
@@ -802,7 +822,20 @@ export class DownloadManager extends EventEmitter {
         if (!targetPath || !isArchiveLikePath(targetPath)) {
           continue;
         }
-        for (const cleanupTarget of collectArchiveCleanupTargets(targetPath)) {
+        const dir = path.dirname(targetPath);
+        let filesInDir = dirFilesCache.get(dir);
+        if (!filesInDir) {
+          try {
+            filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+              .filter((entry) => entry.isFile())
+              .map((entry) => entry.name);
+          } catch {
+            filesInDir = [];
+          }
+          dirFilesCache.set(dir, filesInDir);
+        }
+
+        for (const cleanupTarget of collectArchiveCleanupTargets(targetPath, filesInDir)) {
           packageTargets.add(cleanupTarget);
         }
       }
@@ -860,8 +893,14 @@ export class DownloadManager extends EventEmitter {
     if (!rootDir || !fs.existsSync(rootDir)) {
       return false;
     }
+    const deadline = nowMs() + 55;
+    let inspectedDirs = 0;
     const stack = [rootDir];
     while (stack.length > 0) {
+      inspectedDirs += 1;
+      if (inspectedDirs > 6000 || nowMs() > deadline) {
+        return true;
+      }
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
       try {
@@ -1215,13 +1254,13 @@ export class DownloadManager extends EventEmitter {
     const itemCount = Object.keys(this.session.items).length;
     const minGapMs = this.session.running
       ? itemCount >= 1500
-        ? 1300
+        ? 3000
         : itemCount >= 700
-          ? 950
+          ? 2200
           : itemCount >= 250
-            ? 700
-            : 450
-      : 250;
+            ? 1500
+            : 700
+      : 300;
     const sinceLastPersist = nowMs() - this.lastPersistAt;
     const delay = Math.max(120, minGapMs - sinceLastPersist);
 
@@ -1251,12 +1290,12 @@ export class DownloadManager extends EventEmitter {
     const itemCount = Object.keys(this.session.items).length;
     const emitDelay = this.session.running
       ? itemCount >= 1500
-        ? 900
+        ? 1200
         : itemCount >= 700
-          ? 650
+          ? 900
           : itemCount >= 250
-            ? 420
-            : 280
+            ? 560
+            : 320
       : 260;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
@@ -2568,6 +2607,35 @@ export class DownloadManager extends EventEmitter {
     }
     pkg.updatedAt = nowMs();
     logger.info(`Post-Processing Ende: pkg=${pkg.name}, status=${pkg.status}`);
+
+    this.applyPackageDoneCleanup(packageId);
+  }
+
+  private applyPackageDoneCleanup(packageId: string): void {
+    if (this.settings.completedCleanupPolicy !== "package_done") {
+      return;
+    }
+
+    const pkg = this.session.packages[packageId];
+    if (!pkg || pkg.status !== "completed") {
+      return;
+    }
+
+    const allCompleted = pkg.itemIds.every((itemId) => {
+      const item = this.session.items[itemId];
+      return !item || item.status === "completed";
+    });
+    if (!allCompleted) {
+      return;
+    }
+
+    for (const itemId of pkg.itemIds) {
+      delete this.session.items[itemId];
+    }
+    delete this.session.packages[packageId];
+    this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
+    this.runPackageIds.delete(packageId);
+    this.runCompletedPackages.delete(packageId);
   }
 
   private applyCompletedCleanupPolicy(packageId: string, itemId: string): void {
