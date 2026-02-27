@@ -1,3 +1,4 @@
+import base64
 import json
 import html
 import queue
@@ -7,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 import webbrowser
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -31,14 +34,22 @@ try:
 except ImportError:
     send2trash = None
 
+try:
+    from Cryptodome.Cipher import AES as _AES
+except ImportError:
+    _AES = None
+
 API_BASE_URL = "https://api.real-debrid.com/rest/1.0"
 CONFIG_FILE = Path(__file__).with_name("rd_downloader_config.json")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload"
+DLC_SERVICE_URL = "http://service.jdownloader.org/dlcrypt/service.php?srcType=dlc&destType=pylo&data={}"
+DLC_AES_KEY = b"cb99b5cbc24db398"
+DLC_AES_IV = b"9bc24cb995cb8db3"
 REQUEST_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 1.2
 RETRY_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
@@ -1025,6 +1036,17 @@ class DownloaderApp(tk.Tk):
         self.status_var.set(f"DLC importiert: {len(packages)} Paket(e), {total_links} Link(s)")
 
     def _decrypt_dlc_file(self, file_path: Path) -> list[DownloadPackage]:
+        # Primary: local decryption via JDownloader DLC service (preserves
+        # real package names like JDownloader does).
+        if _AES is not None:
+            try:
+                packages = self._decrypt_dlc_local(file_path)
+                if packages:
+                    return packages
+            except Exception:
+                pass  # fall through to dcrypt.it
+
+        # Fallback: dcrypt.it (no package structure, only flat link list).
         with file_path.open("rb") as handle:
             response = requests.post(
                 DCRYPT_UPLOAD_URL,
@@ -1048,6 +1070,16 @@ class DownloaderApp(tk.Tk):
                 raise RuntimeError("; ".join(details) if details else "DLC konnte nicht entschluesselt werden")
 
         packages = self._extract_packages_from_payload(payload)
+
+        # When the payload contains a single flat link list (e.g. dcrypt.it
+        # ``{"success": {"links": [...]}}``), _extract_packages_from_payload
+        # will lump everything into one package.  Re-group by filename so that
+        # distinct releases end up in separate packages.
+        if len(packages) == 1:
+            regrouped = self._group_links_by_inferred_name(packages[0].links)
+            if len(regrouped) > 1:
+                packages = regrouped
+
         if not packages:
             links = self._extract_urls_recursive(payload)
             packages = self._group_links_by_inferred_name(links)
@@ -1055,6 +1087,65 @@ class DownloaderApp(tk.Tk):
         if not packages:
             links = self._extract_urls_recursive(response.text)
             packages = self._group_links_by_inferred_name(links)
+
+        return packages
+
+    def _decrypt_dlc_local(self, file_path: Path) -> list[DownloadPackage]:
+        """Decrypt a DLC container locally via JDownloader's DLC service.
+
+        Returns a list of DownloadPackage with the real release names that
+        are embedded in the DLC container's XML structure.
+        """
+        content = file_path.read_text(encoding="ascii", errors="ignore").strip()
+        if len(content) < 89:
+            return []
+
+        dlc_key = content[-88:]
+        dlc_data = content[:-88]
+
+        # Ask JDownloader service for the RC token.
+        url = DLC_SERVICE_URL.format(dlc_key)
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            rc_response = resp.read().decode("utf-8")
+
+        rc_match = re.search(r"<rc>(.*?)</rc>", rc_response)
+        if not rc_match:
+            return []
+
+        # Decrypt RC to obtain the real AES key.
+        rc_bytes = base64.b64decode(rc_match.group(1))
+        cipher = _AES.new(DLC_AES_KEY, _AES.MODE_CBC, DLC_AES_IV)
+        real_key = cipher.decrypt(rc_bytes)[:16]
+
+        # Decrypt the main payload.
+        encrypted = base64.b64decode(dlc_data)
+        cipher2 = _AES.new(real_key, _AES.MODE_CBC, real_key)
+        decrypted = cipher2.decrypt(encrypted)
+        # Strip PKCS7 padding.
+        pad = decrypted[-1]
+        if 1 <= pad <= 16 and decrypted[-pad:] == bytes([pad]) * pad:
+            decrypted = decrypted[:-pad]
+
+        xml_data = base64.b64decode(decrypted).decode("utf-8")
+        root = ET.fromstring(xml_data)
+        content_node = root.find("content")
+        if content_node is None:
+            return []
+
+        packages: list[DownloadPackage] = []
+        for pkg_el in content_node.findall("package"):
+            name_b64 = pkg_el.get("name", "")
+            name = base64.b64decode(name_b64).decode("utf-8") if name_b64 else ""
+
+            urls: list[str] = []
+            for file_el in pkg_el.findall("file"):
+                url_el = file_el.find("url")
+                if url_el is not None and url_el.text:
+                    urls.append(base64.b64decode(url_el.text.strip()).decode("utf-8"))
+
+            if urls:
+                package_name = sanitize_filename(name or infer_package_name_from_links(urls) or f"Paket-{len(packages) + 1:03d}")
+                packages.append(DownloadPackage(name=package_name, links=self._unique_preserve_order(urls)))
 
         return packages
 
