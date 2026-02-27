@@ -7,7 +7,7 @@ import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { createStoragePaths, emptySession, loadSession, loadSettings, saveSettings } from "./storage";
+import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSettings } from "./storage";
 import { checkGitHubUpdate, installLatestUpdate } from "./update";
 
 export class AppController {
@@ -69,11 +69,11 @@ export class AppController {
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
-    this.settings = {
+    this.settings = normalizeSettings({
       ...defaultSettings(),
       ...this.settings,
       ...partial
-    };
+    });
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     return this.settings;

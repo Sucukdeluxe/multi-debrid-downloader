@@ -5,6 +5,92 @@ import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
 const VALID_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
+const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
+const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
+const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
+const VALID_SPEED_MODES = new Set(["global", "per_download"]);
+
+function asText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(num)));
+}
+
+export function normalizeSettings(settings: AppSettings): AppSettings {
+  const defaults = defaultSettings();
+  const normalized: AppSettings = {
+    ...defaults,
+    ...settings,
+    token: asText(settings.token),
+    megaLogin: asText(settings.megaLogin),
+    megaPassword: asText(settings.megaPassword),
+    bestToken: asText(settings.bestToken),
+    allDebridToken: asText(settings.allDebridToken),
+    rememberToken: Boolean(settings.rememberToken),
+    autoProviderFallback: Boolean(settings.autoProviderFallback),
+    outputDir: asText(settings.outputDir) || defaults.outputDir,
+    packageName: asText(settings.packageName),
+    autoExtract: Boolean(settings.autoExtract),
+    extractDir: asText(settings.extractDir) || defaults.extractDir,
+    createExtractSubfolder: Boolean(settings.createExtractSubfolder),
+    hybridExtract: Boolean(settings.hybridExtract),
+    removeLinkFilesAfterExtract: Boolean(settings.removeLinkFilesAfterExtract),
+    removeSamplesAfterExtract: Boolean(settings.removeSamplesAfterExtract),
+    enableIntegrityCheck: Boolean(settings.enableIntegrityCheck),
+    autoResumeOnStart: Boolean(settings.autoResumeOnStart),
+    autoReconnect: Boolean(settings.autoReconnect),
+    maxParallel: clampNumber(settings.maxParallel, defaults.maxParallel, 1, 50),
+    speedLimitEnabled: Boolean(settings.speedLimitEnabled),
+    speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
+    reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
+    autoUpdateCheck: Boolean(settings.autoUpdateCheck),
+    updateRepo: asText(settings.updateRepo) || defaults.updateRepo
+  };
+
+  if (!VALID_PROVIDERS.has(normalized.providerPrimary)) {
+    normalized.providerPrimary = defaults.providerPrimary;
+  }
+  if (!VALID_PROVIDERS.has(normalized.providerSecondary)) {
+    normalized.providerSecondary = defaults.providerSecondary;
+  }
+  if (!VALID_PROVIDERS.has(normalized.providerTertiary)) {
+    normalized.providerTertiary = defaults.providerTertiary;
+  }
+  if (!VALID_CLEANUP_MODES.has(normalized.cleanupMode)) {
+    normalized.cleanupMode = defaults.cleanupMode;
+  }
+  if (!VALID_CONFLICT_MODES.has(normalized.extractConflictMode)) {
+    normalized.extractConflictMode = defaults.extractConflictMode;
+  }
+  if (!VALID_FINISHED_POLICIES.has(normalized.completedCleanupPolicy)) {
+    normalized.completedCleanupPolicy = defaults.completedCleanupPolicy;
+  }
+  if (!VALID_SPEED_MODES.has(normalized.speedLimitMode)) {
+    normalized.speedLimitMode = defaults.speedLimitMode;
+  }
+
+  return normalized;
+}
+
+function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
+  if (settings.rememberToken) {
+    return settings;
+  }
+  return {
+    ...settings,
+    token: "",
+    megaLogin: "",
+    megaPassword: "",
+    bestToken: "",
+    allDebridToken: ""
+  };
+}
 
 export interface StoragePaths {
   baseDir: string;
@@ -30,25 +116,12 @@ export function loadSettings(paths: StoragePaths): AppSettings {
     return defaultSettings();
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as Partial<AppSettings>;
-    const merged: AppSettings = {
+    const parsed = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as AppSettings;
+    const merged = normalizeSettings({
       ...defaultSettings(),
       ...parsed
-    };
-    if (!VALID_PROVIDERS.has(merged.providerPrimary)) {
-      merged.providerPrimary = "realdebrid";
-    }
-    if (!VALID_PROVIDERS.has(merged.providerSecondary)) {
-      merged.providerSecondary = "megadebrid";
-    }
-    if (!VALID_PROVIDERS.has(merged.providerTertiary)) {
-      merged.providerTertiary = "bestdebrid";
-    }
-    merged.autoProviderFallback = Boolean(merged.autoProviderFallback);
-    merged.maxParallel = Math.max(1, Math.min(50, Number(merged.maxParallel) || 4));
-    merged.speedLimitKbps = Math.max(0, Math.min(500000, Number(merged.speedLimitKbps) || 0));
-    merged.reconnectWaitSeconds = Math.max(10, Math.min(600, Number(merged.reconnectWaitSeconds) || 45));
-    return merged;
+    });
+    return sanitizeCredentialPersistence(merged);
   } catch (error) {
     logger.error(`Konfiguration konnte nicht geladen werden: ${String(error)}`);
     return defaultSettings();
@@ -57,7 +130,8 @@ export function loadSettings(paths: StoragePaths): AppSettings {
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   ensureBaseDir(paths.baseDir);
-  const payload = JSON.stringify(settings, null, 2);
+  const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
+  const payload = JSON.stringify(persisted, null, 2);
   const tempPath = `${paths.configFile}.tmp`;
   fs.writeFileSync(tempPath, payload, "utf8");
   fs.renameSync(tempPath, paths.configFile);
