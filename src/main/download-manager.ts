@@ -497,22 +497,21 @@ export class DownloadManager extends EventEmitter {
 
   private async resolveQueuedFilenames(unresolvedByLink: Map<string, string[]>): Promise<void> {
     try {
-      const resolved = await this.debridService.resolveFilenames(Array.from(unresolvedByLink.keys()));
-      if (resolved.size === 0) {
-        return;
-      }
-
       let changed = false;
-      for (const [link, itemIds] of unresolvedByLink.entries()) {
-        const fileName = resolved.get(link);
+      const applyResolvedName = (link: string, fileName: string): void => {
+        const itemIds = unresolvedByLink.get(link);
+        if (!itemIds || itemIds.length === 0) {
+          return;
+        }
         if (!fileName || fileName.toLowerCase() === "download.bin") {
-          continue;
+          return;
         }
         const normalized = sanitizeFilename(fileName);
         if (!normalized || normalized.toLowerCase() === "download.bin") {
-          continue;
+          return;
         }
 
+        let changedForLink = false;
         for (const itemId of itemIds) {
           const item = this.session.items[itemId];
           if (!item) {
@@ -528,8 +527,16 @@ export class DownloadManager extends EventEmitter {
           item.targetPath = path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, normalized);
           item.updatedAt = nowMs();
           changed = true;
+          changedForLink = true;
         }
-      }
+
+        if (changedForLink) {
+          this.persistSoon();
+          this.emitState();
+        }
+      };
+
+      await this.debridService.resolveFilenames(Array.from(unresolvedByLink.keys()), applyResolvedName);
 
       if (changed) {
         this.persistSoon();
