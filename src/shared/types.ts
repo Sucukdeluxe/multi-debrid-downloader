@@ -15,6 +15,7 @@ export type ConflictMode = "overwrite" | "skip" | "rename" | "ask";
 export type SpeedMode = "global" | "per_download";
 export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "package_done";
 export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid";
+export type DebridFallbackProvider = DebridProvider | "none";
 
 export interface AppSettings {
   token: string;
@@ -24,8 +25,8 @@ export interface AppSettings {
   allDebridToken: string;
   rememberToken: boolean;
   providerPrimary: DebridProvider;
-  providerSecondary: DebridProvider;
-  providerTertiary: DebridProvider;
+  providerSecondary: DebridFallbackProvider;
+  providerTertiary: DebridFallbackProvider;
   autoProviderFallback: boolean;
   outputDir: string;
   packageName: string;

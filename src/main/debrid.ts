@@ -1,4 +1,4 @@
-import { AppSettings, DebridProvider } from "../shared/types";
+import { AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
 import { REQUEST_RETRIES } from "./constants";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
@@ -111,6 +111,17 @@ function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
     result.push(provider);
   }
   return result;
+}
+
+function toProviderOrder(primary: DebridProvider, secondary: DebridFallbackProvider, tertiary: DebridFallbackProvider): DebridProvider[] {
+  const order: DebridProvider[] = [primary];
+  if (secondary !== "none") {
+    order.push(secondary);
+  }
+  if (tertiary !== "none") {
+    order.push(tertiary);
+  }
+  return uniqueProviderOrder(order);
 }
 
 function isRapidgatorLink(link: string): boolean {
@@ -492,11 +503,11 @@ export class DebridService {
   }
 
   public async unrestrictLink(link: string): Promise<ProviderUnrestrictedLink> {
-    const order = uniqueProviderOrder([
+    const order = toProviderOrder(
       this.settings.providerPrimary,
       this.settings.providerSecondary,
       this.settings.providerTertiary
-    ]);
+    );
 
     let configuredFound = false;
     const attempts: string[] = [];

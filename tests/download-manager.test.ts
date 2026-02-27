@@ -1024,4 +1024,153 @@ describe("download manager", () => {
       await once(server, "close");
     }
   });
+
+  it("shows stable ETA while paused", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(320 * 1024, 10);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/pause") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      const chunk = Math.floor(binary.length / 2);
+      res.write(binary.subarray(0, chunk));
+      setTimeout(() => {
+        res.end(binary.subarray(chunk));
+      }, 900);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/pause`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "pause.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "pause-case", links: ["https://dummy/pause"] }]);
+      manager.start();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      manager.togglePause();
+      const pausedSnapshot = manager.getSnapshot();
+      expect(pausedSnapshot.session.paused).toBe(true);
+      expect(pausedSnapshot.etaText).toBe("ETA: --");
+
+      manager.stop();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("recovers pending extraction on startup for completed package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const outputDir = path.join(root, "downloads", "recovery");
+    const extractDir = path.join(root, "extract", "recovery");
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const zip = new AdmZip();
+    zip.addFile("episode.txt", Buffer.from("ok"));
+    const archivePath = path.join(outputDir, "episode.zip");
+    zip.writeZip(archivePath);
+
+    const session = emptySession();
+    const packageId = "recover-pkg";
+    const itemId = "recover-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "recovery",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/recover",
+      provider: "megadebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: fs.statSync(archivePath).size,
+      totalBytes: fs.statSync(archivePath).size,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (100 MB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        createExtractSubfolder: true,
+        autoExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => fs.existsSync(path.join(extractDir, "episode.txt")), 25000);
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]?.status).toBe("completed");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
+  });
 });
