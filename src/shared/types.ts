@@ -137,6 +137,15 @@ export interface AddContainerPayload {
   filePaths: string[];
 }
 
+export interface UpdateCheckResult {
+  updateAvailable: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  latestTag: string;
+  releaseUrl: string;
+  error?: string;
+}
+
 export interface ParsedHashEntry {
   fileName: string;
   algorithm: "crc32" | "md5" | "sha1";

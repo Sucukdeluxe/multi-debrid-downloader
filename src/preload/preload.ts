@@ -1,11 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AddLinksPayload, AppSettings, UiSnapshot } from "../shared/types";
+import { AddLinksPayload, AppSettings, UiSnapshot, UpdateCheckResult } from "../shared/types";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
 const api: ElectronApi = {
   getSnapshot: (): Promise<UiSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.GET_SNAPSHOT),
   getVersion: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.GET_VERSION),
+  checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_UPDATES),
   updateSettings: (settings: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SETTINGS, settings),
   addLinks: (payload: AddLinksPayload): Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }> =>
     ipcRenderer.invoke(IPC_CHANNELS.ADD_LINKS, payload),

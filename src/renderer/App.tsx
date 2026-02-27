@@ -84,6 +84,14 @@ export function App(): ReactElement {
     void window.rd.getSnapshot().then((state) => {
       setSnapshot(state);
       setSettingsDraft(state.settings);
+      if (state.settings.autoUpdateCheck) {
+        void window.rd.checkUpdates().then((result) => {
+          if (result.updateAvailable) {
+            setStatusToast(`Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})`);
+            setTimeout(() => setStatusToast(""), 3800);
+          }
+        });
+      }
     });
     unsubscribe = window.rd.onStateUpdate((state) => {
       setSnapshot(state);
@@ -103,6 +111,22 @@ export function App(): ReactElement {
     await window.rd.updateSettings(settingsDraft);
     setStatusToast("Settings gespeichert");
     setTimeout(() => setStatusToast(""), 1800);
+  };
+
+  const onCheckUpdates = async (): Promise<void> => {
+    const result = await window.rd.checkUpdates();
+    if (result.error) {
+      setStatusToast(`Update-Check fehlgeschlagen: ${result.error}`);
+      setTimeout(() => setStatusToast(""), 2800);
+      return;
+    }
+    if (result.updateAvailable) {
+      setStatusToast(`Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})`);
+      setTimeout(() => setStatusToast(""), 3200);
+      return;
+    }
+    setStatusToast(`Kein Update verfügbar (v${result.currentVersion})`);
+    setTimeout(() => setStatusToast(""), 2000);
   };
 
   const onAddLinks = async (): Promise<void> => {
@@ -198,6 +222,7 @@ export function App(): ReactElement {
             <option value="per_download">per_download</option>
           </select>
           <button className="btn" onClick={onSaveSettings}>Live speichern</button>
+          <button className="btn" onClick={onCheckUpdates}>Updates prüfen</button>
         </div>
       </section>
 
