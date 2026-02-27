@@ -47,6 +47,11 @@ function canRetryStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+function isFetchFailure(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
+}
+
 function isFinishedStatus(status: DownloadStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
@@ -723,116 +728,145 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    try {
-      const unrestricted = await this.debridService.unrestrictLink(item.url);
-      item.provider = unrestricted.provider;
-      item.retries = unrestricted.retriesUsed;
-      item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
-      fs.mkdirSync(pkg.outputDir, { recursive: true });
-      const existingTargetPath = String(item.targetPath || "").trim();
-      const canReuseExistingTarget = existingTargetPath
-        && isPathInsideDir(existingTargetPath, pkg.outputDir)
-        && (item.downloadedBytes > 0 || fs.existsSync(existingTargetPath));
-      const preferredTargetPath = canReuseExistingTarget
-        ? existingTargetPath
-        : path.join(pkg.outputDir, item.fileName);
-      item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
-      item.totalBytes = unrestricted.fileSize;
-      item.status = "downloading";
-      item.fullStatus = `Download läuft (${unrestricted.providerLabel})`;
-      item.updatedAt = nowMs();
-      this.emitState();
+    let freshRetryUsed = false;
+    while (true) {
+      try {
+        const unrestricted = await this.debridService.unrestrictLink(item.url);
+        item.provider = unrestricted.provider;
+        item.retries = unrestricted.retriesUsed;
+        item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        fs.mkdirSync(pkg.outputDir, { recursive: true });
+        const existingTargetPath = String(item.targetPath || "").trim();
+        const canReuseExistingTarget = existingTargetPath
+          && isPathInsideDir(existingTargetPath, pkg.outputDir)
+          && (item.downloadedBytes > 0 || fs.existsSync(existingTargetPath));
+        const preferredTargetPath = canReuseExistingTarget
+          ? existingTargetPath
+          : path.join(pkg.outputDir, item.fileName);
+        item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
+        item.totalBytes = unrestricted.fileSize;
+        item.status = "downloading";
+        item.fullStatus = `Download läuft (${unrestricted.providerLabel})`;
+        item.updatedAt = nowMs();
+        this.emitState();
 
-      const maxAttempts = REQUEST_RETRIES;
-      let done = false;
-      let downloadRetries = 0;
-      while (!done && item.attempts < maxAttempts) {
-        item.attempts += 1;
-        const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes);
-        downloadRetries += result.retriesUsed;
-        active.resumable = result.resumable;
-        if (!active.resumable && !active.nonResumableCounted) {
-          active.nonResumableCounted = true;
-          this.nonResumableActive += 1;
+        const maxAttempts = REQUEST_RETRIES;
+        let done = false;
+        let downloadRetries = 0;
+        while (!done && item.attempts < maxAttempts) {
+          item.attempts += 1;
+          const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes);
+          downloadRetries += result.retriesUsed;
+          active.resumable = result.resumable;
+          if (!active.resumable && !active.nonResumableCounted) {
+            active.nonResumableCounted = true;
+            this.nonResumableActive += 1;
+          }
+
+          if (this.settings.enableIntegrityCheck) {
+            item.status = "integrity_check";
+            item.fullStatus = "CRC-Check läuft";
+            item.updatedAt = nowMs();
+            this.emitState();
+
+            const validation = await validateFileAgainstManifest(item.targetPath, pkg.outputDir);
+            if (!validation.ok) {
+              item.lastError = validation.message;
+              item.fullStatus = `${validation.message}, Neuversuch`;
+              try {
+                fs.rmSync(item.targetPath, { force: true });
+              } catch {
+                // ignore
+              }
+              if (item.attempts < maxAttempts) {
+                item.status = "queued";
+                item.progressPercent = 0;
+                item.downloadedBytes = 0;
+                item.totalBytes = unrestricted.fileSize;
+                this.emitState();
+                await sleep(300);
+                continue;
+              }
+              throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
+            }
+          }
+
+          done = true;
         }
 
-        if (this.settings.enableIntegrityCheck) {
-          item.status = "integrity_check";
-          item.fullStatus = "CRC-Check läuft";
-          item.updatedAt = nowMs();
-          this.emitState();
+        item.retries += downloadRetries;
+        item.status = "completed";
+        item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
+        item.progressPercent = 100;
+        item.speedBps = 0;
+        item.updatedAt = nowMs();
+        pkg.updatedAt = nowMs();
+        this.recordRunOutcome(item.id, "completed");
 
-          const validation = await validateFileAgainstManifest(item.targetPath, pkg.outputDir);
-          if (!validation.ok) {
-            item.lastError = validation.message;
-            item.fullStatus = `${validation.message}, Neuversuch`;
+        await this.handlePackagePostProcessing(pkg.id);
+        this.applyCompletedCleanupPolicy(pkg.id, item.id);
+        this.persistSoon();
+        this.emitState();
+        return;
+      } catch (error) {
+        const reason = active.abortReason;
+        if (reason === "cancel") {
+          item.status = "cancelled";
+          item.fullStatus = "Entfernt";
+          this.recordRunOutcome(item.id, "cancelled");
+          try {
+            fs.rmSync(item.targetPath, { force: true });
+          } catch {
+            // ignore
+          }
+        } else if (reason === "stop") {
+          item.status = "cancelled";
+          item.fullStatus = "Gestoppt";
+          this.recordRunOutcome(item.id, "cancelled");
+          try {
+            fs.rmSync(item.targetPath, { force: true });
+          } catch {
+            // ignore
+          }
+        } else if (reason === "reconnect") {
+          item.status = "queued";
+          item.fullStatus = "Wartet auf Reconnect";
+        } else {
+          const errorText = compactErrorText(error);
+          const shouldFreshRetry = !freshRetryUsed && isFetchFailure(errorText);
+          if (shouldFreshRetry) {
+            freshRetryUsed = true;
             try {
               fs.rmSync(item.targetPath, { force: true });
             } catch {
               // ignore
             }
-            if (item.attempts < maxAttempts) {
-              item.status = "queued";
-              item.progressPercent = 0;
-              item.downloadedBytes = 0;
-              item.totalBytes = unrestricted.fileSize;
-              this.emitState();
-              await sleep(300);
-              continue;
-            }
-            throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
+            this.releaseTargetPath(item.id);
+            item.status = "queued";
+            item.fullStatus = "Netzwerkfehler erkannt, frischer Retry";
+            item.lastError = "";
+            item.attempts = 0;
+            item.downloadedBytes = 0;
+            item.totalBytes = null;
+            item.progressPercent = 0;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            this.persistSoon();
+            this.emitState();
+            await sleep(450);
+            continue;
           }
+          item.status = "failed";
+          this.recordRunOutcome(item.id, "failed");
+          item.lastError = errorText;
+          item.fullStatus = `Fehler: ${item.lastError}`;
         }
-
-        done = true;
+        item.speedBps = 0;
+        item.updatedAt = nowMs();
+        this.persistSoon();
+        this.emitState();
+        return;
       }
-
-      item.retries += downloadRetries;
-      item.status = "completed";
-      item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
-      item.progressPercent = 100;
-      item.speedBps = 0;
-      item.updatedAt = nowMs();
-      pkg.updatedAt = nowMs();
-      this.recordRunOutcome(item.id, "completed");
-
-      await this.handlePackagePostProcessing(pkg.id);
-      this.applyCompletedCleanupPolicy(pkg.id, item.id);
-      this.persistSoon();
-      this.emitState();
-    } catch (error) {
-      const reason = active.abortReason;
-      if (reason === "cancel") {
-        item.status = "cancelled";
-        item.fullStatus = "Entfernt";
-        this.recordRunOutcome(item.id, "cancelled");
-        try {
-          fs.rmSync(item.targetPath, { force: true });
-        } catch {
-          // ignore
-        }
-      } else if (reason === "stop") {
-        item.status = "cancelled";
-        item.fullStatus = "Gestoppt";
-        this.recordRunOutcome(item.id, "cancelled");
-        try {
-          fs.rmSync(item.targetPath, { force: true });
-        } catch {
-          // ignore
-        }
-      } else if (reason === "reconnect") {
-        item.status = "queued";
-        item.fullStatus = "Wartet auf Reconnect";
-      } else {
-        item.status = "failed";
-        this.recordRunOutcome(item.id, "failed");
-        item.lastError = compactErrorText(error);
-        item.fullStatus = `Fehler: ${item.lastError}`;
-      }
-      item.speedBps = 0;
-      item.updatedAt = nowMs();
-      this.persistSoon();
-      this.emitState();
     }
   }
 
@@ -1109,6 +1143,14 @@ export class DownloadManager extends EventEmitter {
       if (result.failed > 0) {
         pkg.status = "failed";
       } else {
+        if (result.extracted > 0) {
+          for (const entry of items) {
+            if (entry.status === "completed") {
+              entry.fullStatus = "Entpackt";
+              entry.updatedAt = nowMs();
+            }
+          }
+        }
         pkg.status = "completed";
       }
     } else if (failed > 0) {

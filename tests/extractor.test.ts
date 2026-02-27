@@ -96,4 +96,26 @@ describe("extractor", () => {
     expect(result.failed).toBe(0);
     expect(fs.readFileSync(existingPath, "utf8")).toBe("old");
   });
+
+  it("does not keep empty target dir when extraction fails", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    fs.writeFileSync(path.join(packageDir, "broken.zip"), "not-a-zip", "utf8");
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(fs.existsSync(targetDir)).toBe(false);
+  });
 });

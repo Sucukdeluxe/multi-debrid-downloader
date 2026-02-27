@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { once } from "node:events";
+import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
 import { DownloadManager } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
@@ -694,6 +695,173 @@ describe("download manager", () => {
       expect(runningSnapshot.etaText).toBe("ETA: --");
 
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("performs one fresh retry after fetch failed during unrestrict", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(96 * 1024, 12);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/fresh-retry") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/fresh-retry`;
+    let unrestrictCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        if (unrestrictCalls <= 3) {
+          throw new TypeError("fetch failed");
+        }
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "fresh-retry.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "fresh-retry", links: ["https://dummy/fresh"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(unrestrictCalls).toBeGreaterThan(3);
+      expect(item?.status).toBe("completed");
+      expect(item?.lastError || "").toBe("");
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("creates extract directory only at extraction and marks items as Entpackt", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const zip = new AdmZip();
+    zip.addFile("inside.txt", Buffer.from("ok"));
+    const archive = zip.toBuffer();
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/archive") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      setTimeout(() => {
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(archive.length));
+        res.end(archive);
+      }, 450);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/archive`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "sample.zip",
+            filesize: archive.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          createExtractSubfolder: true,
+          autoExtract: true,
+          enableIntegrityCheck: false,
+          cleanupMode: "none"
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "zip-pack", links: ["https://dummy/archive"] }]);
+      const pkgId = manager.getSnapshot().session.packageOrder[0];
+      const extractDir = manager.getSnapshot().session.packages[pkgId]?.extractDir || "";
+      expect(extractDir).toBeTruthy();
+      expect(fs.existsSync(extractDir)).toBe(false);
+
+      manager.start();
+      await new Promise((resolve) => setTimeout(resolve, 140));
+      expect(fs.existsSync(extractDir)).toBe(false);
+
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const snapshot = manager.getSnapshot();
+      const item = Object.values(snapshot.session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(item?.fullStatus).toBe("Entpackt");
+      expect(fs.existsSync(extractDir)).toBe(true);
+      expect(fs.existsSync(path.join(extractDir, "inside.txt"))).toBe(true);
     } finally {
       server.close();
       await once(server, "close");
