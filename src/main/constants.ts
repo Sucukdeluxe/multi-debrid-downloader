@@ -58,6 +58,10 @@ export function defaultSettings(): AppSettings {
     speedLimitKbps: 0,
     speedLimitMode: "global",
     updateRepo: DEFAULT_UPDATE_REPO,
-    autoUpdateCheck: true
+    autoUpdateCheck: true,
+    clipboardWatch: false,
+    minimizeToTray: false,
+    theme: "dark" as const,
+    bandwidthSchedules: []
   };
 }

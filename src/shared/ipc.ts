@@ -12,7 +12,15 @@ export const IPC_CHANNELS = {
   STOP: "queue:stop",
   TOGGLE_PAUSE: "queue:toggle-pause",
   CANCEL_PACKAGE: "queue:cancel-package",
+  RENAME_PACKAGE: "queue:rename-package",
+  REORDER_PACKAGES: "queue:reorder-packages",
+  REMOVE_ITEM: "queue:remove-item",
+  TOGGLE_PACKAGE: "queue:toggle-package",
+  EXPORT_QUEUE: "queue:export",
+  IMPORT_QUEUE: "queue:import",
   PICK_FOLDER: "dialog:pick-folder",
   PICK_CONTAINERS: "dialog:pick-containers",
-  STATE_UPDATE: "state:update"
+  STATE_UPDATE: "state:update",
+  CLIPBOARD_DETECTED: "clipboard:detected",
+  TOGGLE_CLIPBOARD: "clipboard:toggle"
 } as const;

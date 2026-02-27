@@ -3,8 +3,8 @@ import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import { v4 as uuidv4 } from "uuid";
-import { AppSettings, DownloadItem, DownloadSummary, DownloadStatus, PackageEntry, ParsedPackageInput, SessionState, UiSnapshot } from "../shared/types";
-import { CHUNK_SIZE, REQUEST_RETRIES } from "./constants";
+import { AppSettings, DownloadItem, DownloadStats, DownloadSummary, DownloadStatus, PackageEntry, ParsedPackageInput, SessionState, UiSnapshot } from "../shared/types";
+import { REQUEST_RETRIES } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { extractPackageArchives } from "./extractor";
@@ -17,7 +17,7 @@ type ActiveTask = {
   itemId: string;
   packageId: string;
   abortController: AbortController;
-  abortReason: "stop" | "cancel" | "reconnect" | "none";
+  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "none";
   resumable: boolean;
   speedEvents: Array<{ at: number; bytes: number }>;
   nonResumableCounted: boolean;
@@ -41,6 +41,35 @@ function parseContentRangeTotal(contentRange: string | null): number | null {
   }
   const value = Number(match[1]);
   return Number.isFinite(value) ? value : null;
+}
+
+function parseContentDispositionFilename(contentDisposition: string | null): string {
+  if (!contentDisposition) {
+    return "";
+  }
+
+  const encodedMatch = contentDisposition.match(/filename\*\s*=\s*([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    let value = encodedMatch[1].trim();
+    value = value.replace(/^UTF-8''/i, "");
+    value = value.replace(/^['"]+|['"]+$/g, "");
+    try {
+      const decoded = decodeURIComponent(value).trim();
+      if (decoded) {
+        return decoded;
+      }
+    } catch {
+      if (value) {
+        return value;
+      }
+    }
+  }
+
+  const plainMatch = contentDisposition.match(/filename\s*=\s*([^;]+)/i);
+  if (!plainMatch?.[1]) {
+    return "";
+  }
+  return plainMatch[1].trim().replace(/^['"]+|['"]+$/g, "");
 }
 
 function canRetryStatus(status: number): boolean {
@@ -186,16 +215,187 @@ export class DownloadManager extends EventEmitter {
     const remaining = totalItems - doneItems;
     const eta = remaining > 0 && rate > 0 ? remaining / rate : -1;
 
+    const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
+
     return {
       settings: this.settings,
       session: this.getSession(),
       summary: this.summary,
+      stats: this.getStats(),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
       etaText: paused ? "ETA: --" : `ETA: ${formatEta(eta)}`,
       canStart: !this.session.running,
       canStop: this.session.running,
-      canPause: this.session.running
+      canPause: this.session.running,
+      clipboardActive: this.settings.clipboardWatch,
+      reconnectSeconds: Math.ceil(reconnectMs / 1000)
     };
+  }
+
+  public getStats(): DownloadStats {
+    let totalDownloaded = 0;
+    let totalFiles = 0;
+    for (const item of Object.values(this.session.items)) {
+      if (item.status === "completed") {
+        totalDownloaded += item.downloadedBytes;
+        totalFiles += 1;
+      }
+    }
+
+    if (this.session.running) {
+      let visibleRunBytes = 0;
+      for (const itemId of this.runItemIds) {
+        const item = this.session.items[itemId];
+        if (item) {
+          visibleRunBytes += item.downloadedBytes;
+        }
+      }
+      totalDownloaded += Math.max(0, this.session.totalDownloadedBytes - visibleRunBytes);
+    } else {
+      totalDownloaded = Math.max(totalDownloaded, this.session.totalDownloadedBytes);
+    }
+
+    return {
+      totalDownloaded,
+      totalFiles,
+      totalPackages: Object.keys(this.session.packages).length,
+      sessionStartedAt: this.session.runStartedAt
+    };
+  }
+
+  public renamePackage(packageId: string, newName: string): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) {
+      return;
+    }
+    pkg.name = sanitizeFilename(newName) || pkg.name;
+    pkg.updatedAt = nowMs();
+    this.persistSoon();
+    this.emitState(true);
+  }
+
+  public reorderPackages(packageIds: string[]): void {
+    const valid = packageIds.filter((id) => this.session.packages[id]);
+    const remaining = this.session.packageOrder.filter((id) => !valid.includes(id));
+    this.session.packageOrder = [...valid, ...remaining];
+    this.persistSoon();
+    this.emitState(true);
+  }
+
+  public removeItem(itemId: string): void {
+    const item = this.session.items[itemId];
+    if (!item) {
+      return;
+    }
+    this.recordRunOutcome(itemId, "cancelled");
+    const active = this.activeTasks.get(itemId);
+    if (active) {
+      active.abortReason = "cancel";
+      active.abortController.abort("cancel");
+    }
+    const pkg = this.session.packages[item.packageId];
+    if (pkg) {
+      pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
+      if (pkg.itemIds.length === 0) {
+        this.removePackageFromSession(item.packageId, []);
+      } else {
+        pkg.updatedAt = nowMs();
+      }
+    }
+    delete this.session.items[itemId];
+    this.releaseTargetPath(itemId);
+    this.persistSoon();
+    this.emitState(true);
+  }
+
+  public togglePackage(packageId: string): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) {
+      return;
+    }
+
+    const nextEnabled = !pkg.enabled;
+    pkg.enabled = nextEnabled;
+
+    if (!nextEnabled) {
+      if (pkg.status === "downloading") {
+        pkg.status = "paused";
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        if (this.session.running && !isFinishedStatus(item.status) && !this.runOutcomes.has(itemId)) {
+          this.runItemIds.delete(itemId);
+        }
+        const active = this.activeTasks.get(itemId);
+        if (active) {
+          active.abortReason = "package_toggle";
+          active.abortController.abort("package_toggle");
+          continue;
+        }
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.fullStatus = "Paket gestoppt";
+          item.updatedAt = nowMs();
+        }
+      }
+      this.runPackageIds.delete(packageId);
+      this.runCompletedPackages.delete(packageId);
+    } else {
+      if (pkg.status === "paused") {
+        pkg.status = "queued";
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        if (item.status === "queued" && item.fullStatus === "Paket gestoppt") {
+          item.fullStatus = "Wartet";
+          item.updatedAt = nowMs();
+        }
+      }
+      if (this.session.running) {
+        void this.ensureScheduler();
+      }
+    }
+
+    pkg.updatedAt = nowMs();
+    this.persistSoon();
+    this.emitState(true);
+  }
+
+  public exportQueue(): string {
+    const exportData = {
+      version: 1,
+      packages: this.session.packageOrder.map((id) => {
+        const pkg = this.session.packages[id];
+        if (!pkg) {
+          return null;
+        }
+        return {
+          name: pkg.name,
+          links: pkg.itemIds
+            .map((itemId) => this.session.items[itemId]?.url)
+            .filter(Boolean)
+        };
+      }).filter(Boolean)
+    };
+    return JSON.stringify(exportData, null, 2);
+  }
+
+  public importQueue(json: string): { addedPackages: number; addedLinks: number } {
+    const data = JSON.parse(json) as { packages?: Array<{ name: string; links: string[] }> };
+    if (!Array.isArray(data.packages)) {
+      return { addedPackages: 0, addedLinks: 0 };
+    }
+    const inputs: ParsedPackageInput[] = data.packages
+      .filter((pkg) => pkg.name && Array.isArray(pkg.links) && pkg.links.length > 0)
+      .map((pkg) => ({ name: pkg.name, links: pkg.links }));
+    return this.addPackages(inputs);
   }
 
   public clearAll(): void {
@@ -238,6 +438,7 @@ export class DownloadManager extends EventEmitter {
         status: "queued",
         itemIds: [],
         cancelled: false,
+        enabled: true,
         createdAt: nowMs(),
         updatedAt: nowMs()
       };
@@ -378,7 +579,13 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const runItems = Object.values(this.session.items)
-      .filter((item) => item.status === "queued" || item.status === "reconnect_wait");
+      .filter((item) => {
+        if (item.status !== "queued" && item.status !== "reconnect_wait") {
+          return false;
+        }
+        const pkg = this.session.packages[item.packageId];
+        return Boolean(pkg && !pkg.cancelled && pkg.enabled);
+      });
     if (runItems.length === 0) {
       this.runItemIds.clear();
       this.runPackageIds.clear();
@@ -464,6 +671,9 @@ export class DownloadManager extends EventEmitter {
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
+      if (pkg.enabled === undefined) {
+        pkg.enabled = true;
+      }
       if (pkg.status === "downloading"
         || pkg.status === "validating"
         || pkg.status === "extracting"
@@ -749,6 +959,10 @@ export class DownloadManager extends EventEmitter {
 
   private markQueuedAsReconnectWait(): void {
     for (const item of Object.values(this.session.items)) {
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
       if (item.status === "queued") {
         item.status = "reconnect_wait";
         item.fullStatus = `Reconnect-Wait (${Math.ceil((this.session.reconnectUntil - nowMs()) / 1000)}s)`;
@@ -761,7 +975,7 @@ export class DownloadManager extends EventEmitter {
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled) {
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
       for (const itemId of pkg.itemIds) {
@@ -778,13 +992,28 @@ export class DownloadManager extends EventEmitter {
   }
 
   private hasQueuedItems(): boolean {
-    return Object.values(this.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private startItem(packageId: string, itemId: string): void {
     const item = this.session.items[itemId];
     const pkg = this.session.packages[packageId];
-    if (!item || !pkg || pkg.cancelled) {
+    if (!item || !pkg || pkg.cancelled || !pkg.enabled) {
       return;
     }
 
@@ -927,6 +1156,10 @@ export class DownloadManager extends EventEmitter {
         } else if (reason === "reconnect") {
           item.status = "queued";
           item.fullStatus = "Wartet auf Reconnect";
+        } else if (reason === "package_toggle") {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.fullStatus = "Paket gestoppt";
         } else {
           const errorText = compactErrorText(error);
           const shouldFreshRetry = !freshRetryUsed && isFetchFailure(errorText);
@@ -978,8 +1211,9 @@ export class DownloadManager extends EventEmitter {
     }
 
     let lastError = "";
+    let effectiveTargetPath = targetPath;
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
-      const existingBytes = fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0;
+      const existingBytes = fs.existsSync(effectiveTargetPath) ? fs.statSync(effectiveTargetPath).size : 0;
       const headers: Record<string, string> = {};
       if (existingBytes > 0) {
         headers.Range = `bytes=${existingBytes}-`;
@@ -1042,6 +1276,22 @@ export class DownloadManager extends EventEmitter {
 
       const acceptRanges = (response.headers.get("accept-ranges") || "").toLowerCase().includes("bytes");
       try {
+        if (existingBytes === 0) {
+          const rawHeaderName = parseContentDispositionFilename(response.headers.get("content-disposition")).trim();
+          const fromHeader = rawHeaderName ? sanitizeFilename(rawHeaderName) : "";
+          if (fromHeader && !looksLikeOpaqueFilename(fromHeader) && fromHeader !== item.fileName) {
+            const pkg = this.session.packages[item.packageId];
+            if (pkg) {
+              this.releaseTargetPath(item.id);
+              effectiveTargetPath = this.claimTargetPath(item.id, path.join(pkg.outputDir, fromHeader));
+              item.fileName = fromHeader;
+              item.targetPath = effectiveTargetPath;
+              item.updatedAt = nowMs();
+              this.emitState();
+            }
+          }
+        }
+
         const resumable = response.status === 206 || acceptRanges;
         active.resumable = resumable;
 
@@ -1057,10 +1307,10 @@ export class DownloadManager extends EventEmitter {
 
         const writeMode = existingBytes > 0 && response.status === 206 ? "a" : "w";
         if (writeMode === "w" && existingBytes > 0) {
-          fs.rmSync(targetPath, { force: true });
+          fs.rmSync(effectiveTargetPath, { force: true });
         }
 
-        const stream = fs.createWriteStream(targetPath, { flags: writeMode });
+        const stream = fs.createWriteStream(effectiveTargetPath, { flags: writeMode });
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
         let windowStarted = nowMs();
@@ -1183,11 +1433,35 @@ export class DownloadManager extends EventEmitter {
     throw new Error(lastError || "Download fehlgeschlagen");
   }
 
+  private getEffectiveSpeedLimitKbps(): number {
+    const schedules = this.settings.bandwidthSchedules;
+    if (schedules.length > 0) {
+      const hour = new Date().getHours();
+      for (const entry of schedules) {
+        if (!entry.enabled) {
+          continue;
+        }
+        const wraps = entry.startHour > entry.endHour;
+        const inRange = wraps
+          ? hour >= entry.startHour || hour < entry.endHour
+          : hour >= entry.startHour && hour < entry.endHour;
+        if (inRange) {
+          return entry.speedLimitKbps;
+        }
+      }
+    }
+    if (this.settings.speedLimitEnabled && this.settings.speedLimitKbps > 0) {
+      return this.settings.speedLimitKbps;
+    }
+    return 0;
+  }
+
   private async applySpeedLimit(chunkBytes: number, localWindowBytes: number, localWindowStarted: number): Promise<void> {
-    if (!this.settings.speedLimitEnabled || this.settings.speedLimitKbps <= 0) {
+    const limitKbps = this.getEffectiveSpeedLimitKbps();
+    if (limitKbps <= 0) {
       return;
     }
-    const bytesPerSecond = this.settings.speedLimitKbps * 1024;
+    const bytesPerSecond = limitKbps * 1024;
     const now = nowMs();
     const elapsed = Math.max((now - localWindowStarted) / 1000, 0.1);
     if (this.settings.speedLimitMode === "per_download") {

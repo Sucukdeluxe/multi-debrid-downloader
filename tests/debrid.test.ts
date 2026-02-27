@@ -250,4 +250,41 @@ describe("debrid service", () => {
     await expect(service.unrestrictLink("https://rapidgator.net/file/example.part6.rar.html")).rejects.toThrow();
     expect(megaWeb).toHaveBeenCalledTimes(0);
   });
+
+  it("resolves rapidgator filename from page when provider returns hash", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({
+          download: "https://cdn.example/file.bin",
+          filename: "6f09df2984fe01378537c7cd8d7fa7ce",
+          filesize: 2048
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("rapidgator.net/file/6f09df2984fe01378537c7cd8d7fa7ce")) {
+        return new Response("<html><head><title>download file Banshee.S04E01.German.DL.720p.part01.rar - Rapidgator</title></head></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://rapidgator.net/file/6f09df2984fe01378537c7cd8d7fa7ce");
+    expect(result.provider).toBe("realdebrid");
+    expect(result.fileName).toBe("Banshee.S04E01.German.DL.720p.part01.rar");
+  });
 });

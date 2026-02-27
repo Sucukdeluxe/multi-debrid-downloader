@@ -126,6 +126,30 @@ export class AppController {
     this.manager.cancelPackage(packageId);
   }
 
+  public renamePackage(packageId: string, newName: string): void {
+    this.manager.renamePackage(packageId, newName);
+  }
+
+  public reorderPackages(packageIds: string[]): void {
+    this.manager.reorderPackages(packageIds);
+  }
+
+  public removeItem(itemId: string): void {
+    this.manager.removeItem(itemId);
+  }
+
+  public togglePackage(packageId: string): void {
+    this.manager.togglePackage(packageId);
+  }
+
+  public exportQueue(): string {
+    return this.manager.exportQueue();
+  }
+
+  public importQueue(json: string): { addedPackages: number; addedLinks: number } {
+    return this.manager.importQueue(json);
+  }
+
   public shutdown(): void {
     this.manager.stop();
     this.megaWebFallback.dispose();
