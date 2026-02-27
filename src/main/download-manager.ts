@@ -23,7 +23,7 @@ import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
-import { StoragePaths, saveSession } from "./storage";
+import { StoragePaths, saveSession, saveSessionAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 
 type ActiveTask = {
@@ -1309,7 +1309,11 @@ export class DownloadManager extends EventEmitter {
 
   private persistNow(): void {
     this.lastPersistAt = nowMs();
-    saveSession(this.storagePaths, this.session);
+    if (this.session.running) {
+      void saveSessionAsync(this.storagePaths, this.session);
+    } else {
+      saveSession(this.storagePaths, this.session);
+    }
   }
 
   private emitState(force = false): void {
@@ -1340,12 +1344,17 @@ export class DownloadManager extends EventEmitter {
     }, emitDelay);
   }
 
+  private speedEventsHead = 0;
+
   private pruneSpeedEvents(now: number): void {
-    while (this.speedEvents.length > 0 && this.speedEvents[0].at < now - 3000) {
-      const event = this.speedEvents.shift();
-      if (event) {
-        this.speedBytesLastWindow = Math.max(0, this.speedBytesLastWindow - event.bytes);
-      }
+    const cutoff = now - 3000;
+    while (this.speedEventsHead < this.speedEvents.length && this.speedEvents[this.speedEventsHead].at < cutoff) {
+      this.speedBytesLastWindow = Math.max(0, this.speedBytesLastWindow - this.speedEvents[this.speedEventsHead].bytes);
+      this.speedEventsHead += 1;
+    }
+    if (this.speedEventsHead > 50) {
+      this.speedEvents = this.speedEvents.slice(this.speedEventsHead);
+      this.speedEventsHead = 0;
     }
   }
 
@@ -1681,6 +1690,9 @@ export class DownloadManager extends EventEmitter {
 
     logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalled.length} Task(s) neu starten`);
     for (const active of stalled) {
+      if (active.abortController.signal.aborted) {
+        continue;
+      }
       active.abortReason = "stall";
       active.abortController.abort("stall");
     }
@@ -2372,7 +2384,7 @@ export class DownloadManager extends EventEmitter {
                 throw new Error("aborted:reconnect");
               }
 
-              const buffer = Buffer.from(chunk);
+              const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
               await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
@@ -2566,31 +2578,37 @@ export class DownloadManager extends EventEmitter {
   }
 
   private refreshPackageStatus(pkg: PackageEntry): void {
-    const items = pkg.itemIds
-      .map((itemId) => this.session.items[itemId])
-      .filter(Boolean) as DownloadItem[];
-    if (items.length === 0) {
+    let pending = 0;
+    let success = 0;
+    let failed = 0;
+    let cancelled = 0;
+    let total = 0;
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) {
+        continue;
+      }
+      total += 1;
+      const s = item.status;
+      if (s === "completed") {
+        success += 1;
+      } else if (s === "failed") {
+        failed += 1;
+      } else if (s === "cancelled") {
+        cancelled += 1;
+      } else {
+        pending += 1;
+      }
+    }
+    if (total === 0) {
       return;
     }
 
-    const hasPending = items.some((item) => (
-      item.status === "queued"
-      || item.status === "reconnect_wait"
-      || item.status === "validating"
-      || item.status === "downloading"
-      || item.status === "paused"
-      || item.status === "extracting"
-      || item.status === "integrity_check"
-    ));
-    if (hasPending) {
+    if (pending > 0) {
       pkg.status = pkg.enabled ? "queued" : "paused";
       pkg.updatedAt = nowMs();
       return;
     }
-
-    const success = items.filter((item) => item.status === "completed").length;
-    const failed = items.filter((item) => item.status === "failed").length;
-    const cancelled = items.filter((item) => item.status === "cancelled").length;
 
     if (failed > 0) {
       pkg.status = "failed";
@@ -2602,7 +2620,16 @@ export class DownloadManager extends EventEmitter {
     pkg.updatedAt = nowMs();
   }
 
+  private cachedSpeedLimitKbps = 0;
+
+  private cachedSpeedLimitAt = 0;
+
   private getEffectiveSpeedLimitKbps(): number {
+    const now = nowMs();
+    if (now - this.cachedSpeedLimitAt < 2000) {
+      return this.cachedSpeedLimitKbps;
+    }
+    this.cachedSpeedLimitAt = now;
     const schedules = this.settings.bandwidthSchedules;
     if (schedules.length > 0) {
       const hour = new Date().getHours();
@@ -2615,13 +2642,16 @@ export class DownloadManager extends EventEmitter {
           ? hour >= entry.startHour || hour < entry.endHour
           : hour >= entry.startHour && hour < entry.endHour;
         if (inRange) {
-          return entry.speedLimitKbps;
+          this.cachedSpeedLimitKbps = entry.speedLimitKbps;
+          return this.cachedSpeedLimitKbps;
         }
       }
     }
     if (this.settings.speedLimitEnabled && this.settings.speedLimitKbps > 0) {
-      return this.settings.speedLimitKbps;
+      this.cachedSpeedLimitKbps = this.settings.speedLimitKbps;
+      return this.cachedSpeedLimitKbps;
     }
+    this.cachedSpeedLimitKbps = 0;
     return 0;
   }
 
