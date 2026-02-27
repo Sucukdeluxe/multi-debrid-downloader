@@ -42,9 +42,18 @@ type ExtractResumeState = {
 };
 
 function findArchiveCandidates(packageDir: string): string[] {
-  const files = fs.readdirSync(packageDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => path.join(packageDir, entry.name));
+  if (!packageDir || !fs.existsSync(packageDir)) {
+    return [];
+  }
+
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(packageDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.join(packageDir, entry.name));
+  } catch {
+    return [];
+  }
 
   const preferred = files.filter((file) => /\.part0*1\.rar$/i.test(file));
   const zip = files.filter((file) => /\.zip$/i.test(file));
@@ -408,56 +417,6 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function captureDirFingerprint(rootDir: string): Map<string, string> {
-  const fingerprint = new Map<string, string>();
-  if (!fs.existsSync(rootDir)) {
-    return fingerprint;
-  }
-
-  const stack = [rootDir];
-  while (stack.length > 0) {
-    const current = stack.pop() as string;
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-        continue;
-      }
-      if (!entry.isFile()) {
-        continue;
-      }
-      try {
-        const stat = fs.statSync(full);
-        const relative = path.relative(rootDir, full).toLowerCase();
-        fingerprint.set(relative, `${stat.size}:${stat.mtimeMs}`);
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  return fingerprint;
-}
-
-function hasDirChanges(before: Map<string, string>, after: Map<string, string>): boolean {
-  if (after.size > before.size) {
-    return true;
-  }
-  for (const [relative, meta] of after.entries()) {
-    if (before.get(relative) !== meta) {
-      return true;
-    }
-  }
-  return false;
-}
-
 export function collectArchiveCleanupTargets(sourceArchivePath: string): string[] {
   const targets = new Set<string>([sourceArchivePath]);
   const dir = path.dirname(sourceArchivePath);
@@ -619,7 +578,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   const conflictMode = effectiveConflictMode(options.conflictMode);
   const passwordCandidates = archivePasswords(options.passwordList || "");
-  const beforeFingerprint = captureDirFingerprint(options.targetDir);
   const resumeCompleted = readExtractResumeState(options.packageDir);
   const resumeCompletedAtStart = resumeCompleted.size;
   const candidateNames = new Set(candidates.map((archivePath) => path.basename(archivePath)));
@@ -751,10 +709,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   if (extracted > 0) {
-    const afterFingerprint = captureDirFingerprint(options.targetDir);
-    const changedOutput = hasDirChanges(beforeFingerprint, afterFingerprint);
+    const hasOutputAfter = hasAnyFilesRecursive(options.targetDir);
     const hadResumeProgress = resumeCompletedAtStart > 0;
-    if (!changedOutput && conflictMode !== "skip" && !hadResumeProgress) {
+    if (!hasOutputAfter && conflictMode !== "skip" && !hadResumeProgress) {
       lastError = "Keine entpackten Dateien erkannt";
       failed += extracted;
       extracted = 0;

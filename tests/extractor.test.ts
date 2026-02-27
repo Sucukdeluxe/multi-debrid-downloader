@@ -331,4 +331,25 @@ describe("extractor", () => {
       signal: controller.signal
     })).rejects.toThrow("aborted:extract");
   });
+
+  it("handles missing package source directory without throwing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg-missing");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, "video.mkv"), "ok", "utf8");
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.failed).toBe(0);
+    expect(result.extracted).toBe(0);
+  });
 });

@@ -201,21 +201,39 @@ export function App(): ReactElement {
     };
   }, []);
 
-  const packages = useMemo(() => snapshot.session.packageOrder
-    .map((id: string) => snapshot.session.packages[id])
-    .filter(Boolean), [snapshot.session.packageOrder, snapshot.session.packages]);
+  const downloadsTabActive = tab === "downloads";
 
-  const packageOrderKey = useMemo(() => snapshot.session.packageOrder.join("|"), [snapshot.session.packageOrder]);
+  const packages = useMemo(() => {
+    if (!downloadsTabActive) {
+      return [] as PackageEntry[];
+    }
+    return snapshot.session.packageOrder
+      .map((id: string) => snapshot.session.packages[id])
+      .filter(Boolean);
+  }, [downloadsTabActive, snapshot.session.packageOrder, snapshot.session.packages]);
+
+  const packageOrderKey = useMemo(() => {
+    if (!downloadsTabActive) {
+      return "";
+    }
+    return snapshot.session.packageOrder.join("|");
+  }, [downloadsTabActive, snapshot.session.packageOrder]);
 
   const packagePosition = useMemo(() => {
+    if (!downloadsTabActive) {
+      return new Map<string, number>();
+    }
     const map = new Map<string, number>();
     snapshot.session.packageOrder.forEach((id, index) => {
       map.set(id, index);
     });
     return map;
-  }, [packageOrderKey]);
+  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder]);
 
   const itemsByPackage = useMemo(() => {
+    if (!downloadsTabActive) {
+      return new Map<string, DownloadItem[]>();
+    }
     const map = new Map<string, DownloadItem[]>();
     for (const packageId of snapshot.session.packageOrder) {
       const pkg = snapshot.session.packages[packageId];
@@ -228,9 +246,12 @@ export function App(): ReactElement {
       map.set(packageId, items);
     }
     return map;
-  }, [packageOrderKey, snapshot.session.items, snapshot.session.packages]);
+  }, [downloadsTabActive, packageOrderKey, snapshot.session.items, snapshot.session.packages, snapshot.session.packageOrder]);
 
   useEffect(() => {
+    if (!downloadsTabActive) {
+      return;
+    }
     setCollapsedPackages((prev) => {
       const next: Record<string, boolean> = {};
       const defaultCollapsed = snapshot.session.packageOrder.length >= 24;
@@ -239,7 +260,7 @@ export function App(): ReactElement {
       }
       return next;
     });
-  }, [packageOrderKey, snapshot.session.packageOrder.length]);
+  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder.length]);
 
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
 

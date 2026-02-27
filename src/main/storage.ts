@@ -205,7 +205,7 @@ export function loadSession(paths: StoragePaths): SessionState {
 
 export function saveSession(paths: StoragePaths, session: SessionState): void {
   ensureBaseDir(paths.baseDir);
-  const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, null, 2);
+  const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
   const tempPath = `${paths.sessionFile}.tmp`;
   fs.writeFileSync(tempPath, payload, "utf8");
   fs.renameSync(tempPath, paths.sessionFile);
