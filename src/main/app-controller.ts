@@ -70,11 +70,17 @@ export class AppController {
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
-    this.settings = normalizeSettings({
+    const nextSettings = normalizeSettings({
       ...defaultSettings(),
       ...this.settings,
       ...partial
     });
+
+    if (JSON.stringify(nextSettings) === JSON.stringify(this.settings)) {
+      return this.settings;
+    }
+
+    this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     return this.settings;
