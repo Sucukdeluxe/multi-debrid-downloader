@@ -170,26 +170,36 @@ export function App(): ReactElement {
   };
 
   const onAddLinks = async (): Promise<void> => {
-    await window.rd.updateSettings(settingsDraft);
-    const result = await window.rd.addLinks({ rawText: linksRaw, packageName: settingsDraft.packageName });
-    if (result.addedLinks > 0) {
-      setStatusToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
-      setLinksRaw("");
-    } else {
-      setStatusToast("Keine gültigen Links gefunden");
+    try {
+      await window.rd.updateSettings(settingsDraft);
+      const result = await window.rd.addLinks({ rawText: linksRaw, packageName: settingsDraft.packageName });
+      if (result.addedLinks > 0) {
+        setStatusToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
+        setLinksRaw("");
+      } else {
+        setStatusToast("Keine gültigen Links gefunden");
+      }
+      setTimeout(() => setStatusToast(""), 2200);
+    } catch (error) {
+      setStatusToast(`Fehler beim Hinzufügen: ${String(error)}`);
+      setTimeout(() => setStatusToast(""), 2600);
     }
-    setTimeout(() => setStatusToast(""), 2200);
   };
 
   const onImportDlc = async (): Promise<void> => {
-    const files = await window.rd.pickContainers();
-    if (files.length === 0) {
-      return;
+    try {
+      const files = await window.rd.pickContainers();
+      if (files.length === 0) {
+        return;
+      }
+      await window.rd.updateSettings(settingsDraft);
+      const result = await window.rd.addContainers(files);
+      setStatusToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+      setTimeout(() => setStatusToast(""), 2200);
+    } catch (error) {
+      setStatusToast(`Fehler beim DLC-Import: ${String(error)}`);
+      setTimeout(() => setStatusToast(""), 2600);
     }
-    await window.rd.updateSettings(settingsDraft);
-    const result = await window.rd.addContainers(files);
-    setStatusToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-    setTimeout(() => setStatusToast(""), 2200);
   };
 
   const onDrop = async (event: DragEvent<HTMLTextAreaElement>): Promise<void> => {
@@ -202,10 +212,15 @@ export function App(): ReactElement {
     if (dlc.length === 0) {
       return;
     }
-    await window.rd.updateSettings(settingsDraft);
-    const result = await window.rd.addContainers(dlc);
-    setStatusToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-    setTimeout(() => setStatusToast(""), 2200);
+    try {
+      await window.rd.updateSettings(settingsDraft);
+      const result = await window.rd.addContainers(dlc);
+      setStatusToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+      setTimeout(() => setStatusToast(""), 2200);
+    } catch (error) {
+      setStatusToast(`Fehler bei Drag-and-Drop: ${String(error)}`);
+      setTimeout(() => setStatusToast(""), 2600);
+    }
   };
 
   const setBool = (key: keyof AppSettings, value: boolean): void => {
@@ -218,6 +233,15 @@ export function App(): ReactElement {
 
   const setNum = (key: keyof AppSettings, value: number): void => {
     setSettingsDraft((prev: AppSettings) => ({ ...prev, [key]: value }));
+  };
+
+  const performQuickAction = async (action: () => Promise<unknown>): Promise<void> => {
+    try {
+      await action();
+    } catch (error) {
+      setStatusToast(`Fehler: ${String(error)}`);
+      setTimeout(() => setStatusToast(""), 2600);
+    }
   };
 
   return (
@@ -239,15 +263,17 @@ export function App(): ReactElement {
             className="btn accent"
             disabled={!snapshot.canStart}
             onClick={async () => {
-              await window.rd.updateSettings(settingsDraft);
-              await window.rd.start();
+              await performQuickAction(async () => {
+                await window.rd.updateSettings(settingsDraft);
+                await window.rd.start();
+              });
             }}
           >Start</button>
-          <button className="btn" disabled={!snapshot.canPause} onClick={() => window.rd.togglePause()}>
+          <button className="btn" disabled={!snapshot.canPause} onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}>
             {snapshot.session.paused ? "Resume" : "Pause"}
           </button>
-          <button className="btn" disabled={!snapshot.canStop} onClick={() => window.rd.stop()}>Stop</button>
-          <button className="btn" onClick={() => window.rd.clearAll()}>Alles leeren</button>
+          <button className="btn" disabled={!snapshot.canStop} onClick={() => { void performQuickAction(() => window.rd.stop()); }}>Stop</button>
+          <button className="btn" onClick={() => { void performQuickAction(() => window.rd.clearAll()); }}>Alles leeren</button>
         </div>
         <div className="speed-config">
           <label>
@@ -310,7 +336,7 @@ export function App(): ReactElement {
                 key={pkg.id}
                 pkg={pkg}
                 items={pkg.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean)}
-                onCancel={() => window.rd.cancelPackage(pkg.id)}
+                onCancel={() => { void performQuickAction(() => window.rd.cancelPackage(pkg.id)); }}
               />
             ))}
           </section>

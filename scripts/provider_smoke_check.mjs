@@ -5,12 +5,14 @@ const RAPIDGATOR_LINKS = [
 ];
 
 const rdToken = process.env.RD_TOKEN || "";
-const megaToken = process.env.MEGA_TOKEN || "";
+const megaLogin = process.env.MEGA_LOGIN || "";
+const megaPassword = process.env.MEGA_PASSWORD || "";
 const bestToken = process.env.BEST_TOKEN || "";
 const allDebridToken = process.env.ALLDEBRID_TOKEN || "";
+let megaCookie = "";
 
-if (!rdToken && !megaToken && !bestToken && !allDebridToken) {
-  console.error("No provider token configured. Set RD_TOKEN and/or MEGA_TOKEN and/or BEST_TOKEN and/or ALLDEBRID_TOKEN.");
+if (!rdToken && !(megaLogin && megaPassword) && !bestToken && !allDebridToken) {
+  console.error("No provider credentials configured. Set RD_TOKEN and/or MEGA_LOGIN+MEGA_PASSWORD and/or BEST_TOKEN and/or ALLDEBRID_TOKEN.");
   process.exit(1);
 }
 
@@ -65,32 +67,78 @@ async function callRealDebrid(link) {
 }
 
 async function callMegaDebrid(link) {
-  const response = await fetch(`https://www.mega-debrid.eu/api.php?action=getLink&token=${encodeURIComponent(megaToken)}`, {
+  if (!megaCookie) {
+    const loginRes = await fetch("https://www.mega-debrid.eu/index.php?form=login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0"
+      },
+      body: new URLSearchParams({ login: megaLogin, password: megaPassword, remember: "on" }),
+      redirect: "manual"
+    });
+    megaCookie = (loginRes.headers.get("set-cookie") || "")
+      .split(",")
+      .map((chunk) => chunk.split(";")[0].trim())
+      .filter(Boolean)
+      .join("; ");
+    if (!megaCookie) {
+      return { ok: false, error: "Mega-Web login failed" };
+    }
+  }
+
+  const debridRes = await fetch("https://www.mega-debrid.eu/index.php?form=debrid", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "RD-Node-Downloader/1.1.12"
+      "User-Agent": "Mozilla/5.0",
+      Cookie: megaCookie,
+      Referer: "https://www.mega-debrid.eu/index.php?page=debrideur&lang=de"
     },
-    body: new URLSearchParams({ link })
+    body: new URLSearchParams({ links: link, password: "", showLinks: "1" })
   });
-  const text = await response.text();
-  const payload = asRecord(safeJson(text));
-  if (!response.ok) {
-    return { ok: false, error: parseResponseError(response.status, text, payload) };
+  const html = await debridRes.text();
+  const code = html.match(/processDebrid\(\d+,'([^']+)',0\)/i)?.[1] || "";
+  if (!code) {
+    return { ok: false, error: "Mega-Web returned no processDebrid code" };
   }
-  const code = pickString(payload, ["response_code"]);
-  if (code && code.toLowerCase() !== "ok") {
-    return { ok: false, error: pickString(payload, ["response_text"]) || code };
+
+  for (let attempt = 1; attempt <= 40; attempt += 1) {
+    const ajaxRes = await fetch("https://www.mega-debrid.eu/index.php?ajax=debrid&json", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0",
+        Cookie: megaCookie,
+        Referer: "https://www.mega-debrid.eu/index.php?page=debrideur&lang=de"
+      },
+      body: new URLSearchParams({ code, autodl: "0" })
+    });
+    const txt = (await ajaxRes.text()).trim();
+    if (txt === "reload") {
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      continue;
+    }
+    if (txt === "false") {
+      return { ok: false, error: "Mega-Web returned false" };
+    }
+    const payload = safeJson(txt);
+    const direct = String(payload?.link || "");
+    if (!direct) {
+      const msg = String(payload?.text || txt || "Mega-Web no link");
+      if (/hoster does not respond correctly|could not be done for this moment/i.test(msg)) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      return { ok: false, error: msg };
+    }
+    return {
+      ok: true,
+      direct,
+      fileName: pickString(asRecord(payload), ["filename"]) || ""
+    };
   }
-  const direct = pickString(payload, ["debridLink", "download", "link"]);
-  if (!direct) {
-    return { ok: false, error: "Mega-Debrid returned no debridLink" };
-  }
-  return {
-    ok: true,
-    direct,
-    fileName: pickString(payload, ["filename", "fileName"])
-  };
+  return { ok: false, error: "Mega-Web timeout while generating link" };
 }
 
 async function callBestDebrid(link) {
@@ -196,7 +244,7 @@ async function main() {
   if (rdToken) {
     providers.push({ name: "Real-Debrid", run: callRealDebrid });
   }
-  if (megaToken) {
+  if (megaLogin && megaPassword) {
     providers.push({ name: "Mega-Debrid", run: callMegaDebrid });
   }
   if (bestToken) {

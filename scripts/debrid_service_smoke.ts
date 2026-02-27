@@ -1,5 +1,6 @@
 import { DebridService } from "../src/main/debrid";
 import { defaultSettings } from "../src/main/constants";
+import { MegaWebFallback } from "../src/main/mega-web-fallback";
 
 const links = [
   "https://rapidgator.net/file/837ef967aede4935e3e0374c4e663b40/GTHDERTPIIP7P401.part1.rar.html",
@@ -26,7 +27,13 @@ if (!settings.token && !(settings.megaLogin && settings.megaPassword) && !settin
 }
 
 async function main(): Promise<void> {
-  const service = new DebridService(settings);
+  const megaWeb = new MegaWebFallback(() => ({
+    login: settings.megaLogin,
+    password: settings.megaPassword
+  }));
+  const service = new DebridService(settings, {
+    megaWebUnrestrict: (link) => megaWeb.unrestrict(link)
+  });
   for (const link of links) {
     try {
       const result = await service.unrestrictLink(link);
@@ -35,6 +42,7 @@ async function main(): Promise<void> {
       console.log(`[FAIL] ${String(error)}`);
     }
   }
+  megaWeb.dispose();
 }
 
 void main();
