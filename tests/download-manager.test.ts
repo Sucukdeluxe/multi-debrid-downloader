@@ -204,6 +204,220 @@ describe("download manager", () => {
     }
   });
 
+  it("continues downloading while package post-processing is pending", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(80 * 1024, 7);
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (route !== "/first" && route !== "/second") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const firstUrl = `http://127.0.0.1:${address.port}/first`;
+    const secondUrl = `http://127.0.0.1:${address.port}/second`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        const body = init?.body;
+        const bodyText = body instanceof URLSearchParams ? body.toString() : String(body || "");
+        const originalLink = new URLSearchParams(bodyText).get("link") || "";
+        const directUrl = originalLink.includes("second") ? secondUrl : firstUrl;
+        const filename = originalLink.includes("second") ? "second.bin" : "first.bin";
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename,
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    let releaseBlockedPostProcess: ((value?: void | PromiseLike<void>) => void) | undefined;
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      const blocker = new Promise<void>((resolve) => {
+        releaseBlockedPostProcess = resolve;
+      });
+      (manager as unknown as { packagePostProcessQueue: Promise<void> }).packagePostProcessQueue = blocker;
+
+      manager.addPackages([
+        { name: "first", links: ["https://dummy/first"] },
+        { name: "second", links: ["https://dummy/second"] }
+      ]);
+
+      const initial = manager.getSnapshot();
+      const firstPackage = initial.session.packageOrder[0];
+      const secondPackage = initial.session.packageOrder[1];
+      const firstItem = initial.session.packages[firstPackage]?.itemIds[0] || "";
+      const secondItem = initial.session.packages[secondPackage]?.itemIds[0] || "";
+
+      manager.start();
+
+      await waitFor(() => manager.getSnapshot().session.items[firstItem]?.status === "completed", 12000);
+      await waitFor(() => {
+        const state = manager.getSnapshot().session.items[secondItem]?.status;
+        return state === "validating" || state === "downloading" || state === "integrity_check" || state === "completed";
+      }, 6000);
+
+      if (releaseBlockedPostProcess) {
+        releaseBlockedPostProcess();
+      }
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const done = manager.getSnapshot();
+      expect(done.session.items[firstItem]?.status).toBe("completed");
+      expect(done.session.items[secondItem]?.status).toBe("completed");
+    } finally {
+      if (releaseBlockedPostProcess) {
+        releaseBlockedPostProcess();
+      }
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("recovers from stalled download streams without manual pause/resume", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(300 * 1024, 17);
+    const previousStallTimeout = process.env.RD_STALL_TIMEOUT_MS;
+    process.env.RD_STALL_TIMEOUT_MS = "2500";
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/stall") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      directCalls += 1;
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+
+      if (directCalls === 1 && start === 0) {
+        const firstChunk = Math.floor(binary.length / 3);
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length));
+        res.write(binary.subarray(0, firstChunk));
+        setTimeout(() => {
+          if (!res.writableEnded && !res.destroyed) {
+            res.end(binary.subarray(firstChunk));
+          }
+        }, 5000);
+        return;
+      }
+
+      const chunk = binary.subarray(start);
+      if (start > 0) {
+        res.statusCode = 206;
+        res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+      } else {
+        res.statusCode = 200;
+      }
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      res.end(chunk);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/stall`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "stall.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "stall", links: ["https://dummy/stall"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThan(1);
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+      expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+    } finally {
+      if (previousStallTimeout === undefined) {
+        delete process.env.RD_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_STALL_TIMEOUT_MS = previousStallTimeout;
+      }
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
+
   it("uses content-disposition filename when provider filename is opaque", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

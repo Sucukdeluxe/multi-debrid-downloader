@@ -17,11 +17,21 @@ type ActiveTask = {
   itemId: string;
   packageId: string;
   abortController: AbortController;
-  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "none";
+  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "none";
   resumable: boolean;
   speedEvents: Array<{ at: number; bytes: number }>;
   nonResumableCounted: boolean;
 };
+
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 120000;
+
+function getDownloadStallTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 2000 && fromEnv <= 600000) {
+    return Math.floor(fromEnv);
+  }
+  return DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS;
+}
 
 type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
@@ -953,7 +963,7 @@ export class DownloadManager extends EventEmitter {
           this.startItem(next.packageId, next.itemId);
         }
 
-        if (this.activeTasks.size === 0 && !this.hasQueuedItems()) {
+        if (this.activeTasks.size === 0 && !this.hasQueuedItems() && this.packagePostProcessTasks.size === 0) {
           this.finishRun();
           break;
         }
@@ -1086,6 +1096,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     let freshRetryUsed = false;
+    let stallRetries = 0;
     while (true) {
       try {
         const unrestricted = await this.debridService.unrestrictLink(item.url);
@@ -1160,8 +1171,11 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
         this.recordRunOutcome(item.id, "completed");
 
-        await this.runPackagePostProcessing(pkg.id);
-        this.applyCompletedCleanupPolicy(pkg.id, item.id);
+        void this.runPackagePostProcessing(pkg.id).finally(() => {
+          this.applyCompletedCleanupPolicy(pkg.id, item.id);
+          this.persistSoon();
+          this.emitState();
+        });
         this.persistSoon();
         this.emitState();
         return;
@@ -1192,6 +1206,26 @@ export class DownloadManager extends EventEmitter {
           item.status = "queued";
           item.speedBps = 0;
           item.fullStatus = "Paket gestoppt";
+        } else if (reason === "stall") {
+          stallRetries += 1;
+          if (stallRetries <= 2) {
+            item.status = "queued";
+            item.speedBps = 0;
+            item.fullStatus = `Keine Daten empfangen, Retry ${stallRetries}/2`;
+            item.lastError = "";
+            item.attempts = 0;
+            item.updatedAt = nowMs();
+            active.abortController = new AbortController();
+            active.abortReason = "none";
+            this.persistSoon();
+            this.emitState();
+            await sleep(350 * stallRetries);
+            continue;
+          }
+          item.status = "failed";
+          item.lastError = "Download hing wiederholt";
+          item.fullStatus = `Fehler: ${item.lastError}`;
+          this.recordRunOutcome(item.id, "failed");
         } else {
           const errorText = compactErrorText(error);
           const shouldFreshRetry = !freshRetryUsed && isFetchFailure(errorText);
@@ -1366,8 +1400,43 @@ export class DownloadManager extends EventEmitter {
             throw new Error("Leerer Response-Body");
           }
           const reader = body.getReader();
+          const stallTimeoutMs = getDownloadStallTimeoutMs();
+          const readWithTimeout = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+            if (stallTimeoutMs <= 0) {
+              return reader.read();
+            }
+            return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+              let settled = false;
+              const timer = setTimeout(() => {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                active.abortReason = "stall";
+                active.abortController.abort("stall");
+                reject(new Error("stall_timeout"));
+              }, stallTimeoutMs);
+
+              reader.read().then((result) => {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                clearTimeout(timer);
+                resolve(result);
+              }).catch((error) => {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                clearTimeout(timer);
+                reject(error);
+              });
+            });
+          };
+
           while (true) {
-            const { done, value } = await reader.read();
+            const { done, value } = await readWithTimeout();
             if (done) {
               break;
             }
