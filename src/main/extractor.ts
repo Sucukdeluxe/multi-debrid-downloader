@@ -2,17 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import AdmZip from "adm-zip";
-import { path7za } from "7zip-bin";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 
 const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
-const FALLBACK_COMMANDS = ["7z", "C:\\Program Files\\7-Zip\\7z.exe", "C:\\Program Files (x86)\\7-Zip\\7z.exe", "unrar"];
+const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installieren.";
 
-let preferredExtractorCommand: string | null = null;
-let extractorUnavailable = false;
-let extractorUnavailableReason = "";
+let resolvedExtractorCommand: string | null = null;
+let resolveFailureReason = "";
 
 export interface ExtractOptions {
   packageDir: string;
@@ -51,12 +49,6 @@ function cleanErrorText(text: string): string {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
-function normalizeBundledExtractorPath(filePath: string): string {
-  return filePath.includes("app.asar")
-    ? filePath.replace("app.asar", "app.asar.unpacked")
-    : filePath;
-}
-
 function archivePasswords(): string[] {
   const custom = String(process.env.RD_ARCHIVE_PASSWORDS || "")
     .split(/[;,\n]/g)
@@ -65,11 +57,26 @@ function archivePasswords(): string[] {
   return Array.from(new Set([...DEFAULT_ARCHIVE_PASSWORDS, ...custom]));
 }
 
-function extractorCandidates(): string[] {
-  const bundled = normalizeBundledExtractorPath(path7za);
-  const ordered = preferredExtractorCommand
-    ? [preferredExtractorCommand, bundled, ...FALLBACK_COMMANDS]
-    : [bundled, ...FALLBACK_COMMANDS];
+function winRarCandidates(): string[] {
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const localAppData = process.env.LOCALAPPDATA || "";
+
+  const installed = [
+    path.join(programFiles, "WinRAR", "UnRAR.exe"),
+    path.join(programFiles, "WinRAR", "WinRAR.exe"),
+    path.join(programFilesX86, "WinRAR", "UnRAR.exe"),
+    path.join(programFilesX86, "WinRAR", "WinRAR.exe")
+  ];
+
+  if (localAppData) {
+    installed.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
+    installed.push(path.join(localAppData, "Programs", "WinRAR", "WinRAR.exe"));
+  }
+
+  const ordered = resolvedExtractorCommand
+    ? [resolvedExtractorCommand, ...installed, "UnRAR.exe", "WinRAR.exe", "unrar", "winrar"]
+    : [...installed, "UnRAR.exe", "WinRAR.exe", "unrar", "winrar"];
   return Array.from(new Set(ordered.filter(Boolean)));
 }
 
@@ -77,6 +84,10 @@ function isAbsoluteCommand(command: string): boolean {
   return path.isAbsolute(command)
     || command.includes("\\")
     || command.includes("/");
+}
+
+function isNoExtractorError(errorText: string): boolean {
+  return String(errorText || "").toLowerCase().includes("nicht gefunden");
 }
 
 type ExtractSpawnResult = {
@@ -139,10 +150,10 @@ export function buildExternalExtractArgs(
 ): string[] {
   const mode = effectiveConflictMode(conflictMode);
   const lower = command.toLowerCase();
-  if (lower.includes("unrar")) {
+  if (lower.includes("unrar") || lower.includes("winrar")) {
     const overwrite = mode === "overwrite" ? "-o+" : mode === "rename" ? "-or" : "-o-";
     const pass = password ? `-p${password}` : "-p-";
-    return ["x", overwrite, pass, archivePath, `${targetDir}${path.sep}`];
+    return ["x", overwrite, pass, "-y", archivePath, `${targetDir}${path.sep}`];
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
@@ -150,50 +161,54 @@ export function buildExternalExtractArgs(
   return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
 }
 
-async function runExternalExtract(archivePath: string, targetDir: string, conflictMode: ConflictMode): Promise<void> {
-  if (extractorUnavailable) {
-    throw new Error(extractorUnavailableReason || "Kein Entpacker gefunden (7-Zip/unrar fehlt)");
+async function resolveExtractorCommand(): Promise<string> {
+  if (resolvedExtractorCommand) {
+    return resolvedExtractorCommand;
+  }
+  if (resolveFailureReason) {
+    throw new Error(resolveFailureReason);
   }
 
-  const candidates = extractorCandidates();
+  const candidates = winRarCandidates();
+  for (const command of candidates) {
+    if (isAbsoluteCommand(command) && !fs.existsSync(command)) {
+      continue;
+    }
+    const probeArgs = command.toLowerCase().includes("winrar") ? ["-?"] : ["?"];
+    const probe = await runExtractCommand(command, probeArgs);
+    if (!probe.missingCommand) {
+      resolvedExtractorCommand = command;
+      resolveFailureReason = "";
+      logger.info(`Entpacker erkannt: ${command}`);
+      return command;
+    }
+  }
+
+  resolveFailureReason = NO_EXTRACTOR_MESSAGE;
+  throw new Error(resolveFailureReason);
+}
+
+async function runExternalExtract(archivePath: string, targetDir: string, conflictMode: ConflictMode): Promise<void> {
+  const command = await resolveExtractorCommand();
   const passwords = archivePasswords();
   let lastError = "";
-  let sawExecutableCommand = false;
-  let missingCommands = 0;
 
   fs.mkdirSync(targetDir, { recursive: true });
 
-  for (const command of candidates) {
-    if (isAbsoluteCommand(command) && !fs.existsSync(command)) {
-      missingCommands += 1;
-      continue;
+  for (const password of passwords) {
+    const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password);
+    const result = await runExtractCommand(command, args);
+    if (result.ok) {
+      return;
     }
 
-    for (const password of passwords) {
-      const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password);
-      const result = await runExtractCommand(command, args);
-      if (result.ok) {
-        preferredExtractorCommand = command;
-        extractorUnavailable = false;
-        extractorUnavailableReason = "";
-        return;
-      }
-
-      if (result.missingCommand) {
-        missingCommands += 1;
-        lastError = result.errorText;
-        break;
-      }
-
-      sawExecutableCommand = true;
-      lastError = result.errorText;
+    if (result.missingCommand) {
+      resolvedExtractorCommand = null;
+      resolveFailureReason = NO_EXTRACTOR_MESSAGE;
+      throw new Error(NO_EXTRACTOR_MESSAGE);
     }
-  }
 
-  if (!sawExecutableCommand && missingCommands >= candidates.length) {
-    extractorUnavailable = true;
-    extractorUnavailableReason = "Kein Entpacker gefunden (7-Zip/unrar fehlt oder konnte nicht gestartet werden)";
-    throw new Error(extractorUnavailableReason);
+    lastError = result.errorText;
   }
 
   throw new Error(lastError || "Entpacken fehlgeschlagen");
@@ -272,6 +287,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       const errorText = String(error);
       lastError = errorText;
       logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${errorText}`);
+      if (isNoExtractorError(errorText)) {
+        const remaining = candidates.length - (extracted + failed);
+        if (remaining > 0) {
+          failed += remaining;
+        }
+        break;
+      }
     }
   }
 
