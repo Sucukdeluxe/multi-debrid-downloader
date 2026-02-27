@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
@@ -11,6 +12,7 @@ const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installi
 
 let resolvedExtractorCommand: string | null = null;
 let resolveFailureReason = "";
+let externalExtractorSupportsPerfFlags = true;
 
 export interface ExtractOptions {
   packageDir: string;
@@ -37,8 +39,42 @@ export interface ExtractProgressUpdate {
 const MAX_EXTRACT_OUTPUT_BUFFER = 48 * 1024;
 const EXTRACT_PROGRESS_FILE = ".rd_extract_progress.json";
 const EXTRACT_BASE_TIMEOUT_MS = 6 * 60 * 1000;
-const EXTRACT_PER_GIB_TIMEOUT_MS = 7 * 60 * 1000;
-const EXTRACT_MAX_TIMEOUT_MS = 40 * 60 * 1000;
+const EXTRACT_PER_GIB_TIMEOUT_MS = 4 * 60 * 1000;
+const EXTRACT_MAX_TIMEOUT_MS = 120 * 60 * 1000;
+const ARCHIVE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function pathSetKey(filePath: string): string {
+  return process.platform === "win32" ? filePath.toLowerCase() : filePath;
+}
+
+function archiveSortKey(filePath: string): string {
+  const fileName = path.basename(filePath).toLowerCase();
+  return fileName
+    .replace(/\.part0*1\.rar$/i, "")
+    .replace(/\.zip\.\d{3}$/i, "")
+    .replace(/\.7z\.\d{3}$/i, "")
+    .replace(/\.rar$/i, "")
+    .replace(/\.zip$/i, "")
+    .replace(/\.7z$/i, "")
+    .replace(/[._\-\s]+$/g, "");
+}
+
+function archiveTypeRank(filePath: string): number {
+  const fileName = path.basename(filePath).toLowerCase();
+  if (/\.part0*1\.rar$/i.test(fileName)) {
+    return 0;
+  }
+  if (/\.rar$/i.test(fileName)) {
+    return 1;
+  }
+  if (/\.zip(?:\.\d{3})?$/i.test(fileName)) {
+    return 2;
+  }
+  if (/\.7z(?:\.\d{3})?$/i.test(fileName)) {
+    return 3;
+  }
+  return 9;
+}
 
 type ExtractResumeState = {
   completedArchives: string[];
@@ -58,13 +94,50 @@ function findArchiveCandidates(packageDir: string): string[] {
     return [];
   }
 
-  const preferred = files.filter((file) => /\.part0*1\.rar$/i.test(file));
-  const zip = files.filter((file) => /\.zip$/i.test(file));
-  const singleRar = files.filter((file) => /\.rar$/i.test(file) && !/\.part\d+\.rar$/i.test(file));
-  const seven = files.filter((file) => /\.7z$/i.test(file));
+  const fileNamesLower = new Set(files.map((filePath) => path.basename(filePath).toLowerCase()));
+  const multipartRar = files.filter((filePath) => /\.part0*1\.rar$/i.test(filePath));
+  const singleRar = files.filter((filePath) => /\.rar$/i.test(filePath) && !/\.part\d+\.rar$/i.test(filePath));
+  const zipSplit = files.filter((filePath) => /\.zip\.001$/i.test(filePath));
+  const zip = files.filter((filePath) => {
+    const fileName = path.basename(filePath);
+    if (!/\.zip$/i.test(fileName)) {
+      return false;
+    }
+    return !fileNamesLower.has(`${fileName}.001`.toLowerCase());
+  });
+  const sevenSplit = files.filter((filePath) => /\.7z\.001$/i.test(filePath));
+  const seven = files.filter((filePath) => {
+    const fileName = path.basename(filePath);
+    if (!/\.7z$/i.test(fileName)) {
+      return false;
+    }
+    return !fileNamesLower.has(`${fileName}.001`.toLowerCase());
+  });
 
-  const ordered = [...preferred, ...zip, ...singleRar, ...seven];
-  return Array.from(new Set(ordered));
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [...multipartRar, ...singleRar, ...zipSplit, ...zip, ...sevenSplit, ...seven]) {
+    const key = pathSetKey(candidate);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(candidate);
+  }
+
+  unique.sort((left, right) => {
+    const keyCmp = ARCHIVE_SORT_COLLATOR.compare(archiveSortKey(left), archiveSortKey(right));
+    if (keyCmp !== 0) {
+      return keyCmp;
+    }
+    const rankCmp = archiveTypeRank(left) - archiveTypeRank(right);
+    if (rankCmp !== 0) {
+      return rankCmp;
+    }
+    return ARCHIVE_SORT_COLLATOR.compare(path.basename(left), path.basename(right));
+  });
+
+  return unique;
 }
 
 function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip" | "rename" {
@@ -91,15 +164,20 @@ function appendLimited(base: string, chunk: string, maxLen = MAX_EXTRACT_OUTPUT_
 
 function parseProgressPercent(chunk: string): number | null {
   const text = String(chunk || "");
-  const regex = /(?:^|\D)(\d{1,3})%/g;
-  let match: RegExpExecArray | null = regex.exec(text);
+  const matches = text.match(/(?:^|\D)(\d{1,3})%/g);
+  if (!matches) {
+    return null;
+  }
   let latest: number | null = null;
-  while (match) {
-    const value = Number(match[1]);
+  for (const raw of matches) {
+    const digits = raw.match(/(\d{1,3})%/);
+    if (!digits) {
+      continue;
+    }
+    const value = Number(digits[1]);
     if (Number.isFinite(value) && value >= 0 && value <= 100) {
       latest = value;
     }
-    match = regex.exec(text);
   }
   return latest;
 }
@@ -115,8 +193,19 @@ function shouldPreferExternalZip(archivePath: string): boolean {
 
 function computeExtractTimeoutMs(archivePath: string): number {
   try {
-    const stat = fs.statSync(archivePath);
-    const gib = stat.size / (1024 * 1024 * 1024);
+    const relatedFiles = collectArchiveCleanupTargets(archivePath);
+    let totalBytes = 0;
+    for (const filePath of relatedFiles) {
+      try {
+        totalBytes += fs.statSync(filePath).size;
+      } catch {
+        // ignore missing parts
+      }
+    }
+    if (totalBytes <= 0) {
+      totalBytes = fs.statSync(archivePath).size;
+    }
+    const gib = totalBytes / (1024 * 1024 * 1024);
     const dynamicMs = EXTRACT_BASE_TIMEOUT_MS + Math.floor(gib * EXTRACT_PER_GIB_TIMEOUT_MS);
     return Math.max(EXTRACT_BASE_TIMEOUT_MS, Math.min(EXTRACT_MAX_TIMEOUT_MS, dynamicMs));
   } catch {
@@ -223,6 +312,31 @@ function isAbsoluteCommand(command: string): boolean {
 
 function isNoExtractorError(errorText: string): boolean {
   return String(errorText || "").toLowerCase().includes("nicht gefunden");
+}
+
+function isUnsupportedExtractorSwitchError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("unknown switch")
+    || text.includes("unknown option")
+    || text.includes("invalid switch")
+    || text.includes("unsupported option")
+    || text.includes("unbekannter schalter")
+    || text.includes("falscher parameter");
+}
+
+function shouldUseExtractorPerformanceFlags(): boolean {
+  const raw = String(process.env.RD_EXTRACT_PERF_FLAGS || "").trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+}
+
+function extractorThreadSwitch(): string {
+  const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
+  if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
+    return `-mt${Math.floor(envValue)}`;
+  }
+  const cpuCount = Math.max(1, os.cpus().length || 1);
+  const threadCount = Math.max(1, Math.min(16, cpuCount));
+  return `-mt${threadCount}`;
 }
 
 type ExtractSpawnResult = {
@@ -340,14 +454,18 @@ export function buildExternalExtractArgs(
   archivePath: string,
   targetDir: string,
   conflictMode: ConflictMode,
-  password = ""
+  password = "",
+  usePerformanceFlags = true
 ): string[] {
   const mode = effectiveConflictMode(conflictMode);
   const lower = command.toLowerCase();
   if (lower.includes("unrar") || lower.includes("winrar")) {
     const overwrite = mode === "overwrite" ? "-o+" : mode === "rename" ? "-or" : "-o-";
     const pass = password ? `-p${password}` : "-p-";
-    return ["x", overwrite, pass, "-y", archivePath, `${targetDir}${path.sep}`];
+    const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
+      ? ["-idc", extractorThreadSwitch()]
+      : [];
+    return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
@@ -399,6 +517,7 @@ async function runExternalExtract(
 
   let announcedStart = false;
   let bestPercent = 0;
+  let usePerformanceFlags = externalExtractorSupportsPerfFlags && shouldUseExtractorPerformanceFlags();
 
   for (const password of passwords) {
     if (signal?.aborted) {
@@ -408,8 +527,8 @@ async function runExternalExtract(
       announcedStart = true;
       onArchiveProgress?.(0);
     }
-    const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password);
-    const result = await runExtractCommand(command, args, (chunk) => {
+    let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags);
+    let result = await runExtractCommand(command, args, (chunk) => {
       const parsed = parseProgressPercent(chunk);
       if (parsed === null || parsed <= bestPercent) {
         return;
@@ -417,6 +536,22 @@ async function runExternalExtract(
       bestPercent = parsed;
       onArchiveProgress?.(bestPercent);
     }, signal, timeoutMs);
+
+    if (!result.ok && usePerformanceFlags && isUnsupportedExtractorSwitchError(result.errorText)) {
+      usePerformanceFlags = false;
+      externalExtractorSupportsPerfFlags = false;
+      logger.warn(`Entpacker ohne Performance-Flags fortgesetzt: ${path.basename(archivePath)}`);
+      args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, false);
+      result = await runExtractCommand(command, args, (chunk) => {
+        const parsed = parseProgressPercent(chunk);
+        if (parsed === null || parsed <= bestPercent) {
+          return;
+        }
+        bestPercent = parsed;
+        onArchiveProgress?.(bestPercent);
+      }, signal, timeoutMs);
+    }
+
     if (result.ok) {
       onArchiveProgress?.(100);
       return password;
@@ -523,8 +658,24 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     return Array.from(targets);
   }
 
+  const splitZip = fileName.match(/^(.*)\.zip\.\d{3}$/i);
+  if (splitZip) {
+    const stem = escapeRegex(splitZip[1]);
+    addMatching(new RegExp(`^${stem}\\.zip$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.zip\\.\\d{3}$`, "i"));
+    return Array.from(targets);
+  }
+
   if (/\.7z$/i.test(fileName)) {
     const stem = escapeRegex(fileName.replace(/\.7z$/i, ""));
+    addMatching(new RegExp(`^${stem}\\.7z$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.7z\\.\\d{3}$`, "i"));
+    return Array.from(targets);
+  }
+
+  const splitSeven = fileName.match(/^(.*)\.7z\.\d{3}$/i);
+  if (splitSeven) {
+    const stem = escapeRegex(splitSeven[1]);
     addMatching(new RegExp(`^${stem}\\.7z$`, "i"));
     addMatching(new RegExp(`^${stem}\\.7z\\.\\d{3}$`, "i"));
     return Array.from(targets);
