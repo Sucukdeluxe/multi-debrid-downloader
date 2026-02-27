@@ -160,6 +160,29 @@ export function App(): ReactElement {
 
   const packageOrderKey = useMemo(() => snapshot.session.packageOrder.join("|"), [snapshot.session.packageOrder]);
 
+  const packagePosition = useMemo(() => {
+    const map = new Map<string, number>();
+    snapshot.session.packageOrder.forEach((id, index) => {
+      map.set(id, index);
+    });
+    return map;
+  }, [packageOrderKey]);
+
+  const itemsByPackage = useMemo(() => {
+    const map = new Map<string, DownloadItem[]>();
+    for (const packageId of snapshot.session.packageOrder) {
+      const pkg = snapshot.session.packages[packageId];
+      if (!pkg) {
+        continue;
+      }
+      const items = pkg.itemIds
+        .map((id) => snapshot.session.items[id])
+        .filter(Boolean) as DownloadItem[];
+      map.set(packageId, items);
+    }
+    return map;
+  }, [packageOrderKey, snapshot.session.items, snapshot.session.packages]);
+
   useEffect(() => {
     setCollapsedPackages((prev) => {
       const next: Record<string, boolean> = {};
@@ -265,41 +288,51 @@ export function App(): ReactElement {
   };
 
   const onSaveSettings = async (): Promise<void> => {
-    try {
+    await performQuickAction(async () => {
       const result = await window.rd.updateSettings(normalizedSettingsDraft);
       setSettingsDraft(result);
       setSettingsDirty(false);
       applyTheme(result.theme);
       showToast("Einstellungen gespeichert", 1800);
-    } catch (error) { showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800); }
+    }, (error) => {
+      showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
+    });
   };
 
   const onCheckUpdates = async (): Promise<void> => {
-    try {
+    await performQuickAction(async () => {
       const result = await window.rd.checkUpdates();
       await handleUpdateResult(result, "manual");
-    } catch (error) { showToast(`Update-Check fehlgeschlagen: ${String(error)}`, 2800); }
+    }, (error) => {
+      showToast(`Update-Check fehlgeschlagen: ${String(error)}`, 2800);
+    });
   };
 
   const onAddLinks = async (): Promise<void> => {
-    try {
+    await performQuickAction(async () => {
       await window.rd.updateSettings(normalizedSettingsDraft);
       const result = await window.rd.addLinks({ rawText: currentCollectorTab.text, packageName: settingsDraft.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
         setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id ? { ...t, text: "" } : t));
-      } else { showToast("Keine gültigen Links gefunden"); }
-    } catch (error) { showToast(`Fehler beim Hinzufügen: ${String(error)}`, 2600); }
+      } else {
+        showToast("Keine gültigen Links gefunden");
+      }
+    }, (error) => {
+      showToast(`Fehler beim Hinzufügen: ${String(error)}`, 2600);
+    });
   };
 
   const onImportDlc = async (): Promise<void> => {
-    try {
+    await performQuickAction(async () => {
       const files = await window.rd.pickContainers();
       if (files.length === 0) { return; }
       await window.rd.updateSettings(normalizedSettingsDraft);
       const result = await window.rd.addContainers(files);
       showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-    } catch (error) { showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600); }
+    }, (error) => {
+      showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
+    });
   };
 
   const onDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
@@ -311,11 +344,13 @@ export function App(): ReactElement {
     const dlc = files.filter((f) => f.name.toLowerCase().endsWith(".dlc")).map((f) => (f as unknown as { path?: string }).path).filter((v): v is string => !!v);
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
     if (dlc.length > 0) {
-      try {
+      await performQuickAction(async () => {
         await window.rd.updateSettings(normalizedSettingsDraft);
         const result = await window.rd.addContainers(dlc);
         showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-      } catch (error) { showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600); }
+      }, (error) => {
+        showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
+      });
     } else if (droppedText.trim()) {
       setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id
         ? { ...t, text: t.text ? `${t.text}\n${droppedText}` : droppedText } : t));
@@ -325,7 +360,7 @@ export function App(): ReactElement {
   };
 
   const onExportQueue = async (): Promise<void> => {
-    try {
+    await performQuickAction(async () => {
       const json = await window.rd.exportQueue();
       const blob = new Blob([json], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -335,27 +370,33 @@ export function App(): ReactElement {
       a.click();
       URL.revokeObjectURL(url);
       showToast("Queue exportiert");
-    } catch (error) { showToast(`Export fehlgeschlagen: ${String(error)}`, 2600); }
+    }, (error) => {
+      showToast(`Export fehlgeschlagen: ${String(error)}`, 2600);
+    });
   };
 
   const onImportQueue = async (): Promise<void> => {
-    try {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = ".json";
-      input.onchange = async () => {
-        const file = input.files?.[0];
-        if (!file) { return; }
-        try {
-          const text = await file.text();
-          const result = await window.rd.importQueue(text);
-          showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-        } catch (error) {
-          showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
-        }
-      };
-      input.click();
-    } catch (error) { showToast(`Import fehlgeschlagen: ${String(error)}`, 2600); }
+    if (actionBusyRef.current) {
+      return;
+    }
+
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) {
+        return;
+      }
+      await performQuickAction(async () => {
+        const text = await file.text();
+        const result = await window.rd.importQueue(text);
+        showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+      }, (error) => {
+        showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
+      });
+    };
+    input.click();
   };
 
   const setBool = (key: keyof AppSettings, value: boolean): void => {
@@ -376,7 +417,10 @@ export function App(): ReactElement {
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
   };
 
-  const performQuickAction = async (action: () => Promise<unknown>): Promise<void> => {
+  const performQuickAction = async (
+    action: () => Promise<unknown>,
+    onError?: (error: unknown) => void
+  ): Promise<void> => {
     if (actionBusyRef.current) {
       return;
     }
@@ -385,7 +429,11 @@ export function App(): ReactElement {
     try {
       await action();
     } catch (error) {
-      showToast(`Fehler: ${String(error)}`, 2600);
+      if (onError) {
+        onError(error);
+      } else {
+        showToast(`Fehler: ${String(error)}`, 2600);
+      }
     } finally {
       setTimeout(() => {
         actionBusyRef.current = false;
@@ -579,10 +627,10 @@ export function App(): ReactElement {
               <div className="collector-header">
                 <h3>Linksammler</h3>
                 <div className="link-actions">
-                  <button className="btn" onClick={onImportDlc}>DLC import</button>
-                  <button className="btn" onClick={onExportQueue}>Queue Export</button>
-                  <button className="btn" onClick={onImportQueue}>Queue Import</button>
-                  <button className="btn accent" onClick={onAddLinks}>Zur Queue hinzufügen</button>
+                  <button className="btn" disabled={actionBusy} onClick={onImportDlc}>DLC import</button>
+                  <button className="btn" disabled={actionBusy} onClick={onExportQueue}>Queue Export</button>
+                  <button className="btn" disabled={actionBusy} onClick={onImportQueue}>Queue Import</button>
+                  <button className="btn accent" disabled={actionBusy} onClick={onAddLinks}>Zur Queue hinzufügen</button>
                 </div>
               </div>
               <div className="collector-tabs">
@@ -648,10 +696,10 @@ export function App(): ReactElement {
               <PackageCard
                 key={pkg.id}
                 pkg={pkg}
-                items={pkg.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean)}
+                items={itemsByPackage.get(pkg.id) ?? []}
                 packageSpeed={packageSpeedMap.get(pkg.id) ?? 0}
-                isFirst={snapshot.session.packageOrder.indexOf(pkg.id) === 0}
-                isLast={snapshot.session.packageOrder.indexOf(pkg.id) === snapshot.session.packageOrder.length - 1}
+                isFirst={(packagePosition.get(pkg.id) ?? -1) === 0}
+                isLast={(packagePosition.get(pkg.id) ?? -1) === snapshot.session.packageOrder.length - 1}
                 isEditing={editingPackageId === pkg.id}
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}
@@ -682,7 +730,7 @@ export function App(): ReactElement {
                 <span>Kompakt, schnell auffindbar und direkt speicherbar.</span>
               </div>
               <div className="settings-toolbar-actions">
-                <button className="btn" onClick={onCheckUpdates}>Updates prüfen</button>
+                <button className="btn" disabled={actionBusy} onClick={onCheckUpdates}>Updates prüfen</button>
                 <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
                   const next = settingsDraft.theme === "dark" ? "light" : "dark";
                   setSettingsDirty(true);
@@ -691,7 +739,7 @@ export function App(): ReactElement {
                 }}>
                   {settingsDraft.theme === "dark" ? "Light Mode" : "Dark Mode"}
                 </button>
-                <button className="btn accent" onClick={onSaveSettings}>Einstellungen speichern</button>
+                <button className="btn accent" disabled={actionBusy} onClick={onSaveSettings}>Einstellungen speichern</button>
               </div>
             </article>
 
