@@ -755,6 +755,19 @@ export class DownloadManager extends EventEmitter {
       let windowBytes = 0;
       let windowStarted = nowMs();
 
+      const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
+        const onDrain = (): void => {
+          stream.off("error", onError);
+          resolve();
+        };
+        const onError = (error: Error): void => {
+          stream.off("drain", onDrain);
+          reject(error);
+        };
+        stream.once("drain", onDrain);
+        stream.once("error", onError);
+      });
+
       try {
         const body = response.body;
         if (!body) {
@@ -784,7 +797,9 @@ export class DownloadManager extends EventEmitter {
 
           const buffer = Buffer.from(chunk);
           await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
-          stream.write(buffer);
+          if (!stream.write(buffer)) {
+            await waitDrain();
+          }
           written += buffer.length;
           windowBytes += buffer.length;
           this.session.totalDownloadedBytes += buffer.length;
@@ -806,8 +821,18 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
         }
       } finally {
-        await new Promise<void>((resolve) => {
-          stream.end(() => resolve());
+        await new Promise<void>((resolve, reject) => {
+          const onFinish = (): void => {
+            stream.off("error", onError);
+            resolve();
+          };
+          const onError = (error: Error): void => {
+            stream.off("finish", onFinish);
+            reject(error);
+          };
+          stream.once("finish", onFinish);
+          stream.once("error", onError);
+          stream.end();
         });
       }
 

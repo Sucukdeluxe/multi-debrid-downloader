@@ -83,8 +83,9 @@ async function hashFile(filePath: string, algorithm: "crc32" | "md5" | "sha1"): 
     const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
     return await new Promise<string>((resolve, reject) => {
       let crc = 0;
-      stream.on("data", (chunk: Buffer) => {
-        crc = crc32Buffer(chunk, crc);
+      stream.on("data", (chunk: string | Buffer) => {
+        const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        crc = crc32Buffer(buffer, crc);
       });
       stream.on("error", reject);
       stream.on("end", () => resolve(((crc >>> 0).toString(16)).padStart(8, "0").toLowerCase()));

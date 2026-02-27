@@ -20,9 +20,23 @@ function normalizeLink(link: string): string {
   return link.trim().toLowerCase();
 }
 
-function parseSetCookie(raw: string): string {
+function parseSetCookieFromHeaders(headers: Headers): string {
+  const getSetCookie = (headers as unknown as { getSetCookie?: () => string[] }).getSetCookie;
+  if (typeof getSetCookie === "function") {
+    const values = getSetCookie.call(headers)
+      .map((entry) => entry.split(";")[0].trim())
+      .filter(Boolean);
+    if (values.length > 0) {
+      return values.join("; ");
+    }
+  }
+
+  const raw = headers.get("set-cookie") || "";
+  if (!raw) {
+    return "";
+  }
   return raw
-    .split(",")
+    .split(/,(?=[^;=]+?=)/g)
     .map((chunk) => chunk.split(";")[0].trim())
     .filter(Boolean)
     .join("; ");
@@ -144,10 +158,25 @@ export class MegaWebFallback {
       redirect: "manual"
     });
 
-    const cookie = parseSetCookie(response.headers.get("set-cookie") || "");
+    const cookie = parseSetCookieFromHeaders(response.headers);
     if (!cookie) {
       throw new Error("Mega-Web Login liefert kein Session-Cookie");
     }
+
+    const verify = await fetch(DEBRID_REFERER, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Cookie: cookie,
+        Referer: DEBRID_REFERER
+      }
+    });
+    const verifyHtml = await verify.text();
+    const hasDebridForm = /id=["']debridForm["']/i.test(verifyHtml) || /name=["']links["']/i.test(verifyHtml);
+    if (!hasDebridForm) {
+      throw new Error("Mega-Web Login ungültig oder Session blockiert");
+    }
+
     this.cookie = cookie;
     this.cookieSetAt = Date.now();
   }
