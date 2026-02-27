@@ -27,6 +27,12 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
+
+try:
     import pyzipper
 except ImportError:
     pyzipper = None
@@ -52,7 +58,7 @@ MANIFEST_FILE = Path(__file__).with_name("rd_download_manifest.json")
 LOG_FILE = Path(__file__).with_name("rd_downloader.log")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload"
@@ -146,6 +152,11 @@ def configure_file_logger() -> logging.Logger:
 
 
 LOGGER = configure_file_logger()
+
+if TkinterDnD is not None:
+    TkBase = TkinterDnD.Tk
+else:
+    TkBase = tk.Tk
 
 
 def compact_error_text(message: str, max_len: int = 180) -> str:
@@ -507,7 +518,7 @@ class RealDebridClient:
         return filename, download_url, retries_used, file_size
 
 
-class DownloaderApp(tk.Tk):
+class DownloaderApp(TkBase):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} v{APP_VERSION}")
@@ -570,6 +581,7 @@ class DownloaderApp(tk.Tk):
         self.tooltip_label: ttk.Label | None = None
         self.tooltip_row = ""
         self.tooltip_column = ""
+        self.dnd_ready = False
 
         self._build_ui()
         self._load_config()
@@ -693,12 +705,14 @@ class DownloaderApp(tk.Tk):
         ttk.Button(links_actions, text="DLC import", command=self._import_dlc_file).pack(side="left", padx=(8, 0))
         ttk.Button(links_actions, text="Links speichern", command=self._save_links_to_file).pack(side="left", padx=(8, 0))
         ttk.Button(links_actions, text="Links leeren", command=self._clear_links).pack(side="left", padx=(8, 0))
+        ttk.Label(links_actions, text="Tipp: .dlc per Drag-and-Drop hier ablegen").pack(side="right")
 
         self.links_text = tk.Text(links_frame, height=14, wrap="none")
         self.links_text.grid(row=1, column=0, sticky="nsew")
         links_scroll = ttk.Scrollbar(links_frame, orient="vertical", command=self.links_text.yview)
         links_scroll.grid(row=1, column=1, sticky="ns")
         self.links_text.configure(yscrollcommand=links_scroll.set)
+        self._setup_dlc_drag_and_drop()
 
         actions_frame = ttk.Frame(root)
         actions_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -1320,17 +1334,59 @@ class DownloaderApp(tk.Tk):
         self.links_text.delete("1.0", "end")
         self.links_text.insert("1.0", content)
 
-    def _import_dlc_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title="DLC importieren",
-            initialdir=str(Path.home() / "Desktop"),
-            filetypes=(("DLC Container", "*.dlc"), ("Alle Dateien", "*.*")),
-        )
-        if not file_path:
+    def _setup_dlc_drag_and_drop(self) -> None:
+        if DND_FILES is None:
             return
-
         try:
-            packages = self._decrypt_dlc_file(Path(file_path))
+            self.links_text.drop_target_register(DND_FILES)
+            self.links_text.dnd_bind("<<Drop>>", self._on_links_drop)
+            self.dnd_ready = True
+        except Exception as exc:
+            self.dnd_ready = False
+            LOGGER.warning("Drag-and-Drop konnte nicht aktiviert werden: %s", exc)
+
+    def _on_links_drop(self, event: tk.Event) -> str:
+        raw_data = str(getattr(event, "data", "") or "")
+        paths = self._parse_dropped_paths(raw_data)
+        if not paths:
+            self.status_var.set("Drop ignoriert: keine Datei erkannt")
+            return "break"
+
+        dlc_files = [path for path in paths if path.suffix.lower() == ".dlc"]
+        if not dlc_files:
+            self.status_var.set("Drop ignoriert: bitte eine .dlc Datei ziehen")
+            return "break"
+
+        if len(dlc_files) > 1:
+            self.status_var.set(f"Mehrere DLC-Dateien erkannt ({len(dlc_files)}), lade die erste ...")
+
+        self._import_dlc_path(dlc_files[0], source="Drag-and-Drop")
+        return "break"
+
+    def _parse_dropped_paths(self, raw_data: str) -> list[Path]:
+        text = str(raw_data or "").strip()
+        if not text:
+            return []
+
+        parts: tuple[str, ...]
+        try:
+            parts = tuple(self.tk.splitlist(text))
+        except Exception:
+            parts = (text,)
+
+        result: list[Path] = []
+        for part in parts:
+            value = str(part).strip().strip("{}\"")
+            if not value:
+                continue
+            candidate = Path(value)
+            if candidate.exists() and candidate.is_file():
+                result.append(candidate)
+        return result
+
+    def _import_dlc_path(self, file_path: Path, source: str = "DLC Import") -> None:
+        try:
+            packages = self._decrypt_dlc_file(file_path)
         except Exception as exc:
             messagebox.showerror("DLC Import", f"DLC konnte nicht importiert werden: {exc}")
             return
@@ -1346,7 +1402,18 @@ class DownloaderApp(tk.Tk):
             self.package_name_var.set("")
 
         total_links = sum(len(package.links) for package in packages)
-        self.status_var.set(f"DLC importiert: {len(packages)} Paket(e), {total_links} Link(s)")
+        self.status_var.set(f"{source}: {len(packages)} Paket(e), {total_links} Link(s)")
+        LOGGER.info("%s: %s Paket(e), %s Link(s)", source, len(packages), total_links)
+
+    def _import_dlc_file(self) -> None:
+        file_path = filedialog.askopenfilename(
+            title="DLC importieren",
+            initialdir=str(Path.home() / "Desktop"),
+            filetypes=(("DLC Container", "*.dlc"), ("Alle Dateien", "*.*")),
+        )
+        if not file_path:
+            return
+        self._import_dlc_path(Path(file_path), source="DLC importiert")
 
     def _decrypt_dlc_file(self, file_path: Path) -> list[DownloadPackage]:
         # Primary: local decryption via JDownloader DLC service (preserves
