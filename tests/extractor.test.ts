@@ -274,4 +274,61 @@ describe("extractor", () => {
     expect(result.failed).toBe(1);
     expect(fs.existsSync(targetDir)).toBe(false);
   });
+
+  it("resumes extraction from persisted progress file", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zipA = new AdmZip();
+    zipA.addFile("a.txt", Buffer.from("a"));
+    zipA.writeZip(path.join(packageDir, "a.zip"));
+
+    const zipB = new AdmZip();
+    zipB.addFile("b.txt", Buffer.from("b"));
+    zipB.writeZip(path.join(packageDir, "b.zip"));
+
+    fs.writeFileSync(path.join(packageDir, ".rd_extract_progress.json"), JSON.stringify({ completedArchives: ["a.zip"] }), "utf8");
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(fs.existsSync(path.join(targetDir, "b.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(packageDir, ".rd_extract_progress.json"))).toBe(false);
+  });
+
+  it("aborts extraction immediately when abort signal is set", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zip = new AdmZip();
+    zip.addFile("file.txt", Buffer.from("x"));
+    zip.writeZip(path.join(packageDir, "file.zip"));
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      signal: controller.signal
+    })).rejects.toThrow("aborted:extract");
+  });
 });

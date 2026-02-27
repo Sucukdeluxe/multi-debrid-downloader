@@ -2807,6 +2807,69 @@ describe("download manager", () => {
     }
   });
 
+  it("marks extracting items as resumable extraction on shutdown", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "extract-stop-pkg";
+    const itemId = "extract-stop-item";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "extract-stop");
+    const extractDir = path.join(root, "extract", "extract-stop");
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "extract-stop",
+      outputDir,
+      extractDir,
+      status: "extracting",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/extract-stop",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: "extract-stop.part01.rar",
+      targetPath: path.join(outputDir, "extract-stop.part01.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpacken 40%",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.prepareForShutdown();
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpacken abgebrochen (wird fortgesetzt)");
+  });
+
   it("recovers pending extraction on startup for completed package", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

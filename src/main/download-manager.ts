@@ -175,6 +175,8 @@ export class DownloadManager extends EventEmitter {
 
   private packagePostProcessTasks = new Map<string, Promise<void>>();
 
+  private packagePostProcessAbortControllers = new Map<string, AbortController>();
+
   private reservedTargetPaths = new Map<string, string>();
 
   private claimedTargetPathByItem = new Map<string, string>();
@@ -188,6 +190,8 @@ export class DownloadManager extends EventEmitter {
   private runCompletedPackages = new Set<string>();
 
   private lastSchedulerHeartbeatAt = 0;
+
+  private lastReconnectMarkAt = 0;
 
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
@@ -435,6 +439,7 @@ export class DownloadManager extends EventEmitter {
 
   public clearAll(): void {
     this.stop();
+    this.abortPostProcessing("clear_all");
     this.session.packageOrder = [];
     this.session.packages = {};
     this.session.items = {};
@@ -446,6 +451,7 @@ export class DownloadManager extends EventEmitter {
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
     this.packagePostProcessTasks.clear();
+    this.packagePostProcessAbortControllers.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.summary = null;
     this.persistNow();
@@ -764,6 +770,9 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || pkg.status !== "completed") {
         continue;
       }
+      if (this.packagePostProcessTasks.has(packageId)) {
+        continue;
+      }
 
       const items = pkg.itemIds
         .map((itemId) => this.session.items[itemId])
@@ -995,6 +1004,7 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
+    this.lastReconnectMarkAt = 0;
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.summary = null;
@@ -1008,6 +1018,7 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
+    this.abortPostProcessing("stop");
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
       active.abortController.abort("stop");
@@ -1022,6 +1033,7 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
+    this.abortPostProcessing("shutdown");
 
     let requeuedItems = 0;
     for (const active of this.activeTasks.values()) {
@@ -1047,6 +1059,18 @@ export class DownloadManager extends EventEmitter {
         || pkg.status === "reconnect_wait") {
         pkg.status = pkg.enabled ? "queued" : "paused";
         pkg.updatedAt = nowMs();
+      }
+    }
+
+    for (const item of Object.values(this.session.items)) {
+      if (item.status === "completed" && /^Entpacken/i.test(item.fullStatus || "")) {
+        item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
+        item.updatedAt = nowMs();
+        const pkg = this.session.packages[item.packageId];
+        if (pkg) {
+          pkg.status = pkg.enabled ? "queued" : "paused";
+          pkg.updatedAt = nowMs();
+        }
       }
     }
 
@@ -1288,22 +1312,55 @@ export class DownloadManager extends EventEmitter {
     this.claimedTargetPathByItem.delete(itemId);
   }
 
+  private abortPostProcessing(reason: string): void {
+    for (const [packageId, controller] of this.packagePostProcessAbortControllers.entries()) {
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+
+      const pkg = this.session.packages[packageId];
+      if (!pkg) {
+        continue;
+      }
+
+      if (pkg.status === "extracting" || pkg.status === "integrity_check") {
+        pkg.status = pkg.enabled ? "queued" : "paused";
+        pkg.updatedAt = nowMs();
+      }
+
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item || item.status !== "completed") {
+          continue;
+        }
+        if (/^Entpacken/i.test(item.fullStatus || "")) {
+          item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
+          item.updatedAt = nowMs();
+        }
+      }
+    }
+  }
+
   private runPackagePostProcessing(packageId: string): Promise<void> {
     const existing = this.packagePostProcessTasks.get(packageId);
     if (existing) {
       return existing;
     }
 
+    const abortController = new AbortController();
+    this.packagePostProcessAbortControllers.set(packageId, abortController);
+
     const task = this.packagePostProcessQueue
       .catch(() => undefined)
       .then(async () => {
-        await this.handlePackagePostProcessing(packageId);
+        await this.handlePackagePostProcessing(packageId, abortController.signal);
       })
       .catch((error) => {
         logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
       })
       .finally(() => {
         this.packagePostProcessTasks.delete(packageId);
+        this.packagePostProcessAbortControllers.delete(packageId);
         this.persistSoon();
         this.emitState();
       });
@@ -1393,8 +1450,15 @@ export class DownloadManager extends EventEmitter {
         }
 
         if (this.reconnectActive() && (this.nonResumableActive > 0 || this.activeTasks.size === 0)) {
-          this.markQueuedAsReconnectWait();
-          await sleep(200);
+          const markNow = nowMs();
+          if (markNow - this.lastReconnectMarkAt >= 900) {
+            this.lastReconnectMarkAt = markNow;
+            const changed = this.markQueuedAsReconnectWait();
+            if (!changed) {
+              this.emitState();
+            }
+          }
+          await sleep(220);
           continue;
         }
 
@@ -1431,6 +1495,7 @@ export class DownloadManager extends EventEmitter {
     const until = nowMs() + this.settings.reconnectWaitSeconds * 1000;
     this.session.reconnectUntil = Math.max(this.session.reconnectUntil, until);
     this.session.reconnectReason = reason;
+    this.lastReconnectMarkAt = 0;
 
     for (const active of this.activeTasks.values()) {
       if (active.resumable) {
@@ -1443,7 +1508,8 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
   }
 
-  private markQueuedAsReconnectWait(): void {
+  private markQueuedAsReconnectWait(): boolean {
+    let changed = false;
     for (const item of Object.values(this.session.items)) {
       const pkg = this.session.packages[item.packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) {
@@ -1453,9 +1519,13 @@ export class DownloadManager extends EventEmitter {
         item.status = "reconnect_wait";
         item.fullStatus = `Reconnect-Wait (${Math.ceil((this.session.reconnectUntil - nowMs()) / 1000)}s)`;
         item.updatedAt = nowMs();
+        changed = true;
       }
     }
-    this.emitState();
+    if (changed) {
+      this.emitState();
+    }
+    return changed;
   }
 
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
@@ -1923,6 +1993,16 @@ export class DownloadManager extends EventEmitter {
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
         let windowStarted = nowMs();
+        const itemCount = Object.keys(this.session.items).length;
+        const uiUpdateIntervalMs = itemCount >= 1500
+          ? 650
+          : itemCount >= 700
+            ? 420
+            : itemCount >= 250
+              ? 280
+              : 170;
+        let lastUiEmitAt = 0;
+        let lastProgressPercent = item.progressPercent;
 
         const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
           const onDrain = (): void => {
@@ -2027,8 +2107,14 @@ export class DownloadManager extends EventEmitter {
             item.downloadedBytes = written;
             item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
             item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
-            item.updatedAt = nowMs();
-            this.emitState();
+            const nowTick = nowMs();
+            const progressChanged = item.progressPercent !== lastProgressPercent;
+            if (progressChanged || nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
+              item.updatedAt = nowTick;
+              this.emitState();
+              lastUiEmitAt = nowTick;
+              lastProgressPercent = item.progressPercent;
+            }
           }
         } finally {
           await new Promise<void>((resolve, reject) => {
@@ -2274,9 +2360,12 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private async handlePackagePostProcessing(packageId: string): Promise<void> {
+  private async handlePackagePostProcessing(packageId: string, signal?: AbortSignal): Promise<void> {
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) {
+      return;
+    }
+    if (signal?.aborted) {
       return;
     }
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
@@ -2299,9 +2388,13 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
 
       const updateExtractingStatus = (text: string): void => {
+        const updatedAt = nowMs();
         for (const entry of completedItems) {
+          if (entry.fullStatus === text) {
+            continue;
+          }
           entry.fullStatus = text;
-          entry.updatedAt = nowMs();
+          entry.updatedAt = updatedAt;
         }
       };
 
@@ -2317,10 +2410,19 @@ export class DownloadManager extends EventEmitter {
           removeLinks: this.settings.removeLinkFilesAfterExtract,
           removeSamples: this.settings.removeSamplesAfterExtract,
           passwordList: this.settings.archivePasswordList,
+          signal,
           onProgress: (progress) => {
             const label = progress.phase === "done"
               ? "Entpacken 100%"
-              : `Entpacken ${progress.percent}% (${progress.current}/${progress.total})`;
+              : (() => {
+                const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
+                const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
+                  ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
+                  : "";
+                const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+                const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+                return `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+              })();
             updateExtractingStatus(label);
             this.emitState();
           }
@@ -2343,6 +2445,19 @@ export class DownloadManager extends EventEmitter {
           pkg.status = "completed";
         }
       } catch (error) {
+        const reasonRaw = String(error || "");
+        if (reasonRaw.includes("aborted:extract")) {
+          for (const entry of completedItems) {
+            if (/^Entpacken/i.test(entry.fullStatus || "")) {
+              entry.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
+            }
+            entry.updatedAt = nowMs();
+          }
+          pkg.status = pkg.enabled ? "queued" : "paused";
+          pkg.updatedAt = nowMs();
+          logger.info(`Post-Processing Entpacken abgebrochen: pkg=${pkg.name}`);
+          return;
+        }
         const reason = compactErrorText(error);
         logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
         for (const entry of completedItems) {

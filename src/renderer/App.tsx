@@ -1,4 +1,4 @@
-import { DragEvent, KeyboardEvent, ReactElement, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppSettings,
   AppTheme,
@@ -97,6 +97,7 @@ export function App(): ReactElement {
   ]);
   const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
   const activeCollectorTabRef = useRef(activeCollectorTab);
+  const activeTabRef = useRef<Tab>(tab);
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
@@ -113,6 +114,10 @@ export function App(): ReactElement {
   useEffect(() => {
     activeCollectorTabRef.current = activeCollectorTab;
   }, [activeCollectorTab]);
+
+  useEffect(() => {
+    activeTabRef.current = tab;
+  }, [tab]);
 
   useEffect(() => {
     settingsDirtyRef.current = settingsDirty;
@@ -146,6 +151,22 @@ export function App(): ReactElement {
     unsubscribe = window.rd.onStateUpdate((state) => {
       latestStateRef.current = state;
       if (stateFlushTimerRef.current) { return; }
+
+      const itemCount = Object.keys(state.session.items).length;
+      let flushDelay = itemCount >= 1500
+        ? 850
+        : itemCount >= 700
+          ? 620
+          : itemCount >= 250
+            ? 420
+            : 180;
+      if (!state.session.running) {
+        flushDelay = Math.min(flushDelay, 260);
+      }
+      if (activeTabRef.current !== "downloads") {
+        flushDelay = Math.max(flushDelay, 320);
+      }
+
       stateFlushTimerRef.current = setTimeout(() => {
         stateFlushTimerRef.current = null;
         if (latestStateRef.current) {
@@ -156,7 +177,7 @@ export function App(): ReactElement {
           }
           latestStateRef.current = null;
         }
-      }, 220);
+      }, flushDelay);
     });
     unsubClipboard = window.rd.onClipboardDetected((links) => {
       showToast(`Zwischenablage: ${links.length} Link(s) erkannt`, 3000);
@@ -182,7 +203,7 @@ export function App(): ReactElement {
 
   const packages = useMemo(() => snapshot.session.packageOrder
     .map((id: string) => snapshot.session.packages[id])
-    .filter(Boolean), [snapshot]);
+    .filter(Boolean), [snapshot.session.packageOrder, snapshot.session.packages]);
 
   const packageOrderKey = useMemo(() => snapshot.session.packageOrder.join("|"), [snapshot.session.packageOrder]);
 
@@ -643,7 +664,7 @@ export function App(): ReactElement {
       }
     }
     return map;
-  }, [snapshot]);
+  }, [snapshot.session.items]);
 
   return (
     <div
@@ -1060,7 +1081,7 @@ interface PackageCardProps {
   onDragEnd: () => void;
 }
 
-function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
@@ -1130,4 +1151,45 @@ function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, edi
       </table>}
     </article>
   );
-}
+}, (prev, next) => {
+  if (prev.pkg.id !== next.pkg.id) {
+    return false;
+  }
+  if (prev.pkg.updatedAt !== next.pkg.updatedAt
+    || prev.pkg.status !== next.pkg.status
+    || prev.pkg.enabled !== next.pkg.enabled
+    || prev.pkg.name !== next.pkg.name) {
+    return false;
+  }
+  if (prev.packageSpeed !== next.packageSpeed
+    || prev.isFirst !== next.isFirst
+    || prev.isLast !== next.isLast
+    || prev.isEditing !== next.isEditing
+    || prev.collapsed !== next.collapsed) {
+    return false;
+  }
+  if ((prev.isEditing || next.isEditing) && prev.editingName !== next.editingName) {
+    return false;
+  }
+  if (prev.items.length !== next.items.length) {
+    return false;
+  }
+  for (let index = 0; index < prev.items.length; index += 1) {
+    const a = prev.items[index];
+    const b = next.items[index];
+    if (!a || !b) {
+      return false;
+    }
+    if (a.id !== b.id
+      || a.updatedAt !== b.updatedAt
+      || a.status !== b.status
+      || a.progressPercent !== b.progressPercent
+      || a.speedBps !== b.speedBps
+      || a.retries !== b.retries
+      || a.provider !== b.provider
+      || a.fullStatus !== b.fullStatus) {
+      return false;
+    }
+  }
+  return true;
+});

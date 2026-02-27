@@ -20,6 +20,7 @@ export interface ExtractOptions {
   removeLinks: boolean;
   removeSamples: boolean;
   passwordList?: string;
+  signal?: AbortSignal;
   onProgress?: (update: ExtractProgressUpdate) => void;
 }
 
@@ -28,8 +29,17 @@ export interface ExtractProgressUpdate {
   total: number;
   percent: number;
   archiveName: string;
+  archivePercent?: number;
+  elapsedMs?: number;
   phase: "extracting" | "done";
 }
+
+const MAX_EXTRACT_OUTPUT_BUFFER = 48 * 1024;
+const EXTRACT_PROGRESS_FILE = ".rd_extract_progress.json";
+
+type ExtractResumeState = {
+  completedArchives: string[];
+};
 
 function findArchiveCandidates(packageDir: string): string[] {
   const files = fs.readdirSync(packageDir, { withFileTypes: true })
@@ -57,6 +67,77 @@ function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip"
 
 function cleanErrorText(text: string): string {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+function appendLimited(base: string, chunk: string, maxLen = MAX_EXTRACT_OUTPUT_BUFFER): string {
+  const next = `${base}${chunk}`;
+  if (next.length <= maxLen) {
+    return next;
+  }
+  return next.slice(next.length - maxLen);
+}
+
+function parseProgressPercent(chunk: string): number | null {
+  const text = String(chunk || "");
+  const regex = /(?:^|\D)(\d{1,3})%/g;
+  let match: RegExpExecArray | null = regex.exec(text);
+  let latest: number | null = null;
+  while (match) {
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value >= 0 && value <= 100) {
+      latest = value;
+    }
+    match = regex.exec(text);
+  }
+  return latest;
+}
+
+function shouldPreferExternalZip(archivePath: string): boolean {
+  try {
+    const stat = fs.statSync(archivePath);
+    return stat.size >= 64 * 1024 * 1024;
+  } catch {
+    return true;
+  }
+}
+
+function extractProgressFilePath(packageDir: string): string {
+  return path.join(packageDir, EXTRACT_PROGRESS_FILE);
+}
+
+function readExtractResumeState(packageDir: string): Set<string> {
+  const progressPath = extractProgressFilePath(packageDir);
+  if (!fs.existsSync(progressPath)) {
+    return new Set<string>();
+  }
+  try {
+    const payload = JSON.parse(fs.readFileSync(progressPath, "utf8")) as Partial<ExtractResumeState>;
+    const names = Array.isArray(payload.completedArchives) ? payload.completedArchives : [];
+    return new Set(names.map((value) => String(value || "").trim()).filter(Boolean));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writeExtractResumeState(packageDir: string, completedArchives: Set<string>): void {
+  const progressPath = extractProgressFilePath(packageDir);
+  const payload: ExtractResumeState = {
+    completedArchives: Array.from(completedArchives).sort((a, b) => a.localeCompare(b))
+  };
+  fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+function clearExtractResumeState(packageDir: string): void {
+  try {
+    fs.rmSync(extractProgressFilePath(packageDir), { force: true });
+  } catch {
+    // ignore
+  }
+}
+
+function isExtractAbortError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("aborted:extract") || text.includes("extract_aborted");
 }
 
 function archivePasswords(listInput: string): string[] {
@@ -109,48 +190,81 @@ function isNoExtractorError(errorText: string): boolean {
 type ExtractSpawnResult = {
   ok: boolean;
   missingCommand: boolean;
+  aborted: boolean;
   errorText: string;
 };
 
-function runExtractCommand(command: string, args: string[]): Promise<ExtractSpawnResult> {
+function runExtractCommand(
+  command: string,
+  args: string[],
+  onChunk?: (chunk: string) => void,
+  signal?: AbortSignal
+): Promise<ExtractSpawnResult> {
+  if (signal?.aborted) {
+    return Promise.resolve({ ok: false, missingCommand: false, aborted: true, errorText: "aborted:extract" });
+  }
+
   return new Promise((resolve) => {
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
 
-    child.stdout.on("data", (chunk) => {
-      output += String(chunk || "");
-    });
-    child.stderr.on("data", (chunk) => {
-      output += String(chunk || "");
-    });
-
-    child.on("error", (error) => {
+    const finish = (result: ExtractSpawnResult): void => {
       if (settled) {
         return;
       }
       settled = true;
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve(result);
+    };
+
+    const onAbort = signal
+      ? (): void => {
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+        finish({ ok: false, missingCommand: false, aborted: true, errorText: "aborted:extract" });
+      }
+      : null;
+    if (signal && onAbort) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout.on("data", (chunk) => {
+      const text = String(chunk || "");
+      output = appendLimited(output, text);
+      onChunk?.(text);
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = String(chunk || "");
+      output = appendLimited(output, text);
+      onChunk?.(text);
+    });
+
+    child.on("error", (error) => {
       const text = cleanErrorText(String(error));
-      resolve({
+      finish({
         ok: false,
         missingCommand: text.toLowerCase().includes("enoent"),
+        aborted: false,
         errorText: text
       });
     });
 
     child.on("close", (code) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
       if (code === 0 || code === 1) {
-        resolve({ ok: true, missingCommand: false, errorText: "" });
+        finish({ ok: true, missingCommand: false, aborted: false, errorText: "" });
         return;
       }
       const cleaned = cleanErrorText(output);
-      resolve({
+      finish({
         ok: false,
         missingCommand: false,
+        aborted: false,
         errorText: cleaned || `Exit Code ${String(code ?? "?")}`
       });
     });
@@ -208,7 +322,9 @@ async function runExternalExtract(
   archivePath: string,
   targetDir: string,
   conflictMode: ConflictMode,
-  passwordCandidates: string[]
+  passwordCandidates: string[],
+  onArchiveProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const command = await resolveExtractorCommand();
   const passwords = passwordCandidates;
@@ -216,11 +332,33 @@ async function runExternalExtract(
 
   fs.mkdirSync(targetDir, { recursive: true });
 
+  let announcedStart = false;
+  let bestPercent = 0;
+
   for (const password of passwords) {
+    if (signal?.aborted) {
+      throw new Error("aborted:extract");
+    }
+    if (!announcedStart) {
+      announcedStart = true;
+      onArchiveProgress?.(0);
+    }
     const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password);
-    const result = await runExtractCommand(command, args);
+    const result = await runExtractCommand(command, args, (chunk) => {
+      const parsed = parseProgressPercent(chunk);
+      if (parsed === null || parsed <= bestPercent) {
+        return;
+      }
+      bestPercent = parsed;
+      onArchiveProgress?.(bestPercent);
+    }, signal);
     if (result.ok) {
+      onArchiveProgress?.(100);
       return;
+    }
+
+    if (result.aborted) {
+      throw new Error("aborted:extract");
     }
 
     if (result.missingCommand) {
@@ -467,9 +605,14 @@ function removeEmptyDirectoryTree(rootDir: string): number {
 }
 
 export async function extractPackageArchives(options: ExtractOptions): Promise<{ extracted: number; failed: number; lastError: string }> {
+  if (options.signal?.aborted) {
+    throw new Error("aborted:extract");
+  }
+
   const candidates = findArchiveCandidates(options.packageDir);
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
+    clearExtractResumeState(options.packageDir);
     logger.info(`Entpacken übersprungen (keine Archive gefunden): ${options.packageDir}`);
     return { extracted: 0, failed: 0, lastError: "" };
   }
@@ -477,68 +620,148 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   const conflictMode = effectiveConflictMode(options.conflictMode);
   const passwordCandidates = archivePasswords(options.passwordList || "");
   const beforeFingerprint = captureDirFingerprint(options.targetDir);
-  let extracted = 0;
+  const resumeCompleted = readExtractResumeState(options.packageDir);
+  const resumeCompletedAtStart = resumeCompleted.size;
+  const candidateNames = new Set(candidates.map((archivePath) => path.basename(archivePath)));
+  for (const archiveName of Array.from(resumeCompleted.values())) {
+    if (!candidateNames.has(archiveName)) {
+      resumeCompleted.delete(archiveName);
+    }
+  }
+  if (resumeCompleted.size > 0) {
+    writeExtractResumeState(options.packageDir, resumeCompleted);
+  } else {
+    clearExtractResumeState(options.packageDir);
+  }
+
+  const pendingCandidates = candidates.filter((archivePath) => !resumeCompleted.has(path.basename(archivePath)));
+  let extracted = resumeCompleted.size;
   let failed = 0;
   let lastError = "";
-  const extractedArchives: string[] = [];
+  const extractedArchives = new Set<string>();
+  for (const archivePath of candidates) {
+    if (resumeCompleted.has(path.basename(archivePath))) {
+      extractedArchives.add(archivePath);
+    }
+  }
 
-  const emitProgress = (current: number, archiveName: string, phase: "extracting" | "done"): void => {
+  const emitProgress = (
+    current: number,
+    archiveName: string,
+    phase: "extracting" | "done",
+    archivePercent?: number,
+    elapsedMs?: number
+  ): void => {
     if (!options.onProgress) {
       return;
     }
     const total = Math.max(1, candidates.length);
-    const percent = Math.max(0, Math.min(100, Math.floor((current / total) * 100)));
-    options.onProgress({ current, total, percent, archiveName, phase });
+    let percent = Math.max(0, Math.min(100, Math.floor((current / total) * 100)));
+    if (phase !== "done") {
+      const boundedCurrent = Math.max(0, Math.min(total, current));
+      const boundedArchivePercent = Math.max(0, Math.min(100, Number(archivePercent ?? 0)));
+      percent = Math.max(0, Math.min(100, Math.floor(((boundedCurrent + (boundedArchivePercent / 100)) / total) * 100)));
+    }
+    options.onProgress({
+      current,
+      total,
+      percent,
+      archiveName,
+      archivePercent,
+      elapsedMs,
+      phase
+    });
   };
 
-  emitProgress(0, "", "extracting");
+  emitProgress(extracted, "", "extracting");
 
-  for (const archivePath of candidates) {
+  for (const archivePath of pendingCandidates) {
+    if (options.signal?.aborted) {
+      throw new Error("aborted:extract");
+    }
     const archiveName = path.basename(archivePath);
-    emitProgress(extracted + failed, archiveName, "extracting");
+    const archiveStartedAt = Date.now();
+    let archivePercent = 0;
+    emitProgress(extracted + failed, archiveName, "extracting", archivePercent, 0);
+    const pulseTimer = setInterval(() => {
+      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+    }, 1100);
     logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}`);
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
-        try {
-          extractZipArchive(archivePath, options.targetDir, options.conflictMode);
-        } catch {
-          await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates);
+        const preferExternal = shouldPreferExternalZip(archivePath);
+        if (preferExternal) {
+          try {
+            await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+              archivePercent = Math.max(archivePercent, value);
+              emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+            }, options.signal);
+          } catch (error) {
+            if (isNoExtractorError(String(error))) {
+              extractZipArchive(archivePath, options.targetDir, options.conflictMode);
+            } else {
+              throw error;
+            }
+          }
+        } else {
+          try {
+            extractZipArchive(archivePath, options.targetDir, options.conflictMode);
+            archivePercent = 100;
+          } catch {
+            await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+              archivePercent = Math.max(archivePercent, value);
+              emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+            }, options.signal);
+          }
         }
       } else {
-        await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates);
+        await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+          archivePercent = Math.max(archivePercent, value);
+          emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+        }, options.signal);
       }
       extracted += 1;
-      extractedArchives.push(archivePath);
+      extractedArchives.add(archivePath);
+      resumeCompleted.add(archiveName);
+      writeExtractResumeState(options.packageDir, resumeCompleted);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
-      emitProgress(extracted + failed, archiveName, "extracting");
+      archivePercent = 100;
+      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
     } catch (error) {
       failed += 1;
       const errorText = String(error);
+      if (isExtractAbortError(errorText)) {
+        throw new Error("aborted:extract");
+      }
       lastError = errorText;
       logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${errorText}`);
-      emitProgress(extracted + failed, archiveName, "extracting");
+      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
       if (isNoExtractorError(errorText)) {
         const remaining = candidates.length - (extracted + failed);
         if (remaining > 0) {
           failed += remaining;
-          emitProgress(candidates.length, archiveName, "extracting");
+          emitProgress(candidates.length, archiveName, "extracting", 0, Date.now() - archiveStartedAt);
         }
         break;
       }
+    } finally {
+      clearInterval(pulseTimer);
     }
   }
 
   if (extracted > 0) {
     const afterFingerprint = captureDirFingerprint(options.targetDir);
     const changedOutput = hasDirChanges(beforeFingerprint, afterFingerprint);
-    if (!changedOutput && conflictMode !== "skip") {
+    const hadResumeProgress = resumeCompletedAtStart > 0;
+    if (!changedOutput && conflictMode !== "skip" && !hadResumeProgress) {
       lastError = "Keine entpackten Dateien erkannt";
       failed += extracted;
       extracted = 0;
       logger.error(`Entpacken ohne neue Ausgabe erkannt: ${options.targetDir}. Cleanup wird NICHT ausgeführt.`);
     } else {
-      const removedArchives = cleanupArchives(extractedArchives, options.cleanupMode);
+      const cleanupSources = failed === 0 ? candidates : Array.from(extractedArchives.values());
+      const removedArchives = cleanupArchives(cleanupSources, options.cleanupMode);
       if (options.cleanupMode !== "none") {
         logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
       }
@@ -549,6 +772,10 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       if (options.removeSamples) {
         const removedSamples = removeSampleArtifacts(options.targetDir);
         logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
+      }
+
+      if (failed === 0 && resumeCompleted.size >= candidates.length) {
+        clearExtractResumeState(options.packageDir);
       }
 
       if (options.cleanupMode === "delete" && !hasAnyFilesRecursive(options.packageDir)) {
@@ -565,6 +792,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
     } catch {
       // ignore
+    }
+  }
+
+  if (failed > 0) {
+    if (resumeCompleted.size > 0) {
+      writeExtractResumeState(options.packageDir, resumeCompleted);
+    } else {
+      clearExtractResumeState(options.packageDir);
     }
   }
 
