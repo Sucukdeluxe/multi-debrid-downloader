@@ -27,6 +27,10 @@ export class AppController {
 
   private megaWebFallback: MegaWebFallback;
 
+  private lastUpdateCheck: UpdateCheckResult | null = null;
+
+  private lastUpdateCheckAt = 0;
+
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
   public constructor() {
@@ -100,11 +104,25 @@ export class AppController {
   }
 
   public async checkUpdates(): Promise<UpdateCheckResult> {
-    return checkGitHubUpdate(this.settings.updateRepo);
+    const result = await checkGitHubUpdate(this.settings.updateRepo);
+    if (!result.error) {
+      this.lastUpdateCheck = result;
+      this.lastUpdateCheckAt = Date.now();
+    }
+    return result;
   }
 
   public async installUpdate(): Promise<UpdateInstallResult> {
-    return installLatestUpdate(this.settings.updateRepo);
+    const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
+    const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000
+      ? this.lastUpdateCheck
+      : undefined;
+    const result = await installLatestUpdate(this.settings.updateRepo, cached);
+    if (result.started) {
+      this.lastUpdateCheck = null;
+      this.lastUpdateCheckAt = 0;
+    }
+    return result;
   }
 
   public addLinks(payload: AddLinksPayload): { addedPackages: number; addedLinks: number; invalidCount: number } {

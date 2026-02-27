@@ -197,6 +197,7 @@ export interface UpdateCheckResult {
   latestTag: string;
   releaseUrl: string;
   setupAssetUrl?: string;
+  setupAssetName?: string;
   error?: string;
 }
 

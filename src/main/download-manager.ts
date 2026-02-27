@@ -787,7 +787,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      const hasExtractMarker = items.some((item) => /entpack/i.test(item.fullStatus));
+      const hasExtractMarker = items.some((item) => isExtractedLabel(item.fullStatus));
       const extractDirIsUnique = (extractDirUsage.get(pathKey(pkg.extractDir)) || 0) === 1;
       const hasExtractedOutput = extractDirIsUnique && this.directoryHasAnyFiles(pkg.extractDir);
       if (!hasExtractMarker && !hasExtractedOutput) {
@@ -823,7 +823,7 @@ export class DownloadManager extends EventEmitter {
             continue;
           }
 
-          logger.info(`Nachträgliches Cleanup geprüft: pkg=${pkg.name}, targets=${targets.size}, marker=${pkg.itemIds.some((id) => /entpack/i.test(this.session.items[id]?.fullStatus || ""))}`);
+          logger.info(`Nachträgliches Cleanup geprüft: pkg=${pkg.name}, targets=${targets.size}, marker=${pkg.itemIds.some((id) => isExtractedLabel(this.session.items[id]?.fullStatus || ""))}`);
 
           let removed = 0;
           for (const targetPath of targets) {
