@@ -15,36 +15,29 @@ afterEach(() => {
 
 describe("extractor", () => {
   it("maps external extractor args by conflict mode", () => {
-    expect(buildExternalExtractArgs("7z", "archive.rar", "C:\\target", "overwrite")).toEqual([
+    expect(buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "overwrite")).toEqual([
       "x",
+      "-o+",
+      "-p-",
       "-y",
-      "-aoa",
-      "-p",
       "archive.rar",
-      "-oC:\\target"
+      "C:\\target\\"
     ]);
-    expect(buildExternalExtractArgs("7z", "archive.rar", "C:\\target", "ask")).toEqual([
+    expect(buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "ask", "serienfans.org")).toEqual([
       "x",
-      "-y",
-      "-aos",
-      "-p",
-      "archive.rar",
-      "-oC:\\target"
-    ]);
-    expect(buildExternalExtractArgs("7z", "archive.rar", "C:\\target", "ask", "serienfans.org")).toEqual([
-      "x",
-      "-y",
-      "-aos",
+      "-o-",
       "-pserienfans.org",
+      "-y",
       "archive.rar",
-      "-oC:\\target"
+      "C:\\target\\"
     ]);
 
     const unrarRename = buildExternalExtractArgs("unrar", "archive.rar", "C:\\target", "rename");
     expect(unrarRename[0]).toBe("x");
     expect(unrarRename[1]).toBe("-or");
     expect(unrarRename[2]).toBe("-p-");
-    expect(unrarRename[3]).toBe("archive.rar");
+    expect(unrarRename[3]).toBe("-y");
+    expect(unrarRename[4]).toBe("archive.rar");
   });
 
   it("deletes only successfully extracted archives", async () => {
