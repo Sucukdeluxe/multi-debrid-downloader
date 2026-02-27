@@ -1,4 +1,13 @@
-import type { AddLinksPayload, AppSettings, UiSnapshot, UpdateCheckResult, UpdateInstallResult } from "./types";
+import type {
+  AddLinksPayload,
+  AppSettings,
+  DuplicatePolicy,
+  StartConflictEntry,
+  StartConflictResolutionResult,
+  UiSnapshot,
+  UpdateCheckResult,
+  UpdateInstallResult
+} from "./types";
 
 export interface ElectronApi {
   getSnapshot: () => Promise<UiSnapshot>;
@@ -9,6 +18,8 @@ export interface ElectronApi {
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
   addLinks: (payload: AddLinksPayload) => Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }>;
   addContainers: (filePaths: string[]) => Promise<{ addedPackages: number; addedLinks: number }>;
+  getStartConflicts: () => Promise<StartConflictEntry[]>;
+  resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;
   clearAll: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;

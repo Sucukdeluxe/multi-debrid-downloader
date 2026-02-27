@@ -1,6 +1,16 @@
 import path from "node:path";
 import { app } from "electron";
-import { AddLinksPayload, AppSettings, ParsedPackageInput, UiSnapshot, UpdateCheckResult, UpdateInstallResult } from "../shared/types";
+import {
+  AddLinksPayload,
+  AppSettings,
+  DuplicatePolicy,
+  ParsedPackageInput,
+  StartConflictEntry,
+  StartConflictResolutionResult,
+  UiSnapshot,
+  UpdateCheckResult,
+  UpdateInstallResult
+} from "../shared/types";
 import { importDlcContainers } from "./container";
 import { APP_VERSION, defaultSettings } from "./constants";
 import { DownloadManager } from "./download-manager";
@@ -39,9 +49,12 @@ export class AppController {
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
-      if (hasPending && this.hasAnyProviderToken(this.settings)) {
+      const hasConflicts = this.manager.getStartConflicts().length > 0;
+      if (hasPending && this.hasAnyProviderToken(this.settings) && !hasConflicts) {
         this.manager.start();
         logger.info("Auto-Resume beim Start aktiviert");
+      } else if (hasPending && hasConflicts) {
+        logger.info("Auto-Resume übersprungen: Start-Konflikte erkannt");
       }
     }
   }
@@ -111,6 +124,14 @@ export class AppController {
     }));
     const result = this.manager.addPackages(merged);
     return result;
+  }
+
+  public getStartConflicts(): StartConflictEntry[] {
+    return this.manager.getStartConflicts();
+  }
+
+  public resolveStartConflict(packageId: string, policy: DuplicatePolicy): StartConflictResolutionResult {
+    return this.manager.resolveStartConflict(packageId, policy);
   }
 
   public clearAll(): void {

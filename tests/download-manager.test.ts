@@ -823,6 +823,209 @@ describe("download manager", () => {
     expect(snapshot.canStart).toBe(true);
   });
 
+  it("detects start conflicts when extract output already exists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageId = "conflict-pkg";
+    const itemId = "conflict-item";
+    const now = Date.now() - 5000;
+    const outputDir = path.join(root, "downloads", "conflict");
+    const extractDir = path.join(root, "extract", "conflict");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "existing.mkv"), "x", "utf8");
+
+    const session = emptySession();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "conflict",
+      outputDir,
+      extractDir,
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/conflict",
+      provider: null,
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "conflict.part01.rar",
+      targetPath: path.join(outputDir, "conflict.part01.rar"),
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const conflicts = manager.getStartConflicts();
+    expect(conflicts.length).toBe(1);
+    expect(conflicts[0]?.packageId).toBe(packageId);
+  });
+
+  it("resolves start conflict by skipping package", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageId = "skip-pkg";
+    const itemId = "skip-item";
+    const now = Date.now() - 5000;
+    const outputDir = path.join(root, "downloads", "skip");
+    const extractDir = path.join(root, "extract", "skip");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "existing.mkv"), "x", "utf8");
+
+    const session = emptySession();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "skip",
+      outputDir,
+      extractDir,
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/skip",
+      provider: null,
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "skip.part01.rar",
+      targetPath: path.join(outputDir, "skip.part01.rar"),
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const result = manager.resolveStartConflict(packageId, "skip");
+    expect(result.skipped).toBe(true);
+    expect(manager.getSnapshot().session.packages[packageId]).toBeUndefined();
+    expect(manager.getSnapshot().session.items[itemId]).toBeUndefined();
+  });
+
+  it("resolves start conflict by overwriting and resetting queued package", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageId = "overwrite-pkg";
+    const itemId = "overwrite-item";
+    const now = Date.now() - 5000;
+    const outputDir = path.join(root, "downloads", "overwrite");
+    const extractDir = path.join(root, "extract", "overwrite");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(outputDir, "overwrite.part01.rar"), "part", "utf8");
+    fs.writeFileSync(path.join(extractDir, "existing.mkv"), "x", "utf8");
+
+    const session = emptySession();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "overwrite",
+      outputDir,
+      extractDir,
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/overwrite",
+      provider: null,
+      status: "queued",
+      retries: 1,
+      speedBps: 0,
+      downloadedBytes: 42,
+      totalBytes: 100,
+      progressPercent: 42,
+      fileName: "overwrite.part01.rar",
+      targetPath: path.join(outputDir, "overwrite.part01.rar"),
+      resumable: true,
+      attempts: 3,
+      lastError: "x",
+      fullStatus: "Wartet",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const result = manager.resolveStartConflict(packageId, "overwrite");
+    expect(result.overwritten).toBe(true);
+    const snapshot = manager.getSnapshot();
+    const item = snapshot.session.items[itemId];
+    expect(item?.status).toBe("queued");
+    expect(item?.downloadedBytes).toBe(0);
+    expect(item?.progressPercent).toBe(0);
+    expect(item?.attempts).toBe(0);
+    expect(item?.lastError).toBe("");
+    expect(item?.fullStatus).toBe("Wartet");
+    expect(fs.existsSync(outputDir)).toBe(false);
+    expect(fs.existsSync(extractDir)).toBe(false);
+  });
+
   it("requeues legacy 'Gestoppt' items on startup", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

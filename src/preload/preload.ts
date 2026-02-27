@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AddLinksPayload, AppSettings, UiSnapshot, UpdateCheckResult } from "../shared/types";
+import { AddLinksPayload, AppSettings, DuplicatePolicy, StartConflictEntry, StartConflictResolutionResult, UiSnapshot, UpdateCheckResult } from "../shared/types";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
@@ -14,6 +14,9 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.ADD_LINKS, payload),
   addContainers: (filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> =>
     ipcRenderer.invoke(IPC_CHANNELS.ADD_CONTAINERS, filePaths),
+  getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
+  resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_START_CONFLICT, packageId, policy),
   clearAll: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_ALL),
   start: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.START),
   stop: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.STOP),

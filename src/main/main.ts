@@ -154,6 +154,9 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => controller.addLinks(payload));
   ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => controller.addContainers(filePaths ?? []));
+  ipcMain.handle(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
+  ipcMain.handle(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") =>
+    controller.resolveStartConflict(packageId, policy));
   ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
   ipcMain.handle(IPC_CHANNELS.START, () => controller.start());
   ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());
