@@ -18,7 +18,6 @@ export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "allde
 
 export interface AppSettings {
   token: string;
-  megaToken: string;
   megaLogin: string;
   megaPassword: string;
   bestToken: string;

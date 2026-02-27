@@ -417,7 +417,7 @@ export class DownloadManager extends EventEmitter {
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
       this.emit("state", this.getSnapshot());
-    }, 140);
+    }, 260);
   }
 
   private pruneSpeedEvents(now: number): void {

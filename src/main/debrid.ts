@@ -1,10 +1,8 @@
 import { AppSettings, DebridProvider } from "../shared/types";
-import { createHash } from "node:crypto";
 import { REQUEST_RETRIES } from "./constants";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
-const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
 const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
 
@@ -195,135 +193,31 @@ function buildBestDebridRequests(link: string, token: string): BestDebridRequest
 }
 
 class MegaDebridClient {
-  private token: string;
-
   private megaWebUnrestrict?: MegaWebUnrestrictor;
 
-  public constructor(token: string, megaWebUnrestrict?: MegaWebUnrestrictor) {
-    this.token = token;
+  public constructor(megaWebUnrestrict?: MegaWebUnrestrictor) {
     this.megaWebUnrestrict = megaWebUnrestrict;
   }
 
-  private normalizeMegaCandidates(link: string): string[] {
-    const result = new Set<string>();
-    const trimmed = link.trim();
-    if (trimmed) {
-      result.add(trimmed);
-    }
-
-    try {
-      const parsed = new URL(trimmed);
-      const host = parsed.hostname.toLowerCase();
-      if (host.includes("rapidgator.net")) {
-        const parts = parsed.pathname.split("/").filter(Boolean);
-        const fileIdx = parts.findIndex((part) => part.toLowerCase() === "file");
-        if (fileIdx >= 0 && parts[fileIdx + 1]) {
-          const hash = parts[fileIdx + 1];
-          result.add(`https://rapidgator.net/file/${hash}`);
-          result.add(`http://rapidgator.net/file/${hash}`);
-          if (parts[fileIdx + 2]) {
-            const name = parts[fileIdx + 2].replace(/\.html$/i, "");
-            result.add(`https://rapidgator.net/file/${hash}/${name}.html`);
-            result.add(`http://rapidgator.net/file/${hash}/${name}.html`);
-          }
-        }
-      }
-    } catch {
-      // ignore malformed URL
-    }
-
-    return [...result];
-  }
-
-  private async requestMega(link: string, includePasswordField: boolean, useGetLinkParam: boolean): Promise<UnrestrictedLink> {
-    const url = `${MEGA_DEBRID_API}?action=getLink&token=${encodeURIComponent(this.token)}${useGetLinkParam ? `&link=${encodeURIComponent(link)}` : ""}`;
-    const body = new URLSearchParams();
-    if (!useGetLinkParam) {
-      body.set("link", link);
-    }
-    if (includePasswordField) {
-      body.set("password", createHash("md5").update("").digest("hex"));
-    }
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "RD-Node-Downloader/1.1.17"
-      },
-      body
-    });
-    const text = await response.text();
-    const payload = asRecord(parseJson(text));
-
-    if (!response.ok) {
-      throw new Error(parseError(response.status, text, payload));
-    }
-
-    const responseCode = pickString(payload, ["response_code"]);
-    if (responseCode && responseCode.toLowerCase() !== "ok") {
-      throw new Error(pickString(payload, ["response_text"]) || responseCode);
-    }
-
-    const directUrl = pickString(payload, ["debridLink", "download", "link"]);
-    if (!directUrl) {
-      throw new Error("Mega-Debrid Antwort ohne debridLink");
-    }
-
-    const fileName = pickString(payload, ["filename", "fileName"]) || filenameFromUrl(link);
-    const fileSize = pickNumber(payload, ["filesize", "size"]);
-    return {
-      fileName,
-      directUrl,
-      fileSize,
-      retriesUsed: 0
-    };
-  }
-
   public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
+    if (!this.megaWebUnrestrict) {
+      throw new Error("Mega-Web-Fallback nicht verfügbar");
+    }
     let lastError = "";
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
-      try {
-        const candidates = this.normalizeMegaCandidates(link);
-        const variants = [
-          { includePasswordField: false, useGetLinkParam: false },
-          { includePasswordField: true, useGetLinkParam: false },
-          { includePasswordField: false, useGetLinkParam: true },
-          { includePasswordField: true, useGetLinkParam: true }
-        ];
-
-        for (const candidate of candidates) {
-          for (const variant of variants) {
-            try {
-              const out = await this.requestMega(candidate, variant.includePasswordField, variant.useGetLinkParam);
-              out.retriesUsed = attempt - 1;
-              return out;
-            } catch (error) {
-              lastError = compactErrorText(error);
-            }
-          }
-        }
-
-        if (/token error|vip_end/i.test(lastError)) {
-          throw new Error(lastError);
-        }
-
-        if (/UNRESTRICTING_ERROR_1/i.test(lastError) && this.megaWebUnrestrict) {
-          const web = await this.megaWebUnrestrict(link);
-          if (web?.directUrl) {
-            web.retriesUsed = attempt - 1;
-            return web;
-          }
-        }
-      } catch (error) {
+      const web = await this.megaWebUnrestrict(link).catch((error) => {
         lastError = compactErrorText(error);
-        if (attempt >= REQUEST_RETRIES) {
-          break;
-        }
+        return null;
+      });
+      if (web?.directUrl) {
+        web.retriesUsed = attempt - 1;
+        return web;
+      }
+      if (attempt < REQUEST_RETRIES) {
         await sleep(retryDelay(attempt));
       }
     }
-    throw new Error(lastError || "Mega-Debrid Unrestrict fehlgeschlagen");
+    throw new Error(lastError || "Mega-Web Unrestrict fehlgeschlagen");
   }
 }
 
@@ -608,8 +502,7 @@ export class DebridService {
     const attempts: string[] = [];
 
     for (const provider of order) {
-      const token = this.getProviderToken(provider).trim();
-      if (!token) {
+      if (!this.isProviderConfigured(provider)) {
         continue;
       }
       configuredFound = true;
@@ -618,7 +511,7 @@ export class DebridService {
       }
 
       try {
-        const result = await this.unrestrictViaProvider(provider, link, token);
+        const result = await this.unrestrictViaProvider(provider, link);
         return {
           ...result,
           provider,
@@ -630,35 +523,35 @@ export class DebridService {
     }
 
     if (!configuredFound) {
-      throw new Error("Kein Debrid-Provider konfiguriert (API-Key fehlt)");
+      throw new Error("Kein Debrid-Provider konfiguriert");
     }
 
     throw new Error(`Unrestrict fehlgeschlagen: ${attempts.join(" | ")}`);
   }
 
-  private getProviderToken(provider: DebridProvider): string {
+  private isProviderConfigured(provider: DebridProvider): boolean {
     if (provider === "realdebrid") {
-      return this.settings.token;
+      return Boolean(this.settings.token.trim());
     }
     if (provider === "megadebrid") {
-      return this.settings.megaToken;
+      return Boolean(this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
     }
     if (provider === "alldebrid") {
-      return this.settings.allDebridToken;
+      return Boolean(this.settings.allDebridToken.trim());
     }
-    return this.settings.bestToken;
+    return Boolean(this.settings.bestToken.trim());
   }
 
-  private async unrestrictViaProvider(provider: DebridProvider, link: string, token: string): Promise<UnrestrictedLink> {
+  private async unrestrictViaProvider(provider: DebridProvider, link: string): Promise<UnrestrictedLink> {
     if (provider === "realdebrid") {
       return this.realDebridClient.unrestrictLink(link);
     }
     if (provider === "megadebrid") {
-      return new MegaDebridClient(token, this.options.megaWebUnrestrict).unrestrictLink(link);
+      return new MegaDebridClient(this.options.megaWebUnrestrict).unrestrictLink(link);
     }
     if (provider === "alldebrid") {
       return this.allDebridClient.unrestrictLink(link);
     }
-    return new BestDebridClient(token).unrestrictLink(link);
+    return new BestDebridClient(this.settings.bestToken).unrestrictLink(link);
   }
 }

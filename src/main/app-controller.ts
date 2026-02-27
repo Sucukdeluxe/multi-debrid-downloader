@@ -46,7 +46,12 @@ export class AppController {
   }
 
   private hasAnyProviderToken(settings: AppSettings): boolean {
-    return Boolean(settings.token.trim() || settings.megaToken.trim() || settings.bestToken.trim() || settings.allDebridToken.trim());
+    return Boolean(
+      settings.token.trim()
+      || (settings.megaLogin.trim() && settings.megaPassword.trim())
+      || settings.bestToken.trim()
+      || settings.allDebridToken.trim()
+    );
   }
 
   public onState: ((snapshot: UiSnapshot) => void) | null = null;
