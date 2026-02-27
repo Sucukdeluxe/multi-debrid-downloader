@@ -151,7 +151,7 @@ export class AppController {
   }
 
   public shutdown(): void {
-    this.manager.stop();
+    this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
     logger.info("App beendet");
   }

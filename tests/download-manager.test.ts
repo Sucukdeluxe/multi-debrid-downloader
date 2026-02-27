@@ -821,6 +821,66 @@ describe("download manager", () => {
     expect(snapshot.canStart).toBe(true);
   });
 
+  it("requeues legacy 'Gestoppt' items on startup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "stopped-pkg";
+    const itemId = "stopped-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "stopped",
+      outputDir: path.join(root, "downloads", "stopped"),
+      extractDir: path.join(root, "extract", "stopped"),
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/stopped",
+      provider: "megadebrid",
+      status: "cancelled",
+      retries: 1,
+      speedBps: 0,
+      downloadedBytes: 512,
+      totalBytes: 2048,
+      progressPercent: 25,
+      fileName: "resume.part01.rar",
+      targetPath: path.join(root, "downloads", "stopped", "resume.part01.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Gestoppt",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.items[itemId]?.status).toBe("queued");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Wartet");
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+  });
+
   it("cleans leftover split archives on startup for already extracted packages", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -889,6 +949,82 @@ describe("download manager", () => {
 
     await waitFor(() => !fs.existsSync(part2) && !fs.existsSync(part3), 5000);
     expect(fs.existsSync(keep)).toBe(true);
+  });
+
+  it("cleans legacy leftovers when package is extracted but marker is old", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageDir = path.join(root, "downloads", "legacy-old");
+    const extractDir = path.join(root, "extract", "legacy-old");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const part1 = path.join(packageDir, "legacy.old.part01.rar");
+    const part2 = path.join(packageDir, "legacy.old.part02.rar");
+    const part3 = path.join(packageDir, "legacy.old.part03.rar");
+    const keep = path.join(packageDir, "keep.nfo");
+    fs.writeFileSync(part1, "part1", "utf8");
+    fs.writeFileSync(part2, "part2", "utf8");
+    fs.writeFileSync(part3, "part3", "utf8");
+    fs.writeFileSync(keep, "keep", "utf8");
+    fs.writeFileSync(path.join(extractDir, "episode.mkv"), "video", "utf8");
+
+    const session = emptySession();
+    const packageId = "legacy-old-pkg";
+    const itemId = "legacy-old-item";
+    const createdAt = Date.now() - 20_000;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "legacy-old",
+      outputDir: packageDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/legacy-old",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: path.basename(part1),
+      targetPath: part1,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (123 MB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => !fs.existsSync(part1) && !fs.existsSync(part2) && !fs.existsSync(part3), 5000);
+    expect(fs.existsSync(keep)).toBe(true);
+    expect(fs.existsSync(path.join(extractDir, "episode.mkv"))).toBe(true);
   });
 
   it("resets run counters and reconnect state on start", async () => {
@@ -1627,6 +1763,89 @@ describe("download manager", () => {
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("keeps active downloads resumable on shutdown preparation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(480 * 1024, 5);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/shutdown") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.write(binary.subarray(0, Math.floor(binary.length / 3)));
+      setTimeout(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.end(binary.subarray(Math.floor(binary.length / 3)));
+        }
+      }, 2200);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/shutdown`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "shutdown.part01.rar",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "shutdown-case", links: ["https://dummy/shutdown"] }]);
+      const itemId = Object.values(manager.getSnapshot().session.items)[0]?.id || "";
+      manager.start();
+      await waitFor(() => manager.getSnapshot().session.items[itemId]?.status === "downloading", 12000);
+
+      manager.prepareForShutdown();
+      await waitFor(() => {
+        const state = manager.getSnapshot();
+        return !state.session.running && state.session.items[itemId]?.status === "queued";
+      }, 8000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("queued");
+      expect(item?.fullStatus).toBe("Wartet");
     } finally {
       server.close();
       await once(server, "close");

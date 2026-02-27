@@ -17,7 +17,7 @@ type ActiveTask = {
   itemId: string;
   packageId: string;
   abortController: AbortController;
-  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "none";
+  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "none";
   resumable: boolean;
   speedEvents: Array<{ at: number; bytes: number }>;
   nonResumableCounted: boolean;
@@ -84,6 +84,11 @@ function parseContentDispositionFilename(contentDisposition: string | null): str
 
 function canRetryStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+function isArchiveLikePath(filePath: string): boolean {
+  const lower = path.basename(filePath).toLowerCase();
+  return /\.(?:part\d+\.rar|rar|r\d{2}|zip|z\d{2}|7z|7z\.\d{3})$/i.test(lower);
 }
 
 function isFetchFailure(errorText: string): boolean {
@@ -601,15 +606,18 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      const extractedItems = items.filter((item) => item.fullStatus === "Entpackt");
-      if (extractedItems.length === 0) {
+      const hasExtractMarker = items.some((item) => /entpack/i.test(item.fullStatus));
+      const hasExtractedOutput = this.directoryHasAnyFiles(pkg.extractDir);
+      if (!hasExtractMarker && !hasExtractedOutput) {
         continue;
       }
 
       const packageTargets = cleanupTargetsByPackage.get(packageId) ?? new Set<string>();
-      for (const item of extractedItems) {
-        const targetPath = String(item.targetPath || "").trim();
-        if (!targetPath) {
+      for (const item of items) {
+        const rawTargetPath = String(item.targetPath || "").trim();
+        const fallbackTargetPath = item.fileName ? path.join(pkg.outputDir, sanitizeFilename(item.fileName)) : "";
+        const targetPath = rawTargetPath || fallbackTargetPath;
+        if (!targetPath || !isArchiveLikePath(targetPath)) {
           continue;
         }
         for (const cleanupTarget of collectArchiveCleanupTargets(targetPath)) {
@@ -635,6 +643,9 @@ export class DownloadManager extends EventEmitter {
 
           let removed = 0;
           for (const targetPath of targets) {
+            if (!fs.existsSync(targetPath)) {
+              continue;
+            }
             try {
               await fs.promises.rm(targetPath, { force: true });
               removed += 1;
@@ -651,6 +662,32 @@ export class DownloadManager extends EventEmitter {
       .catch((error) => {
         logger.warn(`Nachtraegliches Archive-Cleanup fehlgeschlagen: ${compactErrorText(error)}`);
       });
+  }
+
+  private directoryHasAnyFiles(rootDir: string): boolean {
+    if (!rootDir || !fs.existsSync(rootDir)) {
+      return false;
+    }
+    const stack = [rootDir];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          return true;
+        }
+        if (entry.isDirectory()) {
+          stack.push(path.join(current, entry.name));
+        }
+      }
+    }
+    return false;
   }
 
   public cancelPackage(packageId: string): void {
@@ -755,6 +792,48 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
+  public prepareForShutdown(): void {
+    this.session.running = false;
+    this.session.paused = false;
+    this.session.reconnectUntil = 0;
+    this.session.reconnectReason = "";
+
+    for (const active of this.activeTasks.values()) {
+      const item = this.session.items[active.itemId];
+      if (item && !isFinishedStatus(item.status)) {
+        item.status = "queued";
+        item.speedBps = 0;
+        const pkg = this.session.packages[item.packageId];
+        item.fullStatus = pkg && !pkg.enabled ? "Paket gestoppt" : "Wartet";
+        item.updatedAt = nowMs();
+      }
+      active.abortReason = "shutdown";
+      active.abortController.abort("shutdown");
+    }
+
+    for (const pkg of Object.values(this.session.packages)) {
+      if (pkg.status === "downloading"
+        || pkg.status === "validating"
+        || pkg.status === "extracting"
+        || pkg.status === "integrity_check"
+        || pkg.status === "paused"
+        || pkg.status === "reconnect_wait") {
+        pkg.status = pkg.enabled ? "queued" : "paused";
+        pkg.updatedAt = nowMs();
+      }
+    }
+
+    this.speedEvents = [];
+    this.speedBytesLastWindow = 0;
+    this.runItemIds.clear();
+    this.runPackageIds.clear();
+    this.runOutcomes.clear();
+    this.runCompletedPackages.clear();
+    this.session.summaryText = "";
+    this.persistNow();
+    this.emitState(true);
+  }
+
   public togglePause(): boolean {
     if (!this.session.running) {
       return false;
@@ -774,6 +853,13 @@ export class DownloadManager extends EventEmitter {
     for (const item of Object.values(this.session.items)) {
       if (item.provider !== "realdebrid" && item.provider !== "megadebrid" && item.provider !== "bestdebrid" && item.provider !== "alldebrid") {
         item.provider = null;
+      }
+      if (item.status === "cancelled" && item.fullStatus === "Gestoppt") {
+        item.status = "queued";
+        item.fullStatus = "Wartet";
+        item.lastError = "";
+        item.speedBps = 0;
+        continue;
       }
       if (item.status === "downloading"
         || item.status === "validating"
@@ -1272,6 +1358,11 @@ export class DownloadManager extends EventEmitter {
           } catch {
             // ignore
           }
+        } else if (reason === "shutdown") {
+          item.status = "queued";
+          item.speedBps = 0;
+          const activePkg = this.session.packages[item.packageId];
+          item.fullStatus = activePkg && !activePkg.enabled ? "Paket gestoppt" : "Wartet";
         } else if (reason === "reconnect") {
           item.status = "queued";
           item.fullStatus = "Wartet auf Reconnect";
