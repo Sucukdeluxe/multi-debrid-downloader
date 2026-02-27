@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: "Segoe UI", "Inter", sans-serif;
+  font-family: "Manrope", "Segoe UI Variable", "Segoe UI", sans-serif;
   --bg: #040912;
   --surface: #0b1424;
   --card: #101d31;
@@ -30,8 +30,8 @@ body,
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   height: 100%;
-  padding: 14px 16px 12px;
-  gap: 10px;
+  padding: 12px 14px 10px;
+  gap: 8px;
 }
 
 .top-header {
@@ -62,11 +62,11 @@ body,
 .control-strip {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   background: linear-gradient(180deg, rgba(20, 34, 56, 0.95), rgba(9, 16, 28, 0.95));
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 12px 14px;
+  border-radius: 12px;
+  padding: 10px 12px;
 }
 
 .buttons,
@@ -83,10 +83,11 @@ body,
   background: #0d1a2c;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 7px 12px;
+  border-radius: 9px;
+  padding: 6px 11px;
   cursor: pointer;
   font-weight: 600;
+  font-size: 13px;
   transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
 
@@ -121,10 +122,11 @@ body,
   background: #0b1321;
   border: 1px solid var(--border);
   color: var(--muted);
-  border-radius: 10px;
-  padding: 8px 13px;
+  border-radius: 9px;
+  padding: 7px 12px;
   cursor: pointer;
   font-weight: 600;
+  font-size: 13px;
 }
 
 .tab.active {
@@ -146,12 +148,12 @@ body,
 
 .card {
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(17, 29, 49, 0.95), rgba(9, 16, 28, 0.95));
-  padding: 12px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
 }
 
 .card.wide {
@@ -161,7 +163,8 @@ body,
 
 .card h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
+  letter-spacing: 0.1px;
 }
 
 .card label,
@@ -180,8 +183,8 @@ body,
   background: var(--field);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 9px;
+  padding: 7px 9px;
 }
 
 .card textarea {
@@ -207,6 +210,77 @@ body,
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.settings-shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+
+.settings-toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-toolbar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-toolbar-copy span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-grid {
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+}
+
+.settings-card {
+  gap: 6px;
+}
+
+.field-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.field-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.field-grid > div {
+  min-width: 0;
+}
+
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.toggle-line input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
 }
 
 .package-card {
@@ -248,6 +322,7 @@ body,
 
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   margin-top: 10px;
   font-size: 13px;
@@ -265,13 +340,43 @@ th {
   font-weight: 600;
 }
 
-.settings-grid {
-  grid-template-columns: 1fr 1fr;
+td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.settings-actions {
-  grid-column: span 2;
-  justify-content: flex-end;
+.num {
+  font-variant-numeric: tabular-nums;
+  font-family: "Consolas", "SFMono-Regular", "Menlo", monospace;
+}
+
+.col-file {
+  width: 34%;
+}
+
+.col-provider {
+  width: 14%;
+}
+
+.col-status {
+  width: 26%;
+}
+
+.col-progress {
+  width: 8%;
+}
+
+.col-speed {
+  width: 12%;
+}
+
+.col-retries {
+  width: 6%;
+}
+
+.settings-grid {
+  grid-template-columns: 1.1fr 1fr;
 }
 
 .empty {
@@ -300,8 +405,22 @@ th {
     align-items: flex-start;
   }
 
+  .settings-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .settings-toolbar-actions {
+    width: 100%;
+  }
+
   .grid-two,
   .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .field-grid.two,
+  .field-grid.three {
     grid-template-columns: 1fr;
   }
 

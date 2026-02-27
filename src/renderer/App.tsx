@@ -73,6 +73,11 @@ const providerLabels: Record<DebridProvider, string> = {
   alldebrid: "AllDebrid"
 };
 
+function formatSpeedMbps(speedBps: number): string {
+  const mbps = Math.max(0, speedBps) / (1024 * 1024);
+  return `${mbps.toFixed(2)} MB/s`;
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [tab, setTab] = useState<Tab>("collector");
@@ -309,8 +314,6 @@ export function App(): ReactElement {
             <option value="global">global</option>
             <option value="per_download">per_download</option>
           </select>
-          <button className="btn" onClick={onSaveSettings}>Live speichern</button>
-          <button className="btn" onClick={onCheckUpdates}>Updates prüfen</button>
         </div>
       </section>
 
@@ -356,161 +359,166 @@ export function App(): ReactElement {
         )}
 
         {tab === "settings" && (
-          <section className="grid-two settings-grid">
-            <article className="card">
-              <h3>Debrid Provider</h3>
-              <label>Real-Debrid API Token</label>
-              <input
-                type="password"
-                value={settingsDraft.token}
-                onChange={(event) => setText("token", event.target.value)}
-              />
-              <label>Mega-Debrid Login</label>
-              <input
-                value={settingsDraft.megaLogin}
-                onChange={(event) => setText("megaLogin", event.target.value)}
-              />
-              <label>Mega-Debrid Passwort</label>
-              <input
-                type="password"
-                value={settingsDraft.megaPassword}
-                onChange={(event) => setText("megaPassword", event.target.value)}
-              />
-              <label>BestDebrid API Token</label>
-              <input
-                type="password"
-                value={settingsDraft.bestToken}
-                onChange={(event) => setText("bestToken", event.target.value)}
-              />
-              <label>AllDebrid API Key</label>
-              <input
-                type="password"
-                value={settingsDraft.allDebridToken}
-                onChange={(event) => setText("allDebridToken", event.target.value)}
-              />
-              <label>Primärer Provider</label>
-              <select value={settingsDraft.providerPrimary} onChange={(event) => setText("providerPrimary", event.target.value)}>
-                {Object.entries(providerLabels).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-              </select>
-              <label>Sekundärer Provider</label>
-              <select value={settingsDraft.providerSecondary} onChange={(event) => setText("providerSecondary", event.target.value)}>
-                {Object.entries(providerLabels).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-              </select>
-              <label>Tertiärer Provider</label>
-              <select value={settingsDraft.providerTertiary} onChange={(event) => setText("providerTertiary", event.target.value)}>
-                {Object.entries(providerLabels).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-              </select>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.autoProviderFallback}
-                  onChange={(event) => setBool("autoProviderFallback", event.target.checked)}
-                />
-                Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.rememberToken}
-                  onChange={(event) => setBool("rememberToken", event.target.checked)}
-                />
-                API Keys lokal speichern
-              </label>
-              <label>GitHub Repo</label>
-              <input value={settingsDraft.updateRepo} onChange={(event) => setText("updateRepo", event.target.value)} />
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.autoUpdateCheck}
-                  onChange={(event) => setBool("autoUpdateCheck", event.target.checked)}
-                />
-                Beim Start auf Updates prüfen
-              </label>
-            </article>
-
-            <article className="card">
-              <h3>Paketierung & Zielpfade</h3>
-              <label>Download-Ordner</label>
-              <div className="input-row">
-                <input value={settingsDraft.outputDir} onChange={(event) => setText("outputDir", event.target.value)} />
-                <button
-                  className="btn"
-                  onClick={() => {
-                    void performQuickAction(async () => {
-                      const selected = await window.rd.pickFolder();
-                      if (selected) {
-                        setText("outputDir", selected);
-                      }
-                    });
-                  }}
-                >Wählen</button>
+          <section className="settings-shell">
+            <article className="card settings-toolbar">
+              <div className="settings-toolbar-copy">
+                <h3>Einstellungen</h3>
+                <span>Kompakt, schnell auffindbar und direkt speicherbar.</span>
               </div>
-              <label>Paketname (optional)</label>
-              <input value={settingsDraft.packageName} onChange={(event) => setText("packageName", event.target.value)} />
-              <label>Entpacken nach</label>
-              <div className="input-row">
-                <input value={settingsDraft.extractDir} onChange={(event) => setText("extractDir", event.target.value)} />
-                <button
-                  className="btn"
-                  onClick={() => {
-                    void performQuickAction(async () => {
-                      const selected = await window.rd.pickFolder();
-                      if (selected) {
-                        setText("extractDir", selected);
-                      }
-                    });
-                  }}
-                >Wählen</button>
+              <div className="settings-toolbar-actions">
+                <button className="btn" onClick={onCheckUpdates}>Updates prüfen</button>
+                <button className="btn accent" onClick={onSaveSettings}>Settings speichern</button>
               </div>
-              <label><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(event) => setBool("autoExtract", event.target.checked)} /> Auto-Extract</label>
-              <label><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(event) => setBool("hybridExtract", event.target.checked)} /> Hybrid-Extract</label>
             </article>
 
-            <article className="card">
-              <h3>Queue & Reconnect</h3>
-              <label>Max. gleichzeitige Downloads</label>
-              <input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(event) => setNum("maxParallel", Number(event.target.value) || 1)} />
-              <label><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(event) => setBool("autoReconnect", event.target.checked)} /> Automatischer Reconnect</label>
-              <label>Reconnect-Wartezeit (Sek.)</label>
-              <input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(event) => setNum("reconnectWaitSeconds", Number(event.target.value) || 45)} />
-              <label><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(event) => setBool("autoResumeOnStart", event.target.checked)} /> Auto-Resume beim Start</label>
-            </article>
+            <section className="settings-grid">
+              <article className="card settings-card">
+                <h3>Provider & Zugang</h3>
+                <label>Real-Debrid API Token</label>
+                <input type="password" value={settingsDraft.token} onChange={(event) => setText("token", event.target.value)} />
+                <label>Mega-Debrid Login</label>
+                <input value={settingsDraft.megaLogin} onChange={(event) => setText("megaLogin", event.target.value)} />
+                <label>Mega-Debrid Passwort</label>
+                <input type="password" value={settingsDraft.megaPassword} onChange={(event) => setText("megaPassword", event.target.value)} />
+                <label>BestDebrid API Token</label>
+                <input type="password" value={settingsDraft.bestToken} onChange={(event) => setText("bestToken", event.target.value)} />
+                <label>AllDebrid API Key</label>
+                <input type="password" value={settingsDraft.allDebridToken} onChange={(event) => setText("allDebridToken", event.target.value)} />
 
-            <article className="card">
-              <h3>Integrität & Cleanup</h3>
-              <label><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(event) => setBool("enableIntegrityCheck", event.target.checked)} /> SFV/CRC/MD5/SHA1 prüfen</label>
-              <label><input type="checkbox" checked={settingsDraft.removeLinkFilesAfterExtract} onChange={(event) => setBool("removeLinkFilesAfterExtract", event.target.checked)} /> Link-Dateien nach Entpacken entfernen</label>
-              <label><input type="checkbox" checked={settingsDraft.removeSamplesAfterExtract} onChange={(event) => setBool("removeSamplesAfterExtract", event.target.checked)} /> Samples nach Entpacken entfernen</label>
-              <label>Fertiggestellte Downloads entfernen</label>
-              <select value={settingsDraft.completedCleanupPolicy} onChange={(event) => setText("completedCleanupPolicy", event.target.value)}>
-                {Object.entries(cleanupLabels).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-              </select>
-              <label>Cleanup nach Entpacken</label>
-              <select value={settingsDraft.cleanupMode} onChange={(event) => setText("cleanupMode", event.target.value)}>
-                <option value="none">keine Archive löschen</option>
-                <option value="trash">Archive in Papierkorb</option>
-                <option value="delete">Archive löschen</option>
-              </select>
-              <label>Konfliktmodus beim Entpacken</label>
-              <select value={settingsDraft.extractConflictMode} onChange={(event) => setText("extractConflictMode", event.target.value)}>
-                <option value="overwrite">überschreiben</option>
-                <option value="skip">überspringen</option>
-                <option value="rename">umbenennen</option>
-                <option value="ask">nachfragen</option>
-              </select>
-            </article>
+                <div className="field-grid three">
+                  <div>
+                    <label>Primär</label>
+                    <select value={settingsDraft.providerPrimary} onChange={(event) => setText("providerPrimary", event.target.value)}>
+                      {Object.entries(providerLabels).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label>Sekundär</label>
+                    <select value={settingsDraft.providerSecondary} onChange={(event) => setText("providerSecondary", event.target.value)}>
+                      {Object.entries(providerLabels).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label>Tertiär</label>
+                    <select value={settingsDraft.providerTertiary} onChange={(event) => setText("providerTertiary", event.target.value)}>
+                      {Object.entries(providerLabels).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-            <div className="settings-actions">
-              <button className="btn accent" onClick={onSaveSettings}>Settings speichern</button>
-            </div>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(event) => setBool("autoProviderFallback", event.target.checked)} /> Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(event) => setBool("rememberToken", event.target.checked)} /> Zugangsdaten lokal speichern</label>
+              </article>
+
+              <article className="card settings-card">
+                <h3>Pfade & Paketierung</h3>
+                <label>Download-Ordner</label>
+                <div className="input-row">
+                  <input value={settingsDraft.outputDir} onChange={(event) => setText("outputDir", event.target.value)} />
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      void performQuickAction(async () => {
+                        const selected = await window.rd.pickFolder();
+                        if (selected) {
+                          setText("outputDir", selected);
+                        }
+                      });
+                    }}
+                  >Wählen</button>
+                </div>
+                <label>Paketname (optional)</label>
+                <input value={settingsDraft.packageName} onChange={(event) => setText("packageName", event.target.value)} />
+                <label>Entpacken nach</label>
+                <div className="input-row">
+                  <input value={settingsDraft.extractDir} onChange={(event) => setText("extractDir", event.target.value)} />
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      void performQuickAction(async () => {
+                        const selected = await window.rd.pickFolder();
+                        if (selected) {
+                          setText("extractDir", selected);
+                        }
+                      });
+                    }}
+                  >Wählen</button>
+                </div>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(event) => setBool("autoExtract", event.target.checked)} /> Auto-Extract</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(event) => setBool("hybridExtract", event.target.checked)} /> Hybrid-Extract</label>
+              </article>
+
+              <article className="card settings-card">
+                <h3>Queue, Limits & Reconnect</h3>
+                <div className="field-grid two">
+                  <div>
+                    <label>Max. Downloads</label>
+                    <input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(event) => setNum("maxParallel", Number(event.target.value) || 1)} />
+                  </div>
+                  <div>
+                    <label>Reconnect-Wartezeit (Sek.)</label>
+                    <input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(event) => setNum("reconnectWaitSeconds", Number(event.target.value) || 45)} />
+                  </div>
+                </div>
+                <div className="field-grid two">
+                  <div>
+                    <label>Speed-Limit (KB/s)</label>
+                    <input type="number" min={0} max={500000} value={settingsDraft.speedLimitKbps} onChange={(event) => setNum("speedLimitKbps", Number(event.target.value) || 0)} />
+                  </div>
+                  <div>
+                    <label>Speed-Modus</label>
+                    <select value={settingsDraft.speedLimitMode} onChange={(event) => setText("speedLimitMode", event.target.value)}>
+                      <option value="global">global</option>
+                      <option value="per_download">per_download</option>
+                    </select>
+                  </div>
+                </div>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(event) => setBool("speedLimitEnabled", event.target.checked)} /> Speed-Limit aktivieren</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(event) => setBool("autoReconnect", event.target.checked)} /> Automatischer Reconnect</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(event) => setBool("autoResumeOnStart", event.target.checked)} /> Auto-Resume beim Start</label>
+              </article>
+
+              <article className="card settings-card">
+                <h3>Integrität, Cleanup & Updates</h3>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(event) => setBool("enableIntegrityCheck", event.target.checked)} /> SFV/CRC/MD5/SHA1 prüfen</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeLinkFilesAfterExtract} onChange={(event) => setBool("removeLinkFilesAfterExtract", event.target.checked)} /> Link-Dateien nach Entpacken entfernen</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeSamplesAfterExtract} onChange={(event) => setBool("removeSamplesAfterExtract", event.target.checked)} /> Samples nach Entpacken entfernen</label>
+                <label>Fertiggestellte Downloads entfernen</label>
+                <select value={settingsDraft.completedCleanupPolicy} onChange={(event) => setText("completedCleanupPolicy", event.target.value)}>
+                  {Object.entries(cleanupLabels).map(([key, label]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+                <div className="field-grid two">
+                  <div>
+                    <label>Cleanup nach Entpacken</label>
+                    <select value={settingsDraft.cleanupMode} onChange={(event) => setText("cleanupMode", event.target.value)}>
+                      <option value="none">keine Archive löschen</option>
+                      <option value="trash">Archive in Papierkorb</option>
+                      <option value="delete">Archive löschen</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Konfliktmodus</label>
+                    <select value={settingsDraft.extractConflictMode} onChange={(event) => setText("extractConflictMode", event.target.value)}>
+                      <option value="overwrite">überschreiben</option>
+                      <option value="skip">überspringen</option>
+                      <option value="rename">umbenennen</option>
+                      <option value="ask">nachfragen</option>
+                    </select>
+                  </div>
+                </div>
+                <label>GitHub Repo</label>
+                <input value={settingsDraft.updateRepo} onChange={(event) => setText("updateRepo", event.target.value)} />
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(event) => setBool("autoUpdateCheck", event.target.checked)} /> Beim Start auf Updates prüfen</label>
+              </article>
+            </section>
           </section>
         )}
       </main>
@@ -542,23 +550,23 @@ function PackageCard({ pkg, items, onCancel }: { pkg: PackageEntry; items: Downl
       <table>
         <thead>
           <tr>
-            <th>Datei</th>
-            <th>Provider</th>
-            <th>Status</th>
-            <th>Fortschritt</th>
-            <th>Speed</th>
-            <th>Retries</th>
+            <th className="col-file">Datei</th>
+            <th className="col-provider">Provider</th>
+            <th className="col-status">Status</th>
+            <th className="col-progress">Fortschritt</th>
+            <th className="col-speed">Speed</th>
+            <th className="col-retries">Retries</th>
           </tr>
         </thead>
         <tbody>
           {items.map((item) => (
             <tr key={item.id}>
-              <td>{item.fileName}</td>
-              <td>{item.provider ? providerLabels[item.provider] : "-"}</td>
-              <td title={item.fullStatus}>{item.fullStatus}</td>
-              <td>{item.progressPercent}%</td>
-              <td>{item.speedBps > 0 ? `${Math.floor(item.speedBps / 1024)} KB/s` : "0 KB/s"}</td>
-              <td>{item.retries}</td>
+              <td className="col-file" title={item.fileName}>{item.fileName}</td>
+              <td className="col-provider">{item.provider ? providerLabels[item.provider] : "-"}</td>
+              <td className="col-status" title={item.fullStatus}>{item.fullStatus}</td>
+              <td className="col-progress num">{item.progressPercent}%</td>
+              <td className="col-speed num">{formatSpeedMbps(item.speedBps)}</td>
+              <td className="col-retries num">{item.retries}</td>
             </tr>
           ))}
         </tbody>

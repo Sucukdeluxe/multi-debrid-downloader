@@ -125,8 +125,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     return { extracted: 0, failed: 0 };
   }
 
-  fs.mkdirSync(options.targetDir, { recursive: true });
-
   let extracted = 0;
   let failed = 0;
   const extractedArchives: string[] = [];
@@ -153,6 +151,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
     if (options.removeSamples) {
       removeSampleArtifacts(options.targetDir);
+    }
+  } else {
+    try {
+      if (fs.existsSync(options.targetDir) && fs.readdirSync(options.targetDir).length === 0) {
+        fs.rmSync(options.targetDir, { recursive: true, force: true });
+      }
+    } catch {
+      // ignore
     }
   }
 
