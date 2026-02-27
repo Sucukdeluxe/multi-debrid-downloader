@@ -10,7 +10,8 @@ const links = [
 const settings = {
   ...defaultSettings(),
   token: process.env.RD_TOKEN || "",
-  megaToken: process.env.MEGA_TOKEN || "",
+  megaLogin: process.env.MEGA_LOGIN || "",
+  megaPassword: process.env.MEGA_PASSWORD || "",
   bestToken: process.env.BEST_TOKEN || "",
   allDebridToken: process.env.ALLDEBRID_TOKEN || "",
   providerPrimary: "alldebrid" as const,
@@ -19,8 +20,8 @@ const settings = {
   autoProviderFallback: true
 };
 
-if (!settings.token && !settings.megaToken && !settings.bestToken && !settings.allDebridToken) {
-  console.error("No provider tokens set. Use RD_TOKEN/MEGA_TOKEN/BEST_TOKEN/ALLDEBRID_TOKEN.");
+if (!settings.token && !(settings.megaLogin && settings.megaPassword) && !settings.bestToken && !settings.allDebridToken) {
+  console.error("No provider credentials set. Use RD_TOKEN or MEGA_LOGIN+MEGA_PASSWORD or BEST_TOKEN or ALLDEBRID_TOKEN.");
   process.exit(1);
 }
 

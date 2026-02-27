@@ -1,4 +1,4 @@
-import { DragEvent, ReactElement, useEffect, useMemo, useState } from "react";
+import { DragEvent, ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import type { AppSettings, DebridProvider, DownloadItem, PackageEntry, UiSnapshot, UpdateCheckResult } from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
@@ -6,7 +6,6 @@ type Tab = "collector" | "downloads" | "settings";
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
     token: "",
-    megaToken: "",
     megaLogin: "",
     megaPassword: "",
     bestToken: "",
@@ -80,6 +79,8 @@ export function App(): ReactElement {
   const [linksRaw, setLinksRaw] = useState("");
   const [statusToast, setStatusToast] = useState("");
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
+  const latestStateRef = useRef<UiSnapshot | null>(null);
+  const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
@@ -93,9 +94,23 @@ export function App(): ReactElement {
       }
     });
     unsubscribe = window.rd.onStateUpdate((state) => {
-      setSnapshot(state);
+      latestStateRef.current = state;
+      if (stateFlushTimerRef.current) {
+        return;
+      }
+      stateFlushTimerRef.current = setTimeout(() => {
+        stateFlushTimerRef.current = null;
+        if (latestStateRef.current) {
+          setSnapshot(latestStateRef.current);
+          latestStateRef.current = null;
+        }
+      }, 220);
     });
     return () => {
+      if (stateFlushTimerRef.current) {
+        clearTimeout(stateFlushTimerRef.current);
+        stateFlushTimerRef.current = null;
+      }
       if (unsubscribe) {
         unsubscribe();
       }
@@ -171,6 +186,7 @@ export function App(): ReactElement {
     if (files.length === 0) {
       return;
     }
+    await window.rd.updateSettings(settingsDraft);
     const result = await window.rd.addContainers(files);
     setStatusToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
     setTimeout(() => setStatusToast(""), 2200);
@@ -186,6 +202,7 @@ export function App(): ReactElement {
     if (dlc.length === 0) {
       return;
     }
+    await window.rd.updateSettings(settingsDraft);
     const result = await window.rd.addContainers(dlc);
     setStatusToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
     setTimeout(() => setStatusToast(""), 2200);
@@ -309,18 +326,12 @@ export function App(): ReactElement {
                 value={settingsDraft.token}
                 onChange={(event) => setText("token", event.target.value)}
               />
-              <label>Mega-Debrid API Token</label>
-              <input
-                type="password"
-                value={settingsDraft.megaToken}
-                onChange={(event) => setText("megaToken", event.target.value)}
-              />
-              <label>Mega-Debrid Login (Web Fallback)</label>
+              <label>Mega-Debrid Login</label>
               <input
                 value={settingsDraft.megaLogin}
                 onChange={(event) => setText("megaLogin", event.target.value)}
               />
-              <label>Mega-Debrid Passwort (Web Fallback)</label>
+              <label>Mega-Debrid Passwort</label>
               <input
                 type="password"
                 value={settingsDraft.megaPassword}
