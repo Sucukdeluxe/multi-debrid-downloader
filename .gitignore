@@ -16,3 +16,10 @@ rd_downloader.log
 rd_download_manifest.json
 _update_staging/
 apply_update.cmd
+
+node_modules/
+.vite/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

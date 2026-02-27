@@ -1,0 +1,73 @@
+{
+  "name": "real-debrid-downloader",
+  "version": "1.1.9",
+  "description": "Real-Debrid Downloader Desktop (Electron + React + TypeScript)",
+  "main": "build/main/main/main.js",
+  "author": "Sucukdeluxe",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:main:watch\" \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:main:watch": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap --watch",
+    "dev:electron": "wait-on tcp:5173 file:build/main/main/main.js && cross-env NODE_ENV=development electron .",
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap",
+    "build:renderer": "vite build",
+    "start": "cross-env NODE_ENV=production electron .",
+    "test": "vitest run",
+    "self-check": "tsx tests/self-check.ts",
+    "release:win": "npm run build && electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.13",
+    "@types/adm-zip": "^0.5.7",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8",
+    "tsup": "^8.3.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.sucukdeluxe.realdebrid",
+    "productName": "Real-Debrid-Downloader",
+    "artifactName": "${productName}-${version}-${arch}-${target}.${ext}",
+    "directories": {
+      "buildResources": "assets",
+      "output": "release"
+    },
+    "files": [
+      "build/main/**/*",
+      "build/renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/app_icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
