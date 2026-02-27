@@ -310,4 +310,61 @@ describe("debrid service", () => {
     const resolved = await service.resolveFilenames([link]);
     expect(resolved.get(link)).toBe("Bulletproof.S01E01.German.DL.DD20.Synced.720p.AmazonHD.h264-GDR.part01.rar");
   });
+
+  it("falls back to provider unrestrict for unresolved filename scan", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true,
+      allDebridToken: ""
+    };
+
+    const linkFromPage = "https://rapidgator.net/file/11111111111111111111111111111111";
+    const linkFromProvider = "https://hoster.example/file/22222222222222222222222222222222";
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url === linkFromPage) {
+        return new Response("<html><head><title>Download file from-page.part1.rar</title></head></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        const body = init?.body;
+        const bodyText = body instanceof URLSearchParams ? body.toString() : String(body || "");
+        const linkValue = new URLSearchParams(bodyText).get("link") || "";
+        if (linkValue === linkFromProvider) {
+          return new Response(JSON.stringify({
+            download: "https://cdn.example/from-provider",
+            filename: "from-provider.part2.rar",
+            filesize: 1024
+          }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+      }
+
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const events: Array<{ link: string; fileName: string }> = [];
+    const resolved = await service.resolveFilenames([linkFromPage, linkFromProvider], (link, fileName) => {
+      events.push({ link, fileName });
+    });
+
+    expect(resolved.get(linkFromPage)).toBe("from-page.part1.rar");
+    expect(resolved.get(linkFromProvider)).toBe("from-provider.part2.rar");
+    expect(events).toEqual(expect.arrayContaining([
+      { link: linkFromPage, fileName: "from-page.part1.rar" },
+      { link: linkFromProvider, fileName: "from-provider.part2.rar" }
+    ]));
+  });
 });

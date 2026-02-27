@@ -551,21 +551,34 @@ export class DebridService {
     this.allDebridClient = new AllDebridClient(next.allDebridToken);
   }
 
-  public async resolveFilenames(links: string[]): Promise<Map<string, string>> {
+  public async resolveFilenames(
+    links: string[],
+    onResolved?: (link: string, fileName: string) => void
+  ): Promise<Map<string, string>> {
     const unresolved = links.filter((link) => looksLikeOpaqueFilename(filenameFromUrl(link)));
     if (unresolved.length === 0) {
       return new Map<string, string>();
     }
 
     const clean = new Map<string, string>();
+    const reportResolved = (link: string, fileName: string): void => {
+      const normalized = fileName.trim();
+      if (!normalized || looksLikeOpaqueFilename(normalized) || normalized.toLowerCase() === "download.bin") {
+        return;
+      }
+      if (clean.get(link) === normalized) {
+        return;
+      }
+      clean.set(link, normalized);
+      onResolved?.(link, normalized);
+    };
+
     const token = this.settings.allDebridToken.trim();
     if (token) {
       try {
         const infos = await this.allDebridClient.getLinkInfos(unresolved);
         for (const [link, fileName] of infos.entries()) {
-          if (fileName.trim() && !looksLikeOpaqueFilename(fileName.trim())) {
-            clean.set(link, fileName.trim());
-          }
+          reportResolved(link, fileName);
         }
       } catch {
         // ignore and continue with host page fallback
@@ -573,10 +586,18 @@ export class DebridService {
     }
 
     const remaining = unresolved.filter((link) => !clean.has(link) && isRapidgatorLink(link));
-    await runWithConcurrency(remaining, 3, async (link) => {
+    await runWithConcurrency(remaining, 6, async (link) => {
       const fromPage = await resolveRapidgatorFilename(link);
-      if (fromPage && !looksLikeOpaqueFilename(fromPage)) {
-        clean.set(link, fromPage);
+      reportResolved(link, fromPage);
+    });
+
+    const stillUnresolved = unresolved.filter((link) => !clean.has(link));
+    await runWithConcurrency(stillUnresolved, 4, async (link) => {
+      try {
+        const unrestricted = await this.unrestrictLink(link);
+        reportResolved(link, unrestricted.fileName || "");
+      } catch {
+        // ignore final fallback errors
       }
     });
 
