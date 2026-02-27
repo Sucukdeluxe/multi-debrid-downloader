@@ -2941,4 +2941,136 @@ describe("download manager", () => {
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
     expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
   });
+
+  it("does not fail startup post-processing when source package dir is missing but extract output exists", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const outputDir = path.join(root, "downloads", "missing-source-ok");
+    const extractDir = path.join(root, "extract", "missing-source-ok");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "episode.mkv"), "ok", "utf8");
+
+    const session = emptySession();
+    const packageId = "missing-source-ok-pkg";
+    const itemId = "missing-source-ok-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "missing-source-ok",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/missing-source-ok",
+      provider: "megadebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: "missing-source-ok.part01.rar",
+      targetPath: path.join(outputDir, "missing-source-ok.part01.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (123 B)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt"), 12000);
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]?.status).toBe("completed");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
+  });
+
+  it("marks missing source package dir as extracted instead of failed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const outputDir = path.join(root, "downloads", "missing-source-empty");
+    const extractDir = path.join(root, "extract", "missing-source-empty");
+
+    const session = emptySession();
+    const packageId = "missing-source-empty-pkg";
+    const itemId = "missing-source-empty-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "missing-source-empty",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/missing-source-empty",
+      provider: "megadebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: "missing-source-empty.part01.rar",
+      targetPath: path.join(outputDir, "missing-source-empty.part01.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (123 B)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt"), 12000);
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]?.status).toBe("completed");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt (Quelle fehlt)");
+  });
 });

@@ -113,6 +113,10 @@ function isFinishedStatus(status: DownloadStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+function isExtractedLabel(statusText: string): boolean {
+  return /^entpackt\b/i.test(String(statusText || "").trim());
+}
+
 function providerLabel(provider: DownloadItem["provider"]): string {
   if (provider === "realdebrid") {
     return "Real-Debrid";
@@ -168,6 +172,8 @@ export class DownloadManager extends EventEmitter {
   private stateEmitTimer: NodeJS.Timeout | null = null;
 
   private speedBytesLastWindow = 0;
+
+  private lastPersistAt = 0;
 
   private cleanupQueue: Promise<void> = Promise.resolve();
 
@@ -1203,13 +1209,28 @@ export class DownloadManager extends EventEmitter {
     if (this.persistTimer) {
       return;
     }
+
+    const itemCount = Object.keys(this.session.items).length;
+    const minGapMs = this.session.running
+      ? itemCount >= 1500
+        ? 1300
+        : itemCount >= 700
+          ? 950
+          : itemCount >= 250
+            ? 700
+            : 450
+      : 250;
+    const sinceLastPersist = nowMs() - this.lastPersistAt;
+    const delay = Math.max(120, minGapMs - sinceLastPersist);
+
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       this.persistNow();
-    }, 250);
+    }, delay);
   }
 
   private persistNow(): void {
+    this.lastPersistAt = nowMs();
     saveSession(this.storagePaths, this.session);
   }
 
@@ -1397,7 +1418,7 @@ export class DownloadManager extends EventEmitter {
 
       if (this.settings.autoExtract && failed === 0 && success > 0) {
         const needsPostProcess = pkg.status !== "completed"
-          || items.some((item) => item.status === "completed" && item.fullStatus !== "Entpackt");
+          || items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
         if (needsPostProcess) {
           void this.runPackagePostProcessing(packageId);
         } else if (pkg.status !== "completed") {
@@ -1475,7 +1496,9 @@ export class DownloadManager extends EventEmitter {
           break;
         }
 
-        await sleep(120);
+        const maxParallel = Math.max(1, this.settings.maxParallel);
+        const schedulerSleepMs = this.activeTasks.size >= maxParallel ? 170 : 120;
+        await sleep(schedulerSleepMs);
       }
     } finally {
       this.scheduleRunning = false;
@@ -2381,7 +2404,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     const completedItems = items.filter((item) => item.status === "completed");
-    const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => item.fullStatus === "Entpackt");
+    const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => isExtractedLabel(item.fullStatus));
 
     if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
       pkg.status = "extracting";
@@ -2436,11 +2459,22 @@ export class DownloadManager extends EventEmitter {
           }
           pkg.status = "failed";
         } else {
-          if (result.extracted > 0) {
-            for (const entry of completedItems) {
-              entry.fullStatus = "Entpackt";
-              entry.updatedAt = nowMs();
-            }
+          const hasExtractedOutput = this.directoryHasAnyFiles(pkg.extractDir);
+          const sourceExists = fs.existsSync(pkg.outputDir);
+          let finalStatusText = "";
+
+          if (result.extracted > 0 || hasExtractedOutput) {
+            finalStatusText = "Entpackt";
+          } else if (!sourceExists) {
+            finalStatusText = "Entpackt (Quelle fehlt)";
+            logger.warn(`Post-Processing ohne Quellordner: pkg=${pkg.name}, outputDir fehlt`);
+          } else {
+            finalStatusText = "Entpackt (keine Archive)";
+          }
+
+          for (const entry of completedItems) {
+            entry.fullStatus = finalStatusText;
+            entry.updatedAt = nowMs();
           }
           pkg.status = "completed";
         }
