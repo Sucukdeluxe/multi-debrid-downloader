@@ -245,11 +245,76 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
   }
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function collectArchiveCleanupTargets(sourceArchivePath: string): string[] {
+  const targets = new Set<string>([sourceArchivePath]);
+  const dir = path.dirname(sourceArchivePath);
+  const fileName = path.basename(sourceArchivePath);
+
+  let filesInDir: string[] = [];
+  try {
+    filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  } catch {
+    return Array.from(targets);
+  }
+
+  const addMatching = (pattern: RegExp): void => {
+    for (const candidate of filesInDir) {
+      if (pattern.test(candidate)) {
+        targets.add(path.join(dir, candidate));
+      }
+    }
+  };
+
+  const multipartRar = fileName.match(/^(.*)\.part\d+\.rar$/i);
+  if (multipartRar) {
+    const prefix = escapeRegex(multipartRar[1]);
+    addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i"));
+    return Array.from(targets);
+  }
+
+  if (/\.rar$/i.test(fileName)) {
+    const stem = escapeRegex(fileName.replace(/\.rar$/i, ""));
+    addMatching(new RegExp(`^${stem}\\.rar$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.r\\d{2}$`, "i"));
+    return Array.from(targets);
+  }
+
+  if (/\.zip$/i.test(fileName)) {
+    const stem = escapeRegex(fileName.replace(/\.zip$/i, ""));
+    addMatching(new RegExp(`^${stem}\\.zip$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.z\\d{2}$`, "i"));
+    return Array.from(targets);
+  }
+
+  if (/\.7z$/i.test(fileName)) {
+    const stem = escapeRegex(fileName.replace(/\.7z$/i, ""));
+    addMatching(new RegExp(`^${stem}\\.7z$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.7z\\.\\d{3}$`, "i"));
+    return Array.from(targets);
+  }
+
+  return Array.from(targets);
+}
+
 function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): void {
   if (cleanupMode === "none") {
     return;
   }
-  for (const filePath of sourceFiles) {
+
+  const targets = new Set<string>();
+  for (const sourceFile of sourceFiles) {
+    for (const target of collectArchiveCleanupTargets(sourceFile)) {
+      targets.add(target);
+    }
+  }
+
+  for (const filePath of targets) {
     try {
       fs.rmSync(filePath, { force: true });
     } catch {

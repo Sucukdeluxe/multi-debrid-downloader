@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildExternalExtractArgs, extractPackageArchives } from "../src/main/extractor";
+import { buildExternalExtractArgs, collectArchiveCleanupTargets, extractPackageArchives } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
 
@@ -69,6 +69,66 @@ describe("extractor", () => {
     expect(fs.existsSync(validZipPath)).toBe(false);
     expect(fs.existsSync(invalidZipPath)).toBe(true);
     expect(fs.existsSync(path.join(targetDir, "release.txt"))).toBe(true);
+  });
+
+  it("collects companion rar parts for cleanup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const part1 = path.join(packageDir, "show.s01e01.part01.rar");
+    const part2 = path.join(packageDir, "show.s01e01.part02.rar");
+    const part3 = path.join(packageDir, "show.s01e01.part03.rar");
+    const other = path.join(packageDir, "other.s01e01.part01.rar");
+
+    fs.writeFileSync(part1, "a", "utf8");
+    fs.writeFileSync(part2, "b", "utf8");
+    fs.writeFileSync(part3, "c", "utf8");
+    fs.writeFileSync(other, "x", "utf8");
+
+    const targets = new Set(collectArchiveCleanupTargets(part1));
+    expect(targets.has(part1)).toBe(true);
+    expect(targets.has(part2)).toBe(true);
+    expect(targets.has(part3)).toBe(true);
+    expect(targets.has(other)).toBe(false);
+  });
+
+  it("deletes split zip companion parts when cleanup is enabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zipPath = path.join(packageDir, "season.zip");
+    const z01Path = path.join(packageDir, "season.z01");
+    const z02Path = path.join(packageDir, "season.z02");
+    const otherPath = path.join(packageDir, "other.z01");
+
+    const zip = new AdmZip();
+    zip.addFile("episode.txt", Buffer.from("ok"));
+    zip.writeZip(zipPath);
+    fs.writeFileSync(z01Path, "part1", "utf8");
+    fs.writeFileSync(z02Path, "part2", "utf8");
+    fs.writeFileSync(otherPath, "keep", "utf8");
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "delete",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(fs.existsSync(zipPath)).toBe(false);
+    expect(fs.existsSync(z01Path)).toBe(false);
+    expect(fs.existsSync(z02Path)).toBe(false);
+    expect(fs.existsSync(otherPath)).toBe(true);
+    expect(fs.existsSync(path.join(targetDir, "episode.txt"))).toBe(true);
   });
 
   it("treats ask conflict mode as skip in zip extraction", async () => {
