@@ -1,6 +1,6 @@
 {
   "name": "real-debrid-downloader",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "description": "Real-Debrid Downloader Desktop (Electron + React + TypeScript)",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -16,7 +16,7 @@
     "start": "cross-env NODE_ENV=production electron .",
     "test": "vitest run",
     "self-check": "tsx tests/self-check.ts",
-    "release:win": "npm run build && electron-builder --win nsis portable"
+    "release:win": "npm run build && electron-builder --publish never --win nsis portable"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
