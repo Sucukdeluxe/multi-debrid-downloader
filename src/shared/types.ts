@@ -38,6 +38,7 @@ export interface AppSettings {
   megaPassword: string;
   bestToken: string;
   allDebridToken: string;
+  archivePasswordList: string;
   rememberToken: boolean;
   providerPrimary: DebridProvider;
   providerSecondary: DebridFallbackProvider;

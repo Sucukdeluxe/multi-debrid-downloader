@@ -236,6 +236,11 @@ body,
   resize: vertical;
 }
 
+.password-list {
+  min-height: 120px;
+  resize: vertical;
+}
+
 .input-row input {
   flex: 1;
 }
@@ -254,6 +259,23 @@ body,
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.downloads-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  width: min(360px, 100%);
+  background: var(--field);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 9px;
 }
 
 .collector-header {

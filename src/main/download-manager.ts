@@ -654,7 +654,7 @@ export class DownloadManager extends EventEmitter {
             continue;
           }
 
-          logger.info(`Nachtraegliches Cleanup geprueft: pkg=${pkg.name}, targets=${targets.size}, marker=${pkg.itemIds.some((id) => /entpack/i.test(this.session.items[id]?.fullStatus || ""))}`);
+          logger.info(`Nachträgliches Cleanup geprüft: pkg=${pkg.name}, targets=${targets.size}, marker=${pkg.itemIds.some((id) => /entpack/i.test(this.session.items[id]?.fullStatus || ""))}`);
 
           let removed = 0;
           for (const targetPath of targets) {
@@ -670,20 +670,20 @@ export class DownloadManager extends EventEmitter {
           }
 
           if (removed > 0) {
-            logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: ${removed} Datei(en) geloescht`);
+            logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: ${removed} Datei(en) gelöscht`);
             if (!this.directoryHasAnyFiles(pkg.outputDir)) {
               const removedDirs = this.removeEmptyDirectoryTree(pkg.outputDir);
               if (removedDirs > 0) {
-                logger.info(`Nachtraegliches Cleanup entfernte leere Download-Ordner fuer ${pkg.name}: ${removedDirs}`);
+                logger.info(`Nachträgliches Cleanup entfernte leere Download-Ordner für ${pkg.name}: ${removedDirs}`);
               }
             }
           } else {
-            logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: keine Dateien entfernt`);
+            logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: keine Dateien entfernt`);
           }
         }
       })
       .catch((error) => {
-        logger.warn(`Nachtraegliches Archive-Cleanup fehlgeschlagen: ${compactErrorText(error)}`);
+        logger.warn(`Nachträgliches Archive-Cleanup fehlgeschlagen: ${compactErrorText(error)}`);
       });
   }
 
@@ -1900,6 +1900,17 @@ export class DownloadManager extends EventEmitter {
     if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
       pkg.status = "extracting";
       this.emitState();
+
+      const updateExtractingStatus = (text: string): void => {
+        for (const entry of completedItems) {
+          entry.fullStatus = text;
+          entry.updatedAt = nowMs();
+        }
+      };
+
+      updateExtractingStatus("Entpacken 0%");
+      this.emitState();
+
       try {
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
@@ -1907,7 +1918,15 @@ export class DownloadManager extends EventEmitter {
           cleanupMode: this.settings.cleanupMode,
           conflictMode: this.settings.extractConflictMode,
           removeLinks: this.settings.removeLinkFilesAfterExtract,
-          removeSamples: this.settings.removeSamplesAfterExtract
+          removeSamples: this.settings.removeSamplesAfterExtract,
+          passwordList: this.settings.archivePasswordList,
+          onProgress: (progress) => {
+            const label = progress.phase === "done"
+              ? "Entpacken 100%"
+              : `Entpacken ${progress.percent}% (${progress.current}/${progress.total})`;
+            updateExtractingStatus(label);
+            this.emitState();
+          }
         });
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         if (result.failed > 0) {

@@ -188,6 +188,41 @@ describe("extractor", () => {
     expect(fs.existsSync(path.join(targetDir, "video.mkv"))).toBe(true);
   });
 
+  it("reports extraction progress from 0 to 100", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zip1 = new AdmZip();
+    zip1.addFile("a.txt", Buffer.from("a"));
+    zip1.writeZip(path.join(packageDir, "a.zip"));
+
+    const zip2 = new AdmZip();
+    zip2.addFile("b.txt", Buffer.from("b"));
+    zip2.writeZip(path.join(packageDir, "b.zip"));
+
+    const updates: number[] = [];
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onProgress: (update) => {
+        updates.push(update.percent);
+      }
+    });
+
+    expect(result.extracted).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(updates[0]).toBe(0);
+    expect(updates.some((value) => value > 0 && value < 100)).toBe(true);
+    expect(updates[updates.length - 1]).toBe(100);
+  });
+
   it("treats ask conflict mode as skip in zip extraction", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
     tempDirs.push(root);

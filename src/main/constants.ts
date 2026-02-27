@@ -33,6 +33,7 @@ export function defaultSettings(): AppSettings {
     megaPassword: "",
     bestToken: "",
     allDebridToken: "",
+    archivePasswordList: "",
     rememberToken: true,
     providerPrimary: "realdebrid",
     providerSecondary: "megadebrid",

@@ -139,4 +139,13 @@ describe("settings storage", () => {
     expect(normalized.providerSecondary).toBe("none");
     expect(normalized.providerTertiary).toBe("none");
   });
+
+  it("normalizes archive password list line endings", () => {
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      archivePasswordList: "one\r\ntwo\r\nthree"
+    });
+
+    expect(normalized.archivePasswordList).toBe("one\ntwo\nthree");
+  });
 });
