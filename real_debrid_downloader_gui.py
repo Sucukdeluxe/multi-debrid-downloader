@@ -58,7 +58,7 @@ MANIFEST_FILE = Path(__file__).with_name("rd_download_manifest.json")
 LOG_FILE = Path(__file__).with_name("rd_downloader.log")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload"
@@ -75,6 +75,7 @@ PACKAGE_MARKER_RE = re.compile(r"^\s*#\s*package\s*:\s*(.+?)\s*$", re.IGNORECASE
 SPEED_MODE_CHOICES = ("global", "per_download")
 EXTRACT_CONFLICT_CHOICES = ("overwrite", "skip", "rename", "ask")
 CLEANUP_MODE_CHOICES = ("none", "trash", "delete")
+FINISHED_TASK_CLEANUP_CHOICES = ("never", "immediate", "on_start", "package_done")
 SEVEN_ZIP_CANDIDATES = (
     "7z",
     "7za",
@@ -145,6 +146,13 @@ CLEANUP_LABELS = {
     "none": "keine Archive löschen",
     "trash": "Archive in den Papierkorb verschieben, wenn möglich",
     "delete": "Archive unwiderruflich löschen",
+}
+
+FINISHED_TASK_CLEANUP_LABELS = {
+    "never": "Nie",
+    "immediate": "Sofort",
+    "on_start": "Beim App-Start",
+    "package_done": "Sobald Paket fertig ist",
 }
 
 
@@ -544,7 +552,13 @@ class DownloaderApp(TkBase):
         self.extract_conflict_mode_var = tk.StringVar(value="overwrite")
         self.remove_link_files_after_extract_var = tk.BooleanVar(value=False)
         self.remove_samples_var = tk.BooleanVar(value=False)
+        self.enable_integrity_check_var = tk.BooleanVar(value=True)
+        self.auto_resume_on_start_var = tk.BooleanVar(value=True)
+        self.auto_reconnect_var = tk.BooleanVar(value=False)
+        self.reconnect_wait_seconds_var = tk.IntVar(value=45)
+        self.completed_cleanup_policy_var = tk.StringVar(value="never")
         self.max_parallel_var = tk.IntVar(value=4)
+        self.speed_limit_enabled_var = tk.BooleanVar(value=False)
         self.speed_limit_kbps_var = tk.IntVar(value=0)
         self.speed_limit_mode_var = tk.StringVar(value="global")
         self.update_repo_var = tk.StringVar(value=DEFAULT_UPDATE_REPO)
@@ -553,6 +567,7 @@ class DownloaderApp(TkBase):
         self.remember_token_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Bereit")
         self.speed_var = tk.StringVar(value="Geschwindigkeit: 0 B/s")
+        self.eta_var = tk.StringVar(value="ETA: --")
         self.overall_progress_var = tk.DoubleVar(value=0.0)
 
         self.worker_thread: threading.Thread | None = None
@@ -576,6 +591,13 @@ class DownloaderApp(TkBase):
         self.global_throttle_bytes = 0
         self.path_lock = threading.Lock()
         self.reserved_target_keys: set[str] = set()
+        self.integrity_cache_lock = threading.Lock()
+        self.integrity_cache: dict[str, dict[str, tuple[str, str]]] = {}
+        self.reconnect_lock = threading.Lock()
+        self.reconnect_active_until = 0.0
+        self.reconnect_requested = False
+        self.reconnect_reason = ""
+        self.non_resumable_active = 0
         self.update_lock = threading.Lock()
         self.update_check_running = False
         self.update_download_running = False
@@ -592,16 +614,20 @@ class DownloaderApp(TkBase):
         self.dnd_ready = False
         self.package_cancel_lock = threading.Lock()
         self.cancelled_package_rows: set[str] = set()
+        self.resume_manifest_loaded = False
 
         self._build_ui()
         self._load_config()
+        self._on_speed_limit_enabled_toggle()
         self._restore_manifest_into_links()
         self.max_parallel_var.trace_add("write", self._on_parallel_spinbox_change)
         self.speed_limit_kbps_var.trace_add("write", self._on_speed_limit_change)
         self.speed_limit_mode_var.trace_add("write", self._on_speed_mode_change)
         self._sync_parallel_limit(self.max_parallel_var.get())
-        self._sync_speed_limit(self.speed_limit_kbps_var.get(), self.speed_limit_mode_var.get())
+        initial_speed = self.speed_limit_kbps_var.get() if self.speed_limit_enabled_var.get() else 0
+        self._sync_speed_limit(initial_speed, self.speed_limit_mode_var.get())
         self.after(100, self._process_ui_queue)
+        self.after(400, self._maybe_auto_resume_on_start)
         self.after(1500, self._auto_check_updates)
 
     def destroy(self) -> None:
@@ -616,67 +642,101 @@ class DownloaderApp(TkBase):
         super().destroy()
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=12)
+        self._configure_modern_theme()
+
+        root = ttk.Frame(self, padding=10)
         root.pack(fill="both", expand=True)
-
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(2, weight=3)
-        root.rowconfigure(4, weight=2)
+        root.rowconfigure(1, weight=1)
 
-        token_frame = ttk.LabelFrame(root, text="Authentifizierung", padding=10)
+        header = ttk.LabelFrame(root, text="Steuerung", padding=10)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(9, weight=1)
+
+        self.start_button = ttk.Button(header, text="Start", command=self.start_downloads)
+        self.start_button.grid(row=0, column=0, sticky="w")
+        self.pause_button = ttk.Button(header, text="Pause", command=self.toggle_pause_downloads, state="disabled")
+        self.pause_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.stop_button = ttk.Button(header, text="Stop", command=self.stop_downloads, state="disabled")
+        self.stop_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Button(header, text="Fortschritt leeren", command=self._clear_progress_only).grid(row=0, column=3, sticky="w", padx=(10, 0))
+
+        ttk.Checkbutton(
+            header,
+            text="Speed-Limit aktiv",
+            variable=self.speed_limit_enabled_var,
+            command=self._on_speed_limit_enabled_toggle,
+        ).grid(row=0, column=4, sticky="w", padx=(16, 0))
+        self.speed_limit_spin = ttk.Spinbox(header, from_=0, to=500000, width=8, textvariable=self.speed_limit_kbps_var)
+        self.speed_limit_spin.grid(row=0, column=5, sticky="w", padx=(6, 0))
+        ttk.Label(header, text="KB/s").grid(row=0, column=6, sticky="w", padx=(4, 0))
+        self.speed_mode_box = ttk.Combobox(
+            header,
+            textvariable=self.speed_limit_mode_var,
+            values=SPEED_MODE_CHOICES,
+            width=12,
+            state="readonly",
+        )
+        self.speed_mode_box.grid(row=0, column=7, sticky="w", padx=(8, 0))
+        ttk.Button(header, text="Update suchen", command=self._manual_check_updates).grid(row=0, column=8, sticky="w", padx=(10, 0))
+
+        ttk.Label(header, textvariable=self.speed_var).grid(row=0, column=9, sticky="e", padx=(10, 0))
+        ttk.Label(header, textvariable=self.eta_var).grid(row=0, column=10, sticky="e", padx=(10, 0))
+
+        self.main_tabs = ttk.Notebook(root)
+        self.main_tabs.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+
+        collector_tab = ttk.Frame(self.main_tabs, padding=8)
+        downloads_tab = ttk.Frame(self.main_tabs, padding=8)
+        settings_tab = ttk.Frame(self.main_tabs, padding=8)
+        self.main_tabs.add(collector_tab, text="Linksammler")
+        self.main_tabs.add(downloads_tab, text="Downloads")
+        self.main_tabs.add(settings_tab, text="Settings")
+
+        collector_tab.columnconfigure(0, weight=1)
+        collector_tab.rowconfigure(2, weight=1)
+
+        token_frame = ttk.LabelFrame(collector_tab, text="Authentifizierung & Update", padding=10)
         token_frame.grid(row=0, column=0, sticky="ew")
         token_frame.columnconfigure(1, weight=1)
 
         ttk.Label(token_frame, text="Real-Debrid API Token:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.token_entry = ttk.Entry(token_frame, textvariable=self.token_var, show="*", width=80)
         self.token_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-
         ttk.Checkbutton(
             token_frame,
             text="Token anzeigen",
             variable=self.show_token_var,
             command=self._toggle_token_visibility,
         ).grid(row=0, column=2, sticky="w")
-
         ttk.Checkbutton(
             token_frame,
             text="Token lokal speichern",
             variable=self.remember_token_var,
         ).grid(row=1, column=1, sticky="w", pady=(8, 0))
-
         ttk.Label(token_frame, text="GitHub Repo (owner/name):").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
         ttk.Entry(token_frame, textvariable=self.update_repo_var).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
-        ttk.Button(token_frame, text="Update suchen", command=self._manual_check_updates).grid(row=2, column=2, sticky="w", pady=(8, 0))
-
         ttk.Checkbutton(
             token_frame,
-            text="Beim Start auf Updates pruefen",
+            text="Beim Start auf Updates prüfen",
             variable=self.auto_update_check_var,
         ).grid(row=3, column=1, sticky="w", pady=(6, 0))
 
-        output_frame = ttk.LabelFrame(root, text="Paket / Zielordner", padding=10)
+        output_frame = ttk.LabelFrame(collector_tab, text="Paketierung & Zielpfade", padding=10)
         output_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         output_frame.columnconfigure(1, weight=1)
 
         ttk.Label(output_frame, text="Download-Ordner:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Entry(output_frame, textvariable=self.output_dir_var).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         ttk.Button(output_frame, text="Ordner wählen", command=self._browse_output_dir).grid(row=0, column=2)
-
         ttk.Label(output_frame, text="Paketname (optional):").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(output_frame, textvariable=self.package_name_var).grid(
-            row=1,
-            column=1,
-            columnspan=2,
-            sticky="ew",
-            pady=(8, 0),
-        )
+        ttk.Entry(output_frame, textvariable=self.package_name_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
 
         ttk.Checkbutton(
             output_frame,
             text="Nach Download automatisch entpacken",
             variable=self.auto_extract_var,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-
         ttk.Label(output_frame, text="Entpacken nach:").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
         ttk.Entry(output_frame, textvariable=self.extract_dir_var).grid(row=3, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
         ttk.Button(output_frame, text="Ordner wählen", command=self._browse_extract_dir).grid(row=3, column=2, pady=(8, 0))
@@ -686,25 +746,20 @@ class DownloaderApp(TkBase):
             text="Unterordner erstellen (Paketname)",
             variable=self.create_extract_subfolder_var,
         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
-
         ttk.Checkbutton(
             output_frame,
             text="Hybrid-Entpacken (sobald Parts komplett)",
             variable=self.hybrid_extract_var,
         ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(output_frame, text="Auto-Passwörter: serienfans.org, serienjunkies.net").grid(
+            row=6,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(6, 0),
+        )
 
-        settings_row = ttk.Frame(output_frame)
-        settings_row.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        settings_row.columnconfigure(0, weight=1)
-        ttk.Label(settings_row, text="Entpack-Settings wie JDownloader").grid(row=0, column=0, sticky="w")
-        ttk.Button(settings_row, text="Settings", command=self._open_settings_window).grid(row=0, column=1, sticky="e")
-
-        ttk.Label(
-            output_frame,
-            text="Auto-Passwoerter: serienfans.org, serienjunkies.net",
-        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
-
-        links_frame = ttk.LabelFrame(root, text="Links (ein Link pro Zeile)", padding=10)
+        links_frame = ttk.LabelFrame(collector_tab, text="Linksammler (ein Link pro Zeile)", padding=10)
         links_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         links_frame.columnconfigure(0, weight=1)
         links_frame.rowconfigure(1, weight=1)
@@ -715,67 +770,39 @@ class DownloaderApp(TkBase):
         ttk.Button(links_actions, text="DLC import", command=self._import_dlc_file).pack(side="left", padx=(8, 0))
         ttk.Button(links_actions, text="Links speichern", command=self._save_links_to_file).pack(side="left", padx=(8, 0))
         ttk.Button(links_actions, text="Links leeren", command=self._clear_links).pack(side="left", padx=(8, 0))
-        ttk.Label(links_actions, text="Tipp: .dlc per Drag-and-Drop hier ablegen").pack(side="right")
+        ttk.Label(links_actions, text="Tipp: .dlc per Drag-and-Drop in dieses Feld").pack(side="right")
 
-        self.links_text = tk.Text(links_frame, height=14, wrap="none")
+        self.links_text = tk.Text(links_frame, height=18, wrap="none", bg="#1e2329", fg="#e8edf4", insertbackground="#e8edf4")
         self.links_text.grid(row=1, column=0, sticky="nsew")
         links_scroll = ttk.Scrollbar(links_frame, orient="vertical", command=self.links_text.yview)
         links_scroll.grid(row=1, column=1, sticky="ns")
         self.links_text.configure(yscrollcommand=links_scroll.set)
         self._setup_dlc_drag_and_drop()
 
-        actions_frame = ttk.Frame(root)
-        actions_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        downloads_tab.columnconfigure(0, weight=1)
+        downloads_tab.rowconfigure(0, weight=1)
 
-        self.start_button = ttk.Button(actions_frame, text="Download starten", command=self.start_downloads)
-        self.start_button.pack(side="left")
-
-        self.stop_button = ttk.Button(actions_frame, text="Stop", command=self.stop_downloads, state="disabled")
-        self.stop_button.pack(side="left", padx=(8, 0))
-
-        self.pause_button = ttk.Button(actions_frame, text="Pause", command=self.toggle_pause_downloads, state="disabled")
-        self.pause_button.pack(side="left", padx=(8, 0))
-
-        ttk.Button(actions_frame, text="Fortschritt leeren", command=self._clear_progress_only).pack(side="left", padx=(8, 0))
-        ttk.Button(actions_frame, text="Settings", command=self._open_settings_window).pack(side="left", padx=(8, 0))
-
-        ttk.Label(actions_frame, text="Parallel:").pack(side="left", padx=(18, 6))
-        ttk.Spinbox(actions_frame, from_=1, to=50, width=5, textvariable=self.max_parallel_var).pack(side="left")
-
-        ttk.Label(actions_frame, text="Speed-Limit:").pack(side="left", padx=(18, 6))
-        ttk.Spinbox(actions_frame, from_=0, to=500000, width=8, textvariable=self.speed_limit_kbps_var).pack(side="left")
-        ttk.Label(actions_frame, text="KB/s").pack(side="left", padx=(4, 8))
-        speed_mode_box = ttk.Combobox(
-            actions_frame,
-            textvariable=self.speed_limit_mode_var,
-            values=SPEED_MODE_CHOICES,
-            width=12,
-            state="readonly",
-        )
-        speed_mode_box.pack(side="left")
-
-        table_frame = ttk.LabelFrame(root, text="Fortschritt pro Link", padding=10)
-        table_frame.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
+        table_frame = ttk.LabelFrame(downloads_tab, text="Downloads", padding=10)
+        table_frame.grid(row=0, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
         columns = ("file", "status", "progress", "speed", "retries")
         self.table = ttk.Treeview(table_frame, columns=columns, show="tree headings")
-        self.table.heading("#0", text="Paket / Link")
+        self.table.heading("#0", text="Paket / Datei")
         self.table.heading("file", text="Datei")
         self.table.heading("status", text="Status")
-        self.table.heading("progress", text="Progress")
+        self.table.heading("progress", text="Fortschritt")
         self.table.heading("speed", text="Speed")
         self.table.heading("retries", text="Retries")
-
-        self.table.column("#0", width=400, anchor="w")
-        self.table.column("file", width=250, anchor="w")
-        self.table.column("status", width=250, anchor="w")
-        self.table.column("progress", width=90, anchor="center")
-        self.table.column("speed", width=90, anchor="center")
+        self.table.column("#0", width=380, anchor="w")
+        self.table.column("file", width=260, anchor="w")
+        self.table.column("status", width=260, anchor="w")
+        self.table.column("progress", width=100, anchor="center")
+        self.table.column("speed", width=100, anchor="center")
         self.table.column("retries", width=80, anchor="center")
-
         self.table.grid(row=0, column=0, sticky="nsew")
+
         table_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
         table_scroll.grid(row=0, column=1, sticky="ns")
         self.table.configure(yscrollcommand=table_scroll.set)
@@ -791,18 +818,175 @@ class DownloaderApp(TkBase):
         self.table_context_menu.add_command(label="Links komplett leeren", command=self._clear_links)
         self.table_context_menu.add_command(label="Alles leeren", command=self._clear_all_lists)
 
-        footer = ttk.Frame(root)
-        footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        footer = ttk.Frame(downloads_tab)
+        footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         footer.columnconfigure(0, weight=1)
+        ttk.Progressbar(footer, variable=self.overall_progress_var, maximum=100, mode="determinate").grid(row=0, column=0, sticky="ew")
+        ttk.Label(footer, textvariable=self.status_var).grid(row=1, column=0, sticky="w", pady=(5, 0))
 
-        ttk.Progressbar(
-            footer,
-            variable=self.overall_progress_var,
-            maximum=100,
-            mode="determinate",
-        ).grid(row=0, column=0, sticky="ew")
-        ttk.Label(footer, textvariable=self.status_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(footer, textvariable=self.speed_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self._build_settings_tab(settings_tab)
+        self._on_speed_limit_enabled_toggle()
+
+    def _configure_modern_theme(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        bg = "#0f141b"
+        card = "#1a212c"
+        fg = "#e6edf3"
+        sub = "#b7c3d0"
+        accent = "#2f81f7"
+
+        self.configure(bg=bg)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabelframe", background=card, foreground=fg)
+        style.configure("TLabelframe.Label", background=card, foreground=fg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TButton", background=card, foreground=fg, borderwidth=0, padding=(10, 6))
+        style.map("TButton", background=[("active", accent), ("pressed", accent)])
+        style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure("TNotebook.Tab", background=card, foreground=sub, padding=(14, 7))
+        style.map("TNotebook.Tab", background=[("selected", "#243041")], foreground=[("selected", fg)])
+        style.configure("Treeview", background=card, fieldbackground=card, foreground=fg, rowheight=24)
+        style.configure("Treeview.Heading", background="#243041", foreground=fg)
+
+    def _build_settings_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        queue_box = ttk.LabelFrame(parent, text="Queue & Reconnect", padding=10)
+        queue_box.grid(row=0, column=0, sticky="ew")
+        queue_box.columnconfigure(1, weight=1)
+
+        ttk.Label(queue_box, text="Max. gleichzeitige Downloads:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Spinbox(queue_box, from_=1, to=50, width=6, textvariable=self.max_parallel_var).grid(row=0, column=1, sticky="w")
+        ttk.Checkbutton(
+            queue_box,
+            text="Automatischer Reconnect aktiv",
+            variable=self.auto_reconnect_var,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(queue_box, text="Reconnect-Wartezeit (Sek.):").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Spinbox(queue_box, from_=10, to=600, width=8, textvariable=self.reconnect_wait_seconds_var).grid(
+            row=2,
+            column=1,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        resume_box = ttk.LabelFrame(parent, text="Session & Persistenz", padding=10)
+        resume_box.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        resume_box.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            resume_box,
+            text="Downloads beim Start automatisch fortsetzen",
+            variable=self.auto_resume_on_start_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(resume_box, text="Fertiggestellte Downloads entfernen:").grid(row=1, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        cleanup_label_var = tk.StringVar(
+            value=self._finished_cleanup_label(self._normalize_finished_cleanup_policy(self.completed_cleanup_policy_var.get()))
+        )
+        cleanup_combo = ttk.Combobox(
+            resume_box,
+            textvariable=cleanup_label_var,
+            values=tuple(FINISHED_TASK_CLEANUP_LABELS.values()),
+            state="readonly",
+            width=28,
+        )
+        cleanup_combo.grid(row=1, column=1, sticky="w", pady=(8, 0))
+
+        integrity_box = ttk.LabelFrame(parent, text="Integrität & Aufräumen", padding=10)
+        integrity_box.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        integrity_box.columnconfigure(0, weight=1)
+
+        ttk.Checkbutton(
+            integrity_box,
+            text="Datei-Integrität (SFV/CRC/MD5/SHA1) nach Download prüfen",
+            variable=self.enable_integrity_check_var,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            integrity_box,
+            text="Downloadlinks in Archiven nach erfolgreichem Entpacken entfernen",
+            variable=self.remove_link_files_after_extract_var,
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(
+            integrity_box,
+            text="Sample-Dateien/-Ordner nach dem Entpacken entfernen",
+            variable=self.remove_samples_var,
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+        extract_box = ttk.LabelFrame(parent, text="Entpacken", padding=10)
+        extract_box.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        extract_box.columnconfigure(1, weight=1)
+
+        ttk.Label(extract_box, text="Nach erfolgreichem Entpacken:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.cleanup_combo_settings_tab = ttk.Combobox(
+            extract_box,
+            values=tuple(CLEANUP_LABELS.values()),
+            state="readonly",
+            width=42,
+        )
+        self.cleanup_combo_settings_tab.set(self._cleanup_label(self._normalize_cleanup_mode(self.cleanup_mode_var.get())))
+        self.cleanup_combo_settings_tab.grid(row=0, column=1, sticky="w")
+
+        ttk.Label(extract_box, text="Wenn Datei bereits existiert:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        self.conflict_combo_settings_tab = ttk.Combobox(
+            extract_box,
+            values=tuple(CONFLICT_LABELS.values()),
+            state="readonly",
+            width=42,
+        )
+        self.conflict_combo_settings_tab.set(self._conflict_label(self._normalize_extract_conflict_mode(self.extract_conflict_mode_var.get())))
+        self.conflict_combo_settings_tab.grid(row=1, column=1, sticky="w", pady=(8, 0))
+
+        buttons = ttk.Frame(parent)
+        buttons.grid(row=4, column=0, sticky="e", pady=(12, 0))
+
+        def apply_settings() -> None:
+            self.cleanup_mode_var.set(self._cleanup_mode_from_label(self.cleanup_combo_settings_tab.get()))
+            self.extract_conflict_mode_var.set(self._conflict_mode_from_label(self.conflict_combo_settings_tab.get()))
+            self.completed_cleanup_policy_var.set(self._finished_cleanup_policy_from_label(cleanup_label_var.get()))
+            self._save_config()
+            self.status_var.set("Settings gespeichert")
+
+        ttk.Button(buttons, text="Speichern", command=apply_settings).pack(side="right")
+
+    def _on_speed_limit_enabled_toggle(self) -> None:
+        enabled = bool(self.speed_limit_enabled_var.get())
+        state = "normal" if enabled else "disabled"
+        try:
+            self.speed_limit_spin.configure(state=state)
+        except Exception:
+            pass
+        try:
+            self.speed_mode_box.configure(state="readonly" if enabled else "disabled")
+        except Exception:
+            pass
+
+        kbps = self._normalize_speed_limit_value(self.speed_limit_kbps_var.get()) if enabled else 0
+        mode = self._normalize_speed_mode(self.speed_limit_mode_var.get())
+        self._sync_speed_limit(kbps, mode)
+
+    def _maybe_auto_resume_on_start(self) -> None:
+        if not self.auto_resume_on_start_var.get():
+            return
+        if not self.resume_manifest_loaded:
+            return
+        if self.worker_thread and self.worker_thread.is_alive():
+            return
+        if not self.token_var.get().strip():
+            self.status_var.set("Resume gefunden, aber API Token fehlt")
+            return
+
+        if self._normalize_finished_cleanup_policy(self.completed_cleanup_policy_var.get()) == "on_start":
+            self._cleanup_finished_rows_on_start()
+
+        self.status_var.set("Auto-Resume startet ...")
+        self.start_downloads()
 
     def _toggle_token_visibility(self) -> None:
         self.token_entry.configure(show="" if self.show_token_var.get() else "*")
@@ -828,8 +1012,25 @@ class DownloaderApp(TkBase):
         return mode if mode in EXTRACT_CONFLICT_CHOICES else "overwrite"
 
     @staticmethod
+    def _normalize_finished_cleanup_policy(value: str) -> str:
+        policy = str(value or "never").strip().lower()
+        return policy if policy in FINISHED_TASK_CLEANUP_CHOICES else "never"
+
+    @staticmethod
     def _cleanup_label(mode: str) -> str:
         return CLEANUP_LABELS.get(mode, CLEANUP_LABELS["none"])
+
+    @staticmethod
+    def _finished_cleanup_label(policy: str) -> str:
+        return FINISHED_TASK_CLEANUP_LABELS.get(policy, FINISHED_TASK_CLEANUP_LABELS["never"])
+
+    @staticmethod
+    def _finished_cleanup_policy_from_label(label: str) -> str:
+        text = str(label or "").strip()
+        for policy, policy_label in FINISHED_TASK_CLEANUP_LABELS.items():
+            if text == policy_label:
+                return policy
+        return "never"
 
     @staticmethod
     def _cleanup_mode_from_label(label: str) -> str:
@@ -958,12 +1159,53 @@ class DownloaderApp(TkBase):
         with self.speed_events_lock:
             self.speed_events.clear()
         self.speed_var.set("Geschwindigkeit: 0 B/s")
+        self.eta_var.set("ETA: --")
         self.status_var.set("Bereit")
         self.overall_progress_var.set(0.0)
 
     def _clear_all_lists(self) -> None:
         self._clear_links()
         self._clear_progress_only()
+
+    @staticmethod
+    def _is_finished_status_text(status_text: str) -> bool:
+        text = str(status_text or "").strip().lower()
+        return text.startswith("fertig") or "bereits fertig" in text or text.startswith("entpacken fertig")
+
+    def _remove_links_from_text(self, links_to_remove: list[str]) -> None:
+        if not links_to_remove:
+            return
+        lines = [line.strip() for line in self.links_text.get("1.0", "end").splitlines() if line.strip()]
+        for link in links_to_remove:
+            if link in lines:
+                lines.remove(link)
+        self._set_links_text_lines(lines)
+
+    def _cleanup_finished_rows_on_start(self) -> None:
+        links_to_remove: list[str] = []
+        package_ids = list(self.table.get_children(""))
+        for package_row_id in package_ids:
+            if not self.table.exists(package_row_id):
+                continue
+            child_ids = list(self.table.get_children(package_row_id))
+            remove_child_ids: list[str] = []
+            for child_id in child_ids:
+                values = list(self.table.item(child_id, "values"))
+                status_text = str(values[1]) if len(values) >= 2 else ""
+                if self._is_finished_status_text(status_text):
+                    remove_child_ids.append(child_id)
+                    link_text = str(self.table.item(child_id, "text")).strip()
+                    if link_text:
+                        links_to_remove.append(link_text)
+
+            for child_id in remove_child_ids:
+                if self.table.exists(child_id):
+                    self.table.delete(child_id)
+
+            if self.table.exists(package_row_id) and not self.table.get_children(package_row_id):
+                self.table.delete(package_row_id)
+
+        self._remove_links_from_text(links_to_remove)
 
     def _clear_progress_view(self) -> None:
         self.table.delete(*self.table.get_children())
@@ -1221,25 +1463,39 @@ class DownloaderApp(TkBase):
     def _restore_manifest_into_links(self) -> None:
         manifest = self._load_manifest_file()
         if not manifest or manifest.get("finished"):
+            self.resume_manifest_loaded = False
             return
         packages = manifest.get("packages")
         if not isinstance(packages, list) or not packages:
             return
 
         restored_packages: list[DownloadPackage] = []
+        cleanup_on_start = self._normalize_finished_cleanup_policy(self.completed_cleanup_policy_var.get()) == "on_start"
         for package in packages:
             if not isinstance(package, dict):
                 continue
             name = sanitize_filename(str(package.get("name") or "Paket"))
-            links = [str(link).strip() for link in package.get("links", []) if str(link).strip()]
+            raw_links = [str(link).strip() for link in package.get("links", []) if str(link).strip()]
+            completed_indices = {
+                int(x)
+                for x in package.get("completed", [])
+                if isinstance(x, int) or str(x).isdigit()
+            }
+            links: list[str] = []
+            for idx, link in enumerate(raw_links, start=1):
+                if cleanup_on_start and idx in completed_indices:
+                    continue
+                links.append(link)
             if links:
                 restored_packages.append(DownloadPackage(name=name, links=links))
         if not restored_packages:
+            self.resume_manifest_loaded = False
             return
 
         self._set_packages_to_links_text(restored_packages)
         self.output_dir_var.set(str(manifest.get("output_dir") or self.output_dir_var.get()))
         self.status_var.set("Ungesicherte Session gefunden. Resume ist vorbereitet.")
+        self.resume_manifest_loaded = True
 
     def _can_store_token_securely(self) -> bool:
         return keyring is not None
@@ -1330,6 +1586,106 @@ class DownloaderApp(TkBase):
             if self._is_package_cancelled(package_row_id):
                 return
             sleep(0.15)
+
+    def _is_reconnect_active(self) -> bool:
+        with self.reconnect_lock:
+            return monotonic() < self.reconnect_active_until
+
+    def _request_reconnect(self, reason: str) -> None:
+        if not self.auto_reconnect_var.get():
+            return
+        wait_seconds = max(10, min(int(self.reconnect_wait_seconds_var.get() or 45), 600))
+        with self.reconnect_lock:
+            deadline = monotonic() + wait_seconds
+            if deadline > self.reconnect_active_until:
+                self.reconnect_active_until = deadline
+            self.reconnect_requested = True
+            self.reconnect_reason = reason
+        self._queue_status(f"Reconnect-Wartefenster aktiv ({wait_seconds}s): {reason}")
+
+    def _wait_for_reconnect_window(self, row_index: int, package_row_id: str | None = None) -> None:
+        while not self.stop_event.is_set() and not self._is_package_cancelled(package_row_id):
+            with self.reconnect_lock:
+                remaining = self.reconnect_active_until - monotonic()
+                reason = self.reconnect_reason
+            if remaining <= 0:
+                break
+            self._queue_row(
+                row_index,
+                package_row_id=package_row_id,
+                status=f"Reconnect-Wait {int(remaining)}s ({reason})",
+                speed="0 B/s",
+            )
+            sleep(min(1.0, max(0.1, remaining)))
+
+    @staticmethod
+    def _parse_hash_line(line: str) -> tuple[str, str] | None:
+        text = str(line or "").strip()
+        if not text or text.startswith(";"):
+            return None
+        md = re.match(r"^([0-9a-fA-F]{8,64})\s+\*?(.+)$", text)
+        if md:
+            return md.group(2).strip(), md.group(1).lower()
+        sfv = re.match(r"^(.+?)\s+([0-9A-Fa-f]{8})$", text)
+        if sfv:
+            return sfv.group(1).strip(), sfv.group(2).lower()
+        return None
+
+    def _hash_manifest_for_dir(self, package_dir: Path) -> dict[str, tuple[str, str]]:
+        key = str(package_dir)
+        with self.integrity_cache_lock:
+            cached = self.integrity_cache.get(key)
+            if cached is not None:
+                return cached
+
+        mapping: dict[str, tuple[str, str]] = {}
+        if not package_dir.exists():
+            return mapping
+        for ext, algo in (("*.sfv", "crc32"), ("*.md5", "md5"), ("*.sha1", "sha1")):
+            for hash_file in package_dir.glob(ext):
+                try:
+                    lines = hash_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+                except Exception:
+                    continue
+                for line in lines:
+                    parsed = self._parse_hash_line(line)
+                    if not parsed:
+                        continue
+                    file_name, digest = parsed
+                    mapping[file_name.lower()] = (algo, digest)
+
+        with self.integrity_cache_lock:
+            self.integrity_cache[key] = mapping
+        return mapping
+
+    def _validate_file_integrity(self, file_path: Path, package_dir: Path) -> tuple[bool, str]:
+        manifest = self._hash_manifest_for_dir(package_dir)
+        if not manifest:
+            return True, "Kein Hash verfügbar"
+
+        expected = manifest.get(file_path.name.lower())
+        if not expected:
+            return True, "Kein Hash für Datei"
+
+        algo, digest = expected
+        if algo == "crc32":
+            import binascii
+
+            crc = 0
+            with file_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    crc = binascii.crc32(chunk, crc)
+            actual = f"{crc & 0xFFFFFFFF:08x}"
+        else:
+            hasher = hashlib.new(algo)
+            with file_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            actual = hasher.hexdigest().lower()
+
+        if actual.lower() == digest.lower():
+            return True, f"{algo.upper()} ok"
+        return False, f"{algo.upper()} mismatch"
 
     def toggle_pause_downloads(self) -> None:
         if not (self.worker_thread and self.worker_thread.is_alive()):
@@ -1793,9 +2149,10 @@ class DownloaderApp(TkBase):
             return
 
         mode = self._normalize_speed_mode(self.speed_limit_mode_var.get())
-        self._sync_speed_limit(normalized, mode)
+        effective = normalized if self.speed_limit_enabled_var.get() else 0
+        self._sync_speed_limit(effective, mode)
         if self.worker_thread and self.worker_thread.is_alive():
-            self._queue_status(f"Speed-Limit live angepasst: {normalized} KB/s ({mode})")
+            self._queue_status(f"Speed-Limit live angepasst: {effective} KB/s ({mode})")
 
     def _on_speed_mode_change(self, *_: object) -> None:
         mode = self._normalize_speed_mode(self.speed_limit_mode_var.get())
@@ -1804,7 +2161,8 @@ class DownloaderApp(TkBase):
             return
 
         kbps = self._normalize_speed_limit_value(self.speed_limit_kbps_var.get())
-        self._sync_speed_limit(kbps, mode)
+        effective = kbps if self.speed_limit_enabled_var.get() else 0
+        self._sync_speed_limit(effective, mode)
         if self.worker_thread and self.worker_thread.is_alive():
             self._queue_status(f"Speed-Modus live angepasst: {mode}")
 
@@ -1988,6 +2346,17 @@ class DownloaderApp(TkBase):
         )
         self.remove_link_files_after_extract_var.set(bool(data.get("remove_link_files_after_extract", False)))
         self.remove_samples_var.set(bool(data.get("remove_samples_after_extract", False)))
+        self.enable_integrity_check_var.set(bool(data.get("enable_integrity_check", True)))
+        self.auto_resume_on_start_var.set(bool(data.get("auto_resume_on_start", True)))
+        self.auto_reconnect_var.set(bool(data.get("auto_reconnect", False)))
+        try:
+            reconnect_wait = int(data.get("reconnect_wait_seconds", self.reconnect_wait_seconds_var.get()))
+        except Exception:
+            reconnect_wait = self.reconnect_wait_seconds_var.get()
+        self.reconnect_wait_seconds_var.set(max(10, min(reconnect_wait, 600)))
+        self.completed_cleanup_policy_var.set(
+            self._normalize_finished_cleanup_policy(str(data.get("completed_cleanup_policy", "never")))
+        )
         try:
             max_parallel = int(data.get("max_parallel", self.max_parallel_var.get()))
         except Exception:
@@ -1998,7 +2367,9 @@ class DownloaderApp(TkBase):
             speed_limit = int(data.get("speed_limit_kbps", self.speed_limit_kbps_var.get()))
         except Exception:
             speed_limit = self.speed_limit_kbps_var.get()
-        self.speed_limit_kbps_var.set(self._normalize_speed_limit_value(speed_limit))
+        normalized_speed_limit = self._normalize_speed_limit_value(speed_limit)
+        self.speed_limit_kbps_var.set(normalized_speed_limit)
+        self.speed_limit_enabled_var.set(bool(data.get("speed_limit_enabled", normalized_speed_limit > 0)))
         self.speed_limit_mode_var.set(self._normalize_speed_mode(str(data.get("speed_limit_mode", "global"))))
 
         update_repo = str(data.get("update_repo", DEFAULT_UPDATE_REPO)).strip() or DEFAULT_UPDATE_REPO
@@ -2033,7 +2404,13 @@ class DownloaderApp(TkBase):
             "extract_conflict_mode": self._normalize_extract_conflict_mode(self.extract_conflict_mode_var.get()),
             "remove_link_files_after_extract": self.remove_link_files_after_extract_var.get(),
             "remove_samples_after_extract": self.remove_samples_var.get(),
+            "enable_integrity_check": self.enable_integrity_check_var.get(),
+            "auto_resume_on_start": self.auto_resume_on_start_var.get(),
+            "auto_reconnect": self.auto_reconnect_var.get(),
+            "reconnect_wait_seconds": self.reconnect_wait_seconds_var.get(),
+            "completed_cleanup_policy": self._normalize_finished_cleanup_policy(self.completed_cleanup_policy_var.get()),
             "max_parallel": self.max_parallel_var.get(),
+            "speed_limit_enabled": self.speed_limit_enabled_var.get(),
             "speed_limit_kbps": self.speed_limit_kbps_var.get(),
             "speed_limit_mode": self.speed_limit_mode_var.get(),
             "update_repo": self.update_repo_var.get().strip(),
@@ -2111,7 +2488,8 @@ class DownloaderApp(TkBase):
         speed_mode = self._normalize_speed_mode(self.speed_limit_mode_var.get())
         self.speed_limit_kbps_var.set(speed_limit)
         self.speed_limit_mode_var.set(speed_mode)
-        self._sync_speed_limit(speed_limit, speed_mode)
+        effective_speed_limit = speed_limit if self.speed_limit_enabled_var.get() else 0
+        self._sync_speed_limit(effective_speed_limit, speed_mode)
 
         hybrid_extract = False
         cleanup_mode = "none"
@@ -2434,6 +2812,7 @@ class DownloaderApp(TkBase):
     ) -> PackageRunResult:
         self._sync_parallel_limit(initial_parallel)
         total = len(links)
+        cleanup_policy = self._normalize_finished_cleanup_policy(self.completed_cleanup_policy_var.get())
         overall_total = overall_total_links if overall_total_links is not None else total
         resume_done = set(completed_indices or set())
         processed = len(resume_done)
@@ -2462,6 +2841,11 @@ class DownloaderApp(TkBase):
                     break
 
                 self._wait_if_paused(package_row_id)
+                if self._is_reconnect_active():
+                    if package_row_id:
+                        self._queue_package_row(package_row_id, status="Reconnect-Wartefenster aktiv", speed="0 B/s")
+                    sleep(0.35)
+                    continue
                 desired_parallel = self._active_parallel_limit(total)
 
                 while pending_links and len(running_futures) < desired_parallel and not self.stop_event.is_set() and not package_cancelled:
@@ -2490,6 +2874,9 @@ class DownloaderApp(TkBase):
                             self.total_downloaded_bytes += int(result.bytes_written)
                             success += 1
                             self._mark_manifest_link(package_name, index, success=True)
+                            if cleanup_policy == "immediate":
+                                link_text = links[index - 1] if 1 <= index <= len(links) else ""
+                                self._queue_cleanup_row(package_row_id, index, link_text)
                             if extract_target_dir and hybrid_extract:
                                 add_extracted, add_failed = self._extract_ready_archives(
                                     downloaded_files,
@@ -2509,16 +2896,23 @@ class DownloaderApp(TkBase):
                             failed += 1
                             self._mark_manifest_link(package_name, index, success=False)
                     except InterruptedError:
-                        self._queue_row(index, status="Gestoppt", progress="-", speed="0 B/s", retries="-")
+                        self._queue_row(index, package_row_id=package_row_id, status="Gestoppt", progress="-", speed="0 B/s", retries="-")
                         self.stop_event.set()
                         break
                     except PackageCancelledError:
-                        self._queue_row(index, status="Entfernt", progress="-", speed="0 B/s", retries="-")
+                        self._queue_row(index, package_row_id=package_row_id, status="Entfernt", progress="-", speed="0 B/s", retries="-")
                         package_cancelled = True
                         break
                     except Exception as exc:
                         error_text = compact_error_text(str(exc))
-                        self._queue_row(index, status=f"Fehler: {error_text}", progress="-", speed="0 B/s", retries="-")
+                        self._queue_row(
+                            index,
+                            package_row_id=package_row_id,
+                            status=f"Fehler: {error_text}",
+                            progress="-",
+                            speed="0 B/s",
+                            retries="-",
+                        )
                         LOGGER.error("Downloadfehler [%s #%s]: %s", package_name, index, exc)
                         failed += 1
                         self._mark_manifest_link(package_name, index, success=False)
@@ -2581,6 +2975,8 @@ class DownloaderApp(TkBase):
             self._queue_status(f"Gestoppt. Fertig: {success}, Fehler: {failed}")
             self._queue_package(status="Gestoppt", progress=f"{processed}/{total}")
         else:
+            if cleanup_policy == "package_done" and failed == 0 and processed >= total:
+                self._queue_cleanup_package(package_row_id, list(links))
             self._queue_overall(progress_offset + processed, overall_total)
             if extract_target_dir and not defer_final_extract:
                 self._queue_status(
@@ -2620,7 +3016,14 @@ class DownloaderApp(TkBase):
         target_path: Path | None = None
         try:
             self._wait_if_paused(package_row_id)
-            self._queue_row(index, status="Link wird via Real-Debrid umgewandelt", progress="0%", speed="0 B/s", retries="0")
+            self._queue_row(
+                index,
+                package_row_id=package_row_id,
+                status="Link wird via Real-Debrid umgewandelt",
+                progress="0%",
+                speed="0 B/s",
+                retries="0",
+            )
             filename, direct_url, unrestrict_retries, file_size = client.unrestrict_link(link)
             target_path = self._reserve_download_target(package_dir, filename)
             if file_size and not self._has_enough_disk_space(package_dir, file_size):
@@ -2630,22 +3033,49 @@ class DownloaderApp(TkBase):
 
             self._queue_row(
                 index,
+                package_row_id=package_row_id,
                 file=target_path.name,
                 status="Download läuft",
                 progress="0%",
                 speed="0 B/s",
                 retries=str(unrestrict_retries),
             )
-            download_retries, written_bytes = self._stream_download(
-                client.session,
-                direct_url,
-                target_path,
-                index,
-                package_row_id=package_row_id,
-            )
+            integrity_retries = 0
+            while True:
+                download_retries, written_bytes = self._stream_download(
+                    client.session,
+                    direct_url,
+                    target_path,
+                    index,
+                    package_row_id=package_row_id,
+                )
+
+                if not self.enable_integrity_check_var.get():
+                    break
+
+                self._queue_row(index, package_row_id=package_row_id, status="CRC-Check läuft", speed="0 B/s")
+                ok, integrity_text = self._validate_file_integrity(target_path, package_dir)
+                if ok:
+                    self._queue_row(index, package_row_id=package_row_id, status=f"Download läuft ({integrity_text})")
+                    break
+
+                target_path.unlink(missing_ok=True)
+                integrity_retries += 1
+                if integrity_retries <= 1:
+                    self._queue_row(
+                        index,
+                        package_row_id=package_row_id,
+                        status=f"{integrity_text}, Neuversuch {integrity_retries}/1",
+                        progress="0%",
+                        speed="0 B/s",
+                    )
+                    continue
+                raise RuntimeError(f"Integritätsprüfung fehlgeschlagen ({integrity_text})")
+
             total_retries = unrestrict_retries + download_retries
             self._queue_row(
                 index,
+                package_row_id=package_row_id,
                 status=f"Fertig ({human_size(target_path.stat().st_size)})",
                 progress="100%",
                 speed="0 B/s",
@@ -3148,12 +3578,15 @@ class DownloaderApp(TkBase):
         for attempt in range(1, REQUEST_RETRIES + 1):
             response: requests.Response | None = None
             try:
+                if self._is_reconnect_active():
+                    self._wait_for_reconnect_window(row_index, package_row_id)
                 response = session.get(url, stream=True, timeout=(25, 300))
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < REQUEST_RETRIES:
                     self._queue_row(
                         row_index,
+                        package_row_id=package_row_id,
                         status=f"Verbindungsfehler, retry {attempt + 1}/{REQUEST_RETRIES}",
                         speed="0 B/s",
                         retries=str(attempt),
@@ -3164,9 +3597,13 @@ class DownloaderApp(TkBase):
 
             if not response.ok:
                 error_text = parse_error_message(response)
+                if self.auto_reconnect_var.get() and response.status_code in {429, 503}:
+                    self._request_reconnect(f"HTTP {response.status_code}")
+                    self._wait_for_reconnect_window(row_index, package_row_id)
                 if should_retry_status(response.status_code) and attempt < REQUEST_RETRIES:
                     self._queue_row(
                         row_index,
+                        package_row_id=package_row_id,
                         status=f"Serverfehler {response.status_code}, retry {attempt + 1}/{REQUEST_RETRIES}",
                         speed="0 B/s",
                         retries=str(attempt),
@@ -3208,22 +3645,22 @@ class DownloaderApp(TkBase):
                             percent = int((written * 100) / total_bytes)
                             if percent != last_percent:
                                 last_percent = percent
-                                self._queue_row(row_index, progress=f"{percent}%")
+                                self._queue_row(row_index, package_row_id=package_row_id, progress=f"{percent}%")
                         else:
                             bucket = written // (10 * 1024 * 1024)
                             if bucket != last_reported_bucket:
                                 last_reported_bucket = bucket
-                                self._queue_row(row_index, progress=human_size(written))
+                                self._queue_row(row_index, package_row_id=package_row_id, progress=human_size(written))
 
                         now = monotonic()
                         elapsed = now - speed_window_start
                         if elapsed >= 0.8:
                             speed_value = speed_window_bytes / elapsed if elapsed > 0 else 0.0
-                            self._queue_row(row_index, speed=f"{human_size(int(speed_value))}/s")
+                            self._queue_row(row_index, package_row_id=package_row_id, speed=f"{human_size(int(speed_value))}/s")
                             speed_window_start = now
                             speed_window_bytes = 0
 
-                self._queue_row(row_index, speed="0 B/s", retries=str(attempt - 1))
+                self._queue_row(row_index, package_row_id=package_row_id, speed="0 B/s", retries=str(attempt - 1))
                 return attempt - 1, written
             except InterruptedError:
                 if target_path.exists():
@@ -3240,6 +3677,7 @@ class DownloaderApp(TkBase):
                 if attempt < REQUEST_RETRIES:
                     self._queue_row(
                         row_index,
+                        package_row_id=package_row_id,
                         status=f"Download unterbrochen, retry {attempt + 1}/{REQUEST_RETRIES}",
                         speed="0 B/s",
                         retries=str(attempt),
@@ -3254,14 +3692,32 @@ class DownloaderApp(TkBase):
 
         raise RuntimeError(f"Download fehlgeschlagen: {last_error}")
 
-    def _queue_row(self, row_index: int, **updates: str) -> None:
-        self.ui_queue.put(("row", row_index, updates))
+    def _queue_row(self, row_index: int, package_row_id: str | None = None, **updates: str) -> None:
+        if package_row_id:
+            row_id = f"{package_row_id}-link-{row_index}"
+        else:
+            row_id = self.row_map.get(row_index)
+        if not row_id:
+            return
+        self.ui_queue.put(("row", row_id, updates))
 
-    def _queue_package(self, **updates: str) -> None:
-        self.ui_queue.put(("package", updates))
+    def _queue_package(self, package_row_id: str | None = None, **updates: str) -> None:
+        row_id = package_row_id or self.package_row_id
+        self.ui_queue.put(("package", row_id, updates))
 
     def _queue_package_row(self, package_row_id: str, **updates: str) -> None:
         self.ui_queue.put(("package_row", package_row_id, updates))
+
+    def _queue_cleanup_row(self, package_row_id: str | None, row_index: int, link_text: str) -> None:
+        if not package_row_id:
+            return
+        row_id = f"{package_row_id}-link-{row_index}"
+        self.ui_queue.put(("cleanup_row", row_id, link_text))
+
+    def _queue_cleanup_package(self, package_row_id: str | None, links: list[str]) -> None:
+        if not package_row_id:
+            return
+        self.ui_queue.put(("cleanup_package", package_row_id, list(links)))
 
     def _queue_status(self, message: str) -> None:
         LOGGER.info("%s", message)
@@ -3283,10 +3739,9 @@ class DownloaderApp(TkBase):
             kind = event[0]
 
             if kind == "row":
-                row_index = event[1]
+                row_id = str(event[1])
                 updates = event[2]
-                row_id = self.row_map.get(row_index)
-                if row_id:
+                if row_id and self.table.exists(row_id):
                     values = list(self.table.item(row_id, "values"))
                     columns = {"file": 0, "status": 1, "progress": 2, "speed": 3, "retries": 4}
                     for key, value in updates.items():
@@ -3296,15 +3751,16 @@ class DownloaderApp(TkBase):
                     self.table.item(row_id, values=values)
 
             elif kind == "package":
-                updates = event[1]
-                if self.package_row_id and self.table.exists(self.package_row_id):
-                    values = list(self.table.item(self.package_row_id, "values"))
+                package_row_id = str(event[1]) if event[1] else ""
+                updates = event[2]
+                if package_row_id and self.table.exists(package_row_id):
+                    values = list(self.table.item(package_row_id, "values"))
                     columns = {"file": 0, "status": 1, "progress": 2, "speed": 3, "retries": 4}
                     for key, value in updates.items():
                         column_index = columns.get(key)
                         if column_index is not None:
                             values[column_index] = value
-                    self.table.item(self.package_row_id, values=values)
+                    self.table.item(package_row_id, values=values)
 
             elif kind == "package_row":
                 package_row_id = str(event[1])
@@ -3325,6 +3781,36 @@ class DownloaderApp(TkBase):
                 processed, total = event[1], event[2]
                 percent = (processed / total) * 100 if total else 0
                 self.overall_progress_var.set(percent)
+                if processed > 0 and total > 0 and self.run_started_at > 0:
+                    elapsed = max(monotonic() - self.run_started_at, 0.1)
+                    rate = processed / elapsed
+                    remaining = max(total - processed, 0)
+                    eta_seconds = int(remaining / rate) if rate > 0 else -1
+                    if eta_seconds >= 0:
+                        minutes, seconds = divmod(eta_seconds, 60)
+                        hours, minutes = divmod(minutes, 60)
+                        if hours > 0:
+                            self.eta_var.set(f"ETA: {hours:02d}:{minutes:02d}:{seconds:02d}")
+                        else:
+                            self.eta_var.set(f"ETA: {minutes:02d}:{seconds:02d}")
+
+            elif kind == "cleanup_row":
+                row_id = str(event[1])
+                link_text = str(event[2]).strip()
+                if row_id and self.table.exists(row_id):
+                    parent_id = self.table.parent(row_id)
+                    self.table.delete(row_id)
+                    if parent_id and self.table.exists(parent_id) and not self.table.get_children(parent_id):
+                        self.table.delete(parent_id)
+                if link_text:
+                    self._remove_links_from_text([link_text])
+
+            elif kind == "cleanup_package":
+                package_row_id = str(event[1])
+                links = [str(link).strip() for link in event[2] if str(link).strip()]
+                if package_row_id and self.table.exists(package_row_id):
+                    self.table.delete(package_row_id)
+                self._remove_links_from_text(links)
 
             elif kind == "speed_bytes":
                 byte_count = int(event[1])
@@ -3386,6 +3872,7 @@ class DownloaderApp(TkBase):
                     with self.path_lock:
                         self.reserved_target_keys.clear()
                     self.speed_var.set("Geschwindigkeit: 0 B/s")
+                    self.eta_var.set("ETA: --")
                     if self.package_row_id and self.table.exists(self.package_row_id):
                         values = list(self.table.item(self.package_row_id, "values"))
                         if len(values) >= 4:
