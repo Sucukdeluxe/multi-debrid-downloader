@@ -754,6 +754,225 @@ describe("download manager", () => {
     }
   });
 
+  it("recovers from HTTP 416 by restarting download from zero", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(96 * 1024, 3);
+    const pkgDir = path.join(root, "downloads", "range-reset");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const existingTargetPath = path.join(pkgDir, "reset.mkv");
+    const partialSize = 64 * 1024;
+    fs.writeFileSync(existingTargetPath, binary.subarray(0, partialSize));
+
+    let saw416 = false;
+    let fullRestarted = false;
+    let requestCount = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/range-reset") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      requestCount += 1;
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+
+      if (requestCount === 1 && start === partialSize) {
+        saw416 = true;
+        res.statusCode = 416;
+        res.setHeader("Content-Range", "bytes */32768");
+        res.end("");
+        return;
+      }
+
+      if (start === 0) {
+        fullRestarted = true;
+      }
+      const chunk = binary.subarray(start);
+      if (start > 0) {
+        res.statusCode = 206;
+        res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+      } else {
+        res.statusCode = 200;
+      }
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      res.end(chunk);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/range-reset`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "reset.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "range-reset-pkg";
+      const itemId = "range-reset-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "range-reset",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "range-reset"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/range-reset",
+        provider: null,
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: binary.length,
+        progressPercent: Math.floor((partialSize / binary.length) * 100),
+        fileName: "reset.mkv",
+        targetPath: existingTargetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(saw416).toBe(true);
+      expect(fullRestarted).toBe(true);
+      expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("retries non-retriable HTTP statuses and eventually succeeds", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(96 * 1024, 5);
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/status-retry") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      directCalls += 1;
+      if (directCalls <= 2) {
+        res.statusCode = 403;
+        res.end("forbidden");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/status-retry`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "status-retry.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "status-retry", links: ["https://dummy/status-retry"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThanOrEqual(3);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("normalizes stale running state on startup", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -887,7 +1106,7 @@ describe("download manager", () => {
     expect(conflicts[0]?.packageId).toBe(packageId);
   });
 
-  it("resolves start conflict by skipping package", () => {
+  it("resolves start conflict by skipping package", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -946,13 +1165,13 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    const result = manager.resolveStartConflict(packageId, "skip");
+    const result = await manager.resolveStartConflict(packageId, "skip");
     expect(result.skipped).toBe(true);
     expect(manager.getSnapshot().session.packages[packageId]).toBeUndefined();
     expect(manager.getSnapshot().session.items[itemId]).toBeUndefined();
   });
 
-  it("resolves start conflict by overwriting and resetting queued package", () => {
+  it("resolves start conflict by overwriting and resetting queued package", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -1012,7 +1231,7 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    const result = manager.resolveStartConflict(packageId, "overwrite");
+    const result = await manager.resolveStartConflict(packageId, "overwrite");
     expect(result.overwritten).toBe(true);
     const snapshot = manager.getSnapshot();
     const item = snapshot.session.items[itemId];
