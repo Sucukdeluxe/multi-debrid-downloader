@@ -7,6 +7,7 @@ ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
 
 - Mehrere Links auf einmal (ein Link pro Zeile)
 - DLC Import (`.dlc`) ueber dcrypt.it inklusive Paket-Gruppierung
+- DLC Drag-and-Drop: `.dlc` direkt in den Links-Bereich ziehen
 - Nutzt die Real-Debrid API (`/unrestrict/link`)
 - Download-Status pro Link
 - Paket-Ansicht: Paket ist aufklappbar, darunter alle Einzel-Links
