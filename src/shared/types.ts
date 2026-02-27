@@ -19,6 +19,8 @@ export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "allde
 export interface AppSettings {
   token: string;
   megaToken: string;
+  megaLogin: string;
+  megaPassword: string;
   bestToken: string;
   allDebridToken: string;
   rememberToken: boolean;
@@ -143,7 +145,13 @@ export interface UpdateCheckResult {
   latestVersion: string;
   latestTag: string;
   releaseUrl: string;
+  setupAssetUrl?: string;
   error?: string;
+}
+
+export interface UpdateInstallResult {
+  started: boolean;
+  message: string;
 }
 
 export interface ParsedHashEntry {

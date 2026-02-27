@@ -7,6 +7,7 @@ const api: ElectronApi = {
   getSnapshot: (): Promise<UiSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.GET_SNAPSHOT),
   getVersion: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.GET_VERSION),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_UPDATES),
+  installUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.INSTALL_UPDATE),
   openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL, url),
   updateSettings: (settings: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SETTINGS, settings),
   addLinks: (payload: AddLinksPayload): Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }> =>

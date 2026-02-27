@@ -20,6 +20,12 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
   providerLabel: string;
 }
 
+export type MegaWebUnrestrictor = (link: string) => Promise<UnrestrictedLink | null>;
+
+interface DebridServiceOptions {
+  megaWebUnrestrict?: MegaWebUnrestrictor;
+}
+
 type BestDebridRequest = {
   url: string;
   useAuthHeader: boolean;
@@ -191,8 +197,11 @@ function buildBestDebridRequests(link: string, token: string): BestDebridRequest
 class MegaDebridClient {
   private token: string;
 
-  public constructor(token: string) {
+  private megaWebUnrestrict?: MegaWebUnrestrictor;
+
+  public constructor(token: string, megaWebUnrestrict?: MegaWebUnrestrictor) {
     this.token = token;
+    this.megaWebUnrestrict = megaWebUnrestrict;
   }
 
   private normalizeMegaCandidates(link: string): string[] {
@@ -297,6 +306,14 @@ class MegaDebridClient {
 
         if (/token error|vip_end/i.test(lastError)) {
           throw new Error(lastError);
+        }
+
+        if (/UNRESTRICTING_ERROR_1/i.test(lastError) && this.megaWebUnrestrict) {
+          const web = await this.megaWebUnrestrict(link);
+          if (web?.directUrl) {
+            web.retriesUsed = attempt - 1;
+            return web;
+          }
         }
       } catch (error) {
         lastError = compactErrorText(error);
@@ -533,8 +550,11 @@ export class DebridService {
 
   private allDebridClient: AllDebridClient;
 
-  public constructor(settings: AppSettings) {
+  private options: DebridServiceOptions;
+
+  public constructor(settings: AppSettings, options: DebridServiceOptions = {}) {
     this.settings = settings;
+    this.options = options;
     this.realDebridClient = new RealDebridClient(settings.token);
     this.allDebridClient = new AllDebridClient(settings.allDebridToken);
   }
@@ -634,7 +654,7 @@ export class DebridService {
       return this.realDebridClient.unrestrictLink(link);
     }
     if (provider === "megadebrid") {
-      return new MegaDebridClient(token).unrestrictLink(link);
+      return new MegaDebridClient(token, this.options.megaWebUnrestrict).unrestrictLink(link);
     }
     if (provider === "alldebrid") {
       return this.allDebridClient.unrestrictLink(link);

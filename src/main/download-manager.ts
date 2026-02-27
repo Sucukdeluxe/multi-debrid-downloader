@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import { AppSettings, DownloadItem, DownloadSummary, DownloadStatus, PackageEntry, ParsedPackageInput, SessionState, UiSnapshot } from "../shared/types";
 import { CHUNK_SIZE, REQUEST_RETRIES } from "./constants";
 import { cleanupCancelledPackageArtifacts, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
-import { DebridService } from "./debrid";
+import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { extractPackageArchives } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -21,6 +21,10 @@ type ActiveTask = {
   resumable: boolean;
   speedEvents: Array<{ at: number; bytes: number }>;
   nonResumableCounted: boolean;
+};
+
+type DownloadManagerOptions = {
+  megaWebUnrestrict?: MegaWebUnrestrictor;
 };
 
 function cloneSession(session: SessionState): SessionState {
@@ -103,12 +107,12 @@ export class DownloadManager extends EventEmitter {
 
   private speedBytesLastWindow = 0;
 
-  public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths) {
+  public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
     this.session = cloneSession(session);
     this.storagePaths = storagePaths;
-    this.debridService = new DebridService(settings);
+    this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
   }

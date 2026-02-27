@@ -1,18 +1,21 @@
 import path from "node:path";
 import { app } from "electron";
-import { AddLinksPayload, AppSettings, ParsedPackageInput, UiSnapshot, UpdateCheckResult } from "../shared/types";
+import { AddLinksPayload, AppSettings, ParsedPackageInput, UiSnapshot, UpdateCheckResult, UpdateInstallResult } from "../shared/types";
 import { importDlcContainers } from "./container";
 import { APP_VERSION, defaultSettings } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, logger } from "./logger";
+import { MegaWebFallback } from "./mega-web-fallback";
 import { createStoragePaths, emptySession, loadSession, loadSettings, saveSettings } from "./storage";
-import { checkGitHubUpdate } from "./update";
+import { checkGitHubUpdate, installLatestUpdate } from "./update";
 
 export class AppController {
   private settings: AppSettings;
 
   private manager: DownloadManager;
+
+  private megaWebFallback: MegaWebFallback;
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
@@ -20,7 +23,13 @@ export class AppController {
     configureLogger(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     const session = loadSession(this.storagePaths);
-    this.manager = new DownloadManager(this.settings, session, this.storagePaths);
+    this.megaWebFallback = new MegaWebFallback(() => ({
+      login: this.settings.megaLogin,
+      password: this.settings.megaPassword
+    }));
+    this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
+      megaWebUnrestrict: (link: string) => this.megaWebFallback.unrestrict(link)
+    });
     this.manager.on("state", (snapshot: UiSnapshot) => {
       this.onState?.(snapshot);
     });
@@ -69,6 +78,10 @@ export class AppController {
     return checkGitHubUpdate(this.settings.updateRepo);
   }
 
+  public async installUpdate(): Promise<UpdateInstallResult> {
+    return installLatestUpdate(this.settings.updateRepo);
+  }
+
   public addLinks(payload: AddLinksPayload): { addedPackages: number; addedLinks: number; invalidCount: number } {
     const parsed = parseCollectorInput(payload.rawText, payload.packageName || this.settings.packageName);
     if (parsed.length === 0) {
@@ -110,6 +123,7 @@ export class AppController {
 
   public shutdown(): void {
     this.manager.stop();
+    this.megaWebFallback.dispose();
     logger.info("App beendet");
   }
 }

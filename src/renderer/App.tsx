@@ -7,6 +7,8 @@ const emptySnapshot = (): UiSnapshot => ({
   settings: {
     token: "",
     megaToken: "",
+    megaLogin: "",
+    megaPassword: "",
     bestToken: "",
     allDebridToken: "",
     rememberToken: true,
@@ -122,7 +124,7 @@ export function App(): ReactElement {
     }
 
     const approved = window.confirm(
-      `Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt Download-Seite öffnen?`
+      `Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`
     );
     if (!approved) {
       setStatusToast(`Update verfügbar: ${result.latestTag}`);
@@ -130,9 +132,15 @@ export function App(): ReactElement {
       return;
     }
 
-    const opened = await window.rd.openExternal(result.releaseUrl);
-    setStatusToast(opened ? "Download-Seite im Browser geöffnet" : "Konnte Download-Seite nicht öffnen");
-    setTimeout(() => setStatusToast(""), 2600);
+    const install = await window.rd.installUpdate();
+    if (install.started) {
+      setStatusToast("Updater gestartet - App wird geschlossen");
+      setTimeout(() => setStatusToast(""), 2600);
+      return;
+    }
+
+    setStatusToast(`Auto-Update fehlgeschlagen: ${install.message}`);
+    setTimeout(() => setStatusToast(""), 3200);
   };
 
   const onSaveSettings = async (): Promise<void> => {
@@ -306,6 +314,17 @@ export function App(): ReactElement {
                 type="password"
                 value={settingsDraft.megaToken}
                 onChange={(event) => setText("megaToken", event.target.value)}
+              />
+              <label>Mega-Debrid Login (Web Fallback)</label>
+              <input
+                value={settingsDraft.megaLogin}
+                onChange={(event) => setText("megaLogin", event.target.value)}
+              />
+              <label>Mega-Debrid Passwort (Web Fallback)</label>
+              <input
+                type="password"
+                value={settingsDraft.megaPassword}
+                onChange={(event) => setText("megaPassword", event.target.value)}
               />
               <label>BestDebrid API Token</label>
               <input
