@@ -1,4 +1,5 @@
 import { AppSettings, DebridProvider } from "../shared/types";
+import { createHash } from "node:crypto";
 import { REQUEST_RETRIES } from "./constants";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
@@ -194,49 +195,109 @@ class MegaDebridClient {
     this.token = token;
   }
 
+  private normalizeMegaCandidates(link: string): string[] {
+    const result = new Set<string>();
+    const trimmed = link.trim();
+    if (trimmed) {
+      result.add(trimmed);
+    }
+
+    try {
+      const parsed = new URL(trimmed);
+      const host = parsed.hostname.toLowerCase();
+      if (host.includes("rapidgator.net")) {
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        const fileIdx = parts.findIndex((part) => part.toLowerCase() === "file");
+        if (fileIdx >= 0 && parts[fileIdx + 1]) {
+          const hash = parts[fileIdx + 1];
+          result.add(`https://rapidgator.net/file/${hash}`);
+          result.add(`http://rapidgator.net/file/${hash}`);
+          if (parts[fileIdx + 2]) {
+            const name = parts[fileIdx + 2].replace(/\.html$/i, "");
+            result.add(`https://rapidgator.net/file/${hash}/${name}.html`);
+            result.add(`http://rapidgator.net/file/${hash}/${name}.html`);
+          }
+        }
+      }
+    } catch {
+      // ignore malformed URL
+    }
+
+    return [...result];
+  }
+
+  private async requestMega(link: string, includePasswordField: boolean, useGetLinkParam: boolean): Promise<UnrestrictedLink> {
+    const url = `${MEGA_DEBRID_API}?action=getLink&token=${encodeURIComponent(this.token)}${useGetLinkParam ? `&link=${encodeURIComponent(link)}` : ""}`;
+    const body = new URLSearchParams();
+    if (!useGetLinkParam) {
+      body.set("link", link);
+    }
+    if (includePasswordField) {
+      body.set("password", createHash("md5").update("").digest("hex"));
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "RD-Node-Downloader/1.1.17"
+      },
+      body
+    });
+    const text = await response.text();
+    const payload = asRecord(parseJson(text));
+
+    if (!response.ok) {
+      throw new Error(parseError(response.status, text, payload));
+    }
+
+    const responseCode = pickString(payload, ["response_code"]);
+    if (responseCode && responseCode.toLowerCase() !== "ok") {
+      throw new Error(pickString(payload, ["response_text"]) || responseCode);
+    }
+
+    const directUrl = pickString(payload, ["debridLink", "download", "link"]);
+    if (!directUrl) {
+      throw new Error("Mega-Debrid Antwort ohne debridLink");
+    }
+
+    const fileName = pickString(payload, ["filename", "fileName"]) || filenameFromUrl(link);
+    const fileSize = pickNumber(payload, ["filesize", "size"]);
+    return {
+      fileName,
+      directUrl,
+      fileSize,
+      retriesUsed: 0
+    };
+  }
+
   public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
     let lastError = "";
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
       try {
-        const body = new URLSearchParams({ link });
-        const response = await fetch(`${MEGA_DEBRID_API}?action=getLink&token=${encodeURIComponent(this.token)}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "RD-Node-Downloader/1.1.12"
-          },
-          body
-        });
-        const text = await response.text();
-        const payload = asRecord(parseJson(text));
+        const candidates = this.normalizeMegaCandidates(link);
+        const variants = [
+          { includePasswordField: false, useGetLinkParam: false },
+          { includePasswordField: true, useGetLinkParam: false },
+          { includePasswordField: false, useGetLinkParam: true },
+          { includePasswordField: true, useGetLinkParam: true }
+        ];
 
-        if (!response.ok) {
-          const reason = parseError(response.status, text, payload);
-          if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
-            await sleep(retryDelay(attempt));
-            continue;
+        for (const candidate of candidates) {
+          for (const variant of variants) {
+            try {
+              const out = await this.requestMega(candidate, variant.includePasswordField, variant.useGetLinkParam);
+              out.retriesUsed = attempt - 1;
+              return out;
+            } catch (error) {
+              lastError = compactErrorText(error);
+            }
           }
-          throw new Error(reason);
         }
 
-        const responseCode = pickString(payload, ["response_code"]);
-        if (responseCode && responseCode.toLowerCase() !== "ok") {
-          throw new Error(pickString(payload, ["response_text"]) || responseCode);
+        if (/token error|vip_end/i.test(lastError)) {
+          throw new Error(lastError);
         }
-
-        const directUrl = pickString(payload, ["debridLink", "download", "link"]);
-        if (!directUrl) {
-          throw new Error("Mega-Debrid Antwort ohne debridLink");
-        }
-
-        const fileName = pickString(payload, ["filename", "fileName"]) || filenameFromUrl(link);
-        const fileSize = pickNumber(payload, ["filesize", "size"]);
-        return {
-          fileName,
-          directUrl,
-          fileSize,
-          retriesUsed: attempt - 1
-        };
       } catch (error) {
         lastError = compactErrorText(error);
         if (attempt >= REQUEST_RETRIES) {
