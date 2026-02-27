@@ -12,5 +12,7 @@ release/
 *.spec
 
 rd_downloader_config.json
+rd_downloader.log
+rd_download_manifest.json
 _update_staging/
 apply_update.cmd
