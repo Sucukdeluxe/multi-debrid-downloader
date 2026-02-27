@@ -622,6 +622,110 @@ describe("download manager", () => {
     }
   }, 35000);
 
+  it("recovers via global watchdog when stream hangs without reader timeout", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(240 * 1024, 31);
+    const previousStallTimeout = process.env.RD_STALL_TIMEOUT_MS;
+    const previousConnectTimeout = process.env.RD_CONNECT_TIMEOUT_MS;
+    const previousGlobalWatchdog = process.env.RD_GLOBAL_STALL_TIMEOUT_MS;
+    process.env.RD_STALL_TIMEOUT_MS = "120000";
+    process.env.RD_CONNECT_TIMEOUT_MS = "120000";
+    process.env.RD_GLOBAL_STALL_TIMEOUT_MS = "2500";
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/watchdog-stall") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      directCalls += 1;
+      if (directCalls === 1) {
+        const firstChunk = Math.floor(binary.length / 3);
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length));
+        res.write(binary.subarray(0, firstChunk));
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/watchdog-stall`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "watchdog-stall.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "watchdog-stall", links: ["https://dummy/watchdog-stall"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThan(1);
+    } finally {
+      if (previousStallTimeout === undefined) {
+        delete process.env.RD_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_STALL_TIMEOUT_MS = previousStallTimeout;
+      }
+      if (previousConnectTimeout === undefined) {
+        delete process.env.RD_CONNECT_TIMEOUT_MS;
+      } else {
+        process.env.RD_CONNECT_TIMEOUT_MS = previousConnectTimeout;
+      }
+      if (previousGlobalWatchdog === undefined) {
+        delete process.env.RD_GLOBAL_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_GLOBAL_STALL_TIMEOUT_MS = previousGlobalWatchdog;
+      }
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
+
   it("uses content-disposition filename when provider filename is opaque", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
