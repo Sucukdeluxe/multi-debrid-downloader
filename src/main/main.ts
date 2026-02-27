@@ -41,6 +41,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.GET_SNAPSHOT, () => controller.getSnapshot());
   ipcMain.handle(IPC_CHANNELS.GET_VERSION, () => controller.getVersion());
   ipcMain.handle(IPC_CHANNELS.CHECK_UPDATES, async () => controller.checkUpdates());
+  ipcMain.handle(IPC_CHANNELS.INSTALL_UPDATE, async () => {
+    const result = await controller.installUpdate();
+    if (result.started) {
+      setTimeout(() => {
+        app.quit();
+      }, 350);
+    }
+    return result;
+  });
   ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL, async (_event: IpcMainInvokeEvent, rawUrl: string) => {
     try {
       const parsed = new URL(String(rawUrl || "").trim());
