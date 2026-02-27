@@ -193,7 +193,9 @@ async function main(): Promise<void> {
       assert(cancelItem?.status === "cancelled" || cancelItem?.status === "queued", "Paketabbruch nicht wirksam");
     }
     const packageDir = path.join(path.join(tempRoot, "downloads-cancel"), "cancel");
-    assert(!fs.existsSync(path.join(packageDir, "release.part1.rar")), "RAR-Artefakt wurde nicht gelöscht");
+    const cancelArtifact = path.join(packageDir, "release.part1.rar");
+    await waitFor(() => !fs.existsSync(cancelArtifact), 10000);
+    assert(!fs.existsSync(cancelArtifact), "RAR-Artefakt wurde nicht gelöscht");
 
     console.log("Node self-check erfolgreich");
   } finally {

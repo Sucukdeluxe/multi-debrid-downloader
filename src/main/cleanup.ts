@@ -2,6 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { ARCHIVE_TEMP_EXTENSIONS, LINK_ARTIFACT_EXTENSIONS, RAR_SPLIT_RE, SAMPLE_DIR_NAMES, SAMPLE_TOKEN_RE, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
 
+async function yieldToLoop(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 export function isArchiveOrTempFile(filePath: string): boolean {
   const lower = filePath.toLowerCase();
   const ext = path.extname(lower);
@@ -33,6 +39,47 @@ export function cleanupCancelledPackageArtifacts(packageDir: string): number {
         } catch {
           // ignore
         }
+      }
+    }
+  }
+  return removed;
+}
+
+export async function cleanupCancelledPackageArtifactsAsync(packageDir: string): Promise<number> {
+  try {
+    await fs.promises.access(packageDir, fs.constants.F_OK);
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  let touched = 0;
+  const stack = [packageDir];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile() && isArchiveOrTempFile(full)) {
+        try {
+          await fs.promises.rm(full, { force: true });
+          removed += 1;
+        } catch {
+          // ignore
+        }
+      }
+
+      touched += 1;
+      if (touched % 80 === 0) {
+        await yieldToLoop();
       }
     }
   }

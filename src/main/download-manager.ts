@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { v4 as uuidv4 } from "uuid";
 import { AppSettings, DownloadItem, DownloadSummary, DownloadStatus, PackageEntry, ParsedPackageInput, SessionState, UiSnapshot } from "../shared/types";
 import { CHUNK_SIZE, REQUEST_RETRIES } from "./constants";
-import { cleanupCancelledPackageArtifacts, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
+import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { extractPackageArchives } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
@@ -111,6 +111,8 @@ export class DownloadManager extends EventEmitter {
   private stateEmitTimer: NodeJS.Timeout | null = null;
 
   private speedBytesLastWindow = 0;
+
+  private cleanupQueue: Promise<void> = Promise.resolve();
 
   private reservedTargetPaths = new Map<string, string>();
 
@@ -332,6 +334,8 @@ export class DownloadManager extends EventEmitter {
     if (!pkg) {
       return;
     }
+    const packageName = pkg.name;
+    const outputDir = pkg.outputDir;
     const itemIds = [...pkg.itemIds];
 
     for (const itemId of itemIds) {
@@ -347,11 +351,18 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    const removed = cleanupCancelledPackageArtifacts(pkg.outputDir);
     this.removePackageFromSession(packageId, itemIds);
-    logger.info(`Paket ${pkg.name} abgebrochen, ${removed} Artefakte gelöscht`);
     this.persistSoon();
     this.emitState(true);
+
+    this.cleanupQueue = this.cleanupQueue
+      .then(async () => {
+        const removed = await cleanupCancelledPackageArtifactsAsync(outputDir);
+        logger.info(`Paket ${packageName} abgebrochen, ${removed} Artefakte gelöscht`);
+      })
+      .catch((error) => {
+        logger.warn(`Cleanup für Paket ${packageName} fehlgeschlagen: ${compactErrorText(error)}`);
+      });
   }
 
   public start(): void {
