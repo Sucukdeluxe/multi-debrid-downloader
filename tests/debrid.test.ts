@@ -142,4 +142,41 @@ describe("debrid service", () => {
     expect(result.directUrl).toBe("https://alldebrid.example/file.bin");
     expect(result.fileSize).toBe(4096);
   });
+
+  it("respects provider selection and does not append hidden fallback providers", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      megaToken: "mega-token",
+      bestToken: "",
+      allDebridToken: "ad-token",
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "megadebrid" as const,
+      providerTertiary: "megadebrid" as const,
+      autoProviderFallback: true
+    };
+
+    let allDebridCalls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("mega-debrid.eu/api.php?action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "error", response_text: "host unavailable" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("api.alldebrid.com/v4/link/unlock")) {
+        allDebridCalls += 1;
+        return new Response(JSON.stringify({ status: "success", data: { link: "https://alldebrid.example/file.bin" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://rapidgator.net/file/example.part5.rar.html")).rejects.toThrow();
+    expect(allDebridCalls).toBe(0);
+  });
 });

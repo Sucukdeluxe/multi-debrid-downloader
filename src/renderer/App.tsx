@@ -1,5 +1,5 @@
 import { DragEvent, ReactElement, useEffect, useMemo, useState } from "react";
-import type { AppSettings, DebridProvider, DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
+import type { AppSettings, DebridProvider, DownloadItem, PackageEntry, UiSnapshot, UpdateCheckResult } from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
 
@@ -86,10 +86,7 @@ export function App(): ReactElement {
       setSettingsDraft(state.settings);
       if (state.settings.autoUpdateCheck) {
         void window.rd.checkUpdates().then((result) => {
-          if (result.updateAvailable) {
-            setStatusToast(`Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})`);
-            setTimeout(() => setStatusToast(""), 3800);
-          }
+          void handleUpdateResult(result, "startup");
         });
       }
     });
@@ -107,6 +104,37 @@ export function App(): ReactElement {
     .map((id: string) => snapshot.session.packages[id])
     .filter(Boolean), [snapshot]);
 
+  const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
+    if (result.error) {
+      if (source === "manual") {
+        setStatusToast(`Update-Check fehlgeschlagen: ${result.error}`);
+        setTimeout(() => setStatusToast(""), 2800);
+      }
+      return;
+    }
+
+    if (!result.updateAvailable) {
+      if (source === "manual") {
+        setStatusToast(`Kein Update verfügbar (v${result.currentVersion})`);
+        setTimeout(() => setStatusToast(""), 2000);
+      }
+      return;
+    }
+
+    const approved = window.confirm(
+      `Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt Download-Seite öffnen?`
+    );
+    if (!approved) {
+      setStatusToast(`Update verfügbar: ${result.latestTag}`);
+      setTimeout(() => setStatusToast(""), 2600);
+      return;
+    }
+
+    const opened = await window.rd.openExternal(result.releaseUrl);
+    setStatusToast(opened ? "Download-Seite im Browser geöffnet" : "Konnte Download-Seite nicht öffnen");
+    setTimeout(() => setStatusToast(""), 2600);
+  };
+
   const onSaveSettings = async (): Promise<void> => {
     await window.rd.updateSettings(settingsDraft);
     setStatusToast("Settings gespeichert");
@@ -115,18 +143,7 @@ export function App(): ReactElement {
 
   const onCheckUpdates = async (): Promise<void> => {
     const result = await window.rd.checkUpdates();
-    if (result.error) {
-      setStatusToast(`Update-Check fehlgeschlagen: ${result.error}`);
-      setTimeout(() => setStatusToast(""), 2800);
-      return;
-    }
-    if (result.updateAvailable) {
-      setStatusToast(`Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})`);
-      setTimeout(() => setStatusToast(""), 3200);
-      return;
-    }
-    setStatusToast(`Kein Update verfügbar (v${result.currentVersion})`);
-    setTimeout(() => setStatusToast(""), 2000);
+    await handleUpdateResult(result, "manual");
   };
 
   const onAddLinks = async (): Promise<void> => {
@@ -193,7 +210,14 @@ export function App(): ReactElement {
 
       <section className="control-strip">
         <div className="buttons">
-          <button className="btn accent" disabled={!snapshot.canStart} onClick={() => window.rd.start()}>Start</button>
+          <button
+            className="btn accent"
+            disabled={!snapshot.canStart}
+            onClick={async () => {
+              await window.rd.updateSettings(settingsDraft);
+              await window.rd.start();
+            }}
+          >Start</button>
           <button className="btn" disabled={!snapshot.canPause} onClick={() => window.rd.togglePause()}>
             {snapshot.session.paused ? "Resume" : "Pause"}
           </button>
