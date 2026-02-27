@@ -33,6 +33,7 @@ def run() -> None:
     original_showerror = messagebox.showerror
     original_showwarning = messagebox.showwarning
     original_showinfo = messagebox.showinfo
+    original_askyesno = messagebox.askyesno
 
     def fake_message(kind: str):
         def _inner(title: str, text: str):
@@ -113,6 +114,44 @@ def run() -> None:
         waited = time.monotonic() - started
         assert_true(waited >= 0.2, "Pause-Wait hat nicht geblockt")
 
+        messagebox.askyesno = lambda *args, **kwargs: True
+        cancel_package_dir = temp_root / "cancel_pkg"
+        cancel_package_dir.mkdir(parents=True, exist_ok=True)
+        (cancel_package_dir / "release.part1.rar").write_bytes(b"x")
+        (cancel_package_dir / "keep_movie.mkv").write_bytes(b"x")
+
+        cancel_row = "package-cancel"
+        child_row = "package-cancel-link-1"
+        app.table.insert("", "end", iid=cancel_row, text="cancelpkg", values=("-", "Wartet", "0/1", "0 B/s", "0"), open=True)
+        app.table.insert(cancel_row, "end", iid=child_row, text="https://example.com/cancel", values=("-", "Wartet", "0%", "0 B/s", "0"))
+        app.links_text.delete("1.0", "end")
+        app.links_text.insert("1.0", "https://example.com/cancel\n")
+        app.package_contexts = [
+            {
+                "package_row_id": cancel_row,
+                "row_map": {1: child_row},
+                "job": {
+                    "name": "cancelpkg",
+                    "links": ["https://example.com/cancel"],
+                    "package_dir": cancel_package_dir,
+                    "extract_target_dir": None,
+                    "completed_indices": [],
+                },
+            }
+        ]
+        app.worker_thread = DummyWorker()
+        app.table.selection_set(child_row)
+        app._remove_selected_progress_rows()
+        assert_true(app._is_package_cancelled(cancel_row), "Paket-Abbruch wurde nicht markiert")
+        assert_true(not app.table.exists(cancel_row), "Paketzeile wurde nicht entfernt")
+        remaining_links = app.links_text.get("1.0", "end").strip()
+        assert_true(not remaining_links, "Link wurde bei Paketentfernung nicht aus Liste entfernt")
+
+        removed_cancel_files = app._cleanup_cancelled_package_artifacts(cancel_package_dir)
+        assert_true(removed_cancel_files >= 1, "Archiv-Cleanup bei Paketabbruch hat nichts gelöscht")
+        assert_true(not (cancel_package_dir / "release.part1.rar").exists(), "RAR-Teil wurde nicht entfernt")
+        assert_true((cancel_package_dir / "keep_movie.mkv").exists(), "Nicht-Archivdatei wurde fälschlich gelöscht")
+
         status_events: list[tuple[float, str]] = []
         extract_times: dict[str, float] = {}
         download_starts: dict[str, float] = {}
@@ -125,7 +164,13 @@ def run() -> None:
             status_events.append((time.monotonic(), message))
             original_queue_status(message)
 
-        def fake_download_single(token: str, package_dir: Path, index: int, link: str) -> appmod.DownloadResult:
+        def fake_download_single(
+            token: str,
+            package_dir: Path,
+            index: int,
+            link: str,
+            package_row_id: str | None = None,
+        ) -> appmod.DownloadResult:
             package_name = package_dir.name
             download_starts.setdefault(package_name, time.monotonic())
             archive_path = package_dir / f"{package_name}_{index}.zip"
@@ -251,6 +296,7 @@ def run() -> None:
         messagebox.showerror = original_showerror
         messagebox.showwarning = original_showwarning
         messagebox.showinfo = original_showinfo
+        messagebox.askyesno = original_askyesno
         appmod.CONFIG_FILE = original_config
         appmod.MANIFEST_FILE = original_manifest
 

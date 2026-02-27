@@ -58,7 +58,7 @@ MANIFEST_FILE = Path(__file__).with_name("rd_download_manifest.json")
 LOG_FILE = Path(__file__).with_name("rd_downloader.log")
 CHUNK_SIZE = 1024 * 512
 APP_NAME = "Real-Debrid Downloader GUI"
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader"
 DEFAULT_RELEASE_ASSET = "Real-Debrid-Downloader-win64.zip"
 DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload"
@@ -93,6 +93,8 @@ SAMPLE_DIR_NAMES = {"sample", "samples"}
 SAMPLE_VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".m2ts", ".webm"}
 SAMPLE_TOKEN_RE = re.compile(r"(^|[._\-\s])sample([._\-\s]|$)", re.IGNORECASE)
 LINK_ARTIFACT_EXTENSIONS = {".url", ".webloc", ".dlc", ".rsdf", ".ccf"}
+ARCHIVE_TEMP_EXTENSIONS = {".rar", ".zip", ".7z", ".tmp", ".part"}
+RAR_SPLIT_RE = re.compile(r"\.r\d{2}$", re.IGNORECASE)
 
 
 @dataclass
@@ -131,6 +133,12 @@ class PackageRunResult:
     extracted: int
     downloaded_files: list[Path]
     extracted_job_keys: set[str]
+    cancelled: bool = False
+    skipped: int = 0
+
+
+class PackageCancelledError(Exception):
+    pass
 
 
 CLEANUP_LABELS = {
@@ -582,6 +590,8 @@ class DownloaderApp(TkBase):
         self.tooltip_row = ""
         self.tooltip_column = ""
         self.dnd_ready = False
+        self.package_cancel_lock = threading.Lock()
+        self.cancelled_package_rows: set[str] = set()
 
         self._build_ui()
         self._load_config()
@@ -775,7 +785,7 @@ class DownloaderApp(TkBase):
         self.table.bind("<Leave>", self._hide_status_tooltip)
 
         self.table_context_menu = tk.Menu(self, tearoff=0)
-        self.table_context_menu.add_command(label="Aus Fortschritt löschen", command=self._remove_selected_progress_rows)
+        self.table_context_menu.add_command(label="Aus Fortschritt entfernen", command=self._remove_selected_progress_rows)
         self.table_context_menu.add_command(label="Fortschritt komplett leeren", command=self._clear_progress_only)
         self.table_context_menu.add_separator()
         self.table_context_menu.add_command(label="Links komplett leeren", command=self._clear_links)
@@ -960,6 +970,8 @@ class DownloaderApp(TkBase):
         self.row_map.clear()
         self.package_row_id = None
         self.package_contexts = []
+        with self.package_cancel_lock:
+            self.cancelled_package_rows.clear()
 
     def _set_links_text_lines(self, lines: list[str]) -> None:
         content = "\n".join(line for line in lines if line.strip())
@@ -985,12 +997,66 @@ class DownloaderApp(TkBase):
             self.table_context_menu.grab_release()
 
     def _remove_selected_progress_rows(self) -> None:
-        if self.worker_thread and self.worker_thread.is_alive():
-            messagebox.showinfo("Hinweis", "Löschen aus dem Fortschritt nur im Leerlauf möglich")
-            return
-
         selected = list(self.table.selection())
         if not selected:
+            return
+
+        running = bool(self.worker_thread and self.worker_thread.is_alive())
+        if running:
+            package_rows: set[str] = set()
+            for row_id in selected:
+                if not self.table.exists(row_id):
+                    continue
+                parent = self.table.parent(row_id)
+                package_row_id = row_id if not parent else parent
+                if package_row_id:
+                    package_rows.add(package_row_id)
+
+            if not package_rows:
+                return
+
+            context_map = {
+                str(context.get("package_row_id")): context
+                for context in self.package_contexts
+                if isinstance(context, dict)
+            }
+            active_rows = [row_id for row_id in package_rows if row_id in context_map]
+            if not active_rows:
+                return
+
+            if not messagebox.askyesno(
+                "Paket abbrechen",
+                "Ausgewählte Pakete wirklich abbrechen?\n\n"
+                "- laufender Download stoppt sofort\n"
+                "- unvollständige Archivdateien im Paketordner werden entfernt\n"
+                "- bereits entpackte Dateien bleiben erhalten",
+            ):
+                return
+
+            links_to_remove: list[str] = []
+            removed_package_count = 0
+            for package_row_id in active_rows:
+                context = context_map.get(package_row_id) or {}
+                job = context.get("job") if isinstance(context, dict) else None
+                if isinstance(job, dict):
+                    links_to_remove.extend(
+                        str(link).strip()
+                        for link in job.get("links", [])
+                        if str(link).strip()
+                    )
+                self._request_package_cancel(package_row_id)
+                if self.table.exists(package_row_id):
+                    self.table.delete(package_row_id)
+                removed_package_count += 1
+
+            if links_to_remove:
+                lines = [line.strip() for line in self.links_text.get("1.0", "end").splitlines() if line.strip()]
+                for link in links_to_remove:
+                    if link in lines:
+                        lines.remove(link)
+                self._set_links_text_lines(lines)
+
+            self._queue_status(f"{removed_package_count} Paket(e) abgebrochen und aus der Liste entfernt")
             return
 
         row_ids_to_remove: set[str] = set()
@@ -1211,8 +1277,58 @@ class DownloaderApp(TkBase):
             return True
         return usage.free >= required_bytes + reserve_bytes
 
-    def _wait_if_paused(self) -> None:
+    def _is_package_cancelled(self, package_row_id: str | None) -> bool:
+        if not package_row_id:
+            return False
+        with self.package_cancel_lock:
+            return package_row_id in self.cancelled_package_rows
+
+    def _request_package_cancel(self, package_row_id: str) -> None:
+        with self.package_cancel_lock:
+            self.cancelled_package_rows.add(package_row_id)
+
+    @staticmethod
+    def _is_archive_or_temp_file(path: Path) -> bool:
+        name_lower = path.name.lower()
+        suffix = path.suffix.lower()
+        if suffix in ARCHIVE_TEMP_EXTENSIONS:
+            return True
+        if ".part" in name_lower and name_lower.endswith(".rar"):
+            return True
+        if RAR_SPLIT_RE.search(name_lower):
+            return True
+        return False
+
+    def _cleanup_cancelled_package_artifacts(self, package_dir: Path) -> int:
+        if not package_dir.exists() or not package_dir.is_dir():
+            return 0
+
+        removed = 0
+        paths = sorted(package_dir.rglob("*"), key=lambda path: len(path.parts), reverse=True)
+        for path in paths:
+            if path.is_file() and self._is_archive_or_temp_file(path):
+                try:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+                except Exception:
+                    continue
+
+        for path in paths:
+            if not path.is_dir():
+                continue
+            if path == package_dir:
+                continue
+            try:
+                path.rmdir()
+            except Exception:
+                continue
+
+        return removed
+
+    def _wait_if_paused(self, package_row_id: str | None = None) -> None:
         while self.pause_event.is_set() and not self.stop_event.is_set():
+            if self._is_package_cancelled(package_row_id):
+                return
             sleep(0.15)
 
     def toggle_pause_downloads(self) -> None:
@@ -2072,6 +2188,8 @@ class DownloaderApp(TkBase):
         self.row_map.clear()
         self.package_row_id = None
         self.package_contexts = []
+        with self.package_cancel_lock:
+            self.cancelled_package_rows.clear()
         with self.path_lock:
             self.reserved_target_keys.clear()
         with self.speed_limit_lock:
@@ -2167,6 +2285,7 @@ class DownloaderApp(TkBase):
         total_success = 0
         total_failed = 0
         total_extracted = 0
+        total_cancelled = 0
 
         extract_futures: list = []
         with ThreadPoolExecutor(max_workers=2) as extract_executor:
@@ -2181,6 +2300,17 @@ class DownloaderApp(TkBase):
                 package_links = list(job["links"])
                 package_dir = Path(job["package_dir"])
                 extract_target_dir = Path(job["extract_target_dir"]) if job.get("extract_target_dir") else None
+
+                if self._is_package_cancelled(package_row_id):
+                    skipped_links = len(package_links)
+                    removed_files = self._cleanup_cancelled_package_artifacts(package_dir)
+                    processed_offset += skipped_links
+                    total_cancelled += skipped_links
+                    self._queue_overall(processed_offset, overall_total_links)
+                    self._queue_status(
+                        f"Paket entfernt: {package_name} ({skipped_links} Link(s), {removed_files} Archivdatei(en) gelöscht)"
+                    )
+                    continue
 
                 self.package_row_id = package_row_id
                 self.row_map = row_map
@@ -2221,11 +2351,20 @@ class DownloaderApp(TkBase):
                     remove_samples_after_extract=remove_samples_after_extract,
                 )
                 processed_offset += package_result.processed
+                if package_result.skipped:
+                    processed_offset += package_result.skipped
+                    total_cancelled += package_result.skipped
+                    self._queue_overall(processed_offset, overall_total_links)
                 total_success += package_result.success
                 total_failed += package_result.failed
                 total_extracted += package_result.extracted
 
-                if not self.stop_event.is_set() and extract_target_dir and package_result.downloaded_files:
+                if (
+                    not self.stop_event.is_set()
+                    and not package_result.cancelled
+                    and extract_target_dir
+                    and package_result.downloaded_files
+                ):
                     self._queue_status(f"Paket {package_name}: Entpacken läuft parallel im Hintergrund")
                     self._queue_package_row(package_row_id, status="Download fertig, Entpacken läuft ...")
                     future = extract_executor.submit(
@@ -2262,7 +2401,7 @@ class DownloaderApp(TkBase):
         success_rate = (total_success / total_processed * 100.0) if total_processed else 0.0
         summary = (
             f"Summary: Dauer {duration:.1f}s, Ø Speed {human_size(int(avg_speed))}/s, "
-            f"Erfolg {success_rate:.1f}% ({total_success}/{total_processed}), Entpackt {total_extracted}"
+            f"Erfolg {success_rate:.1f}% ({total_success}/{total_processed}), Entpackt {total_extracted}, Abgebrochen {total_cancelled}"
         )
 
         if self.stop_event.is_set():
@@ -2303,6 +2442,7 @@ class DownloaderApp(TkBase):
         extracted = 0
         downloaded_files: list[Path] = []
         extracted_job_keys: set[str] = set()
+        package_cancelled = self._is_package_cancelled(package_row_id)
 
         if extract_target_dir and package_dir.exists():
             for candidate in package_dir.iterdir():
@@ -2316,13 +2456,17 @@ class DownloaderApp(TkBase):
         )
         running_futures: dict = {}
         with ThreadPoolExecutor(max_workers=max(1, min(50, total))) as executor:
-            while (pending_links or running_futures) and not self.stop_event.is_set():
-                self._wait_if_paused()
+            while (pending_links or running_futures) and not self.stop_event.is_set() and not package_cancelled:
+                if self._is_package_cancelled(package_row_id):
+                    package_cancelled = True
+                    break
+
+                self._wait_if_paused(package_row_id)
                 desired_parallel = self._active_parallel_limit(total)
 
-                while pending_links and len(running_futures) < desired_parallel and not self.stop_event.is_set():
+                while pending_links and len(running_futures) < desired_parallel and not self.stop_event.is_set() and not package_cancelled:
                     index, link = pending_links.popleft()
-                    future = executor.submit(self._download_single_link, token, package_dir, index, link)
+                    future = executor.submit(self._download_single_link, token, package_dir, index, link, package_row_id)
                     running_futures[future] = index
 
                 if not running_futures:
@@ -2368,6 +2512,10 @@ class DownloaderApp(TkBase):
                         self._queue_row(index, status="Gestoppt", progress="-", speed="0 B/s", retries="-")
                         self.stop_event.set()
                         break
+                    except PackageCancelledError:
+                        self._queue_row(index, status="Entfernt", progress="-", speed="0 B/s", retries="-")
+                        package_cancelled = True
+                        break
                     except Exception as exc:
                         error_text = compact_error_text(str(exc))
                         self._queue_row(index, status=f"Fehler: {error_text}", progress="-", speed="0 B/s", retries="-")
@@ -2382,9 +2530,31 @@ class DownloaderApp(TkBase):
                             progress=f"{processed}/{total}",
                         )
 
-            if self.stop_event.is_set():
+                    if package_cancelled:
+                        break
+
+            if self.stop_event.is_set() or package_cancelled:
                 for pending_future in running_futures:
                     pending_future.cancel()
+
+        if package_cancelled:
+            skipped_links = max(total - processed, 0)
+            removed_files = self._cleanup_cancelled_package_artifacts(package_dir)
+            self._queue_status(
+                f"Paket entfernt: {package_name}. Gelöschte Archivdateien: {removed_files}, übersprungene Links: {skipped_links}"
+            )
+            if package_row_id:
+                self._queue_package_row(package_row_id, status="Entfernt", progress=f"{processed}/{total}", speed="0 B/s")
+            return PackageRunResult(
+                processed=processed,
+                success=success,
+                failed=failed,
+                extracted=extracted,
+                downloaded_files=list(downloaded_files),
+                extracted_job_keys=set(extracted_job_keys),
+                cancelled=True,
+                skipped=skipped_links,
+            )
 
         extract_failed = 0
         if not self.stop_event.is_set() and extract_target_dir and downloaded_files and not defer_final_extract:
@@ -2433,19 +2603,30 @@ class DownloaderApp(TkBase):
             extracted_job_keys=set(extracted_job_keys),
         )
 
-    def _download_single_link(self, token: str, package_dir: Path, index: int, link: str) -> DownloadResult | None:
+    def _download_single_link(
+        self,
+        token: str,
+        package_dir: Path,
+        index: int,
+        link: str,
+        package_row_id: str | None = None,
+    ) -> DownloadResult | None:
         if self.stop_event.is_set():
             raise InterruptedError("Download wurde gestoppt")
+        if self._is_package_cancelled(package_row_id):
+            raise PackageCancelledError("Paket wurde entfernt")
 
         client = RealDebridClient(token)
         target_path: Path | None = None
         try:
-            self._wait_if_paused()
+            self._wait_if_paused(package_row_id)
             self._queue_row(index, status="Link wird via Real-Debrid umgewandelt", progress="0%", speed="0 B/s", retries="0")
             filename, direct_url, unrestrict_retries, file_size = client.unrestrict_link(link)
             target_path = self._reserve_download_target(package_dir, filename)
             if file_size and not self._has_enough_disk_space(package_dir, file_size):
                 raise RuntimeError(f"Zu wenig Speicherplatz für {target_path.name} ({human_size(file_size)})")
+            if self._is_package_cancelled(package_row_id):
+                raise PackageCancelledError("Paket wurde entfernt")
 
             self._queue_row(
                 index,
@@ -2455,7 +2636,13 @@ class DownloaderApp(TkBase):
                 speed="0 B/s",
                 retries=str(unrestrict_retries),
             )
-            download_retries, written_bytes = self._stream_download(client.session, direct_url, target_path, index)
+            download_retries, written_bytes = self._stream_download(
+                client.session,
+                direct_url,
+                target_path,
+                index,
+                package_row_id=package_row_id,
+            )
             total_retries = unrestrict_retries + download_retries
             self._queue_row(
                 index,
@@ -2485,6 +2672,9 @@ class DownloaderApp(TkBase):
         if self.stop_event.is_set():
             self._queue_package_row(package_row_id, status="Entpacken gestoppt")
             return 0, 0
+        if self._is_package_cancelled(package_row_id):
+            self._queue_package_row(package_row_id, status="Entfernt")
+            return 0, 0
 
         self._queue_package_row(package_row_id, status="Entpacken gestartet")
         try:
@@ -2507,6 +2697,13 @@ class DownloaderApp(TkBase):
             return extracted, failed
         except InterruptedError:
             self._queue_package_row(package_row_id, status="Entpacken gestoppt")
+            return 0, 0
+        except PackageCancelledError:
+            removed_files = 0
+            if downloaded_files:
+                removed_files = self._cleanup_cancelled_package_artifacts(downloaded_files[0].parent)
+            self._queue_status(f"Paket entfernt: {package_name}. Gelöschte Archivdateien: {removed_files}")
+            self._queue_package_row(package_row_id, status="Entfernt")
             return 0, 0
         except Exception as exc:
             LOGGER.error("Entpack-Fehler [%s]: %s", package_name, exc)
@@ -2550,6 +2747,8 @@ class DownloaderApp(TkBase):
         for position, job in enumerate(pending_jobs, start=1):
             if self.stop_event.is_set():
                 raise InterruptedError("Entpacken wurde gestoppt")
+            if self._is_package_cancelled(package_row_id):
+                raise PackageCancelledError("Paket wurde entfernt")
 
             if package_row_id:
                 self._queue_package_row(package_row_id, status=f"Entpacken {position}/{total_jobs}: {job.archive_path.name}")
@@ -2943,6 +3142,7 @@ class DownloaderApp(TkBase):
         url: str,
         target_path: Path,
         row_index: int,
+        package_row_id: str | None = None,
     ) -> tuple[int, int]:
         last_error: Exception | None = None
         for attempt in range(1, REQUEST_RETRIES + 1):
@@ -2990,7 +3190,9 @@ class DownloaderApp(TkBase):
                     for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                         if self.stop_event.is_set():
                             raise InterruptedError("Download wurde gestoppt")
-                        self._wait_if_paused()
+                        if self._is_package_cancelled(package_row_id):
+                            raise PackageCancelledError("Paket wurde entfernt")
+                        self._wait_if_paused(package_row_id)
 
                         if not chunk:
                             continue
@@ -3024,6 +3226,10 @@ class DownloaderApp(TkBase):
                 self._queue_row(row_index, speed="0 B/s", retries=str(attempt - 1))
                 return attempt - 1, written
             except InterruptedError:
+                if target_path.exists():
+                    target_path.unlink(missing_ok=True)
+                raise
+            except PackageCancelledError:
                 if target_path.exists():
                     target_path.unlink(missing_ok=True)
                 raise
@@ -3175,6 +3381,8 @@ class DownloaderApp(TkBase):
                         self.speed_events.clear()
                     self.pause_event.clear()
                     self.pause_button.configure(text="Pause")
+                    with self.package_cancel_lock:
+                        self.cancelled_package_rows.clear()
                     with self.path_lock:
                         self.reserved_target_keys.clear()
                     self.speed_var.set("Geschwindigkeit: 0 B/s")

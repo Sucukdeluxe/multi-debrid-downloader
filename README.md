@@ -11,6 +11,7 @@ ueber Real-Debrid zu unrestricten und direkt auf deinen PC zu laden.
 - Nutzt die Real-Debrid API (`/unrestrict/link`)
 - Download-Status pro Link
 - Paket-Ansicht: Paket ist aufklappbar, darunter alle Einzel-Links
+- Laufende Pakete koennen per Rechtsklick direkt abgebrochen/entfernt werden
 - Download-Speed pro Link und gesamt
 - Gesamt-Fortschritt
 - Download-Ordner und Paketname waehlbar
