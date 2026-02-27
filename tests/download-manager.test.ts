@@ -835,7 +835,7 @@ describe("download manager", () => {
       name: "stopped",
       outputDir: path.join(root, "downloads", "stopped"),
       extractDir: path.join(root, "extract", "stopped"),
-      status: "downloading",
+      status: "completed",
       itemIds: [itemId],
       cancelled: false,
       enabled: true,
@@ -1025,6 +1025,116 @@ describe("download manager", () => {
     await waitFor(() => !fs.existsSync(part1) && !fs.existsSync(part2) && !fs.existsSync(part3), 5000);
     expect(fs.existsSync(keep)).toBe(true);
     expect(fs.existsSync(path.join(extractDir, "episode.mkv"))).toBe(true);
+  });
+
+  it("does not over-clean packages that share one extract directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const sharedExtractDir = path.join(root, "extract", "shared");
+    fs.mkdirSync(sharedExtractDir, { recursive: true });
+    fs.writeFileSync(path.join(sharedExtractDir, "already-extracted.mkv"), "ok", "utf8");
+
+    const pkg1Dir = path.join(root, "downloads", "pkg1");
+    const pkg2Dir = path.join(root, "downloads", "pkg2");
+    fs.mkdirSync(pkg1Dir, { recursive: true });
+    fs.mkdirSync(pkg2Dir, { recursive: true });
+
+    const pkg1Part1 = path.join(pkg1Dir, "show.one.part01.rar");
+    const pkg1Part2 = path.join(pkg1Dir, "show.one.part02.rar");
+    const pkg2Part1 = path.join(pkg2Dir, "show.two.part01.rar");
+    const pkg2Part2 = path.join(pkg2Dir, "show.two.part02.rar");
+    fs.writeFileSync(pkg1Part1, "a1", "utf8");
+    fs.writeFileSync(pkg1Part2, "a2", "utf8");
+    fs.writeFileSync(pkg2Part1, "b1", "utf8");
+    fs.writeFileSync(pkg2Part2, "b2", "utf8");
+
+    const session = emptySession();
+    const createdAt = Date.now() - 30_000;
+
+    session.packageOrder = ["pkg1", "pkg2"];
+    session.packages.pkg1 = {
+      id: "pkg1",
+      name: "pkg1",
+      outputDir: pkg1Dir,
+      extractDir: sharedExtractDir,
+      status: "completed",
+      itemIds: ["pkg1-item"],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.packages.pkg2 = {
+      id: "pkg2",
+      name: "pkg2",
+      outputDir: pkg2Dir,
+      extractDir: sharedExtractDir,
+      status: "completed",
+      itemIds: ["pkg2-item"],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    session.items["pkg1-item"] = {
+      id: "pkg1-item",
+      packageId: "pkg1",
+      url: "https://dummy/pkg1",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1,
+      totalBytes: 1,
+      progressPercent: 100,
+      fileName: path.basename(pkg1Part1),
+      targetPath: pkg1Part1,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items["pkg2-item"] = {
+      id: "pkg2-item",
+      packageId: "pkg2",
+      url: "https://dummy/pkg2",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1,
+      totalBytes: 1,
+      progressPercent: 100,
+      fileName: path.basename(pkg2Part1),
+      targetPath: pkg2Part1,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (100 MB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => !fs.existsSync(pkg1Part1) && !fs.existsSync(pkg1Part2), 5000);
+    expect(fs.existsSync(pkg2Part1)).toBe(true);
+    expect(fs.existsSync(pkg2Part2)).toBe(true);
   });
 
   it("resets run counters and reconnect state on start", async () => {
