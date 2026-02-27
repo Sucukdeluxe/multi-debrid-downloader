@@ -896,6 +896,123 @@ describe("download manager", () => {
     }
   });
 
+  it("counts retries and resets stale 100% progress on persistent HTTP 416", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const staleBinary = Buffer.alloc(64 * 1024, 9);
+    const pkgDir = path.join(root, "downloads", "range-416-fail");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const existingTargetPath = path.join(pkgDir, "broken.part3.rar");
+    fs.writeFileSync(existingTargetPath, staleBinary);
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/range-416-fail") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      directCalls += 1;
+      res.statusCode = 416;
+      res.setHeader("Content-Range", "bytes */32768");
+      res.end("");
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/range-416-fail`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "broken.part3.rar",
+            filesize: 32768
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "range-416-fail-pkg";
+      const itemId = "range-416-fail-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "range-416-fail",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "range-416-fail"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/range-416-fail",
+        provider: null,
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: staleBinary.length,
+        totalBytes: staleBinary.length,
+        progressPercent: 100,
+        fileName: "broken.part3.rar",
+        targetPath: existingTargetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 45000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("failed");
+      expect(item?.retries).toBeGreaterThan(0);
+      expect(item?.progressPercent).toBe(0);
+      expect(item?.downloadedBytes).toBe(0);
+      expect(item?.lastError).toContain("416");
+      expect(directCalls).toBeGreaterThanOrEqual(3);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 30000);
+
   it("retries non-retriable HTTP statuses and eventually succeeds", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

@@ -1543,7 +1543,7 @@ export class DownloadManager extends EventEmitter {
       try {
         const unrestricted = await this.debridService.unrestrictLink(item.url);
         item.provider = unrestricted.provider;
-        item.retries = unrestricted.retriesUsed;
+        item.retries += unrestricted.retriesUsed;
         item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
         fs.mkdirSync(pkg.outputDir, { recursive: true });
         const existingTargetPath = String(item.targetPath || "").trim();
@@ -1562,11 +1562,9 @@ export class DownloadManager extends EventEmitter {
 
         const maxAttempts = REQUEST_RETRIES;
         let done = false;
-        let downloadRetries = 0;
         while (!done && item.attempts < maxAttempts) {
           item.attempts += 1;
           const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes);
-          downloadRetries += result.retriesUsed;
           active.resumable = result.resumable;
           if (!active.resumable && !active.nonResumableCounted) {
             active.nonResumableCounted = true;
@@ -1603,8 +1601,6 @@ export class DownloadManager extends EventEmitter {
 
           done = true;
         }
-
-        item.retries += downloadRetries;
         item.status = "completed";
         item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         item.progressPercent = 100;
@@ -1656,6 +1652,7 @@ export class DownloadManager extends EventEmitter {
         } else if (reason === "stall") {
           stallRetries += 1;
           if (stallRetries <= 2) {
+            item.retries += 1;
             item.status = "queued";
             item.speedBps = 0;
             item.fullStatus = `Keine Daten empfangen, Retry ${stallRetries}/2`;
@@ -1690,6 +1687,7 @@ export class DownloadManager extends EventEmitter {
           }
           if (shouldFreshRetry) {
             freshRetryUsed = true;
+            item.retries += 1;
             try {
               fs.rmSync(item.targetPath, { force: true });
             } catch {
@@ -1713,6 +1711,7 @@ export class DownloadManager extends EventEmitter {
 
           if (genericErrorRetries < maxGenericErrorRetries) {
             genericErrorRetries += 1;
+            item.retries += 1;
             item.status = "queued";
             item.fullStatus = `Fehler erkannt, Auto-Retry ${genericErrorRetries}/${maxGenericErrorRetries}`;
             item.lastError = errorText;
@@ -1746,7 +1745,7 @@ export class DownloadManager extends EventEmitter {
     directUrl: string,
     targetPath: string,
     knownTotal: number | null
-  ): Promise<{ retriesUsed: number; resumable: boolean }> {
+  ): Promise<{ resumable: boolean }> {
     const item = this.session.items[active.itemId];
     if (!item) {
       throw new Error("Download-Item fehlt");
@@ -1781,6 +1780,7 @@ export class DownloadManager extends EventEmitter {
         }
         lastError = compactErrorText(error);
         if (attempt < REQUEST_RETRIES) {
+          item.retries += 1;
           item.fullStatus = `Verbindungsfehler, retry ${attempt + 1}/${REQUEST_RETRIES}`;
           this.emitState();
           await sleep(300 * attempt);
@@ -1793,13 +1793,13 @@ export class DownloadManager extends EventEmitter {
         if (response.status === 416 && existingBytes > 0) {
           const rangeTotal = parseContentRangeTotal(response.headers.get("content-range"));
           const expectedTotal = knownTotal && knownTotal > 0 ? knownTotal : rangeTotal;
-          if (expectedTotal && existingBytes >= expectedTotal) {
+          if (expectedTotal && existingBytes === expectedTotal) {
             item.totalBytes = expectedTotal;
             item.downloadedBytes = existingBytes;
             item.progressPercent = 100;
             item.speedBps = 0;
             item.updatedAt = nowMs();
-            return { retriesUsed: attempt - 1, resumable: true };
+            return { resumable: true };
           }
 
           try {
@@ -1815,16 +1815,22 @@ export class DownloadManager extends EventEmitter {
           item.updatedAt = nowMs();
           this.emitState();
           if (attempt < REQUEST_RETRIES) {
+            item.retries += 1;
             await sleep(280 * attempt);
             continue;
           }
         }
         const text = await response.text();
-        lastError = compactErrorText(text || `HTTP ${response.status}`);
+        lastError = `HTTP ${response.status}`;
+        const responseText = compactErrorText(text || "");
+        if (responseText && responseText !== "Unbekannter Fehler" && !/(^|\b)http\s*\d{3}\b/i.test(responseText)) {
+          lastError = `HTTP ${response.status}: ${responseText}`;
+        }
         if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
           this.requestReconnect(`HTTP ${response.status}`);
         }
         if (attempt < REQUEST_RETRIES) {
+          item.retries += 1;
           item.fullStatus = `Serverfehler ${response.status}, retry ${attempt + 1}/${REQUEST_RETRIES}`;
           this.emitState();
           await sleep(350 * attempt);
@@ -2008,13 +2014,14 @@ export class DownloadManager extends EventEmitter {
         item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 100;
         item.speedBps = 0;
         item.updatedAt = nowMs();
-        return { retriesUsed: attempt - 1, resumable };
+        return { resumable };
       } catch (error) {
         if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
           throw error;
         }
         lastError = compactErrorText(error);
         if (attempt < REQUEST_RETRIES) {
+          item.retries += 1;
           item.fullStatus = `Downloadfehler, retry ${attempt + 1}/${REQUEST_RETRIES}`;
           this.emitState();
           await sleep(350 * attempt);
