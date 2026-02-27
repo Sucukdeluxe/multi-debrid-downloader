@@ -126,7 +126,11 @@ function toProviderOrder(primary: DebridProvider, secondary: DebridFallbackProvi
 
 function isRapidgatorLink(link: string): boolean {
   try {
-    return new URL(link).hostname.toLowerCase().includes("rapidgator.net");
+    const hostname = new URL(link).hostname.toLowerCase();
+    return hostname === "rapidgator.net"
+      || hostname.endsWith(".rapidgator.net")
+      || hostname === "rg.to"
+      || hostname.endsWith(".rg.to");
   } catch {
     return false;
   }

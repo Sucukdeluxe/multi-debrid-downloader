@@ -287,4 +287,27 @@ describe("debrid service", () => {
     expect(result.provider).toBe("realdebrid");
     expect(result.fileName).toBe("Banshee.S04E01.German.DL.720p.part01.rar");
   });
+
+  it("resolves filenames for rg.to links", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: ""
+    };
+
+    const link = "https://rg.to/file/685cec6dcc1837dc725755fc9c726dd9";
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === link) {
+        return new Response("<html><head><title>Download file Bulletproof.S01E01.German.DL.DD20.Synced.720p.AmazonHD.h264-GDR.part01.rar</title></head></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const resolved = await service.resolveFilenames([link]);
+    expect(resolved.get(link)).toBe("Bulletproof.S01E01.German.DL.DD20.Synced.720p.AmazonHD.h264-GDR.part01.rar");
+  });
 });
