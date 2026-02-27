@@ -418,6 +418,210 @@ describe("download manager", () => {
     }
   }, 35000);
 
+  it("recovers when direct download connection stalls before first byte", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(220 * 1024, 23);
+    const previousStallTimeout = process.env.RD_STALL_TIMEOUT_MS;
+    const previousConnectTimeout = process.env.RD_CONNECT_TIMEOUT_MS;
+    process.env.RD_STALL_TIMEOUT_MS = "2500";
+    process.env.RD_CONNECT_TIMEOUT_MS = "1800";
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/connect-stall") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      directCalls += 1;
+      if (directCalls === 1) {
+        setTimeout(() => {
+          if (res.destroyed || res.writableEnded) {
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader("Accept-Ranges", "bytes");
+          res.setHeader("Content-Length", String(binary.length));
+          res.end(binary);
+        }, 5200);
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/connect-stall`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "connect-stall.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "connect-stall", links: ["https://dummy/connect-stall"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThan(1);
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+      expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+    } finally {
+      if (previousStallTimeout === undefined) {
+        delete process.env.RD_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_STALL_TIMEOUT_MS = previousStallTimeout;
+      }
+      if (previousConnectTimeout === undefined) {
+        delete process.env.RD_CONNECT_TIMEOUT_MS;
+      } else {
+        process.env.RD_CONNECT_TIMEOUT_MS = previousConnectTimeout;
+      }
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
+
+  it("recovers when direct download stalls before first response bytes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(180 * 1024, 12);
+    const previousStallTimeout = process.env.RD_STALL_TIMEOUT_MS;
+    const previousConnectTimeout = process.env.RD_CONNECT_TIMEOUT_MS;
+    process.env.RD_STALL_TIMEOUT_MS = "2500";
+    process.env.RD_CONNECT_TIMEOUT_MS = "2000";
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/stall-connect") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      directCalls += 1;
+      if (directCalls === 1) {
+        setTimeout(() => {
+          if (res.writableEnded || res.destroyed || res.headersSent) {
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader("Accept-Ranges", "bytes");
+          res.setHeader("Content-Length", String(binary.length));
+          res.end(binary);
+        }, 5000);
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/stall-connect`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "stall-connect.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "stall-connect", links: ["https://dummy/stall-connect"] }]);
+      manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThan(1);
+    } finally {
+      if (previousStallTimeout === undefined) {
+        delete process.env.RD_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_STALL_TIMEOUT_MS = previousStallTimeout;
+      }
+      if (previousConnectTimeout === undefined) {
+        delete process.env.RD_CONNECT_TIMEOUT_MS;
+      } else {
+        process.env.RD_CONNECT_TIMEOUT_MS = previousConnectTimeout;
+      }
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
+
   it("uses content-disposition filename when provider filename is opaque", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

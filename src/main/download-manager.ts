@@ -36,7 +36,9 @@ type ActiveTask = {
   nonResumableCounted: boolean;
 };
 
-const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 60000;
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 30000;
+
+const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
@@ -44,6 +46,14 @@ function getDownloadStallTimeoutMs(): number {
     return Math.floor(fromEnv);
   }
   return DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS;
+}
+
+function getDownloadConnectTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_CONNECT_TIMEOUT_MS ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 2000 && fromEnv <= 180000) {
+    return Math.floor(fromEnv);
+  }
+  return DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS;
 }
 
 type DownloadManagerOptions = {
@@ -1996,7 +2006,18 @@ export class DownloadManager extends EventEmitter {
       }
 
       let response: Response;
+      const connectTimeoutMs = getDownloadConnectTimeoutMs();
+      let connectTimer: NodeJS.Timeout | null = null;
       try {
+        if (connectTimeoutMs > 0) {
+          connectTimer = setTimeout(() => {
+            if (active.abortController.signal.aborted) {
+              return;
+            }
+            active.abortReason = "stall";
+            active.abortController.abort("stall");
+          }, connectTimeoutMs);
+        }
         response = await fetch(directUrl, {
           method: "GET",
           headers,
@@ -2015,6 +2036,10 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         throw error;
+      } finally {
+        if (connectTimer) {
+          clearTimeout(connectTimer);
+        }
       }
 
       if (!response.ok) {
@@ -2138,6 +2163,29 @@ export class DownloadManager extends EventEmitter {
           }
           const reader = body.getReader();
           const stallTimeoutMs = getDownloadStallTimeoutMs();
+          let lastDataAt = nowMs();
+          let lastIdleEmitAt = 0;
+          const idlePulseMs = Math.max(1500, Math.min(3500, Math.floor(stallTimeoutMs / 4) || 2000));
+          const idleTimer = setInterval(() => {
+            if (active.abortController.signal.aborted) {
+              return;
+            }
+            const nowTick = nowMs();
+            if (nowTick - lastDataAt < idlePulseMs) {
+              return;
+            }
+            if (item.status === "paused") {
+              return;
+            }
+            item.status = "downloading";
+            item.speedBps = 0;
+            item.fullStatus = `Warte auf Daten (${providerLabel(item.provider)})`;
+            if (nowTick - lastIdleEmitAt >= idlePulseMs) {
+              item.updatedAt = nowTick;
+              this.emitState();
+              lastIdleEmitAt = nowTick;
+            }
+          }, idlePulseMs);
           const readWithTimeout = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
             if (stallTimeoutMs <= 0) {
               return reader.read();
@@ -2172,63 +2220,68 @@ export class DownloadManager extends EventEmitter {
             });
           };
 
-          while (true) {
-            const { done, value } = await readWithTimeout();
-            if (done) {
-              break;
-            }
-            const chunk = value;
-            if (active.abortController.signal.aborted) {
-              throw new Error(`aborted:${active.abortReason}`);
-            }
-            while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
-              item.status = "paused";
-              item.fullStatus = "Pausiert";
-              this.emitState();
-              await sleep(120);
-            }
-            if (active.abortController.signal.aborted) {
-              throw new Error(`aborted:${active.abortReason}`);
-            }
-            if (this.reconnectActive() && active.resumable) {
-              active.abortReason = "reconnect";
-              active.abortController.abort("reconnect");
-              throw new Error("aborted:reconnect");
-            }
+          try {
+            while (true) {
+              const { done, value } = await readWithTimeout();
+              if (done) {
+                break;
+              }
+              const chunk = value;
+              lastDataAt = nowMs();
+              if (active.abortController.signal.aborted) {
+                throw new Error(`aborted:${active.abortReason}`);
+              }
+              while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
+                item.status = "paused";
+                item.fullStatus = "Pausiert";
+                this.emitState();
+                await sleep(120);
+              }
+              if (active.abortController.signal.aborted) {
+                throw new Error(`aborted:${active.abortReason}`);
+              }
+              if (this.reconnectActive() && active.resumable) {
+                active.abortReason = "reconnect";
+                active.abortController.abort("reconnect");
+                throw new Error("aborted:reconnect");
+              }
 
-            const buffer = Buffer.from(chunk);
-            await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
-            if (active.abortController.signal.aborted) {
-              throw new Error(`aborted:${active.abortReason}`);
-            }
-            if (!stream.write(buffer)) {
-              await waitDrain();
-            }
-            written += buffer.length;
-            windowBytes += buffer.length;
-            this.session.totalDownloadedBytes += buffer.length;
-            this.recordSpeed(buffer.length);
+              const buffer = Buffer.from(chunk);
+              await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
+              if (active.abortController.signal.aborted) {
+                throw new Error(`aborted:${active.abortReason}`);
+              }
+              if (!stream.write(buffer)) {
+                await waitDrain();
+              }
+              written += buffer.length;
+              windowBytes += buffer.length;
+              this.session.totalDownloadedBytes += buffer.length;
+              this.recordSpeed(buffer.length);
 
-            const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.1);
-            const speed = windowBytes / elapsed;
-            if (elapsed >= 1.2) {
-              windowStarted = nowMs();
-              windowBytes = 0;
-            }
+              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.1);
+              const speed = windowBytes / elapsed;
+              if (elapsed >= 1.2) {
+                windowStarted = nowMs();
+                windowBytes = 0;
+              }
 
-            item.status = "downloading";
-            item.speedBps = Math.max(0, Math.floor(speed));
-            item.downloadedBytes = written;
-            item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
-            item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
-            const nowTick = nowMs();
-            const progressChanged = item.progressPercent !== lastProgressPercent;
-            if (progressChanged || nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
-              item.updatedAt = nowTick;
-              this.emitState();
-              lastUiEmitAt = nowTick;
-              lastProgressPercent = item.progressPercent;
+              item.status = "downloading";
+              item.speedBps = Math.max(0, Math.floor(speed));
+              item.downloadedBytes = written;
+              item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
+              item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+              const nowTick = nowMs();
+              const progressChanged = item.progressPercent !== lastProgressPercent;
+              if (progressChanged || nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
+                item.updatedAt = nowTick;
+                this.emitState();
+                lastUiEmitAt = nowTick;
+                lastProgressPercent = item.progressPercent;
+              }
             }
+          } finally {
+            clearInterval(idleTimer);
           }
         } finally {
           await new Promise<void>((resolve, reject) => {
