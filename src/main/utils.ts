@@ -62,13 +62,19 @@ export function filenameFromUrl(url: string): string {
     const normalized = decoded
       .replace(/\.(rar|zip|7z|tar|gz|bz2|xz|iso|part\d+\.rar|r\d{2})\.html$/i, ".$1")
       .replace(/\.(mp4|mkv|avi|mp3|flac|srt)\.html$/i, ".$1");
-    if (/^[a-f0-9]{24,}$/i.test(normalized)) {
-      return "download.bin";
-    }
     return sanitizeFilename(normalized || "download.bin");
   } catch {
     return "download.bin";
   }
+}
+
+export function looksLikeOpaqueFilename(name: string): boolean {
+  const cleaned = sanitizeFilename(name || "").toLowerCase();
+  if (!cleaned || cleaned === "download.bin") {
+    return true;
+  }
+  const parsed = path.parse(cleaned);
+  return /^[a-f0-9]{24,}$/i.test(parsed.name || cleaned);
 }
 
 export function inferPackageNameFromLinks(links: string[]): string {

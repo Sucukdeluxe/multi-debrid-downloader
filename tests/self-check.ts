@@ -185,8 +185,13 @@ async function main(): Promise<void> {
     manager4.cancelPackage(pkgId);
     await waitFor(() => !manager4.getSnapshot().session.running || Object.values(manager4.getSnapshot().session.items).every((item) => item.status !== "downloading"), 15000);
     const cancelSnapshot = manager4.getSnapshot();
-    const cancelItem = Object.values(cancelSnapshot.session.items)[0];
-    assert(cancelItem?.status === "cancelled" || cancelItem?.status === "queued", "Paketabbruch nicht wirksam");
+    const remainingItems = Object.values(cancelSnapshot.session.items);
+    if (remainingItems.length === 0) {
+      assert(cancelSnapshot.session.packageOrder.length === 0, "Abgebrochenes Paket wurde nicht entfernt");
+    } else {
+      const cancelItem = remainingItems[0];
+      assert(cancelItem?.status === "cancelled" || cancelItem?.status === "queued", "Paketabbruch nicht wirksam");
+    }
     const packageDir = path.join(path.join(tempRoot, "downloads-cancel"), "cancel");
     assert(!fs.existsSync(path.join(packageDir, "release.part1.rar")), "RAR-Artefakt wurde nicht gelöscht");
 

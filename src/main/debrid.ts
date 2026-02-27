@@ -1,7 +1,7 @@
 import { AppSettings, DebridProvider } from "../shared/types";
 import { REQUEST_RETRIES } from "./constants";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
-import { compactErrorText, filenameFromUrl, sleep } from "./utils";
+import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
@@ -106,6 +106,70 @@ function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
     result.push(provider);
   }
   return result;
+}
+
+function isRapidgatorLink(link: string): boolean {
+  try {
+    return new URL(link).hostname.toLowerCase().includes("rapidgator.net");
+  } catch {
+    return false;
+  }
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+  const size = Math.max(1, Math.min(concurrency, items.length));
+  let index = 0;
+  const runners = Array.from({ length: size }, async () => {
+    while (index < items.length) {
+      const current = items[index];
+      index += 1;
+      await worker(current);
+    }
+  });
+  await Promise.all(runners);
+}
+
+async function resolveRapidgatorFilename(link: string): Promise<string> {
+  if (!isRapidgatorLink(link)) {
+    return "";
+  }
+  try {
+    const response = await fetch(link, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+      }
+    });
+    if (!response.ok) {
+      return "";
+    }
+    const html = await response.text();
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    const title = decodeHtmlEntities((titleMatch?.[1] || "").trim());
+    if (!title) {
+      return "";
+    }
+    const preferred = title.match(/download\s+file\s+(.+)$/i)?.[1]?.trim() || title;
+    if (!preferred) {
+      return "";
+    }
+    const withoutSuffix = preferred.replace(/\s*-\s*rapidgator.*$/i, "").trim();
+    return withoutSuffix;
+  } catch {
+    return "";
+  }
 }
 
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
@@ -421,39 +485,42 @@ export class DebridService {
   }
 
   public async resolveFilenames(links: string[]): Promise<Map<string, string>> {
-    const unresolved = links.filter((link) => filenameFromUrl(link) === "download.bin");
+    const unresolved = links.filter((link) => looksLikeOpaqueFilename(filenameFromUrl(link)));
     if (unresolved.length === 0) {
       return new Map<string, string>();
     }
 
+    const clean = new Map<string, string>();
     const token = this.settings.allDebridToken.trim();
-    if (!token) {
-      return new Map<string, string>();
+    if (token) {
+      try {
+        const infos = await this.allDebridClient.getLinkInfos(unresolved);
+        for (const [link, fileName] of infos.entries()) {
+          if (fileName.trim() && !looksLikeOpaqueFilename(fileName.trim())) {
+            clean.set(link, fileName.trim());
+          }
+        }
+      } catch {
+        // ignore and continue with host page fallback
+      }
     }
 
-    try {
-      const infos = await this.allDebridClient.getLinkInfos(unresolved);
-      const clean = new Map<string, string>();
-      for (const [link, fileName] of infos.entries()) {
-        if (fileName.trim() && fileName.trim().toLowerCase() !== "download.bin") {
-          clean.set(link, fileName.trim());
-        }
+    const remaining = unresolved.filter((link) => !clean.has(link) && isRapidgatorLink(link));
+    await runWithConcurrency(remaining, 6, async (link) => {
+      const fromPage = await resolveRapidgatorFilename(link);
+      if (fromPage && !looksLikeOpaqueFilename(fromPage)) {
+        clean.set(link, fromPage);
       }
-      return clean;
-    } catch {
-      return new Map<string, string>();
-    }
+    });
+
+    return clean;
   }
 
   public async unrestrictLink(link: string): Promise<ProviderUnrestrictedLink> {
     const order = uniqueProviderOrder([
       this.settings.providerPrimary,
       this.settings.providerSecondary,
-      this.settings.providerTertiary,
-      "realdebrid",
-      "megadebrid",
-      "bestdebrid",
-      "alldebrid"
+      this.settings.providerTertiary
     ]);
 
     let configuredFound = false;

@@ -11,7 +11,7 @@ import { extractPackageArchives } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { StoragePaths, saveSession } from "./storage";
-import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, nowMs, sanitizeFilename, sleep } from "./utils";
+import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 
 type ActiveTask = {
   itemId: string;
@@ -99,6 +99,10 @@ export class DownloadManager extends EventEmitter {
 
   private nonResumableActive = 0;
 
+  private stateEmitTimer: NodeJS.Timeout | null = null;
+
+  private speedBytesLastWindow = 0;
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths) {
     super();
     this.settings = settings;
@@ -129,8 +133,8 @@ export class DownloadManager extends EventEmitter {
 
   public getSnapshot(): UiSnapshot {
     const now = nowMs();
-    this.speedEvents = this.speedEvents.filter((event) => event.at >= now - 3000);
-    const speedBps = this.speedEvents.reduce((acc, event) => acc + event.bytes, 0) / 3;
+    this.pruneSpeedEvents(now);
+    const speedBps = this.speedBytesLastWindow / 3;
 
     const totalItems = Object.keys(this.session.items).length;
     const doneItems = Object.values(this.session.items).filter((item) => isFinishedStatus(item.status)).length;
@@ -159,7 +163,7 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = "";
     this.summary = null;
     this.persistNow();
-    this.emitState();
+    this.emitState(true);
   }
 
   public addPackages(packages: ParsedPackageInput[]): { addedPackages: number; addedLinks: number } {
@@ -212,7 +216,7 @@ export class DownloadManager extends EventEmitter {
         };
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
-        if (fileName === "download.bin") {
+        if (looksLikeOpaqueFilename(fileName)) {
           const existing = unresolvedByLink.get(link) ?? [];
           existing.push(itemId);
           unresolvedByLink.set(link, existing);
@@ -256,7 +260,7 @@ export class DownloadManager extends EventEmitter {
           if (!item) {
             continue;
           }
-          if (item.fileName !== "download.bin") {
+          if (!looksLikeOpaqueFilename(item.fileName)) {
             continue;
           }
           item.fileName = normalized;
@@ -280,19 +284,12 @@ export class DownloadManager extends EventEmitter {
     if (!pkg) {
       return;
     }
-    pkg.cancelled = true;
-    pkg.status = "cancelled";
-    pkg.updatedAt = nowMs();
+    const itemIds = [...pkg.itemIds];
 
-    for (const itemId of pkg.itemIds) {
+    for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item) {
         continue;
-      }
-      if (item.status === "queued" || item.status === "validating" || item.status === "reconnect_wait") {
-        item.status = "cancelled";
-        item.fullStatus = "Entfernt";
-        item.updatedAt = nowMs();
       }
       const active = this.activeTasks.get(itemId);
       if (active) {
@@ -302,9 +299,10 @@ export class DownloadManager extends EventEmitter {
     }
 
     const removed = cleanupCancelledPackageArtifacts(pkg.outputDir);
+    this.removePackageFromSession(packageId, itemIds);
     logger.info(`Paket ${pkg.name} abgebrochen, ${removed} Artefakte gelöscht`);
     this.persistSoon();
-    this.emitState();
+    this.emitState(true);
   }
 
   public start(): void {
@@ -316,7 +314,7 @@ export class DownloadManager extends EventEmitter {
     this.session.runStartedAt = this.session.runStartedAt || nowMs();
     this.summary = null;
     this.persistSoon();
-    this.emitState();
+    this.emitState(true);
     this.ensureScheduler();
   }
 
@@ -328,7 +326,7 @@ export class DownloadManager extends EventEmitter {
       active.abortController.abort("stop");
     }
     this.persistSoon();
-    this.emitState();
+    this.emitState(true);
   }
 
   public togglePause(): boolean {
@@ -337,7 +335,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.session.paused = !this.session.paused;
     this.persistSoon();
-    this.emitState();
+    this.emitState(true);
     return this.session.paused;
   }
 
@@ -400,8 +398,46 @@ export class DownloadManager extends EventEmitter {
     saveSession(this.storagePaths, this.session);
   }
 
-  private emitState(): void {
-    this.emit("state", this.getSnapshot());
+  private emitState(force = false): void {
+    if (force) {
+      if (this.stateEmitTimer) {
+        clearTimeout(this.stateEmitTimer);
+        this.stateEmitTimer = null;
+      }
+      this.emit("state", this.getSnapshot());
+      return;
+    }
+    if (this.stateEmitTimer) {
+      return;
+    }
+    this.stateEmitTimer = setTimeout(() => {
+      this.stateEmitTimer = null;
+      this.emit("state", this.getSnapshot());
+    }, 140);
+  }
+
+  private pruneSpeedEvents(now: number): void {
+    while (this.speedEvents.length > 0 && this.speedEvents[0].at < now - 3000) {
+      const event = this.speedEvents.shift();
+      if (event) {
+        this.speedBytesLastWindow = Math.max(0, this.speedBytesLastWindow - event.bytes);
+      }
+    }
+  }
+
+  private recordSpeed(bytes: number): void {
+    const now = nowMs();
+    this.speedEvents.push({ at: now, bytes });
+    this.speedBytesLastWindow += bytes;
+    this.pruneSpeedEvents(now);
+  }
+
+  private removePackageFromSession(packageId: string, itemIds: string[]): void {
+    for (const itemId of itemIds) {
+      delete this.session.items[itemId];
+    }
+    delete this.session.packages[packageId];
+    this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
   }
 
   private async ensureScheduler(): Promise<void> {
@@ -748,8 +784,7 @@ export class DownloadManager extends EventEmitter {
           written += buffer.length;
           windowBytes += buffer.length;
           this.session.totalDownloadedBytes += buffer.length;
-          this.speedEvents.push({ at: nowMs(), bytes: buffer.length });
-          this.speedEvents = this.speedEvents.filter((event) => event.at >= nowMs() - 3000);
+          this.recordSpeed(buffer.length);
 
           const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.1);
           const speed = windowBytes / elapsed;
@@ -801,7 +836,8 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const globalBytes = this.speedEvents.reduce((acc, event) => acc + event.bytes, 0) + chunkBytes;
+    this.pruneSpeedEvents(now);
+    const globalBytes = this.speedBytesLastWindow + chunkBytes;
     const globalAllowed = bytesPerSecond * 3;
     if (globalBytes > globalAllowed) {
       await sleep(Math.min(250, Math.ceil(((globalBytes - globalAllowed) / bytesPerSecond) * 1000)));
