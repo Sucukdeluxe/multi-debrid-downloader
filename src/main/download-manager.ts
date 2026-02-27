@@ -969,6 +969,8 @@ export class DownloadManager extends EventEmitter {
       this.emitState(true);
     }
 
+    this.triggerPendingExtractions();
+
     const runItems = Object.values(this.session.items)
       .filter((item) => {
         if (item.status !== "queued" && item.status !== "reconnect_wait") {
@@ -1420,6 +1422,15 @@ export class DownloadManager extends EventEmitter {
         const needsPostProcess = pkg.status !== "completed"
           || items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
         if (needsPostProcess) {
+          pkg.status = "queued";
+          pkg.updatedAt = nowMs();
+          for (const item of items) {
+            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+              item.fullStatus = "Entpacken ausstehend";
+              item.updatedAt = nowMs();
+            }
+          }
+          changed = true;
           void this.runPackagePostProcessing(packageId);
         } else if (pkg.status !== "completed") {
           pkg.status = "completed";
@@ -1440,6 +1451,47 @@ export class DownloadManager extends EventEmitter {
     if (changed) {
       this.persistSoon();
       this.emitState();
+    }
+  }
+
+  private triggerPendingExtractions(): void {
+    if (!this.settings.autoExtract) {
+      return;
+    }
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      if (this.packagePostProcessTasks.has(packageId)) {
+        continue;
+      }
+      const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+      if (items.length === 0) {
+        continue;
+      }
+      const success = items.filter((item) => item.status === "completed").length;
+      const failed = items.filter((item) => item.status === "failed").length;
+      const cancelled = items.filter((item) => item.status === "cancelled").length;
+      if (success + failed + cancelled < items.length || failed > 0 || success === 0) {
+        continue;
+      }
+      const needsExtraction = items.some((item) =>
+        item.status === "completed" && !isExtractedLabel(item.fullStatus)
+      );
+      if (!needsExtraction) {
+        continue;
+      }
+      pkg.status = "queued";
+      pkg.updatedAt = nowMs();
+      for (const item of items) {
+        if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+          item.fullStatus = "Entpacken ausstehend";
+          item.updatedAt = nowMs();
+        }
+      }
+      logger.info(`Entpacken via Start ausgelöst: pkg=${pkg.name}`);
+      void this.runPackagePostProcessing(packageId);
     }
   }
 
