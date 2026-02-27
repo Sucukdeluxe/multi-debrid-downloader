@@ -87,31 +87,6 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   return file.startsWith(withSep);
 }
 
-function directoryHasFiles(dirPath: string): boolean {
-  if (!fs.existsSync(dirPath)) {
-    return false;
-  }
-  const stack = [dirPath];
-  while (stack.length > 0) {
-    const current = stack.pop() as string;
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isFile()) {
-        return true;
-      }
-      if (entry.isDirectory()) {
-        stack.push(path.join(current, entry.name));
-      }
-    }
-  }
-  return false;
-}
-
 export class DownloadManager extends EventEmitter {
   private settings: AppSettings;
 
@@ -676,26 +651,14 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (this.settings.autoExtract && failed === 0 && success > 0) {
-        if (this.settings.createExtractSubfolder && directoryHasFiles(pkg.extractDir)) {
-          for (const item of items) {
-            if (item.status === "completed" && item.fullStatus !== "Entpackt") {
-              item.fullStatus = "Entpackt";
-              item.updatedAt = nowMs();
-              changed = true;
-            }
-          }
-          if (pkg.status !== "completed") {
-            pkg.status = "completed";
-            pkg.updatedAt = nowMs();
-            changed = true;
-          }
-          continue;
-        }
-
         const needsPostProcess = pkg.status !== "completed"
           || items.some((item) => item.status === "completed" && item.fullStatus !== "Entpackt");
         if (needsPostProcess) {
           void this.runPackagePostProcessing(packageId);
+        } else if (pkg.status !== "completed") {
+          pkg.status = "completed";
+          pkg.updatedAt = nowMs();
+          changed = true;
         }
         continue;
       }
