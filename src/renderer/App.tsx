@@ -404,6 +404,14 @@ export function App(): ReactElement {
     });
   };
 
+  const onStartPauseClick = async (): Promise<void> => {
+    if (snapshot.session.running) {
+      await performQuickAction(() => window.rd.togglePause());
+      return;
+    }
+    await onStartDownloads();
+  };
+
   const onAddLinks = async (): Promise<void> => {
     await performQuickAction(async () => {
       await persistDraftSettings();
@@ -661,9 +669,9 @@ export function App(): ReactElement {
       onDrop={onDrop}
     >
       <header className="top-header">
+        <div className="header-spacer" />
         <div className="title-block">
-          <h1>Debrid Download Manager</h1>
-          <span>Multi-Provider Workflow</span>
+          <h1>Multi Debrid Downloader</h1>
         </div>
         <div className="metrics">
           <div>{snapshot.speedText}</div>
@@ -675,12 +683,17 @@ export function App(): ReactElement {
       </header>
 
       <section className="control-strip">
-        <div className="buttons">
-          <button className="btn accent" disabled={!snapshot.canStart || actionBusy} onClick={() => { void onStartDownloads(); }}>Start</button>
-          <button className="btn" disabled={!snapshot.canPause || actionBusy} onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}>
-            {snapshot.session.paused ? "Fortsetzen" : "Pause"}
+        <div className="buttons buttons-left">
+          <button
+            className="btn accent"
+            disabled={actionBusy || (!snapshot.canStart && !snapshot.canPause)}
+            onClick={() => { void onStartPauseClick(); }}
+          >
+            {snapshot.session.running ? (snapshot.session.paused ? "Fortsetzen" : "Pause") : "Start"}
           </button>
           <button className="btn" disabled={!snapshot.canStop || actionBusy} onClick={() => { void performQuickAction(() => window.rd.stop()); }}>Stop</button>
+        </div>
+        <div className="buttons buttons-right">
           <button
             className="btn"
             disabled={actionBusy}
@@ -695,7 +708,7 @@ export function App(): ReactElement {
             Alles leeren
           </button>
           <button className={`btn${snapshot.clipboardActive ? " btn-active" : ""}`} disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
-            Clipboard {snapshot.clipboardActive ? "An" : "Aus"}
+            Clipboard: {snapshot.clipboardActive ? "An" : "Aus"}
           </button>
         </div>
       </section>

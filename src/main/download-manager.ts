@@ -528,6 +528,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public getStartConflicts(): StartConflictEntry[] {
+    const hasFilesByExtractDir = new Map<string, boolean>();
     const conflicts: StartConflictEntry[] = [];
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
@@ -546,7 +547,19 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      if (this.directoryHasAnyFiles(pkg.extractDir)) {
+      if (!this.isPackageSpecificExtractDir(pkg)) {
+        continue;
+      }
+
+      const extractDirKey = pathKey(pkg.extractDir);
+      const hasExtractedFiles = hasFilesByExtractDir.has(extractDirKey)
+        ? Boolean(hasFilesByExtractDir.get(extractDirKey))
+        : this.directoryHasAnyFiles(pkg.extractDir);
+      if (!hasFilesByExtractDir.has(extractDirKey)) {
+        hasFilesByExtractDir.set(extractDirKey, hasExtractedFiles);
+      }
+
+      if (hasExtractedFiles) {
         conflicts.push({
           packageId: pkg.id,
           packageName: pkg.name,
@@ -557,7 +570,7 @@ export class DownloadManager extends EventEmitter {
     return conflicts;
   }
 
-  public resolveStartConflict(packageId: string, policy: DuplicatePolicy): StartConflictResolutionResult {
+  public async resolveStartConflict(packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> {
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) {
       return { skipped: false, overwritten: false };
@@ -581,13 +594,16 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "overwrite") {
-      try {
-        fs.rmSync(pkg.extractDir, { recursive: true, force: true });
-      } catch {
-        // ignore
+      const canDeleteExtractDir = this.isPackageSpecificExtractDir(pkg) && !this.isExtractDirSharedWithOtherPackages(pkg.id, pkg.extractDir);
+      if (canDeleteExtractDir) {
+        try {
+          await fs.promises.rm(pkg.extractDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
       }
       try {
-        fs.rmSync(pkg.outputDir, { recursive: true, force: true });
+        await fs.promises.rm(pkg.outputDir, { recursive: true, force: true });
       } catch {
         // ignore
       }
@@ -624,6 +640,31 @@ export class DownloadManager extends EventEmitter {
     }
 
     return { skipped: false, overwritten: false };
+  }
+
+  private isPackageSpecificExtractDir(pkg: PackageEntry): boolean {
+    const expectedName = sanitizeFilename(pkg.name).toLowerCase();
+    if (!expectedName) {
+      return false;
+    }
+    return path.basename(pkg.extractDir).toLowerCase() === expectedName;
+  }
+
+  private isExtractDirSharedWithOtherPackages(packageId: string, extractDir: string): boolean {
+    const key = pathKey(extractDir);
+    for (const otherId of this.session.packageOrder) {
+      if (otherId === packageId) {
+        continue;
+      }
+      const other = this.session.packages[otherId];
+      if (!other || other.cancelled) {
+        continue;
+      }
+      if (pathKey(other.extractDir) === key) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async resolveQueuedFilenames(unresolvedByLink: Map<string, string[]>): Promise<void> {
@@ -1496,6 +1537,8 @@ export class DownloadManager extends EventEmitter {
 
     let freshRetryUsed = false;
     let stallRetries = 0;
+    let genericErrorRetries = 0;
+    const maxGenericErrorRetries = Math.max(2, REQUEST_RETRIES);
     while (true) {
       try {
         const unrestricted = await this.debridService.unrestrictLink(item.url);
@@ -1633,6 +1676,18 @@ export class DownloadManager extends EventEmitter {
         } else {
           const errorText = compactErrorText(error);
           const shouldFreshRetry = !freshRetryUsed && isFetchFailure(errorText);
+          const isHttp416 = /(^|\D)416(\D|$)/.test(errorText);
+          if (isHttp416) {
+            try {
+              fs.rmSync(item.targetPath, { force: true });
+            } catch {
+              // ignore
+            }
+            this.releaseTargetPath(item.id);
+            item.downloadedBytes = 0;
+            item.totalBytes = null;
+            item.progressPercent = 0;
+          }
           if (shouldFreshRetry) {
             freshRetryUsed = true;
             try {
@@ -1655,6 +1710,23 @@ export class DownloadManager extends EventEmitter {
             await sleep(450);
             continue;
           }
+
+          if (genericErrorRetries < maxGenericErrorRetries) {
+            genericErrorRetries += 1;
+            item.status = "queued";
+            item.fullStatus = `Fehler erkannt, Auto-Retry ${genericErrorRetries}/${maxGenericErrorRetries}`;
+            item.lastError = errorText;
+            item.attempts = 0;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            active.abortController = new AbortController();
+            active.abortReason = "none";
+            this.persistSoon();
+            this.emitState();
+            await sleep(Math.min(1200, 300 * genericErrorRetries));
+            continue;
+          }
+
           item.status = "failed";
           this.recordRunOutcome(item.id, "failed");
           item.lastError = errorText;
@@ -1729,13 +1801,30 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             return { retriesUsed: attempt - 1, resumable: true };
           }
+
+          try {
+            fs.rmSync(effectiveTargetPath, { force: true });
+          } catch {
+            // ignore
+          }
+          item.downloadedBytes = 0;
+          item.totalBytes = knownTotal && knownTotal > 0 ? knownTotal : null;
+          item.progressPercent = 0;
+          item.speedBps = 0;
+          item.fullStatus = `Range-Konflikt (HTTP 416), starte neu ${Math.min(REQUEST_RETRIES, attempt + 1)}/${REQUEST_RETRIES}`;
+          item.updatedAt = nowMs();
+          this.emitState();
+          if (attempt < REQUEST_RETRIES) {
+            await sleep(280 * attempt);
+            continue;
+          }
         }
         const text = await response.text();
         lastError = compactErrorText(text || `HTTP ${response.status}`);
         if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
           this.requestReconnect(`HTTP ${response.status}`);
         }
-        if (canRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+        if (attempt < REQUEST_RETRIES) {
           item.fullStatus = `Serverfehler ${response.status}, retry ${attempt + 1}/${REQUEST_RETRIES}`;
           this.emitState();
           await sleep(350 * attempt);

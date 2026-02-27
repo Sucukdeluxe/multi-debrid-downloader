@@ -130,7 +130,7 @@ export class AppController {
     return this.manager.getStartConflicts();
   }
 
-  public resolveStartConflict(packageId: string, policy: DuplicatePolicy): StartConflictResolutionResult {
+  public async resolveStartConflict(packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> {
     return this.manager.resolveStartConflict(packageId, policy);
   }
 
