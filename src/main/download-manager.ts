@@ -3,7 +3,20 @@ import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import { v4 as uuidv4 } from "uuid";
-import { AppSettings, DownloadItem, DownloadStats, DownloadSummary, DownloadStatus, PackageEntry, ParsedPackageInput, SessionState, UiSnapshot } from "../shared/types";
+import {
+  AppSettings,
+  DownloadItem,
+  DownloadStats,
+  DownloadSummary,
+  DownloadStatus,
+  DuplicatePolicy,
+  PackageEntry,
+  ParsedPackageInput,
+  SessionState,
+  StartConflictEntry,
+  StartConflictResolutionResult,
+  UiSnapshot
+} from "../shared/types";
 import { REQUEST_RETRIES } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor } from "./debrid";
@@ -512,6 +525,105 @@ export class DownloadManager extends EventEmitter {
       void this.resolveQueuedFilenames(unresolvedByLink);
     }
     return { addedPackages, addedLinks };
+  }
+
+  public getStartConflicts(): StartConflictEntry[] {
+    const conflicts: StartConflictEntry[] = [];
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+
+      const hasPendingItems = pkg.itemIds.some((itemId) => {
+        const item = this.session.items[itemId];
+        if (!item) {
+          return false;
+        }
+        return item.status === "queued" || item.status === "reconnect_wait";
+      });
+      if (!hasPendingItems) {
+        continue;
+      }
+
+      if (this.directoryHasAnyFiles(pkg.extractDir)) {
+        conflicts.push({
+          packageId: pkg.id,
+          packageName: pkg.name,
+          extractDir: pkg.extractDir
+        });
+      }
+    }
+    return conflicts;
+  }
+
+  public resolveStartConflict(packageId: string, policy: DuplicatePolicy): StartConflictResolutionResult {
+    const pkg = this.session.packages[packageId];
+    if (!pkg || pkg.cancelled) {
+      return { skipped: false, overwritten: false };
+    }
+
+    if (policy === "skip") {
+      for (const itemId of pkg.itemIds) {
+        const active = this.activeTasks.get(itemId);
+        if (active) {
+          active.abortReason = "cancel";
+          active.abortController.abort("cancel");
+        }
+        this.releaseTargetPath(itemId);
+        delete this.session.items[itemId];
+      }
+      delete this.session.packages[packageId];
+      this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
+      this.persistSoon();
+      this.emitState(true);
+      return { skipped: true, overwritten: false };
+    }
+
+    if (policy === "overwrite") {
+      try {
+        fs.rmSync(pkg.extractDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+      try {
+        fs.rmSync(pkg.outputDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        const active = this.activeTasks.get(itemId);
+        if (active) {
+          active.abortReason = "cancel";
+          active.abortController.abort("cancel");
+        }
+        this.releaseTargetPath(itemId);
+        item.status = "queued";
+        item.retries = 0;
+        item.speedBps = 0;
+        item.downloadedBytes = 0;
+        item.totalBytes = null;
+        item.progressPercent = 0;
+        item.resumable = true;
+        item.attempts = 0;
+        item.lastError = "";
+        item.fullStatus = "Wartet";
+        item.updatedAt = nowMs();
+        item.targetPath = path.join(pkg.outputDir, sanitizeFilename(item.fileName || filenameFromUrl(item.url)));
+      }
+      pkg.status = "queued";
+      pkg.updatedAt = nowMs();
+      this.persistSoon();
+      this.emitState(true);
+      return { skipped: false, overwritten: true };
+    }
+
+    return { skipped: false, overwritten: false };
   }
 
   private async resolveQueuedFilenames(unresolvedByLink: Map<string, string[]>): Promise<void> {

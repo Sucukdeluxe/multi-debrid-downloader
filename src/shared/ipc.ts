@@ -7,6 +7,8 @@ export const IPC_CHANNELS = {
   UPDATE_SETTINGS: "app:update-settings",
   ADD_LINKS: "queue:add-links",
   ADD_CONTAINERS: "queue:add-containers",
+  GET_START_CONFLICTS: "queue:get-start-conflicts",
+  RESOLVE_START_CONFLICT: "queue:resolve-start-conflict",
   CLEAR_ALL: "queue:clear-all",
   START: "queue:start",
   STOP: "queue:stop",

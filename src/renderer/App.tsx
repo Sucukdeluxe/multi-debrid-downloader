@@ -1,5 +1,18 @@
 import { DragEvent, KeyboardEvent, ReactElement, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import type { AppSettings, AppTheme, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStats, PackageEntry, UiSnapshot, UpdateCheckResult } from "../shared/types";
+import type {
+  AppSettings,
+  AppTheme,
+  BandwidthScheduleEntry,
+  DebridFallbackProvider,
+  DebridProvider,
+  DownloadItem,
+  DownloadStats,
+  DuplicatePolicy,
+  PackageEntry,
+  StartConflictEntry,
+  UiSnapshot,
+  UpdateCheckResult
+} from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
 
@@ -7,6 +20,11 @@ interface CollectorTab {
   id: string;
   name: string;
   text: string;
+}
+
+interface StartConflictPromptState {
+  entry: StartConflictEntry;
+  applyToAll: boolean;
 }
 
 const emptyStats = (): DownloadStats => ({
@@ -86,6 +104,9 @@ export function App(): ReactElement {
   const actionBusyRef = useRef(false);
   const dragOverRef = useRef(false);
   const dragDepthRef = useRef(0);
+  const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
+  const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
+  const startConflictGlobalPolicyRef = useRef<Extract<DuplicatePolicy, "skip" | "overwrite"> | null>(null);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -149,6 +170,11 @@ export function App(): ReactElement {
     return () => {
       if (stateFlushTimerRef.current) { clearTimeout(stateFlushTimerRef.current); }
       if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); }
+      if (startConflictResolverRef.current) {
+        const resolver = startConflictResolverRef.current;
+        startConflictResolverRef.current = null;
+        resolver(null);
+      }
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
     };
@@ -289,9 +315,7 @@ export function App(): ReactElement {
 
   const onSaveSettings = async (): Promise<void> => {
     await performQuickAction(async () => {
-      const result = await window.rd.updateSettings(normalizedSettingsDraft);
-      setSettingsDraft(result);
-      setSettingsDirty(false);
+      const result = await persistDraftSettings();
       applyTheme(result.theme);
       showToast("Einstellungen gespeichert", 1800);
     }, (error) => {
@@ -308,9 +332,81 @@ export function App(): ReactElement {
     });
   };
 
+  const persistDraftSettings = async (): Promise<AppSettings> => {
+    const result = await window.rd.updateSettings(normalizedSettingsDraft);
+    setSettingsDraft(result);
+    setSettingsDirty(false);
+    return result;
+  };
+
+  const closeStartConflictPrompt = (result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null): void => {
+    const resolver = startConflictResolverRef.current;
+    startConflictResolverRef.current = null;
+    setStartConflictPrompt(null);
+    if (resolver) {
+      resolver(result);
+    }
+  };
+
+  const askStartConflictDecision = (entry: StartConflictEntry): Promise<{ policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null> => {
+    return new Promise((resolve) => {
+      startConflictResolverRef.current = resolve;
+      setStartConflictPrompt({
+        entry,
+        applyToAll: false
+      });
+    });
+  };
+
+  const onStartDownloads = async (): Promise<void> => {
+    await performQuickAction(async () => {
+      if (configuredProviders.length === 0) {
+        setTab("settings");
+        showToast("Bitte zuerst mindestens einen Hoster-Account eintragen", 3000);
+        return;
+      }
+
+      await persistDraftSettings();
+      const conflicts = await window.rd.getStartConflicts();
+      let skipped = 0;
+      let overwritten = 0;
+      let rememberedPolicy = startConflictGlobalPolicyRef.current;
+
+      for (const conflict of conflicts) {
+        let decisionPolicy = rememberedPolicy;
+        if (!decisionPolicy) {
+          const decision = await askStartConflictDecision(conflict);
+          if (!decision) {
+            showToast("Start abgebrochen", 1800);
+            return;
+          }
+          decisionPolicy = decision.policy;
+          if (decision.applyToAll) {
+            startConflictGlobalPolicyRef.current = decision.policy;
+            rememberedPolicy = decision.policy;
+          }
+        }
+
+        const result = await window.rd.resolveStartConflict(conflict.packageId, decisionPolicy);
+        if (result.skipped) {
+          skipped += 1;
+        }
+        if (result.overwritten) {
+          overwritten += 1;
+        }
+      }
+
+      if (conflicts.length > 0) {
+        showToast(`Konflikte gelöst: ${overwritten} überschrieben, ${skipped} übersprungen`, 2800);
+      }
+
+      await window.rd.start();
+    });
+  };
+
   const onAddLinks = async (): Promise<void> => {
     await performQuickAction(async () => {
-      await window.rd.updateSettings(normalizedSettingsDraft);
+      await persistDraftSettings();
       const result = await window.rd.addLinks({ rawText: currentCollectorTab.text, packageName: settingsDraft.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
@@ -327,7 +423,7 @@ export function App(): ReactElement {
     await performQuickAction(async () => {
       const files = await window.rd.pickContainers();
       if (files.length === 0) { return; }
-      await window.rd.updateSettings(normalizedSettingsDraft);
+      await persistDraftSettings();
       const result = await window.rd.addContainers(files);
       showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
     }, (error) => {
@@ -345,7 +441,7 @@ export function App(): ReactElement {
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
     if (dlc.length > 0) {
       await performQuickAction(async () => {
-        await window.rd.updateSettings(normalizedSettingsDraft);
+        await persistDraftSettings();
         const result = await window.rd.addContainers(dlc);
         showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
       }, (error) => {
@@ -580,17 +676,7 @@ export function App(): ReactElement {
 
       <section className="control-strip">
         <div className="buttons">
-          <button className="btn accent" disabled={!snapshot.canStart || actionBusy} onClick={async () => {
-            await performQuickAction(async () => {
-              if (configuredProviders.length === 0) {
-                setTab("settings");
-                showToast("Bitte zuerst mindestens einen Hoster-Account eintragen", 3000);
-                return;
-              }
-              await window.rd.updateSettings(normalizedSettingsDraft);
-              await window.rd.start();
-            });
-          }}>Start</button>
+          <button className="btn accent" disabled={!snapshot.canStart || actionBusy} onClick={() => { void onStartDownloads(); }}>Start</button>
           <button className="btn" disabled={!snapshot.canPause || actionBusy} onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}>
             {snapshot.session.paused ? "Fortsetzen" : "Pause"}
           </button>
@@ -893,6 +979,44 @@ export function App(): ReactElement {
           </section>
         )}
       </main>
+
+      {startConflictPrompt && (
+        <div className="modal-backdrop" onClick={() => closeStartConflictPrompt(null)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Paket bereits entpackt</h3>
+            <p>
+              <strong>{startConflictPrompt.entry.packageName}</strong> ist im Ziel bereits vorhanden.
+            </p>
+            <p className="modal-path" title={startConflictPrompt.entry.extractDir}>{startConflictPrompt.entry.extractDir}</p>
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={startConflictPrompt.applyToAll}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setStartConflictPrompt((prev) => prev ? { ...prev, applyToAll: checked } : prev);
+                }}
+              />
+              Für alle weiteren Pakete dieselbe Auswahl verwenden
+            </label>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => closeStartConflictPrompt(null)}>Abbrechen</button>
+              <button
+                className="btn"
+                onClick={() => closeStartConflictPrompt({ policy: "skip", applyToAll: startConflictPrompt.applyToAll })}
+              >
+                Überspringen
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => closeStartConflictPrompt({ policy: "overwrite", applyToAll: startConflictPrompt.applyToAll })}
+              >
+                Überschreiben
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {statusToast && <div className="toast">{statusToast}</div>}
       {dragOver && <div className="drop-overlay">Links oder .dlc Dateien hier ablegen</div>}

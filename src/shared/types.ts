@@ -157,10 +157,37 @@ export interface UiSnapshot {
 export interface AddLinksPayload {
   rawText: string;
   packageName?: string;
+  duplicatePolicy?: DuplicatePolicy;
 }
 
 export interface AddContainerPayload {
   filePaths: string[];
+}
+
+export type DuplicatePolicy = "keep" | "skip" | "overwrite";
+
+export interface QueueAddResult {
+  addedPackages: number;
+  addedLinks: number;
+  skippedExistingPackages: string[];
+  overwrittenPackages: string[];
+}
+
+export interface ContainerConflictResult {
+  conflicts: string[];
+  packageCount: number;
+  linkCount: number;
+}
+
+export interface StartConflictEntry {
+  packageId: string;
+  packageName: string;
+  extractDir: string;
+}
+
+export interface StartConflictResolutionResult {
+  skipped: boolean;
+  overwritten: boolean;
 }
 
 export interface UpdateCheckResult {
