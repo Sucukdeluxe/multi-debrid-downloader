@@ -34,6 +34,7 @@ describe("utils", () => {
   it("normalizes filenames from links", () => {
     expect(filenameFromUrl("https://rapidgator.net/file/id/show.part1.rar.html")).toBe("show.part1.rar");
     expect(filenameFromUrl("https://debrid.example/dl/abc?filename=Movie.S01E01.mkv")).toBe("Movie.S01E01.mkv");
+    expect(filenameFromUrl("https://debrid.example/dl/%E0%A4%A")).toBe("%E0%A4%A");
     expect(filenameFromUrl("https://debrid.example/dl/e51f6809bb6ca615601f5ac5db433737")).toBe("e51f6809bb6ca615601f5ac5db433737");
     expect(looksLikeOpaqueFilename("download.bin")).toBe(true);
     expect(looksLikeOpaqueFilename("e51f6809bb6ca615601f5ac5db433737")).toBe(true);

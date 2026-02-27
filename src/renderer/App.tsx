@@ -81,6 +81,18 @@ export function App(): ReactElement {
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string, timeoutMs = 2200): void => {
+    setStatusToast(message);
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setStatusToast("");
+      toastTimerRef.current = null;
+    }, timeoutMs);
+  };
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
@@ -90,8 +102,10 @@ export function App(): ReactElement {
       if (state.settings.autoUpdateCheck) {
         void window.rd.checkUpdates().then((result) => {
           void handleUpdateResult(result, "startup");
-        });
+        }).catch(() => undefined);
       }
+    }).catch((error) => {
+      showToast(`Snapshot konnte nicht geladen werden: ${String(error)}`, 2800);
     });
     unsubscribe = window.rd.onStateUpdate((state) => {
       latestStateRef.current = state;
@@ -111,6 +125,10 @@ export function App(): ReactElement {
         clearTimeout(stateFlushTimerRef.current);
         stateFlushTimerRef.current = null;
       }
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
       if (unsubscribe) {
         unsubscribe();
       }
@@ -124,16 +142,14 @@ export function App(): ReactElement {
   const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
     if (result.error) {
       if (source === "manual") {
-        setStatusToast(`Update-Check fehlgeschlagen: ${result.error}`);
-        setTimeout(() => setStatusToast(""), 2800);
+        showToast(`Update-Check fehlgeschlagen: ${result.error}`, 2800);
       }
       return;
     }
 
     if (!result.updateAvailable) {
       if (source === "manual") {
-        setStatusToast(`Kein Update verfügbar (v${result.currentVersion})`);
-        setTimeout(() => setStatusToast(""), 2000);
+        showToast(`Kein Update verfügbar (v${result.currentVersion})`, 2000);
       }
       return;
     }
@@ -142,31 +158,35 @@ export function App(): ReactElement {
       `Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`
     );
     if (!approved) {
-      setStatusToast(`Update verfügbar: ${result.latestTag}`);
-      setTimeout(() => setStatusToast(""), 2600);
+      showToast(`Update verfügbar: ${result.latestTag}`, 2600);
       return;
     }
 
     const install = await window.rd.installUpdate();
     if (install.started) {
-      setStatusToast("Updater gestartet - App wird geschlossen");
-      setTimeout(() => setStatusToast(""), 2600);
+      showToast("Updater gestartet - App wird geschlossen", 2600);
       return;
     }
 
-    setStatusToast(`Auto-Update fehlgeschlagen: ${install.message}`);
-    setTimeout(() => setStatusToast(""), 3200);
+    showToast(`Auto-Update fehlgeschlagen: ${install.message}`, 3200);
   };
 
   const onSaveSettings = async (): Promise<void> => {
-    await window.rd.updateSettings(settingsDraft);
-    setStatusToast("Settings gespeichert");
-    setTimeout(() => setStatusToast(""), 1800);
+    try {
+      await window.rd.updateSettings(settingsDraft);
+      showToast("Settings gespeichert", 1800);
+    } catch (error) {
+      showToast(`Settings konnten nicht gespeichert werden: ${String(error)}`, 2800);
+    }
   };
 
   const onCheckUpdates = async (): Promise<void> => {
-    const result = await window.rd.checkUpdates();
-    await handleUpdateResult(result, "manual");
+    try {
+      const result = await window.rd.checkUpdates();
+      await handleUpdateResult(result, "manual");
+    } catch (error) {
+      showToast(`Update-Check fehlgeschlagen: ${String(error)}`, 2800);
+    }
   };
 
   const onAddLinks = async (): Promise<void> => {
@@ -174,15 +194,13 @@ export function App(): ReactElement {
       await window.rd.updateSettings(settingsDraft);
       const result = await window.rd.addLinks({ rawText: linksRaw, packageName: settingsDraft.packageName });
       if (result.addedLinks > 0) {
-        setStatusToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
+        showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
         setLinksRaw("");
       } else {
-        setStatusToast("Keine gültigen Links gefunden");
+        showToast("Keine gültigen Links gefunden");
       }
-      setTimeout(() => setStatusToast(""), 2200);
     } catch (error) {
-      setStatusToast(`Fehler beim Hinzufügen: ${String(error)}`);
-      setTimeout(() => setStatusToast(""), 2600);
+      showToast(`Fehler beim Hinzufügen: ${String(error)}`, 2600);
     }
   };
 
@@ -194,11 +212,9 @@ export function App(): ReactElement {
       }
       await window.rd.updateSettings(settingsDraft);
       const result = await window.rd.addContainers(files);
-      setStatusToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-      setTimeout(() => setStatusToast(""), 2200);
+      showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
     } catch (error) {
-      setStatusToast(`Fehler beim DLC-Import: ${String(error)}`);
-      setTimeout(() => setStatusToast(""), 2600);
+      showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
     }
   };
 
@@ -215,11 +231,9 @@ export function App(): ReactElement {
     try {
       await window.rd.updateSettings(settingsDraft);
       const result = await window.rd.addContainers(dlc);
-      setStatusToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-      setTimeout(() => setStatusToast(""), 2200);
+      showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
     } catch (error) {
-      setStatusToast(`Fehler bei Drag-and-Drop: ${String(error)}`);
-      setTimeout(() => setStatusToast(""), 2600);
+      showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
     }
   };
 
@@ -239,8 +253,7 @@ export function App(): ReactElement {
     try {
       await action();
     } catch (error) {
-      setStatusToast(`Fehler: ${String(error)}`);
-      setTimeout(() => setStatusToast(""), 2600);
+      showToast(`Fehler: ${String(error)}`, 2600);
     }
   };
 
@@ -428,11 +441,13 @@ export function App(): ReactElement {
                 <input value={settingsDraft.outputDir} onChange={(event) => setText("outputDir", event.target.value)} />
                 <button
                   className="btn"
-                  onClick={async () => {
-                    const selected = await window.rd.pickFolder();
-                    if (selected) {
-                      setText("outputDir", selected);
-                    }
+                  onClick={() => {
+                    void performQuickAction(async () => {
+                      const selected = await window.rd.pickFolder();
+                      if (selected) {
+                        setText("outputDir", selected);
+                      }
+                    });
                   }}
                 >Wählen</button>
               </div>
@@ -443,11 +458,13 @@ export function App(): ReactElement {
                 <input value={settingsDraft.extractDir} onChange={(event) => setText("extractDir", event.target.value)} />
                 <button
                   className="btn"
-                  onClick={async () => {
-                    const selected = await window.rd.pickFolder();
-                    if (selected) {
-                      setText("extractDir", selected);
-                    }
+                  onClick={() => {
+                    void performQuickAction(async () => {
+                      const selected = await window.rd.pickFolder();
+                      if (selected) {
+                        setText("extractDir", selected);
+                      }
+                    });
                   }}
                 >Wählen</button>
               </div>

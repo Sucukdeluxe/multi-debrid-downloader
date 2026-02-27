@@ -67,19 +67,19 @@ function providerLabel(provider: DownloadItem["provider"]): string {
   return "Debrid";
 }
 
-function nextAvailablePath(targetPath: string): string {
-  if (!fs.existsSync(targetPath)) {
-    return targetPath;
+function pathKey(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function isPathInsideDir(filePath: string, dirPath: string): boolean {
+  const file = pathKey(filePath);
+  const dir = pathKey(dirPath);
+  if (file === dir) {
+    return true;
   }
-  const parsed = path.parse(targetPath);
-  let i = 1;
-  while (true) {
-    const candidate = path.join(parsed.dir, `${parsed.name} (${i})${parsed.ext}`);
-    if (!fs.existsSync(candidate)) {
-      return candidate;
-    }
-    i += 1;
-  }
+  const withSep = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
+  return file.startsWith(withSep);
 }
 
 export class DownloadManager extends EventEmitter {
@@ -106,6 +106,18 @@ export class DownloadManager extends EventEmitter {
   private stateEmitTimer: NodeJS.Timeout | null = null;
 
   private speedBytesLastWindow = 0;
+
+  private reservedTargetPaths = new Map<string, string>();
+
+  private claimedTargetPathByItem = new Map<string, string>();
+
+  private runItemIds = new Set<string>();
+
+  private runPackageIds = new Set<string>();
+
+  private runOutcomes = new Map<string, "completed" | "failed" | "cancelled">();
+
+  private runCompletedPackages = new Set<string>();
 
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
@@ -140,8 +152,22 @@ export class DownloadManager extends EventEmitter {
     this.pruneSpeedEvents(now);
     const speedBps = this.speedBytesLastWindow / 3;
 
-    const totalItems = Object.keys(this.session.items).length;
-    const doneItems = Object.values(this.session.items).filter((item) => isFinishedStatus(item.status)).length;
+    let totalItems = Object.keys(this.session.items).length;
+    let doneItems = Object.values(this.session.items).filter((item) => isFinishedStatus(item.status)).length;
+    if (this.session.running && this.runItemIds.size > 0) {
+      totalItems = this.runItemIds.size;
+      doneItems = 0;
+      for (const itemId of this.runItemIds) {
+        if (this.runOutcomes.has(itemId)) {
+          doneItems += 1;
+          continue;
+        }
+        const item = this.session.items[itemId];
+        if (item && isFinishedStatus(item.status)) {
+          doneItems += 1;
+        }
+      }
+    }
     const elapsed = this.session.runStartedAt > 0 ? (now - this.session.runStartedAt) / 1000 : 0;
     const rate = doneItems > 0 && elapsed > 0 ? doneItems / elapsed : 0;
     const remaining = totalItems - doneItems;
@@ -165,6 +191,12 @@ export class DownloadManager extends EventEmitter {
     this.session.packages = {};
     this.session.items = {};
     this.session.summaryText = "";
+    this.runItemIds.clear();
+    this.runPackageIds.clear();
+    this.runOutcomes.clear();
+    this.runCompletedPackages.clear();
+    this.reservedTargetPaths.clear();
+    this.claimedTargetPathByItem.clear();
     this.summary = null;
     this.persistNow();
     this.emitState(true);
@@ -220,6 +252,10 @@ export class DownloadManager extends EventEmitter {
         };
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
+        if (this.session.running) {
+          this.runItemIds.add(itemId);
+          this.runPackageIds.add(packageId);
+        }
         if (looksLikeOpaqueFilename(fileName)) {
           const existing = unresolvedByLink.get(link) ?? [];
           existing.push(itemId);
@@ -267,6 +303,9 @@ export class DownloadManager extends EventEmitter {
           if (!looksLikeOpaqueFilename(item.fileName)) {
             continue;
           }
+          if (item.status !== "queued" && item.status !== "reconnect_wait") {
+            continue;
+          }
           item.fileName = normalized;
           item.targetPath = path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, normalized);
           item.updatedAt = nowMs();
@@ -295,6 +334,7 @@ export class DownloadManager extends EventEmitter {
       if (!item) {
         continue;
       }
+      this.recordRunOutcome(itemId, "cancelled");
       const active = this.activeTasks.get(itemId);
       if (active) {
         active.abortReason = "cancel";
@@ -313,9 +353,43 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
+    const runItems = Object.values(this.session.items)
+      .filter((item) => item.status === "queued" || item.status === "reconnect_wait");
+    if (runItems.length === 0) {
+      this.runItemIds.clear();
+      this.runPackageIds.clear();
+      this.runOutcomes.clear();
+      this.runCompletedPackages.clear();
+      this.reservedTargetPaths.clear();
+      this.claimedTargetPathByItem.clear();
+      this.session.running = false;
+      this.session.paused = false;
+      this.session.runStartedAt = 0;
+      this.session.totalDownloadedBytes = 0;
+      this.session.summaryText = "";
+      this.session.reconnectUntil = 0;
+      this.session.reconnectReason = "";
+      this.speedEvents = [];
+      this.speedBytesLastWindow = 0;
+      this.summary = null;
+      this.persistSoon();
+      this.emitState(true);
+      return;
+    }
+    this.runItemIds = new Set(runItems.map((item) => item.id));
+    this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.runOutcomes.clear();
+    this.runCompletedPackages.clear();
+
     this.session.running = true;
     this.session.paused = false;
-    this.session.runStartedAt = this.session.runStartedAt || nowMs();
+    this.session.runStartedAt = nowMs();
+    this.session.totalDownloadedBytes = 0;
+    this.session.summaryText = "";
+    this.session.reconnectUntil = 0;
+    this.session.reconnectReason = "";
+    this.speedEvents = [];
+    this.speedBytesLastWindow = 0;
     this.summary = null;
     this.persistSoon();
     this.emitState(true);
@@ -325,6 +399,8 @@ export class DownloadManager extends EventEmitter {
   public stop(): void {
     this.session.running = false;
     this.session.paused = false;
+    this.session.reconnectUntil = 0;
+    this.session.reconnectReason = "";
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
       active.abortController.abort("stop");
@@ -344,17 +420,32 @@ export class DownloadManager extends EventEmitter {
   }
 
   private normalizeSessionStatuses(): void {
+    this.session.running = false;
+    this.session.paused = false;
+    this.session.reconnectUntil = 0;
+    this.session.reconnectReason = "";
+
     for (const item of Object.values(this.session.items)) {
       if (item.provider !== "realdebrid" && item.provider !== "megadebrid" && item.provider !== "bestdebrid" && item.provider !== "alldebrid") {
         item.provider = null;
       }
-      if (item.status === "downloading" || item.status === "validating" || item.status === "extracting" || item.status === "integrity_check") {
+      if (item.status === "downloading"
+        || item.status === "validating"
+        || item.status === "extracting"
+        || item.status === "integrity_check"
+        || item.status === "paused"
+        || item.status === "reconnect_wait") {
         item.status = "queued";
         item.speedBps = 0;
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
-      if (pkg.status === "downloading" || pkg.status === "validating" || pkg.status === "extracting" || pkg.status === "integrity_check") {
+      if (pkg.status === "downloading"
+        || pkg.status === "validating"
+        || pkg.status === "extracting"
+        || pkg.status === "integrity_check"
+        || pkg.status === "paused"
+        || pkg.status === "reconnect_wait") {
         pkg.status = "queued";
       }
     }
@@ -434,6 +525,55 @@ export class DownloadManager extends EventEmitter {
     this.speedEvents.push({ at: now, bytes });
     this.speedBytesLastWindow += bytes;
     this.pruneSpeedEvents(now);
+  }
+
+  private recordRunOutcome(itemId: string, status: "completed" | "failed" | "cancelled"): void {
+    if (!this.runItemIds.has(itemId)) {
+      return;
+    }
+    this.runOutcomes.set(itemId, status);
+  }
+
+  private claimTargetPath(itemId: string, preferredPath: string, allowExistingFile = false): string {
+    const existingClaim = this.claimedTargetPathByItem.get(itemId);
+    if (existingClaim) {
+      const owner = this.reservedTargetPaths.get(pathKey(existingClaim));
+      if (owner === itemId) {
+        return existingClaim;
+      }
+      this.claimedTargetPathByItem.delete(itemId);
+    }
+
+    const parsed = path.parse(preferredPath);
+    let index = 0;
+    while (true) {
+      const candidate = index === 0
+        ? preferredPath
+        : path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`);
+      const key = pathKey(candidate);
+      const owner = this.reservedTargetPaths.get(key);
+      const existsOnDisk = fs.existsSync(candidate);
+      const allowExistingCandidate = allowExistingFile && index === 0;
+      if ((!owner || owner === itemId) && (owner === itemId || !existsOnDisk || allowExistingCandidate)) {
+        this.reservedTargetPaths.set(key, itemId);
+        this.claimedTargetPathByItem.set(itemId, candidate);
+        return candidate;
+      }
+      index += 1;
+    }
+  }
+
+  private releaseTargetPath(itemId: string): void {
+    const claimedPath = this.claimedTargetPathByItem.get(itemId);
+    if (!claimedPath) {
+      return;
+    }
+    const key = pathKey(claimedPath);
+    const owner = this.reservedTargetPaths.get(key);
+    if (owner === itemId) {
+      this.reservedTargetPaths.delete(key);
+    }
+    this.claimedTargetPathByItem.delete(itemId);
   }
 
   private removePackageFromSession(packageId: string, itemIds: string[]): void {
@@ -566,6 +706,7 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
 
     void this.processItem(active).finally(() => {
+      this.releaseTargetPath(item.id);
       if (active.nonResumableCounted) {
         this.nonResumableActive = Math.max(0, this.nonResumableActive - 1);
       }
@@ -588,7 +729,14 @@ export class DownloadManager extends EventEmitter {
       item.retries = unrestricted.retriesUsed;
       item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
       fs.mkdirSync(pkg.outputDir, { recursive: true });
-      item.targetPath = nextAvailablePath(path.join(pkg.outputDir, item.fileName));
+      const existingTargetPath = String(item.targetPath || "").trim();
+      const canReuseExistingTarget = existingTargetPath
+        && isPathInsideDir(existingTargetPath, pkg.outputDir)
+        && (item.downloadedBytes > 0 || fs.existsSync(existingTargetPath));
+      const preferredTargetPath = canReuseExistingTarget
+        ? existingTargetPath
+        : path.join(pkg.outputDir, item.fileName);
+      item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
       item.totalBytes = unrestricted.fileSize;
       item.status = "downloading";
       item.fullStatus = `Download läuft (${unrestricted.providerLabel})`;
@@ -646,6 +794,7 @@ export class DownloadManager extends EventEmitter {
       item.speedBps = 0;
       item.updatedAt = nowMs();
       pkg.updatedAt = nowMs();
+      this.recordRunOutcome(item.id, "completed");
 
       await this.handlePackagePostProcessing(pkg.id);
       this.applyCompletedCleanupPolicy(pkg.id, item.id);
@@ -656,14 +805,27 @@ export class DownloadManager extends EventEmitter {
       if (reason === "cancel") {
         item.status = "cancelled";
         item.fullStatus = "Entfernt";
+        this.recordRunOutcome(item.id, "cancelled");
+        try {
+          fs.rmSync(item.targetPath, { force: true });
+        } catch {
+          // ignore
+        }
       } else if (reason === "stop") {
         item.status = "cancelled";
         item.fullStatus = "Gestoppt";
+        this.recordRunOutcome(item.id, "cancelled");
+        try {
+          fs.rmSync(item.targetPath, { force: true });
+        } catch {
+          // ignore
+        }
       } else if (reason === "reconnect") {
         item.status = "queued";
         item.fullStatus = "Wartet auf Reconnect";
       } else {
         item.status = "failed";
+        this.recordRunOutcome(item.id, "failed");
         item.lastError = compactErrorText(error);
         item.fullStatus = `Fehler: ${item.lastError}`;
       }
@@ -693,9 +855,11 @@ export class DownloadManager extends EventEmitter {
         headers.Range = `bytes=${existingBytes}-`;
       }
 
-      if (this.reconnectActive()) {
+      while (this.reconnectActive()) {
+        if (active.abortController.signal.aborted) {
+          throw new Error(`aborted:${active.abortReason}`);
+        }
         await sleep(250);
-        continue;
       }
 
       let response: Response;
@@ -706,6 +870,9 @@ export class DownloadManager extends EventEmitter {
           signal: active.abortController.signal
         });
       } catch (error) {
+        if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
+          throw error;
+        }
         lastError = compactErrorText(error);
         if (attempt < REQUEST_RETRIES) {
           item.fullStatus = `Verbindungsfehler, retry ${attempt + 1}/${REQUEST_RETRIES}`;
@@ -717,6 +884,18 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (!response.ok) {
+        if (response.status === 416 && existingBytes > 0) {
+          const rangeTotal = parseContentRangeTotal(response.headers.get("content-range"));
+          const expectedTotal = knownTotal && knownTotal > 0 ? knownTotal : rangeTotal;
+          if (expectedTotal && existingBytes >= expectedTotal) {
+            item.totalBytes = expectedTotal;
+            item.downloadedBytes = existingBytes;
+            item.progressPercent = 100;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            return { retriesUsed: attempt - 1, resumable: true };
+          }
+        }
         const text = await response.text();
         lastError = compactErrorText(text || `HTTP ${response.status}`);
         if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
@@ -732,115 +911,143 @@ export class DownloadManager extends EventEmitter {
       }
 
       const acceptRanges = (response.headers.get("accept-ranges") || "").toLowerCase().includes("bytes");
-      const resumable = response.status === 206 || acceptRanges;
-      active.resumable = resumable;
-
-      const contentLength = Number(response.headers.get("content-length") || 0);
-      const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
-      if (knownTotal && knownTotal > 0) {
-        item.totalBytes = knownTotal;
-      } else if (totalFromRange) {
-        item.totalBytes = totalFromRange;
-      } else if (contentLength > 0) {
-        item.totalBytes = existingBytes + contentLength;
-      }
-
-      const writeMode = existingBytes > 0 && response.status === 206 ? "a" : "w";
-      if (writeMode === "w" && existingBytes > 0) {
-        fs.rmSync(targetPath, { force: true });
-      }
-
-      const stream = fs.createWriteStream(targetPath, { flags: writeMode });
-      let written = writeMode === "a" ? existingBytes : 0;
-      let windowBytes = 0;
-      let windowStarted = nowMs();
-
-      const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
-        const onDrain = (): void => {
-          stream.off("error", onError);
-          resolve();
-        };
-        const onError = (error: Error): void => {
-          stream.off("drain", onDrain);
-          reject(error);
-        };
-        stream.once("drain", onDrain);
-        stream.once("error", onError);
-      });
-
       try {
-        const body = response.body;
-        if (!body) {
-          throw new Error("Leerer Response-Body");
+        const resumable = response.status === 206 || acceptRanges;
+        active.resumable = resumable;
+
+        const contentLength = Number(response.headers.get("content-length") || 0);
+        const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
+        if (knownTotal && knownTotal > 0) {
+          item.totalBytes = knownTotal;
+        } else if (totalFromRange) {
+          item.totalBytes = totalFromRange;
+        } else if (contentLength > 0) {
+          item.totalBytes = existingBytes + contentLength;
         }
-        const reader = body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-          const chunk = value;
-          if (active.abortController.signal.aborted) {
-            throw new Error(`aborted:${active.abortReason}`);
-          }
-          while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
-            item.status = "paused";
-            item.fullStatus = "Pausiert";
-            this.emitState();
-            await sleep(120);
-          }
-          if (this.reconnectActive() && active.resumable) {
-            active.abortReason = "reconnect";
-            active.abortController.abort("reconnect");
-            throw new Error("aborted:reconnect");
-          }
 
-          const buffer = Buffer.from(chunk);
-          await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
-          if (!stream.write(buffer)) {
-            await waitDrain();
-          }
-          written += buffer.length;
-          windowBytes += buffer.length;
-          this.session.totalDownloadedBytes += buffer.length;
-          this.recordSpeed(buffer.length);
-
-          const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.1);
-          const speed = windowBytes / elapsed;
-          if (elapsed >= 1.2) {
-            windowStarted = nowMs();
-            windowBytes = 0;
-          }
-
-          item.status = "downloading";
-          item.speedBps = Math.max(0, Math.floor(speed));
-          item.downloadedBytes = written;
-          item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
-          item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
-          item.updatedAt = nowMs();
-          this.emitState();
+        const writeMode = existingBytes > 0 && response.status === 206 ? "a" : "w";
+        if (writeMode === "w" && existingBytes > 0) {
+          fs.rmSync(targetPath, { force: true });
         }
-      } finally {
-        await new Promise<void>((resolve, reject) => {
-          const onFinish = (): void => {
+
+        const stream = fs.createWriteStream(targetPath, { flags: writeMode });
+        let written = writeMode === "a" ? existingBytes : 0;
+        let windowBytes = 0;
+        let windowStarted = nowMs();
+
+        const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
+          const onDrain = (): void => {
             stream.off("error", onError);
             resolve();
           };
-          const onError = (error: Error): void => {
-            stream.off("finish", onFinish);
-            reject(error);
+          const onError = (streamError: Error): void => {
+            stream.off("drain", onDrain);
+            reject(streamError);
           };
-          stream.once("finish", onFinish);
+          stream.once("drain", onDrain);
           stream.once("error", onError);
-          stream.end();
         });
-      }
 
-      item.downloadedBytes = written;
-      item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 100;
-      item.speedBps = 0;
-      item.updatedAt = nowMs();
-      return { retriesUsed: attempt - 1, resumable };
+        try {
+          const body = response.body;
+          if (!body) {
+            throw new Error("Leerer Response-Body");
+          }
+          const reader = body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            const chunk = value;
+            if (active.abortController.signal.aborted) {
+              throw new Error(`aborted:${active.abortReason}`);
+            }
+            while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
+              item.status = "paused";
+              item.fullStatus = "Pausiert";
+              this.emitState();
+              await sleep(120);
+            }
+            if (active.abortController.signal.aborted) {
+              throw new Error(`aborted:${active.abortReason}`);
+            }
+            if (this.reconnectActive() && active.resumable) {
+              active.abortReason = "reconnect";
+              active.abortController.abort("reconnect");
+              throw new Error("aborted:reconnect");
+            }
+
+            const buffer = Buffer.from(chunk);
+            await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
+            if (active.abortController.signal.aborted) {
+              throw new Error(`aborted:${active.abortReason}`);
+            }
+            if (!stream.write(buffer)) {
+              await waitDrain();
+            }
+            written += buffer.length;
+            windowBytes += buffer.length;
+            this.session.totalDownloadedBytes += buffer.length;
+            this.recordSpeed(buffer.length);
+
+            const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.1);
+            const speed = windowBytes / elapsed;
+            if (elapsed >= 1.2) {
+              windowStarted = nowMs();
+              windowBytes = 0;
+            }
+
+            item.status = "downloading";
+            item.speedBps = Math.max(0, Math.floor(speed));
+            item.downloadedBytes = written;
+            item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
+            item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+            item.updatedAt = nowMs();
+            this.emitState();
+          }
+        } finally {
+          await new Promise<void>((resolve, reject) => {
+            if (stream.closed || stream.destroyed) {
+              resolve();
+              return;
+            }
+            const onDone = (): void => {
+              stream.off("error", onError);
+              stream.off("finish", onDone);
+              stream.off("close", onDone);
+              resolve();
+            };
+            const onError = (streamError: Error): void => {
+              stream.off("finish", onDone);
+              stream.off("close", onDone);
+              reject(streamError);
+            };
+            stream.once("finish", onDone);
+            stream.once("close", onDone);
+            stream.once("error", onError);
+            stream.end();
+          });
+        }
+
+        item.downloadedBytes = written;
+        item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 100;
+        item.speedBps = 0;
+        item.updatedAt = nowMs();
+        return { retriesUsed: attempt - 1, resumable };
+      } catch (error) {
+        if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
+          throw error;
+        }
+        lastError = compactErrorText(error);
+        if (attempt < REQUEST_RETRIES) {
+          item.fullStatus = `Downloadfehler, retry ${attempt + 1}/${REQUEST_RETRIES}`;
+          this.emitState();
+          await sleep(350 * attempt);
+          continue;
+        }
+        throw new Error(lastError || "Download fehlgeschlagen");
+      }
     }
 
     throw new Error(lastError || "Download fehlgeschlagen");
@@ -911,6 +1118,13 @@ export class DownloadManager extends EventEmitter {
     } else {
       pkg.status = "completed";
     }
+    if (this.runPackageIds.has(packageId)) {
+      if (pkg.status === "completed") {
+        this.runCompletedPackages.add(packageId);
+      } else {
+        this.runCompletedPackages.delete(packageId);
+      }
+    }
     pkg.updatedAt = nowMs();
   }
 
@@ -956,12 +1170,12 @@ export class DownloadManager extends EventEmitter {
   private finishRun(): void {
     this.session.running = false;
     this.session.paused = false;
-    const items = Object.values(this.session.items);
-    const total = items.length;
-    const success = items.filter((item) => item.status === "completed").length;
-    const failed = items.filter((item) => item.status === "failed").length;
-    const cancelled = items.filter((item) => item.status === "cancelled").length;
-    const extracted = Object.values(this.session.packages).filter((pkg) => pkg.status === "completed").length;
+    const total = this.runItemIds.size;
+    const outcomes = Array.from(this.runOutcomes.values());
+    const success = outcomes.filter((status) => status === "completed").length;
+    const failed = outcomes.filter((status) => status === "failed").length;
+    const cancelled = outcomes.filter((status) => status === "cancelled").length;
+    const extracted = this.runCompletedPackages.size;
     const duration = this.session.runStartedAt > 0 ? Math.max(1, Math.floor((nowMs() - this.session.runStartedAt) / 1000)) : 1;
     const avgSpeed = Math.floor(this.session.totalDownloadedBytes / duration);
     this.summary = {
@@ -973,7 +1187,13 @@ export class DownloadManager extends EventEmitter {
       durationSeconds: duration,
       averageSpeedBps: avgSpeed
     };
-    this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${Math.max(total, 1)}`;
+    this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
+    this.runItemIds.clear();
+    this.runPackageIds.clear();
+    this.runOutcomes.clear();
+    this.runCompletedPackages.clear();
+    this.reservedTargetPaths.clear();
+    this.claimedTargetPathByItem.clear();
     this.persistNow();
     this.emitState();
   }

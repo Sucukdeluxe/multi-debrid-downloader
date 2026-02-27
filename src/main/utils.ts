@@ -1,6 +1,14 @@
 import path from "node:path";
 import { ParsedPackageInput } from "../shared/types";
 
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function compactErrorText(message: unknown, maxLen = 220): string {
   const raw = String(message ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   if (!raw) {
@@ -58,7 +66,7 @@ export function filenameFromUrl(url: string): string {
       || parsed.searchParams.get("title")
       || "";
     const rawName = queryName || path.basename(parsed.pathname || "");
-    const decoded = decodeURIComponent(rawName || "").trim();
+    const decoded = safeDecodeURIComponent(rawName || "").trim();
     const normalized = decoded
       .replace(/\.(rar|zip|7z|tar|gz|bz2|xz|iso|part\d+\.rar|r\d{2})\.html$/i, ".$1")
       .replace(/\.(mp4|mkv|avi|mp3|flac|srt)\.html$/i, ".$1");

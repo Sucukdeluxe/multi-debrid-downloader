@@ -29,7 +29,29 @@ function findArchiveCandidates(packageDir: string): string[] {
   return Array.from(new Set(ordered));
 }
 
-function runExternalExtract(archivePath: string, targetDir: string): Promise<void> {
+function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip" | "rename" {
+  if (conflictMode === "rename") {
+    return "rename";
+  }
+  if (conflictMode === "overwrite") {
+    return "overwrite";
+  }
+  return "skip";
+}
+
+export function buildExternalExtractArgs(command: string, archivePath: string, targetDir: string, conflictMode: ConflictMode): string[] {
+  const mode = effectiveConflictMode(conflictMode);
+  const lower = command.toLowerCase();
+  if (lower.includes("unrar")) {
+    const overwrite = mode === "overwrite" ? "-o+" : mode === "rename" ? "-or" : "-o-";
+    return ["x", overwrite, archivePath, `${targetDir}${path.sep}`];
+  }
+
+  const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
+  return ["x", "-y", overwrite, archivePath, `-o${targetDir}`];
+}
+
+function runExternalExtract(archivePath: string, targetDir: string, conflictMode: ConflictMode): Promise<void> {
   const candidates = ["7z", "C:\\Program Files\\7-Zip\\7z.exe", "C:\\Program Files (x86)\\7-Zip\\7z.exe", "unrar"];
   return new Promise((resolve, reject) => {
     const tryExec = (idx: number): void => {
@@ -38,9 +60,7 @@ function runExternalExtract(archivePath: string, targetDir: string): Promise<voi
         return;
       }
       const cmd = candidates[idx];
-      const args = cmd.toLowerCase().includes("unrar")
-        ? ["x", "-o+", archivePath, `${targetDir}${path.sep}`]
-        : ["x", "-y", archivePath, `-o${targetDir}`];
+      const args = buildExternalExtractArgs(cmd, archivePath, targetDir, conflictMode);
       const child = spawn(cmd, args, { windowsHide: true });
       child.on("error", () => tryExec(idx + 1));
       child.on("close", (code) => {
@@ -56,6 +76,7 @@ function runExternalExtract(archivePath: string, targetDir: string): Promise<voi
 }
 
 function extractZipArchive(archivePath: string, targetDir: string, conflictMode: ConflictMode): void {
+  const mode = effectiveConflictMode(conflictMode);
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
   for (const entry of entries) {
@@ -66,10 +87,10 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
     }
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     if (fs.existsSync(outputPath)) {
-      if (conflictMode === "skip") {
+      if (mode === "skip") {
         continue;
       }
-      if (conflictMode === "rename") {
+      if (mode === "rename") {
         const parsed = path.parse(outputPath);
         let n = 1;
         let candidate = outputPath;
@@ -108,15 +129,17 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   let extracted = 0;
   let failed = 0;
+  const extractedArchives: string[] = [];
   for (const archivePath of candidates) {
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
         extractZipArchive(archivePath, options.targetDir, options.conflictMode);
       } else {
-        await runExternalExtract(archivePath, options.targetDir);
+        await runExternalExtract(archivePath, options.targetDir, options.conflictMode);
       }
       extracted += 1;
+      extractedArchives.push(archivePath);
     } catch (error) {
       failed += 1;
       logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${String(error)}`);
@@ -124,7 +147,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   if (extracted > 0) {
-    cleanupArchives(candidates, options.cleanupMode);
+    cleanupArchives(extractedArchives, options.cleanupMode);
     if (options.removeLinks) {
       removeDownloadLinkArtifacts(options.targetDir);
     }
