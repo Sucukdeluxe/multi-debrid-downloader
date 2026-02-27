@@ -500,7 +500,7 @@ describe("download manager", () => {
     fs.mkdirSync(pkgDir, { recursive: true });
     const existingTargetPath = path.join(pkgDir, "resume.mkv");
     fs.writeFileSync(existingTargetPath, binary.subarray(0, partialSize));
-    let seenRangeStart = -1;
+    let sawResumeRange = false;
 
     const server = http.createServer((req, res) => {
       if ((req.url || "") !== "/resume") {
@@ -512,7 +512,9 @@ describe("download manager", () => {
       const range = String(req.headers.range || "");
       const match = range.match(/bytes=(\d+)-/i);
       const start = match ? Number(match[1]) : 0;
-      seenRangeStart = start;
+      if (start === partialSize) {
+        sawResumeRange = true;
+      }
       const chunk = binary.subarray(start);
 
       if (start > 0) {
@@ -611,7 +613,7 @@ describe("download manager", () => {
       const item = manager.getSnapshot().session.items[itemId];
       expect(item?.status).toBe("completed");
       expect(item?.targetPath).toBe(existingTargetPath);
-      expect(seenRangeStart).toBe(partialSize);
+      expect(sawResumeRange).toBe(true);
       expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
     } finally {
       server.close();
@@ -1939,6 +1941,105 @@ describe("download manager", () => {
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("handles rapid pause/resume toggles without deadlock", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(320 * 1024, 11);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/toggle-stress") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+      const chunk = binary.subarray(start);
+
+      if (start > 0) {
+        res.statusCode = 206;
+        res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+      } else {
+        res.statusCode = 200;
+      }
+
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      const split = Math.max(1, Math.floor(chunk.length / 4));
+      res.write(chunk.subarray(0, split));
+      setTimeout(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.end(chunk.subarray(split));
+        }
+      }, 260);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/toggle-stress`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "stress.part01.rar",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "toggle-stress", links: ["https://dummy/toggle-stress"] }]);
+      manager.start();
+
+      await waitFor(() => Object.values(manager.getSnapshot().session.items)[0]?.status === "downloading", 12000);
+      for (let i = 0; i < 6; i += 1) {
+        manager.togglePause();
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      }
+
+      if (manager.getSnapshot().session.paused) {
+        manager.togglePause();
+      }
+
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(fs.existsSync(item?.targetPath || "")).toBe(true);
+      expect(fs.statSync(item?.targetPath || "").size).toBe(binary.length);
     } finally {
       server.close();
       await once(server, "close");

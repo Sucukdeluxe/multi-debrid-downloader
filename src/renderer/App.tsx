@@ -1,4 +1,4 @@
-import { DragEvent, KeyboardEvent, ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, KeyboardEvent, ReactElement, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { AppSettings, AppTheme, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStats, PackageEntry, UiSnapshot, UpdateCheckResult } from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
@@ -66,6 +66,8 @@ export function App(): ReactElement {
   const [tab, setTab] = useState<Tab>("collector");
   const [statusToast, setStatusToast] = useState("");
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const settingsDirtyRef = useRef(false);
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,13 +83,19 @@ export function App(): ReactElement {
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
+  const actionBusyRef = useRef(false);
   const dragOverRef = useRef(false);
+  const dragDepthRef = useRef(0);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
   useEffect(() => {
     activeCollectorTabRef.current = activeCollectorTab;
   }, [activeCollectorTab]);
+
+  useEffect(() => {
+    settingsDirtyRef.current = settingsDirty;
+  }, [settingsDirty]);
 
   const showToast = (message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
@@ -104,6 +112,7 @@ export function App(): ReactElement {
     void window.rd.getSnapshot().then((state) => {
       setSnapshot(state);
       setSettingsDraft(state.settings);
+      setSettingsDirty(false);
       applyTheme(state.settings.theme);
       if (state.settings.autoUpdateCheck) {
         void window.rd.checkUpdates().then((result) => {
@@ -119,7 +128,11 @@ export function App(): ReactElement {
       stateFlushTimerRef.current = setTimeout(() => {
         stateFlushTimerRef.current = null;
         if (latestStateRef.current) {
-          setSnapshot(latestStateRef.current);
+          const next = latestStateRef.current;
+          setSnapshot(next);
+          if (!settingsDirtyRef.current) {
+            setSettingsDraft(next.settings);
+          }
           latestStateRef.current = null;
         }
       }, 220);
@@ -145,23 +158,28 @@ export function App(): ReactElement {
     .map((id: string) => snapshot.session.packages[id])
     .filter(Boolean), [snapshot]);
 
+  const packageOrderKey = useMemo(() => snapshot.session.packageOrder.join("|"), [snapshot.session.packageOrder]);
+
   useEffect(() => {
     setCollapsedPackages((prev) => {
       const next: Record<string, boolean> = {};
-      for (const pkg of packages) {
-        next[pkg.id] = prev[pkg.id] ?? false;
+      const defaultCollapsed = snapshot.session.packageOrder.length >= 24;
+      for (const packageId of snapshot.session.packageOrder) {
+        next[packageId] = prev[packageId] ?? defaultCollapsed;
       }
       return next;
     });
-  }, [packages]);
+  }, [packageOrderKey, snapshot.session.packageOrder.length]);
+
+  const deferredDownloadSearch = useDeferredValue(downloadSearch);
 
   const filteredPackages = useMemo(() => {
-    const query = downloadSearch.trim().toLowerCase();
+    const query = deferredDownloadSearch.trim().toLowerCase();
     if (!query) {
       return packages;
     }
     return packages.filter((pkg) => pkg.name.toLowerCase().includes(query));
-  }, [packages, downloadSearch]);
+  }, [packages, deferredDownloadSearch]);
 
   const allPackagesCollapsed = useMemo(() => (
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
@@ -250,6 +268,7 @@ export function App(): ReactElement {
     try {
       const result = await window.rd.updateSettings(normalizedSettingsDraft);
       setSettingsDraft(result);
+      setSettingsDirty(false);
       applyTheme(result.theme);
       showToast("Einstellungen gespeichert", 1800);
     } catch (error) { showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800); }
@@ -285,6 +304,7 @@ export function App(): ReactElement {
 
   const onDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
     event.preventDefault();
+    dragDepthRef.current = 0;
     dragOverRef.current = false;
     setDragOver(false);
     const files = Array.from(event.dataTransfer.files ?? []) as File[];
@@ -338,18 +358,29 @@ export function App(): ReactElement {
     } catch (error) { showToast(`Import fehlgeschlagen: ${String(error)}`, 2600); }
   };
 
-  const setBool = (key: keyof AppSettings, value: boolean): void => { setSettingsDraft((prev) => ({ ...prev, [key]: value })); };
-  const setText = (key: keyof AppSettings, value: string): void => { setSettingsDraft((prev) => ({ ...prev, [key]: value })); };
-  const setNum = (key: keyof AppSettings, value: number): void => { setSettingsDraft((prev) => ({ ...prev, [key]: value })); };
+  const setBool = (key: keyof AppSettings, value: boolean): void => {
+    setSettingsDirty(true);
+    setSettingsDraft((prev) => ({ ...prev, [key]: value }));
+  };
+  const setText = (key: keyof AppSettings, value: string): void => {
+    setSettingsDirty(true);
+    setSettingsDraft((prev) => ({ ...prev, [key]: value }));
+  };
+  const setNum = (key: keyof AppSettings, value: number): void => {
+    setSettingsDirty(true);
+    setSettingsDraft((prev) => ({ ...prev, [key]: value }));
+  };
   const setSpeedLimitMbps = (value: number): void => {
     const mbps = Number.isFinite(value) ? Math.max(0, value) : 0;
+    setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
   };
 
   const performQuickAction = async (action: () => Promise<unknown>): Promise<void> => {
-    if (actionBusy) {
+    if (actionBusyRef.current) {
       return;
     }
+    actionBusyRef.current = true;
     setActionBusy(true);
     try {
       await action();
@@ -357,8 +388,9 @@ export function App(): ReactElement {
       showToast(`Fehler: ${String(error)}`, 2600);
     } finally {
       setTimeout(() => {
+        actionBusyRef.current = false;
         setActionBusy(false);
-      }, 100);
+      }, 80);
     }
   };
 
@@ -464,15 +496,20 @@ export function App(): ReactElement {
   return (
     <div
       className={`app-shell${dragOver ? " drag-over" : ""}`}
-      onDragOver={(e) => {
-        e.preventDefault();
+      onDragEnter={(event) => {
+        event.preventDefault();
+        dragDepthRef.current += 1;
         if (!dragOverRef.current) {
           dragOverRef.current = true;
           setDragOver(true);
         }
       }}
+      onDragOver={(e) => {
+        e.preventDefault();
+      }}
       onDragLeave={() => {
-        if (dragOverRef.current) {
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0 && dragOverRef.current) {
           dragOverRef.current = false;
           setDragOver(false);
         }
@@ -648,6 +685,7 @@ export function App(): ReactElement {
                 <button className="btn" onClick={onCheckUpdates}>Updates prüfen</button>
                 <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
                   const next = settingsDraft.theme === "dark" ? "light" : "dark";
+                  setSettingsDirty(true);
                   setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
                   applyTheme(next as AppTheme);
                 }}>
