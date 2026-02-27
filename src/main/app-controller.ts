@@ -5,7 +5,7 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, defaultSettings } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
-import { configureLogger, logger } from "./logger";
+import { configureLogger, getLogFilePath, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSettings } from "./storage";
 import { checkGitHubUpdate, installLatestUpdate } from "./update";
@@ -34,6 +34,7 @@ export class AppController {
       this.onState?.(snapshot);
     });
     logger.info(`App gestartet v${APP_VERSION}`);
+    logger.info(`Log-Datei: ${getLogFilePath()}`);
 
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();

@@ -174,6 +174,8 @@ export class DownloadManager extends EventEmitter {
 
   private runCompletedPackages = new Set<string>();
 
+  private lastSchedulerHeartbeatAt = 0;
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -592,6 +594,16 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    const extractDirUsage = new Map<string, number>();
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.extractDir) {
+        continue;
+      }
+      const key = pathKey(pkg.extractDir);
+      extractDirUsage.set(key, (extractDirUsage.get(key) || 0) + 1);
+    }
+
     const cleanupTargetsByPackage = new Map<string, Set<string>>();
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
@@ -607,7 +619,8 @@ export class DownloadManager extends EventEmitter {
       }
 
       const hasExtractMarker = items.some((item) => /entpack/i.test(item.fullStatus));
-      const hasExtractedOutput = this.directoryHasAnyFiles(pkg.extractDir);
+      const extractDirIsUnique = (extractDirUsage.get(pathKey(pkg.extractDir)) || 0) === 1;
+      const hasExtractedOutput = extractDirIsUnique && this.directoryHasAnyFiles(pkg.extractDir);
       if (!hasExtractMarker && !hasExtractedOutput) {
         continue;
       }
@@ -641,6 +654,8 @@ export class DownloadManager extends EventEmitter {
             continue;
           }
 
+          logger.info(`Nachtraegliches Cleanup geprueft: pkg=${pkg.name}, targets=${targets.size}, marker=${pkg.itemIds.some((id) => /entpack/i.test(this.session.items[id]?.fullStatus || ""))}`);
+
           let removed = 0;
           for (const targetPath of targets) {
             if (!fs.existsSync(targetPath)) {
@@ -656,6 +671,8 @@ export class DownloadManager extends EventEmitter {
 
           if (removed > 0) {
             logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: ${removed} Datei(en) geloescht`);
+          } else {
+            logger.info(`Nachtraegliches Archive-Cleanup fuer ${pkg.name}: keine Dateien entfernt`);
           }
         }
       })
@@ -793,11 +810,13 @@ export class DownloadManager extends EventEmitter {
   }
 
   public prepareForShutdown(): void {
+    logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
     this.session.running = false;
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
 
+    let requeuedItems = 0;
     for (const active of this.activeTasks.values()) {
       const item = this.session.items[active.itemId];
       if (item && !isFinishedStatus(item.status)) {
@@ -806,6 +825,7 @@ export class DownloadManager extends EventEmitter {
         const pkg = this.session.packages[item.packageId];
         item.fullStatus = pkg && !pkg.enabled ? "Paket gestoppt" : "Wartet";
         item.updatedAt = nowMs();
+        requeuedItems += 1;
       }
       active.abortReason = "shutdown";
       active.abortController.abort("shutdown");
@@ -832,6 +852,7 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = "";
     this.persistNow();
     this.emitState(true);
+    logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
   }
 
   public togglePause(): boolean {
@@ -882,6 +903,39 @@ export class DownloadManager extends EventEmitter {
         || pkg.status === "paused"
         || pkg.status === "reconnect_wait") {
         pkg.status = "queued";
+      }
+
+      const items = pkg.itemIds
+        .map((itemId) => this.session.items[itemId])
+        .filter(Boolean) as DownloadItem[];
+      if (items.length === 0) {
+        continue;
+      }
+
+      const hasPending = items.some((item) => (
+        item.status === "queued"
+        || item.status === "reconnect_wait"
+        || item.status === "validating"
+        || item.status === "downloading"
+        || item.status === "paused"
+        || item.status === "extracting"
+        || item.status === "integrity_check"
+      ));
+      if (hasPending) {
+        pkg.status = pkg.enabled ? "queued" : "paused";
+        continue;
+      }
+
+      const success = items.filter((item) => item.status === "completed").length;
+      const failed = items.filter((item) => item.status === "failed").length;
+      const cancelled = items.filter((item) => item.status === "cancelled").length;
+
+      if (failed > 0) {
+        pkg.status = "failed";
+      } else if (cancelled > 0 && success === 0) {
+        pkg.status = "cancelled";
+      } else if (success > 0) {
+        pkg.status = "completed";
       }
     }
     this.persistSoon();
@@ -1101,8 +1155,15 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     this.scheduleRunning = true;
+    logger.info("Scheduler gestartet");
     try {
       while (this.session.running) {
+        const now = nowMs();
+        if (now - this.lastSchedulerHeartbeatAt >= 60000) {
+          this.lastSchedulerHeartbeatAt = now;
+          logger.info(`Scheduler Heartbeat: active=${this.activeTasks.size}, queued=${this.countQueuedItems()}, reconnect=${this.reconnectActive()}, paused=${this.session.paused}, postProcess=${this.packagePostProcessTasks.size}`);
+        }
+
         if (this.session.paused) {
           await sleep(120);
           continue;
@@ -1131,6 +1192,7 @@ export class DownloadManager extends EventEmitter {
       }
     } finally {
       this.scheduleRunning = false;
+      logger.info("Scheduler beendet");
     }
   }
 
@@ -1209,6 +1271,26 @@ export class DownloadManager extends EventEmitter {
       }
     }
     return false;
+  }
+
+  private countQueuedItems(): number {
+    let count = 0;
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          count += 1;
+        }
+      }
+    }
+    return count;
   }
 
   private startItem(packageId: string, itemId: string): void {
@@ -1758,9 +1840,11 @@ export class DownloadManager extends EventEmitter {
     const success = items.filter((item) => item.status === "completed").length;
     const failed = items.filter((item) => item.status === "failed").length;
     const cancelled = items.filter((item) => item.status === "cancelled").length;
+    logger.info(`Post-Processing Start: pkg=${pkg.name}, success=${success}, failed=${failed}, cancelled=${cancelled}, autoExtract=${this.settings.autoExtract}`);
 
     if (success + failed + cancelled < items.length) {
       pkg.status = "downloading";
+      logger.info(`Post-Processing verschoben: pkg=${pkg.name}, noch offene items`);
       return;
     }
 
@@ -1779,6 +1863,7 @@ export class DownloadManager extends EventEmitter {
           removeLinks: this.settings.removeLinkFilesAfterExtract,
           removeSamples: this.settings.removeSamplesAfterExtract
         });
+        logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
           for (const entry of completedItems) {
@@ -1797,6 +1882,7 @@ export class DownloadManager extends EventEmitter {
         }
       } catch (error) {
         const reason = compactErrorText(error);
+        logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
         for (const entry of completedItems) {
           entry.fullStatus = `Entpack-Fehler: ${reason}`;
           entry.updatedAt = nowMs();
@@ -1818,6 +1904,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
     pkg.updatedAt = nowMs();
+    logger.info(`Post-Processing Ende: pkg=${pkg.name}, status=${pkg.status}`);
   }
 
   private applyCompletedCleanupPolicy(packageId: string, itemId: string): void {

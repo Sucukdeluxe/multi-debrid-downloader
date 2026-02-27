@@ -249,6 +249,56 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function captureDirFingerprint(rootDir: string): Map<string, string> {
+  const fingerprint = new Map<string, string>();
+  if (!fs.existsSync(rootDir)) {
+    return fingerprint;
+  }
+
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      try {
+        const stat = fs.statSync(full);
+        const relative = path.relative(rootDir, full).toLowerCase();
+        fingerprint.set(relative, `${stat.size}:${stat.mtimeMs}`);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return fingerprint;
+}
+
+function hasDirChanges(before: Map<string, string>, after: Map<string, string>): boolean {
+  if (after.size > before.size) {
+    return true;
+  }
+  for (const [relative, meta] of after.entries()) {
+    if (before.get(relative) !== meta) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function collectArchiveCleanupTargets(sourceArchivePath: string): string[] {
   const targets = new Set<string>([sourceArchivePath]);
   const dir = path.dirname(sourceArchivePath);
@@ -302,9 +352,9 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string): string[
   return Array.from(targets);
 }
 
-function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): void {
+function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): number {
   if (cleanupMode === "none") {
-    return;
+    return 0;
   }
 
   const targets = new Set<string>();
@@ -314,26 +364,37 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): void 
     }
   }
 
+  let removed = 0;
   for (const filePath of targets) {
     try {
+      if (!fs.existsSync(filePath)) {
+        continue;
+      }
       fs.rmSync(filePath, { force: true });
+      removed += 1;
     } catch {
       // ignore
     }
   }
+  return removed;
 }
 
 export async function extractPackageArchives(options: ExtractOptions): Promise<{ extracted: number; failed: number; lastError: string }> {
   const candidates = findArchiveCandidates(options.packageDir);
+  logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
+    logger.info(`Entpacken uebersprungen (keine Archive gefunden): ${options.packageDir}`);
     return { extracted: 0, failed: 0, lastError: "" };
   }
 
+  const conflictMode = effectiveConflictMode(options.conflictMode);
+  const beforeFingerprint = captureDirFingerprint(options.targetDir);
   let extracted = 0;
   let failed = 0;
   let lastError = "";
   const extractedArchives: string[] = [];
   for (const archivePath of candidates) {
+    logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}`);
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
@@ -347,6 +408,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
       extracted += 1;
       extractedArchives.push(archivePath);
+      logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
     } catch (error) {
       failed += 1;
       const errorText = String(error);
@@ -363,12 +425,26 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   if (extracted > 0) {
-    cleanupArchives(extractedArchives, options.cleanupMode);
-    if (options.removeLinks) {
-      removeDownloadLinkArtifacts(options.targetDir);
-    }
-    if (options.removeSamples) {
-      removeSampleArtifacts(options.targetDir);
+    const afterFingerprint = captureDirFingerprint(options.targetDir);
+    const changedOutput = hasDirChanges(beforeFingerprint, afterFingerprint);
+    if (!changedOutput && conflictMode !== "skip") {
+      lastError = "Keine entpackten Dateien erkannt";
+      failed += extracted;
+      extracted = 0;
+      logger.error(`Entpacken ohne neue Ausgabe erkannt: ${options.targetDir}. Cleanup wird NICHT ausgefuehrt.`);
+    } else {
+      const removedArchives = cleanupArchives(extractedArchives, options.cleanupMode);
+      if (options.cleanupMode !== "none") {
+        logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
+      }
+      if (options.removeLinks) {
+        const removedLinks = removeDownloadLinkArtifacts(options.targetDir);
+        logger.info(`Link-Artefakt-Cleanup: ${removedLinks} Datei(en) entfernt`);
+      }
+      if (options.removeSamples) {
+        const removedSamples = removeSampleArtifacts(options.targetDir);
+        logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
+      }
     }
   } else {
     try {
@@ -379,6 +455,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       // ignore
     }
   }
+
+  logger.info(`Entpacken beendet: extracted=${extracted}, failed=${failed}, targetDir=${options.targetDir}`);
 
   return { extracted, failed, lastError };
 }
