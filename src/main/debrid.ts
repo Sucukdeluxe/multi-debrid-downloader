@@ -24,6 +24,16 @@ type BestDebridRequest = {
   useAuthHeader: boolean;
 };
 
+function canonicalLink(link: string): string {
+  try {
+    const parsed = new URL(link);
+    const query = parsed.searchParams.toString();
+    return `${parsed.hostname}${parsed.pathname}${query ? `?${query}` : ""}`.toLowerCase();
+  } catch {
+    return link.trim().toLowerCase();
+  }
+}
+
 function shouldRetryStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
@@ -262,6 +272,79 @@ class AllDebridClient {
     this.token = token;
   }
 
+  public async getLinkInfos(links: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    const canonicalToInput = new Map<string, string>();
+    const uniqueLinks: string[] = [];
+
+    for (const link of links) {
+      const trimmed = link.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const canonical = canonicalLink(trimmed);
+      if (canonicalToInput.has(canonical)) {
+        continue;
+      }
+      canonicalToInput.set(canonical, trimmed);
+      uniqueLinks.push(trimmed);
+    }
+
+    for (let index = 0; index < uniqueLinks.length; index += 32) {
+      const chunk = uniqueLinks.slice(index, index + 32);
+      const body = new URLSearchParams();
+      for (const link of chunk) {
+        body.append("link[]", link);
+      }
+
+      const response = await fetch(`${ALL_DEBRID_API_BASE}/link/infos`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "RD-Node-Downloader/1.1.15"
+        },
+        body
+      });
+
+      const text = await response.text();
+      const payload = asRecord(parseJson(text));
+      if (!response.ok) {
+        throw new Error(parseError(response.status, text, payload));
+      }
+
+      const status = pickString(payload, ["status"]);
+      if (status && status.toLowerCase() === "error") {
+        const errorObj = asRecord(payload?.error);
+        throw new Error(pickString(errorObj, ["message", "code"]) || "AllDebrid API error");
+      }
+
+      const data = asRecord(payload?.data);
+      const infos = Array.isArray(data?.infos) ? data.infos : [];
+      for (let i = 0; i < infos.length; i += 1) {
+        const info = asRecord(infos[i]);
+        if (!info) {
+          continue;
+        }
+        const fileName = pickString(info, ["filename", "fileName"]);
+        if (!fileName) {
+          continue;
+        }
+
+        const responseLink = pickString(info, ["link"]);
+        const byResponse = canonicalToInput.get(canonicalLink(responseLink));
+        const byIndex = chunk[i] || "";
+        const original = byResponse || byIndex;
+        if (!original) {
+          continue;
+        }
+        result.set(original, fileName);
+      }
+    }
+
+    return result;
+  }
+
   public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
     let lastError = "";
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
@@ -335,6 +418,31 @@ export class DebridService {
     this.settings = next;
     this.realDebridClient = new RealDebridClient(next.token);
     this.allDebridClient = new AllDebridClient(next.allDebridToken);
+  }
+
+  public async resolveFilenames(links: string[]): Promise<Map<string, string>> {
+    const unresolved = links.filter((link) => filenameFromUrl(link) === "download.bin");
+    if (unresolved.length === 0) {
+      return new Map<string, string>();
+    }
+
+    const token = this.settings.allDebridToken.trim();
+    if (!token) {
+      return new Map<string, string>();
+    }
+
+    try {
+      const infos = await this.allDebridClient.getLinkInfos(unresolved);
+      const clean = new Map<string, string>();
+      for (const [link, fileName] of infos.entries()) {
+        if (fileName.trim() && fileName.trim().toLowerCase() !== "download.bin") {
+          clean.set(link, fileName.trim());
+        }
+      }
+      return clean;
+    } catch {
+      return new Map<string, string>();
+    }
   }
 
   public async unrestrictLink(link: string): Promise<ProviderUnrestrictedLink> {
