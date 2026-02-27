@@ -1027,6 +1027,72 @@ describe("download manager", () => {
     expect(fs.existsSync(path.join(extractDir, "episode.mkv"))).toBe(true);
   });
 
+  it("removes empty download package directory after startup cleanup backfill", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageDir = path.join(root, "downloads", "legacy-empty");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const part1 = path.join(packageDir, "legacy.empty.part01.rar");
+    const part2 = path.join(packageDir, "legacy.empty.part02.rar");
+    fs.writeFileSync(part1, "part1", "utf8");
+    fs.writeFileSync(part2, "part2", "utf8");
+
+    const session = emptySession();
+    const packageId = "legacy-empty-pkg";
+    const itemId = "legacy-empty-item";
+    const createdAt = Date.now() - 20_000;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "legacy-empty",
+      outputDir: packageDir,
+      extractDir: path.join(root, "extract", "legacy-empty"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/legacy-empty",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: path.basename(part1),
+      targetPath: part1,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => !fs.existsSync(packageDir), 5000);
+  });
+
   it("does not over-clean packages that share one extract directory", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
