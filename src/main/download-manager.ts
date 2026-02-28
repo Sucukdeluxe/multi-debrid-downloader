@@ -326,6 +326,8 @@ export class DownloadManager extends EventEmitter {
 
   private claimedTargetPathByItem = new Map<string, string>();
 
+  private itemContributedBytes = new Map<string, number>();
+
   private runItemIds = new Set<string>();
 
   private runPackageIds = new Set<string>();
@@ -337,6 +339,8 @@ export class DownloadManager extends EventEmitter {
   private lastSchedulerHeartbeatAt = 0;
 
   private lastReconnectMarkAt = 0;
+
+  private consecutiveReconnects = 0;
 
   private lastGlobalProgressBytes = 0;
 
@@ -562,7 +566,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
       if (this.session.running) {
-        void this.ensureScheduler();
+        void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (togglePackage): ${compactErrorText(err)}`));
       }
     }
 
@@ -618,6 +622,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
+    this.itemContributedBytes.clear();
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
     this.packagePostProcessQueue = Promise.resolve();
@@ -697,7 +702,7 @@ export class DownloadManager extends EventEmitter {
     this.persistSoon();
     this.emitState();
     if (unresolvedByLink.size > 0) {
-      void this.resolveQueuedFilenames(unresolvedByLink);
+      void this.resolveQueuedFilenames(unresolvedByLink).catch((err) => logger.warn(`resolveQueuedFilenames Fehler (addPackages): ${compactErrorText(err)}`));
     }
     return { addedPackages, addedLinks };
   }
@@ -913,7 +918,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (unresolvedByLink.size > 0) {
-      void this.resolveQueuedFilenames(unresolvedByLink);
+      void this.resolveQueuedFilenames(unresolvedByLink).catch((err) => logger.warn(`resolveQueuedFilenames Fehler (resolveExisting): ${compactErrorText(err)}`));
     }
   }
 
@@ -1268,12 +1273,15 @@ export class DownloadManager extends EventEmitter {
 
     this.session.running = true;
     this.session.paused = false;
+    // By design: runStartedAt and totalDownloadedBytes reset on each start/resume so that
+    // duration, average speed, and ETA are calculated relative to the current run, not cumulative.
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
     this.lastReconnectMarkAt = 0;
+    this.consecutiveReconnects = 0;
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.lastGlobalProgressBytes = 0;
@@ -1501,7 +1509,7 @@ export class DownloadManager extends EventEmitter {
   private persistNow(): void {
     this.lastPersistAt = nowMs();
     if (this.session.running) {
-      void saveSessionAsync(this.storagePaths, this.session);
+      void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
     } else {
       saveSession(this.storagePaths, this.session);
     }
@@ -1715,7 +1723,7 @@ export class DownloadManager extends EventEmitter {
             }
           }
           changed = true;
-          void this.runPackagePostProcessing(packageId);
+          void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (recoverPostProcessing): ${compactErrorText(err)}`));
         } else if (pkg.status !== "completed") {
           pkg.status = "completed";
           pkg.updatedAt = nowMs();
@@ -1775,7 +1783,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
       logger.info(`Entpacken via Start ausgelöst: pkg=${pkg.name}`);
-      void this.runPackagePostProcessing(packageId);
+      void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (triggerPending): ${compactErrorText(err)}`));
     }
   }
 
@@ -1847,7 +1855,17 @@ export class DownloadManager extends EventEmitter {
   }
 
   private reconnectActive(): boolean {
-    return this.session.reconnectUntil > nowMs();
+    if (this.session.reconnectUntil <= 0) {
+      return false;
+    }
+    const now = nowMs();
+    // Safety: if reconnectUntil is unreasonably far in the future (clock regression),
+    // clamp it to reconnectWaitSeconds * 2 from now
+    const maxWaitMs = this.settings.reconnectWaitSeconds * 2 * 1000;
+    if (this.session.reconnectUntil - now > maxWaitMs) {
+      this.session.reconnectUntil = now + maxWaitMs;
+    }
+    return this.session.reconnectUntil > now;
   }
 
   private runGlobalStallWatchdog(now: number): void {
@@ -1900,8 +1918,18 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const until = nowMs() + this.settings.reconnectWaitSeconds * 1000;
+    this.consecutiveReconnects += 1;
+    const backoffMultiplier = Math.min(this.consecutiveReconnects, 5);
+    const waitMs = this.settings.reconnectWaitSeconds * 1000 * backoffMultiplier;
+    const maxWaitMs = this.settings.reconnectWaitSeconds * 2 * 1000;
+    const cappedWaitMs = Math.min(waitMs, maxWaitMs);
+    const until = nowMs() + cappedWaitMs;
     this.session.reconnectUntil = Math.max(this.session.reconnectUntil, until);
+    // Safety cap: never let reconnectUntil exceed reconnectWaitSeconds * 2 from now
+    const absoluteMax = nowMs() + maxWaitMs;
+    if (this.session.reconnectUntil > absoluteMax) {
+      this.session.reconnectUntil = absoluteMax;
+    }
     this.session.reconnectReason = reason;
     this.lastReconnectMarkAt = 0;
 
@@ -1912,7 +1940,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    logger.warn(`Reconnect angefordert: ${reason}`);
+    logger.warn(`Reconnect angefordert: ${reason} (consecutive=${this.consecutiveReconnects}, wait=${Math.ceil(cappedWaitMs / 1000)}s)`);
     this.emitState();
   }
 
@@ -2022,7 +2050,9 @@ export class DownloadManager extends EventEmitter {
     this.activeTasks.set(itemId, active);
     this.emitState();
 
-    void this.processItem(active).finally(() => {
+    void this.processItem(active).catch((err) => {
+      logger.warn(`processItem unbehandelt (${itemId}): ${compactErrorText(err)}`);
+    }).finally(() => {
       this.releaseTargetPath(item.id);
       if (active.nonResumableCounted) {
         this.nonResumableActive = Math.max(0, this.nonResumableActive - 1);
@@ -2140,7 +2170,9 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
         this.recordRunOutcome(item.id, "completed");
 
-        void this.runPackagePostProcessing(pkg.id).finally(() => {
+        void this.runPackagePostProcessing(pkg.id).catch((err) => {
+          logger.warn(`runPackagePostProcessing Fehler (processItem): ${compactErrorText(err)}`);
+        }).finally(() => {
           this.applyCompletedCleanupPolicy(pkg.id, item.id);
           this.persistSoon();
           this.emitState();
@@ -2429,7 +2461,8 @@ export class DownloadManager extends EventEmitter {
         const resumable = response.status === 206 || acceptRanges;
         active.resumable = resumable;
 
-        const contentLength = Number(response.headers.get("content-length") || 0);
+        const rawContentLength = Number(response.headers.get("content-length") || 0);
+        const contentLength = Number.isFinite(rawContentLength) && rawContentLength > 0 ? rawContentLength : 0;
         const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
         if (knownTotal && knownTotal > 0) {
           item.totalBytes = knownTotal;
@@ -2440,10 +2473,19 @@ export class DownloadManager extends EventEmitter {
         }
 
         const writeMode = existingBytes > 0 && response.status === 206 ? "a" : "w";
-        if (writeMode === "w" && existingBytes > 0) {
-          fs.rmSync(effectiveTargetPath, { force: true });
+        if (writeMode === "w") {
+          // Starting fresh: subtract any previously counted bytes for this item to avoid double-counting on retry
+          const previouslyContributed = this.itemContributedBytes.get(active.itemId) || 0;
+          if (previouslyContributed > 0) {
+            this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - previouslyContributed);
+            this.itemContributedBytes.set(active.itemId, 0);
+          }
+          if (existingBytes > 0) {
+            fs.rmSync(effectiveTargetPath, { force: true });
+          }
         }
 
+        fs.mkdirSync(path.dirname(effectiveTargetPath), { recursive: true });
         const stream = fs.createWriteStream(effectiveTargetPath, { flags: writeMode });
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
@@ -2623,9 +2665,10 @@ export class DownloadManager extends EventEmitter {
               written += buffer.length;
               windowBytes += buffer.length;
               this.session.totalDownloadedBytes += buffer.length;
+              this.itemContributedBytes.set(active.itemId, (this.itemContributedBytes.get(active.itemId) || 0) + buffer.length);
               this.recordSpeed(buffer.length);
 
-              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.1);
+              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.5);
               const speed = windowBytes / elapsed;
               if (elapsed >= 1.2) {
                 windowStarted = nowMs();
@@ -3136,6 +3179,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
+    this.itemContributedBytes.clear();
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.persistNow();

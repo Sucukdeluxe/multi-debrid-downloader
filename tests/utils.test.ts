@@ -42,4 +42,62 @@ describe("utils", () => {
     expect(looksLikeOpaqueFilename("e51f6809bb6ca615601f5ac5db433737")).toBe(true);
     expect(looksLikeOpaqueFilename("movie.part1.rar")).toBe(false);
   });
+
+  it("preserves unicode filenames", () => {
+    expect(sanitizeFilename("日本語ファイル.txt")).toBe("日本語ファイル.txt");
+    expect(sanitizeFilename("Ünïcödé Tëst.mkv")).toBe("Ünïcödé Tëst.mkv");
+    expect(sanitizeFilename("파일이름.rar")).toBe("파일이름.rar");
+    expect(sanitizeFilename("файл.zip")).toBe("файл.zip");
+  });
+
+  it("handles very long filenames", () => {
+    const longName = "a".repeat(300);
+    const result = sanitizeFilename(longName);
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+    // The function should return a non-empty string and not crash
+    expect(result).toBe(longName);
+  });
+
+  it("formats eta with very large values without crashing", () => {
+    const result = formatEta(999999);
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+    // 999999 seconds = 277h 46m 39s
+    expect(result).toBe("277:46:39");
+  });
+
+  it("formats eta with edge cases", () => {
+    expect(formatEta(0)).toBe("00:00");
+    expect(formatEta(NaN)).toBe("--");
+    expect(formatEta(Infinity)).toBe("--");
+    expect(formatEta(Number.MAX_SAFE_INTEGER)).toMatch(/^\d+:\d{2}:\d{2}$/);
+  });
+
+  it("extracts filenames from URLs with encoded characters", () => {
+    expect(filenameFromUrl("https://example.com/file%20with%20spaces.rar")).toBe("file with spaces.rar");
+    // %C3%A9 decodes to e-acute (UTF-8), which is preserved
+    expect(filenameFromUrl("https://example.com/t%C3%A9st%20file.zip")).toBe("t\u00e9st file.zip");
+    expect(filenameFromUrl("https://example.com/dl?filename=Movie%20Name%20S01E01.mkv")).toBe("Movie Name S01E01.mkv");
+    // Malformed percent-encoding should not crash
+    const result = filenameFromUrl("https://example.com/%ZZ%invalid");
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("handles looksLikeOpaqueFilename edge cases", () => {
+    // Empty string -> sanitizeFilename returns "Paket" which is not opaque
+    expect(looksLikeOpaqueFilename("")).toBe(false);
+    expect(looksLikeOpaqueFilename("a")).toBe(false);
+    expect(looksLikeOpaqueFilename("ab")).toBe(false);
+    expect(looksLikeOpaqueFilename("abc")).toBe(false);
+    expect(looksLikeOpaqueFilename("download.bin")).toBe(true);
+    // 24-char hex string is opaque (matches /^[a-f0-9]{24,}$/)
+    expect(looksLikeOpaqueFilename("abcdef123456789012345678")).toBe(true);
+    expect(looksLikeOpaqueFilename("abcdef1234567890abcdef12")).toBe(true);
+    // Short hex strings (< 24 chars) are NOT considered opaque
+    expect(looksLikeOpaqueFilename("abcdef12345")).toBe(false);
+    // Real filename with extension
+    expect(looksLikeOpaqueFilename("Show.S01E01.720p.mkv")).toBe(false);
+  });
 });

@@ -466,6 +466,10 @@ export function buildExternalExtractArgs(
   const lower = command.toLowerCase();
   if (lower.includes("unrar") || lower.includes("winrar")) {
     const overwrite = mode === "overwrite" ? "-o+" : mode === "rename" ? "-or" : "-o-";
+    // NOTE: The password is passed as a CLI argument (-p<password>), which means it may be
+    // visible via process listing tools (e.g. `ps aux` on Unix). This is unavoidable because
+    // WinRAR/UnRAR CLI does not support password input via stdin or environment variables.
+    // On Windows (the target platform) this is less of a concern than on shared Unix systems.
     const pass = password ? `-p${password}` : "-p-";
     const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
       ? ["-idc", extractorThreadSwitch()]
@@ -474,6 +478,7 @@ export function buildExternalExtractArgs(
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
+  // NOTE: Same password-in-args limitation as above applies to 7z as well.
   const pass = password ? `-p${password}` : "-p";
   return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
 }
@@ -599,6 +604,9 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
       continue;
     }
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    // TOCTOU note: There is a small race between existsSync and writeFileSync below.
+    // This is acceptable here because zip extraction is single-threaded and we need
+    // the exists check to implement skip/rename conflict resolution semantics.
     if (fs.existsSync(outputPath)) {
       if (mode === "skip") {
         continue;

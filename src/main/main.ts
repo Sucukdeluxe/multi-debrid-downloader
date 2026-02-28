@@ -6,6 +6,20 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import { logger } from "./logger";
 import { APP_NAME } from "./constants";
 
+/* ── IPC validation helpers ────────────────────────────────────── */
+function validateString(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${name} muss ein String sein`);
+  }
+  return value;
+}
+function validateStringArray(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || !value.every(v => typeof v === "string")) {
+    throw new Error(`${name} muss ein String-Array sein`);
+  }
+  return value as string[];
+}
+
 /* ── Single Instance Lock ───────────────────────────────────────── */
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -44,6 +58,19 @@ function createWindow(): BrowserWindow {
       preload: path.join(__dirname, "../preload/preload.js")
     }
   });
+
+  if (!isDevMode()) {
+    window.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          "Content-Security-Policy": [
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://api.github.com https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu"
+          ]
+        }
+      });
+    });
+  }
 
   if (isDevMode()) {
     void window.loadURL("http://localhost:5173");
@@ -96,13 +123,13 @@ function startClipboardWatcher(): void {
   if (clipboardTimer) {
     return;
   }
-  lastClipboardText = clipboard.readText();
+  lastClipboardText = clipboard.readText().slice(0, 50000);
   clipboardTimer = setInterval(() => {
     const text = clipboard.readText();
     if (text === lastClipboardText || !text.trim()) {
       return;
     }
-    lastClipboardText = text;
+    lastClipboardText = text.slice(0, 50000);
     const links = extractLinksFromText(text);
     if (links.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(IPC_CHANNELS.CLIPBOARD_DETECTED, links);
@@ -144,7 +171,7 @@ function registerIpcHandlers(): void {
     if (result.started) {
       setTimeout(() => {
         app.quit();
-      }, 350);
+      }, 800);
     }
     return result;
   });
@@ -166,22 +193,50 @@ function registerIpcHandlers(): void {
     updateTray();
     return result;
   });
-  ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => controller.addLinks(payload));
+  ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
+    validateString(payload?.rawText, "rawText");
+    return controller.addLinks(payload);
+  });
   ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => controller.addContainers(filePaths ?? []));
   ipcMain.handle(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
-  ipcMain.handle(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") =>
-    controller.resolveStartConflict(packageId, policy));
+  ipcMain.handle(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {
+    validateString(packageId, "packageId");
+    validateString(policy, "policy");
+    if (policy !== "keep" && policy !== "skip" && policy !== "overwrite") {
+      throw new Error("policy muss 'keep', 'skip' oder 'overwrite' sein");
+    }
+    return controller.resolveStartConflict(packageId, policy);
+  });
   ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
   ipcMain.handle(IPC_CHANNELS.START, () => controller.start());
   ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());
   ipcMain.handle(IPC_CHANNELS.TOGGLE_PAUSE, () => controller.togglePause());
-  ipcMain.handle(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => controller.cancelPackage(packageId));
-  ipcMain.handle(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => controller.renamePackage(packageId, newName));
-  ipcMain.handle(IPC_CHANNELS.REORDER_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => controller.reorderPackages(packageIds));
-  ipcMain.handle(IPC_CHANNELS.REMOVE_ITEM, (_event: IpcMainInvokeEvent, itemId: string) => controller.removeItem(itemId));
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => controller.togglePackage(packageId));
+  ipcMain.handle(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
+    validateString(packageId, "packageId");
+    return controller.cancelPackage(packageId);
+  });
+  ipcMain.handle(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
+    validateString(packageId, "packageId");
+    validateString(newName, "newName");
+    return controller.renamePackage(packageId, newName);
+  });
+  ipcMain.handle(IPC_CHANNELS.REORDER_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+    validateStringArray(packageIds, "packageIds");
+    return controller.reorderPackages(packageIds);
+  });
+  ipcMain.handle(IPC_CHANNELS.REMOVE_ITEM, (_event: IpcMainInvokeEvent, itemId: string) => {
+    validateString(itemId, "itemId");
+    return controller.removeItem(itemId);
+  });
+  ipcMain.handle(IPC_CHANNELS.TOGGLE_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
+    validateString(packageId, "packageId");
+    return controller.togglePackage(packageId);
+  });
   ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, () => controller.exportQueue());
-  ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => controller.importQueue(json));
+  ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
+    validateString(json, "json");
+    return controller.importQueue(json);
+  });
   ipcMain.handle(IPC_CHANNELS.TOGGLE_CLIPBOARD, () => {
     const settings = controller.getSettings();
     const next = !settings.clipboardWatch;

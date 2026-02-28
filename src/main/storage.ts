@@ -147,6 +147,8 @@ export function loadSettings(paths: StoragePaths): AppSettings {
     return defaultSettings();
   }
   try {
+    // Safe: parsed is spread into a fresh object with defaults first, and normalizeSettings
+    // validates every field, so prototype pollution via __proto__ / constructor is not a concern.
     const parsed = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as AppSettings;
     const merged = normalizeSettings({
       ...defaultSettings(),
@@ -163,7 +165,7 @@ function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void
   try {
     fs.renameSync(tempPath, targetPath);
   } catch (renameError: unknown) {
-    if ((renameError as NodeJS.ErrnoException).code === "EXDEV") {
+    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
       fs.copyFileSync(tempPath, targetPath);
       try { fs.rmSync(tempPath, { force: true }); } catch {}
     } else {
@@ -174,6 +176,14 @@ function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   ensureBaseDir(paths.baseDir);
+  // Create a backup of the existing config before overwriting
+  if (fs.existsSync(paths.configFile)) {
+    try {
+      fs.copyFileSync(paths.configFile, `${paths.configFile}.bak`);
+    } catch {
+      // Best-effort backup; proceed even if it fails
+    }
+  }
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
   const payload = JSON.stringify(persisted, null, 2);
   const tempPath = `${paths.configFile}.tmp`;
@@ -205,13 +215,26 @@ export function loadSession(paths: StoragePaths): SessionState {
   }
   try {
     const parsed = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as Partial<SessionState>;
-    return {
+    const session: SessionState = {
       ...emptySession(),
       ...parsed,
       packages: parsed.packages ?? {},
       items: parsed.items ?? {},
       packageOrder: parsed.packageOrder ?? []
     };
+
+    // Reset transient fields that may be stale from a previous crash
+    const ACTIVE_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
+    for (const item of Object.values(session.items)) {
+      if (ACTIVE_STATUSES.has(item.status)) {
+        item.status = "queued";
+        item.lastError = "";
+      }
+      // Always clear stale speed values
+      item.speedBps = 0;
+    }
+
+    return session;
   } catch (error) {
     logger.error(`Session konnte nicht geladen werden: ${String(error)}`);
     return emptySession();
@@ -243,7 +266,7 @@ export async function saveSessionAsync(paths: StoragePaths, session: SessionStat
     try {
       await fsp.rename(tempPath, paths.sessionFile);
     } catch (renameError: unknown) {
-      if ((renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
         await fsp.copyFile(tempPath, paths.sessionFile);
         await fsp.rm(tempPath, { force: true }).catch(() => {});
       } else {

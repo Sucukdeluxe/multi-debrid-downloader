@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
-import { createStoragePaths, loadSettings, normalizeSettings, saveSettings } from "../src/main/storage";
+import { createStoragePaths, emptySession, loadSession, loadSettings, normalizeSettings, saveSession, saveSettings } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 
@@ -147,5 +147,188 @@ describe("settings storage", () => {
     });
 
     expect(normalized.archivePasswordList).toBe("one\ntwo\nthree");
+  });
+
+  it("resets stale active statuses to queued on session load", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const session = emptySession();
+    session.packages["pkg1"] = {
+      id: "pkg1",
+      name: "Test Package",
+      outputDir: "/tmp/out",
+      extractDir: "/tmp/extract",
+      status: "downloading",
+      itemIds: ["item1", "item2", "item3", "item4"],
+      cancelled: false,
+      enabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    session.items["item1"] = {
+      id: "item1",
+      packageId: "pkg1",
+      url: "https://example.com/file1.rar",
+      provider: null,
+      status: "downloading",
+      retries: 0,
+      speedBps: 1024,
+      downloadedBytes: 5000,
+      totalBytes: 10000,
+      progressPercent: 50,
+      fileName: "file1.rar",
+      targetPath: "/tmp/out/file1.rar",
+      resumable: true,
+      attempts: 1,
+      lastError: "some error",
+      fullStatus: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    session.items["item2"] = {
+      id: "item2",
+      packageId: "pkg1",
+      url: "https://example.com/file2.rar",
+      provider: null,
+      status: "paused",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "file2.rar",
+      targetPath: "/tmp/out/file2.rar",
+      resumable: false,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    session.items["item3"] = {
+      id: "item3",
+      packageId: "pkg1",
+      url: "https://example.com/file3.rar",
+      provider: null,
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 10000,
+      totalBytes: 10000,
+      progressPercent: 100,
+      fileName: "file3.rar",
+      targetPath: "/tmp/out/file3.rar",
+      resumable: false,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    session.items["item4"] = {
+      id: "item4",
+      packageId: "pkg1",
+      url: "https://example.com/file4.rar",
+      provider: null,
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "file4.rar",
+      targetPath: "/tmp/out/file4.rar",
+      resumable: false,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    saveSession(paths, session);
+    const loaded = loadSession(paths);
+
+    // Active statuses (downloading, paused) should be reset to "queued"
+    expect(loaded.items["item1"].status).toBe("queued");
+    expect(loaded.items["item2"].status).toBe("queued");
+    // Speed should be cleared
+    expect(loaded.items["item1"].speedBps).toBe(0);
+    // lastError should be cleared for reset items
+    expect(loaded.items["item1"].lastError).toBe("");
+    // Completed and queued statuses should be preserved
+    expect(loaded.items["item3"].status).toBe("completed");
+    expect(loaded.items["item4"].status).toBe("queued");
+    // Downloaded bytes should be preserved
+    expect(loaded.items["item1"].downloadedBytes).toBe(5000);
+    // Package data should be preserved
+    expect(loaded.packages["pkg1"].name).toBe("Test Package");
+  });
+
+  it("returns empty session when session file contains invalid JSON", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    fs.writeFileSync(paths.sessionFile, "{{{corrupted json!!!", "utf8");
+
+    const loaded = loadSession(paths);
+    const empty = emptySession();
+    expect(loaded.packages).toEqual(empty.packages);
+    expect(loaded.items).toEqual(empty.items);
+    expect(loaded.packageOrder).toEqual(empty.packageOrder);
+  });
+
+  it("returns defaults when config file contains invalid JSON", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    // Write invalid JSON to the config file
+    fs.writeFileSync(paths.configFile, "{{{{not valid json!!!}", "utf8");
+
+    const loaded = loadSettings(paths);
+    const defaults = defaultSettings();
+    expect(loaded.providerPrimary).toBe(defaults.providerPrimary);
+    expect(loaded.maxParallel).toBe(defaults.maxParallel);
+    expect(loaded.outputDir).toBe(defaults.outputDir);
+    expect(loaded.cleanupMode).toBe(defaults.cleanupMode);
+  });
+
+  it("applies defaults for missing fields when loading old config", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    // Write a minimal config that simulates an old version missing newer fields
+    fs.writeFileSync(
+      paths.configFile,
+      JSON.stringify({
+        token: "my-token",
+        rememberToken: true,
+        outputDir: "/custom/output"
+      }),
+      "utf8"
+    );
+
+    const loaded = loadSettings(paths);
+    const defaults = defaultSettings();
+
+    // Old fields should be preserved
+    expect(loaded.token).toBe("my-token");
+    expect(loaded.outputDir).toBe("/custom/output");
+
+    // Missing new fields should get default values
+    expect(loaded.autoProviderFallback).toBe(defaults.autoProviderFallback);
+    expect(loaded.hybridExtract).toBe(defaults.hybridExtract);
+    expect(loaded.completedCleanupPolicy).toBe(defaults.completedCleanupPolicy);
+    expect(loaded.speedLimitMode).toBe(defaults.speedLimitMode);
+    expect(loaded.clipboardWatch).toBe(defaults.clipboardWatch);
+    expect(loaded.minimizeToTray).toBe(defaults.minimizeToTray);
+    expect(loaded.theme).toBe(defaults.theme);
+    expect(loaded.bandwidthSchedules).toEqual(defaults.bandwidthSchedules);
+    expect(loaded.updateRepo).toBe(defaults.updateRepo);
   });
 });
