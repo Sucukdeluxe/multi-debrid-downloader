@@ -201,7 +201,7 @@ const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
 
-function extractEpisodeToken(fileName: string): string | null {
+export function extractEpisodeToken(fileName: string): string | null {
   const match = String(fileName || "").match(SCENE_EPISODE_RE);
   if (!match) {
     return null;
@@ -216,18 +216,15 @@ function extractEpisodeToken(fileName: string): string | null {
   return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
 }
 
-function applyEpisodeTokenToFolderName(folderName: string, episodeToken: string): string {
+export function applyEpisodeTokenToFolderName(folderName: string, episodeToken: string): string {
   const trimmed = String(folderName || "").trim();
   if (!trimmed) {
     return episodeToken;
   }
 
-  const withEpisode = trimmed.replace(
-    /(^|[._\-\s])s\d{1,2}e\d{1,3}(?=[._\-\s]|$)/i,
-    `$1${episodeToken}`
-  );
-  if (withEpisode !== trimmed) {
-    return withEpisode;
+  const episodeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}(?=[._\-\s]|$)/i;
+  if (episodeRe.test(trimmed)) {
+    return trimmed.replace(episodeRe, `$1${episodeToken}`);
   }
 
   const withSeason = trimmed.replace(SCENE_SEASON_ONLY_RE, `$1${episodeToken}`);
@@ -243,11 +240,11 @@ function applyEpisodeTokenToFolderName(folderName: string, episodeToken: string)
   return `${trimmed}.${episodeToken}`;
 }
 
-function sourceHasRpToken(fileName: string): boolean {
+export function sourceHasRpToken(fileName: string): boolean {
   return SCENE_RP_TOKEN_RE.test(String(fileName || ""));
 }
 
-function ensureRepackToken(baseName: string): string {
+export function ensureRepackToken(baseName: string): string {
   if (SCENE_REPACK_TOKEN_RE.test(baseName)) {
     return baseName;
   }
@@ -265,7 +262,7 @@ function ensureRepackToken(baseName: string): string {
   return `${baseName}.REPACK`;
 }
 
-function buildAutoRenameBaseName(folderName: string, sourceFileName: string): string | null {
+export function buildAutoRenameBaseName(folderName: string, sourceFileName: string): string | null {
   if (!SCENE_RELEASE_FOLDER_RE.test(folderName)) {
     return null;
   }
