@@ -196,7 +196,7 @@ export async function importDlcContainers(filePaths: string[]): Promise<ParsedPa
       packages = await decryptDlcLocal(filePath);
     } catch (error) {
       if (/zu groß|ungültig/i.test(compactErrorText(error))) {
-        throw error;
+        continue;
       }
       packages = [];
     }
@@ -205,7 +205,7 @@ export async function importDlcContainers(filePaths: string[]): Promise<ParsedPa
         packages = await decryptDlcViaDcrypt(filePath);
       } catch (error) {
         if (/zu groß|ungültig/i.test(compactErrorText(error))) {
-          throw error;
+          continue;
         }
         packages = [];
       }

@@ -94,6 +94,22 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function bindMainWindowLifecycle(window: BrowserWindow): void {
+  window.on("close", (event) => {
+    const settings = controller.getSettings();
+    if (settings.minimizeToTray && tray) {
+      event.preventDefault();
+      window.hide();
+    }
+  });
+
+  window.on("closed", () => {
+    if (mainWindow === window) {
+      mainWindow = null;
+    }
+  });
+}
+
 function createTray(): void {
   if (tray) {
     return;
@@ -132,11 +148,22 @@ function extractLinksFromText(text: string): string[] {
 }
 
 function normalizeClipboardText(text: string): string {
+  const truncateUnicodeSafe = (value: string, maxChars: number): string => {
+    if (value.length <= maxChars) {
+      return value;
+    }
+    const points = Array.from(value);
+    if (points.length <= maxChars) {
+      return value;
+    }
+    return points.slice(0, maxChars).join("");
+  };
+
   const normalized = String(text || "");
   if (normalized.length <= CLIPBOARD_MAX_TEXT_CHARS) {
     return normalized;
   }
-  const truncated = normalized.slice(0, CLIPBOARD_MAX_TEXT_CHARS);
+  const truncated = truncateUnicodeSafe(normalized, CLIPBOARD_MAX_TEXT_CHARS);
   const lastBreak = Math.max(
     truncated.lastIndexOf("\n"),
     truncated.lastIndexOf("\r"),
@@ -237,7 +264,7 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => {
     const validPaths = validateStringArray(filePaths ?? [], "filePaths");
-    const safePaths = validPaths.filter((p) => path.isAbsolute(p) && !p.includes(".."));
+    const safePaths = validPaths.filter((p) => path.isAbsolute(p));
     return controller.addContainers(safePaths);
   });
   ipcMain.handle(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
@@ -333,24 +360,14 @@ app.on("second-instance", () => {
 app.whenReady().then(() => {
   registerIpcHandlers();
   mainWindow = createWindow();
+  bindMainWindowLifecycle(mainWindow);
   updateClipboardWatcher();
   updateTray();
-
-  mainWindow.on("close", (event) => {
-    const settings = controller.getSettings();
-    if (settings.minimizeToTray && tray) {
-      event.preventDefault();
-      mainWindow?.hide();
-    }
-  });
-
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createWindow();
+      bindMainWindowLifecycle(mainWindow);
     }
   });
 });

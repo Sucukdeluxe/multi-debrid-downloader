@@ -20,10 +20,11 @@ export function compactErrorText(message: unknown, maxLen = 220): string {
   if (!raw) {
     return "Unbekannter Fehler";
   }
-  if (raw.length <= maxLen) {
+  const safeMaxLen = Number.isFinite(maxLen) ? Math.max(4, Math.floor(maxLen)) : 220;
+  if (raw.length <= safeMaxLen) {
     return raw;
   }
-  return `${raw.slice(0, maxLen - 3)}...`;
+  return `${raw.slice(0, safeMaxLen - 3)}...`;
 }
 
 export function sanitizeFilename(name: string): string {
@@ -71,24 +72,40 @@ export function extractHttpLinksFromText(text: string): string[] {
 
   for (const match of matches) {
     let candidate = String(match || "").trim();
+    let openParen = 0;
+    let closeParen = 0;
+    let openBracket = 0;
+    let closeBracket = 0;
+    for (const char of candidate) {
+      if (char === "(") {
+        openParen += 1;
+      } else if (char === ")") {
+        closeParen += 1;
+      } else if (char === "[") {
+        openBracket += 1;
+      } else if (char === "]") {
+        closeBracket += 1;
+      }
+    }
     while (candidate.length > 0) {
       const lastChar = candidate[candidate.length - 1];
       if (![")", "]", ",", ".", "!", "?", ";", ":"].includes(lastChar)) {
         break;
       }
       if (lastChar === ")") {
-        const openCount = (candidate.match(/\(/g) || []).length;
-        const closeCount = (candidate.match(/\)/g) || []).length;
-        if (closeCount <= openCount) {
+        if (closeParen <= openParen) {
           break;
         }
       }
       if (lastChar === "]") {
-        const openCount = (candidate.match(/\[/g) || []).length;
-        const closeCount = (candidate.match(/\]/g) || []).length;
-        if (closeCount <= openCount) {
+        if (closeBracket <= openBracket) {
           break;
         }
+      }
+      if (lastChar === ")") {
+        closeParen = Math.max(0, closeParen - 1);
+      } else if (lastChar === "]") {
+        closeBracket = Math.max(0, closeBracket - 1);
       }
       candidate = candidate.slice(0, -1);
     }
@@ -182,14 +199,17 @@ export function uniquePreserveOrder(items: string[]): string[] {
 export function parsePackagesFromLinksText(rawText: string, defaultPackageName: string): ParsedPackageInput[] {
   const lines = String(rawText || "").split(/\r?\n/);
   const packages: ParsedPackageInput[] = [];
-  let currentName = sanitizeFilename(defaultPackageName || "Paket");
+  let currentName = String(defaultPackageName || "").trim();
   let currentLinks: string[] = [];
 
   const flush = (): void => {
     const links = uniquePreserveOrder(currentLinks.filter((line) => isHttpLink(line)));
     if (links.length > 0) {
+      const normalizedCurrentName = String(currentName || "").trim();
       packages.push({
-        name: sanitizeFilename(currentName || inferPackageNameFromLinks(links)),
+        name: normalizedCurrentName
+          ? sanitizeFilename(normalizedCurrentName)
+          : inferPackageNameFromLinks(links),
         links
       });
     }
@@ -204,7 +224,7 @@ export function parsePackagesFromLinksText(rawText: string, defaultPackageName: 
     const marker = text.match(/^#\s*package\s*:\s*(.+)$/i);
     if (marker) {
       flush();
-      currentName = sanitizeFilename(marker[1]);
+      currentName = String(marker[1] || "").trim();
       continue;
     }
     currentLinks.push(text);

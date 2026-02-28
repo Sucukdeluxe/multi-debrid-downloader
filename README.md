@@ -65,6 +65,10 @@ npm run self-check
 - `npm test`: Unit-Tests fuer Parser/Cleanup/Integrity
 - `npm run self-check`: End-to-End-Checks mit lokalem Mock-Server (Queue, Pause/Resume, Reconnect, Paket-Cancel)
 
+## Changelog
+
+- Detaillierte Release-Historie: `CHANGELOG.md`
+
 ## Projektstruktur
 
 - `src/main`: Electron Main Process + Download/Queue Logik

@@ -6,7 +6,7 @@ let fallbackLogFilePath: string | null = null;
 const LOG_FLUSH_INTERVAL_MS = 120;
 const LOG_BUFFER_LIMIT_CHARS = 1_000_000;
 const LOG_MAX_FILE_BYTES = 10 * 1024 * 1024;
-let lastRotateCheckAt = 0;
+const rotateCheckAtByFile = new Map<string, number>();
 
 let pendingLines: string[] = [];
 let pendingChars = 0;
@@ -97,10 +97,11 @@ function scheduleFlush(immediate = false): void {
 function rotateIfNeeded(filePath: string): void {
   try {
     const now = Date.now();
+    const lastRotateCheckAt = rotateCheckAtByFile.get(filePath) || 0;
     if (now - lastRotateCheckAt < 60_000) {
       return;
     }
-    lastRotateCheckAt = now;
+    rotateCheckAtByFile.set(filePath, now);
     const stat = fs.statSync(filePath);
     if (stat.size < LOG_MAX_FILE_BYTES) {
       return;
@@ -123,25 +124,31 @@ async function flushAsync(): Promise<void> {
   }
 
   flushInFlight = true;
-  const chunk = pendingLines.join("");
-  pendingLines = [];
-  pendingChars = 0;
+  const linesSnapshot = pendingLines.slice();
+  const chunk = linesSnapshot.join("");
 
   try {
     rotateIfNeeded(logFilePath);
     const primary = await appendChunk(logFilePath, chunk);
+    let wroteAny = primary.ok;
     if (fallbackLogFilePath) {
+      rotateIfNeeded(fallbackLogFilePath);
       const fallback = await appendChunk(fallbackLogFilePath, chunk);
+      wroteAny = wroteAny || fallback.ok;
       if (!primary.ok && !fallback.ok) {
         writeStderr(`LOGGER write failed (primary+fallback): ${primary.errorText} | ${fallback.errorText}\n`);
       }
     } else if (!primary.ok) {
       writeStderr(`LOGGER write failed: ${primary.errorText}\n`);
     }
+    if (wroteAny) {
+      pendingLines = pendingLines.slice(linesSnapshot.length);
+      pendingChars = Math.max(0, pendingChars - chunk.length);
+    }
   } finally {
     flushInFlight = false;
     if (pendingLines.length > 0) {
-      scheduleFlush(true);
+      scheduleFlush();
     }
   }
 }

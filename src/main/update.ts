@@ -18,6 +18,8 @@ const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1500;
 const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 
+let activeUpdateAbortController: AbortController | null = null;
+
 type ReleaseAsset = {
   name: string;
   browser_download_url: string;
@@ -85,6 +87,13 @@ function timeoutController(ms: number): { signal: AbortSignal; clear: () => void
     signal: controller.signal,
     clear: () => clearTimeout(timer)
   };
+}
+
+function combineSignals(primary: AbortSignal, secondary?: AbortSignal): AbortSignal {
+  if (!secondary) {
+    return primary;
+  }
+  return AbortSignal.any([primary, secondary]);
 }
 
 async function readJsonWithTimeout(response: Response, timeoutMs: number): Promise<Record<string, unknown> | null> {
@@ -280,13 +289,25 @@ function shouldTryNextDownloadCandidate(error: unknown): boolean {
 }
 
 function deriveUpdateFileName(check: UpdateCheckResult, url: string): string {
+  const sanitizeUpdateAssetFileName = (rawName: string): string => {
+    const base = path.basename(String(rawName || "").trim());
+    if (!base) {
+      return "update.exe";
+    }
+    const safe = base
+      .replace(/[\\/:*?"<>|]/g, "_")
+      .replace(/^\.+/, "")
+      .trim();
+    return safe || "update.exe";
+  };
+
   const fromName = String(check.setupAssetName || "").trim();
   if (fromName) {
-    return fromName;
+    return sanitizeUpdateAssetFileName(fromName);
   }
   try {
     const parsed = new URL(url);
-    return path.basename(parsed.pathname || "update.exe") || "update.exe";
+    return sanitizeUpdateAssetFileName(parsed.pathname || "update.exe");
   } catch {
     return "update.exe";
   }
@@ -317,7 +338,8 @@ async function sha256File(filePath: string): Promise<string> {
 async function verifyDownloadedInstaller(targetPath: string, expectedDigestRaw: string): Promise<void> {
   const expectedDigest = normalizeSha256Digest(expectedDigestRaw);
   if (!expectedDigest) {
-    throw new Error("Update-Asset ohne gültigen SHA256-Digest");
+    logger.warn("Update-Asset ohne SHA256-Digest aus API; Integritätsprüfung übersprungen");
+    return;
   }
   const actualDigest = await sha256File(targetPath);
   if (actualDigest !== expectedDigest) {
@@ -378,6 +400,10 @@ export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult
 }
 
 async function downloadFile(url: string, targetPath: string): Promise<void> {
+  const shutdownSignal = activeUpdateAbortController?.signal;
+  if (shutdownSignal?.aborted) {
+    throw new Error("aborted:update_shutdown");
+  }
   logger.info(`Update-Download versucht: ${url}`);
   const timeout = timeoutController(CONNECT_TIMEOUT_MS);
   let response: Response;
@@ -387,7 +413,7 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
         "User-Agent": UPDATE_USER_AGENT
       },
       redirect: "follow",
-      signal: timeout.signal
+      signal: combineSignals(timeout.signal, shutdownSignal)
     });
   } finally {
     timeout.clear();
@@ -463,13 +489,38 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
   logger.info(`Update-Download abgeschlossen: ${targetPath}`);
 }
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  if (signal.aborted) {
+    throw new Error("aborted:update_shutdown");
+  }
+  return new Promise((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = setTimeout(() => {
+      timer = null;
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(0, ms));
+    const onAbort = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("aborted:update_shutdown"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function downloadWithRetries(url: string, targetPath: string): Promise<void> {
+  const shutdownSignal = activeUpdateAbortController?.signal;
   let lastError: unknown;
   for (let attempt = 1; attempt <= RETRIES_PER_CANDIDATE; attempt += 1) {
+    if (shutdownSignal?.aborted) {
+      throw new Error("aborted:update_shutdown");
+    }
     try {
       await downloadFile(url, targetPath);
       return;
@@ -482,7 +533,7 @@ async function downloadWithRetries(url: string, targetPath: string): Promise<voi
       }
       if (attempt < RETRIES_PER_CANDIDATE && isRetryableDownloadError(error)) {
         logger.warn(`Update-Download Retry ${attempt}/${RETRIES_PER_CANDIDATE} für ${url}: ${compactErrorText(error)}`);
-        await sleep(RETRY_DELAY_MS * attempt);
+        await sleep(RETRY_DELAY_MS * attempt, shutdownSignal);
         continue;
       }
       break;
@@ -492,10 +543,14 @@ async function downloadWithRetries(url: string, targetPath: string): Promise<voi
 }
 
 async function downloadFromCandidates(candidates: string[], targetPath: string): Promise<void> {
+  const shutdownSignal = activeUpdateAbortController?.signal;
   let lastError: unknown = new Error("Update Download fehlgeschlagen");
 
   logger.info(`Update-Download: ${candidates.length} Kandidat(en), je ${RETRIES_PER_CANDIDATE} Versuche`);
   for (let index = 0; index < candidates.length; index += 1) {
+    if (shutdownSignal?.aborted) {
+      throw new Error("aborted:update_shutdown");
+    }
     const candidate = candidates[index];
     try {
       await downloadWithRetries(candidate, targetPath);
@@ -514,6 +569,12 @@ async function downloadFromCandidates(candidates: string[], targetPath: string):
 }
 
 export async function installLatestUpdate(repo: string, prechecked?: UpdateCheckResult): Promise<UpdateInstallResult> {
+  if (activeUpdateAbortController && !activeUpdateAbortController.signal.aborted) {
+    return { started: false, message: "Update-Download läuft bereits" };
+  }
+  const updateAbortController = new AbortController();
+  activeUpdateAbortController = updateAbortController;
+
   const safeRepo = normalizeUpdateRepo(repo);
   const check = prechecked && !prechecked.error
     ? prechecked
@@ -551,14 +612,23 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
   }
 
   const fileName = deriveUpdateFileName(effectiveCheck, candidates[0]);
-  const targetPath = path.join(os.tmpdir(), "rd-update", `${Date.now()}-${fileName}`);
+  const targetPath = path.join(os.tmpdir(), "rd-update", `${Date.now()}-${process.pid}-${crypto.randomUUID()}-${fileName}`);
 
   try {
+    if (updateAbortController.signal.aborted) {
+      throw new Error("aborted:update_shutdown");
+    }
     await downloadFromCandidates(candidates, targetPath);
+    if (updateAbortController.signal.aborted) {
+      throw new Error("aborted:update_shutdown");
+    }
     await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
     const child = spawn(targetPath, [], {
       detached: true,
       stdio: "ignore"
+    });
+    child.once("error", (spawnError) => {
+      logger.error(`Update-Installer Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
     });
     child.unref();
     return { started: true, message: "Update-Installer gestartet" };
@@ -571,5 +641,16 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
     const releaseUrl = String(effectiveCheck.releaseUrl || "").trim();
     const hint = releaseUrl ? ` – Manuell: ${releaseUrl}` : "";
     return { started: false, message: `${compactErrorText(error)}${hint}` };
+  } finally {
+    if (activeUpdateAbortController === updateAbortController) {
+      activeUpdateAbortController = null;
+    }
   }
+}
+
+export function abortActiveUpdateDownload(): void {
+  if (!activeUpdateAbortController || activeUpdateAbortController.signal.aborted) {
+    return;
+  }
+  activeUpdateAbortController.abort("shutdown");
 }

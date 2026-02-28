@@ -32,8 +32,11 @@ type ActiveTask = {
   abortController: AbortController;
   abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "none";
   resumable: boolean;
-  speedEvents: Array<{ at: number; bytes: number }>;
   nonResumableCounted: boolean;
+  freshRetryUsed?: boolean;
+  stallRetries?: number;
+  genericErrorRetries?: number;
+  unrestrictRetries?: number;
 };
 
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 30000;
@@ -362,6 +365,13 @@ export class DownloadManager extends EventEmitter {
 
   private retryAfterByItem = new Map<string, number>();
 
+  private retryStateByItem = new Map<string, {
+    freshRetryUsed: boolean;
+    stallRetries: number;
+    genericErrorRetries: number;
+    unrestrictRetries: number;
+  }>();
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -543,6 +553,7 @@ export class DownloadManager extends EventEmitter {
     delete this.session.items[itemId];
     this.itemCount = Math.max(0, this.itemCount - 1);
     this.retryAfterByItem.delete(itemId);
+    this.retryStateByItem.delete(itemId);
     this.dropItemContribution(itemId);
     if (!hasActiveTask) {
       this.releaseTargetPath(itemId);
@@ -685,6 +696,7 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
     this.itemContributedBytes.clear();
@@ -698,6 +710,7 @@ export class DownloadManager extends EventEmitter {
     this.summary = null;
     this.nonResumableActive = 0;
     this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
     this.persistNow();
     this.emitState(true);
   }
@@ -1291,6 +1304,8 @@ export class DownloadManager extends EventEmitter {
     if (!pkg) {
       return;
     }
+    pkg.cancelled = true;
+    pkg.updatedAt = nowMs();
     const packageName = pkg.name;
     const outputDir = pkg.outputDir;
     const itemIds = [...pkg.itemIds];
@@ -1333,7 +1348,25 @@ export class DownloadManager extends EventEmitter {
     }
 
     const recoveredItems = this.recoverRetryableItems("start");
-    if (recoveredItems > 0) {
+
+    let recoveredStoppedItems = 0;
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "cancelled" || item.fullStatus !== "Gestoppt") {
+        continue;
+      }
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      item.status = "queued";
+      item.fullStatus = "Wartet";
+      item.lastError = "";
+      item.speedBps = 0;
+      item.updatedAt = nowMs();
+      recoveredStoppedItems += 1;
+    }
+
+    if (recoveredItems > 0 || recoveredStoppedItems > 0) {
       this.persistSoon();
       this.emitState(true);
     }
@@ -1349,6 +1382,25 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
+      if (this.packagePostProcessTasks.size > 0) {
+        this.runItemIds.clear();
+        this.runPackageIds.clear();
+        this.runOutcomes.clear();
+        this.runCompletedPackages.clear();
+        this.session.running = true;
+        this.session.paused = false;
+        this.session.runStartedAt = this.session.runStartedAt || nowMs();
+        this.persistSoon();
+        this.emitState(true);
+        void this.ensureScheduler().catch((error) => {
+          logger.error(`Scheduler abgestürzt: ${compactErrorText(error)}`);
+          this.session.running = false;
+          this.session.paused = false;
+          this.persistSoon();
+          this.emitState(true);
+        });
+        return;
+      }
       this.runItemIds.clear();
       this.runPackageIds.clear();
       this.runOutcomes.clear();
@@ -1431,6 +1483,10 @@ export class DownloadManager extends EventEmitter {
   public prepareForShutdown(): void {
     logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
     this.clearPersistTimer();
+    if (this.stateEmitTimer) {
+      clearTimeout(this.stateEmitTimer);
+      this.stateEmitTimer = null;
+    }
     this.session.running = false;
     this.session.paused = false;
     this.session.reconnectUntil = 0;
@@ -1934,7 +1990,7 @@ export class DownloadManager extends EventEmitter {
       const success = items.filter((item) => item.status === "completed").length;
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
-      if (success + failed + cancelled < items.length || failed > 0 || success === 0) {
+      if (success + failed + cancelled < items.length || failed > 0 || cancelled > 0 || success === 0) {
         continue;
       }
       const needsExtraction = items.some((item) =>
@@ -1965,6 +2021,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessTasks.delete(packageId);
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
+      this.retryStateByItem.delete(itemId);
       this.releaseTargetPath(itemId);
       this.dropItemContribution(itemId);
       delete this.session.items[itemId];
@@ -1996,7 +2053,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
 
-        if (this.reconnectActive() && (this.nonResumableActive > 0 || this.activeTasks.size === 0)) {
+        if (this.reconnectActive()) {
           const markNow = nowMs();
           if (markNow - this.lastReconnectMarkAt >= 900) {
             this.lastReconnectMarkAt = markNow;
@@ -2185,7 +2242,27 @@ export class DownloadManager extends EventEmitter {
   }
 
   private hasQueuedItems(): boolean {
-    return this.findNextQueuedItem() !== null;
+    const now = nowMs();
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        const retryAfter = this.retryAfterByItem.get(itemId) || 0;
+        if (retryAfter > now) {
+          continue;
+        }
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private hasDelayedQueuedItems(): boolean {
@@ -2239,6 +2316,12 @@ export class DownloadManager extends EventEmitter {
     item.attempts = 0;
     active.abortController = new AbortController();
     active.abortReason = "none";
+    this.retryStateByItem.set(item.id, {
+      freshRetryUsed: Boolean(active.freshRetryUsed),
+      stallRetries: Number(active.stallRetries || 0),
+      genericErrorRetries: Number(active.genericErrorRetries || 0),
+      unrestrictRetries: Number(active.unrestrictRetries || 0)
+    });
     // Caller returns immediately after this; startItem().finally releases the active slot,
     // so the retry backoff never blocks a worker.
     this.retryAfterByItem.set(item.id, nowMs() + waitMs);
@@ -2268,7 +2351,6 @@ export class DownloadManager extends EventEmitter {
       abortController: new AbortController(),
       abortReason: "none",
       resumable: true,
-      speedEvents: [],
       nonResumableCounted: false
     };
     this.activeTasks.set(itemId, active);
@@ -2277,7 +2359,9 @@ export class DownloadManager extends EventEmitter {
     void this.processItem(active).catch((err) => {
       logger.warn(`processItem unbehandelt (${itemId}): ${compactErrorText(err)}`);
     }).finally(() => {
-      this.releaseTargetPath(item.id);
+      if (!this.retryAfterByItem.has(item.id)) {
+        this.releaseTargetPath(item.id);
+      }
       if (active.nonResumableCounted) {
         this.nonResumableActive = Math.max(0, this.nonResumableActive - 1);
       }
@@ -2294,10 +2378,17 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    let freshRetryUsed = false;
-    let stallRetries = 0;
-    let genericErrorRetries = 0;
-    let unrestrictRetries = 0;
+    const retryState = this.retryStateByItem.get(item.id) || {
+      freshRetryUsed: false,
+      stallRetries: 0,
+      genericErrorRetries: 0,
+      unrestrictRetries: 0
+    };
+    this.retryStateByItem.set(item.id, retryState);
+    active.freshRetryUsed = retryState.freshRetryUsed;
+    active.stallRetries = retryState.stallRetries;
+    active.genericErrorRetries = retryState.genericErrorRetries;
+    active.unrestrictRetries = retryState.unrestrictRetries;
     const maxGenericErrorRetries = Math.max(2, REQUEST_RETRIES);
     const maxUnrestrictRetries = Math.max(3, REQUEST_RETRIES);
     while (true) {
@@ -2430,8 +2521,12 @@ export class DownloadManager extends EventEmitter {
         }
         this.persistSoon();
         this.emitState();
+        this.retryStateByItem.delete(item.id);
         return;
       } catch (error) {
+        if (this.session.items[item.id] !== item) {
+          return;
+        }
         const reason = active.abortReason;
         const claimedTargetPath = this.claimedTargetPathByItem.get(item.id) || "";
         if (reason === "cancel") {
@@ -2449,6 +2544,7 @@ export class DownloadManager extends EventEmitter {
           item.progressPercent = 0;
           item.totalBytes = null;
           this.dropItemContribution(item.id);
+          this.retryStateByItem.delete(item.id);
         } else if (reason === "stop") {
           item.status = "cancelled";
           item.fullStatus = "Gestoppt";
@@ -2459,11 +2555,13 @@ export class DownloadManager extends EventEmitter {
             item.totalBytes = null;
             this.dropItemContribution(item.id);
           }
+          this.retryStateByItem.delete(item.id);
         } else if (reason === "shutdown") {
           item.status = "queued";
           item.speedBps = 0;
           const activePkg = this.session.packages[item.packageId];
           item.fullStatus = activePkg && !activePkg.enabled ? "Paket gestoppt" : "Wartet";
+          this.retryStateByItem.delete(item.id);
         } else if (reason === "reconnect") {
           item.status = "queued";
           item.speedBps = 0;
@@ -2473,10 +2571,10 @@ export class DownloadManager extends EventEmitter {
           item.speedBps = 0;
           item.fullStatus = "Paket gestoppt";
         } else if (reason === "stall") {
-          stallRetries += 1;
-          if (stallRetries <= 2) {
+          active.stallRetries += 1;
+          if (active.stallRetries <= 2) {
             item.retries += 1;
-            this.queueRetry(item, active, 350 * stallRetries, `Keine Daten empfangen, Retry ${stallRetries}/2`);
+            this.queueRetry(item, active, 350 * active.stallRetries, `Keine Daten empfangen, Retry ${active.stallRetries}/2`);
             item.lastError = "";
             this.persistSoon();
             this.emitState();
@@ -2486,9 +2584,10 @@ export class DownloadManager extends EventEmitter {
           item.lastError = "Download hing wiederholt";
           item.fullStatus = `Fehler: ${item.lastError}`;
           this.recordRunOutcome(item.id, "failed");
+          this.retryStateByItem.delete(item.id);
         } else {
           const errorText = compactErrorText(error);
-          const shouldFreshRetry = !freshRetryUsed && isFetchFailure(errorText);
+          const shouldFreshRetry = !active.freshRetryUsed && isFetchFailure(errorText);
           const isHttp416 = /(^|\D)416(\D|$)/.test(errorText);
           if (isHttp416) {
             try {
@@ -2509,10 +2608,11 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             this.persistSoon();
             this.emitState();
+            this.retryStateByItem.delete(item.id);
             return;
           }
           if (shouldFreshRetry) {
-            freshRetryUsed = true;
+            active.freshRetryUsed = true;
             item.retries += 1;
             try {
               fs.rmSync(item.targetPath, { force: true });
@@ -2530,20 +2630,20 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
-          if (isUnrestrictFailure(errorText) && unrestrictRetries < maxUnrestrictRetries) {
-            unrestrictRetries += 1;
+          if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
             item.retries += 1;
-            this.queueRetry(item, active, Math.min(8000, 2000 * unrestrictRetries), `Unrestrict-Fehler, Retry ${unrestrictRetries}/${maxUnrestrictRetries}`);
+            this.queueRetry(item, active, Math.min(8000, 2000 * active.unrestrictRetries), `Unrestrict-Fehler, Retry ${active.unrestrictRetries}/${maxUnrestrictRetries}`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
             return;
           }
 
-          if (genericErrorRetries < maxGenericErrorRetries) {
-            genericErrorRetries += 1;
+          if (active.genericErrorRetries < maxGenericErrorRetries) {
+            active.genericErrorRetries += 1;
             item.retries += 1;
-            this.queueRetry(item, active, Math.min(1200, 300 * genericErrorRetries), `Fehler erkannt, Auto-Retry ${genericErrorRetries}/${maxGenericErrorRetries}`);
+            this.queueRetry(item, active, Math.min(1200, 300 * active.genericErrorRetries), `Fehler erkannt, Auto-Retry ${active.genericErrorRetries}/${maxGenericErrorRetries}`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
@@ -2554,6 +2654,7 @@ export class DownloadManager extends EventEmitter {
           this.recordRunOutcome(item.id, "failed");
           item.lastError = errorText;
           item.fullStatus = `Fehler: ${item.lastError}`;
+          this.retryStateByItem.delete(item.id);
         }
         item.speedBps = 0;
         item.updatedAt = nowMs();
@@ -2653,6 +2754,7 @@ export class DownloadManager extends EventEmitter {
           } catch {
             // ignore
           }
+          this.dropItemContribution(active.itemId);
           item.downloadedBytes = 0;
           item.totalBytes = knownTotal && knownTotal > 0 ? knownTotal : null;
           item.progressPercent = 0;
@@ -2665,6 +2767,8 @@ export class DownloadManager extends EventEmitter {
             await sleep(280 * attempt);
             continue;
           }
+          lastError = "HTTP 416";
+          throw new Error(lastError);
         }
         const text = await response.text();
         lastError = `HTTP ${response.status}`;
@@ -3001,6 +3105,7 @@ export class DownloadManager extends EventEmitter {
   private recoverRetryableItems(trigger: "startup" | "start"): number {
     let recovered = 0;
     const touchedPackages = new Set<string>();
+    const maxAutoRetryFailures = Math.max(2, REQUEST_RETRIES);
 
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
@@ -3010,7 +3115,7 @@ export class DownloadManager extends EventEmitter {
 
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
-        if (!item || item.status === "cancelled") {
+        if (!item || item.status === "cancelled" || this.activeTasks.has(itemId)) {
           continue;
         }
 
@@ -3018,6 +3123,9 @@ export class DownloadManager extends EventEmitter {
         const hasZeroByteArchive = this.hasZeroByteArchiveArtifact(item);
 
         if (item.status === "failed") {
+          if (!is416Failure && !hasZeroByteArchive && item.retries >= maxAutoRetryFailures) {
+            continue;
+          }
           this.queueItemForRetry(item, {
             hardReset: is416Failure || hasZeroByteArchive,
             reason: is416Failure
@@ -3062,6 +3170,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private queueItemForRetry(item: DownloadItem, options: { hardReset: boolean; reason: string }): void {
+    this.retryStateByItem.delete(item.id);
     const targetPath = String(item.targetPath || "").trim();
     if (options.hardReset && targetPath) {
       try {
@@ -3787,6 +3896,8 @@ export class DownloadManager extends EventEmitter {
     this.runPackageIds.clear();
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
+    this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
     this.itemContributedBytes.clear();
