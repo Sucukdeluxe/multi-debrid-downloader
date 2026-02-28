@@ -153,7 +153,7 @@ function parseContentDispositionFilename(contentDisposition: string | null): str
 
 function isArchiveLikePath(filePath: string): boolean {
   const lower = path.basename(filePath).toLowerCase();
-  return /\.(?:part\d+\.rar|rar|r\d{2,3}|zip|z\d{2}|7z|7z\.\d{3})$/i.test(lower);
+  return /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|z\d{1,3}|7z(?:\.\d+)?)$/i.test(lower);
 }
 
 function isFetchFailure(errorText: string): boolean {
@@ -543,6 +543,7 @@ export class DownloadManager extends EventEmitter {
     delete this.session.items[itemId];
     this.itemCount = Math.max(0, this.itemCount - 1);
     this.retryAfterByItem.delete(itemId);
+    this.dropItemContribution(itemId);
     if (!hasActiveTask) {
       this.releaseTargetPath(itemId);
     }
@@ -742,7 +743,7 @@ export class DownloadManager extends EventEmitter {
           totalBytes: null,
           progressPercent: 0,
           fileName,
-          targetPath: path.join(outputDir, fileName),
+          targetPath: "",
           resumable: true,
           attempts: 0,
           lastError: "",
@@ -750,6 +751,7 @@ export class DownloadManager extends EventEmitter {
           createdAt: nowMs(),
           updatedAt: nowMs()
         };
+        this.assignItemTargetPath(item, path.join(outputDir, fileName));
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
         this.itemCount += 1;
@@ -901,7 +903,7 @@ export class DownloadManager extends EventEmitter {
         item.lastError = "";
         item.fullStatus = "Wartet";
         item.updatedAt = nowMs();
-        item.targetPath = path.join(pkg.outputDir, sanitizeFilename(item.fileName || filenameFromUrl(item.url)));
+        this.assignItemTargetPath(item, path.join(pkg.outputDir, sanitizeFilename(item.fileName || filenameFromUrl(item.url))));
         this.runOutcomes.delete(itemId);
         this.itemContributedBytes.delete(itemId);
         this.retryAfterByItem.delete(itemId);
@@ -974,7 +976,7 @@ export class DownloadManager extends EventEmitter {
             continue;
           }
           item.fileName = normalized;
-          item.targetPath = path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, normalized);
+          this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, normalized));
           item.updatedAt = nowMs();
           changed = true;
           changedForLink = true;
@@ -1551,11 +1553,6 @@ export class DownloadManager extends EventEmitter {
       const hasPending = items.some((item) => (
         item.status === "queued"
         || item.status === "reconnect_wait"
-        || item.status === "validating"
-        || item.status === "downloading"
-        || item.status === "paused"
-        || item.status === "extracting"
-        || item.status === "integrity_check"
       ));
       if (hasPending) {
         pkg.status = pkg.enabled ? "queued" : "paused";
@@ -1716,18 +1713,30 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.set(itemId, status);
   }
 
+  private dropItemContribution(itemId: string): void {
+    const contributed = this.itemContributedBytes.get(itemId) || 0;
+    if (contributed > 0) {
+      this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - contributed);
+    }
+    this.itemContributedBytes.delete(itemId);
+  }
+
   private claimTargetPath(itemId: string, preferredPath: string, allowExistingFile = false): string {
+    const preferredKey = pathKey(preferredPath);
     const existingClaim = this.claimedTargetPathByItem.get(itemId);
     if (existingClaim) {
-      const owner = this.reservedTargetPaths.get(pathKey(existingClaim));
+      const existingKey = pathKey(existingClaim);
+      const owner = this.reservedTargetPaths.get(existingKey);
       if (owner === itemId) {
-        return existingClaim;
+        if (existingKey === preferredKey) {
+          return existingClaim;
+        }
+        this.reservedTargetPaths.delete(existingKey);
       }
       this.claimedTargetPathByItem.delete(itemId);
     }
 
     const parsed = path.parse(preferredPath);
-    const preferredKey = pathKey(preferredPath);
     const maxIndex = 10000;
     for (let index = 0; index <= maxIndex; index += 1) {
       const candidate = index === 0
@@ -1762,6 +1771,19 @@ export class DownloadManager extends EventEmitter {
       this.reservedTargetPaths.delete(key);
     }
     this.claimedTargetPathByItem.delete(itemId);
+  }
+
+  private assignItemTargetPath(item: DownloadItem, targetPath: string): string {
+    const rawTargetPath = String(targetPath || "").trim();
+    if (!rawTargetPath) {
+      this.releaseTargetPath(item.id);
+      item.targetPath = "";
+      return "";
+    }
+    const normalizedTargetPath = path.resolve(rawTargetPath);
+    const claimed = this.claimTargetPath(item.id, normalizedTargetPath);
+    item.targetPath = claimed;
+    return claimed;
   }
 
   private abortPostProcessing(reason: string): void {
@@ -1943,6 +1965,8 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessTasks.delete(packageId);
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
+      this.releaseTargetPath(itemId);
+      this.dropItemContribution(itemId);
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
     }
@@ -2215,6 +2239,8 @@ export class DownloadManager extends EventEmitter {
     item.attempts = 0;
     active.abortController = new AbortController();
     active.abortReason = "none";
+    // Caller returns immediately after this; startItem().finally releases the active slot,
+    // so the retry backoff never blocks a worker.
     this.retryAfterByItem.set(item.id, nowMs() + waitMs);
   }
 
@@ -2306,6 +2332,12 @@ export class DownloadManager extends EventEmitter {
         let done = false;
         while (!done && item.attempts < maxAttempts) {
           item.attempts += 1;
+          if (item.status !== "downloading") {
+            item.status = "downloading";
+            item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+            item.updatedAt = nowMs();
+            this.emitState();
+          }
           const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes);
           active.resumable = result.resumable;
           if (!active.resumable && !active.nonResumableCounted) {
@@ -2416,6 +2448,7 @@ export class DownloadManager extends EventEmitter {
           item.downloadedBytes = 0;
           item.progressPercent = 0;
           item.totalBytes = null;
+          this.dropItemContribution(item.id);
         } else if (reason === "stop") {
           item.status = "cancelled";
           item.fullStatus = "Gestoppt";
@@ -2424,6 +2457,7 @@ export class DownloadManager extends EventEmitter {
             item.downloadedBytes = 0;
             item.progressPercent = 0;
             item.totalBytes = null;
+            this.dropItemContribution(item.id);
           }
         } else if (reason === "shutdown") {
           item.status = "queued";
@@ -2466,6 +2500,7 @@ export class DownloadManager extends EventEmitter {
             item.downloadedBytes = 0;
             item.totalBytes = null;
             item.progressPercent = 0;
+            this.dropItemContribution(item.id);
             item.status = "failed";
             this.recordRunOutcome(item.id, "failed");
             item.lastError = errorText;
@@ -2997,6 +3032,11 @@ export class DownloadManager extends EventEmitter {
         }
 
         if (item.status === "completed" && hasZeroByteArchive) {
+          const maxCompletedZeroByteAutoRetries = Math.max(2, REQUEST_RETRIES);
+          if (item.retries >= maxCompletedZeroByteAutoRetries) {
+            continue;
+          }
+          item.retries += 1;
           this.queueItemForRetry(item, {
             hardReset: true,
             reason: "Wartet (Auto-Retry: 0B-Datei)"
@@ -3033,6 +3073,7 @@ export class DownloadManager extends EventEmitter {
       item.downloadedBytes = 0;
       item.totalBytes = null;
       item.progressPercent = 0;
+      this.dropItemContribution(item.id);
     }
 
     item.status = "queued";
@@ -3327,12 +3368,12 @@ export class DownloadManager extends EventEmitter {
     if (/\.zip\.001$/i.test(entryPointName)) {
       const stem = entryPointName.replace(/\.zip\.001$/i, "").toLowerCase();
       const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`^${escaped}\\.zip(\\.\\d{3})?$`, "i").test(fileName);
+      return new RegExp(`^${escaped}\\.zip(\\.\\d+)?$`, "i").test(fileName);
     }
     if (/\.7z\.001$/i.test(entryPointName)) {
       const stem = entryPointName.replace(/\.7z\.001$/i, "").toLowerCase();
       const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`^${escaped}\\.7z(\\.\\d{3})?$`, "i").test(fileName);
+      return new RegExp(`^${escaped}\\.7z(\\.\\d+)?$`, "i").test(fileName);
     }
     return false;
   }
@@ -3651,12 +3692,20 @@ export class DownloadManager extends EventEmitter {
   }
 
   private applyPackageDoneCleanup(packageId: string): void {
-    if (this.settings.completedCleanupPolicy !== "package_done") {
+    const policy = this.settings.completedCleanupPolicy;
+    if (policy !== "package_done" && policy !== "immediate") {
       return;
     }
 
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.status !== "completed") {
+      return;
+    }
+
+    if (policy === "immediate") {
+      for (const itemId of [...pkg.itemIds]) {
+        this.applyCompletedCleanupPolicy(packageId, itemId);
+      }
       return;
     }
 
@@ -3691,6 +3740,8 @@ export class DownloadManager extends EventEmitter {
         }
       }
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
+      this.releaseTargetPath(itemId);
+      this.dropItemContribution(itemId);
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
       this.retryAfterByItem.delete(itemId);

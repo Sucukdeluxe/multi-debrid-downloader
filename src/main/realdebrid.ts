@@ -1,7 +1,7 @@
 import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
 import { compactErrorText, sleep } from "./utils";
 
-const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.28";
+const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.29";
 
 export interface UnrestrictedLink {
   fileName: string;
@@ -16,6 +16,33 @@ function shouldRetryStatus(status: number): boolean {
 
 function retryDelay(attempt: number): number {
   return Math.min(5000, 400 * 2 ** attempt);
+}
+
+function parseRetryAfterMs(value: string | null): number {
+  const text = String(value || "").trim();
+  if (!text) {
+    return 0;
+  }
+
+  const asSeconds = Number(text);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return Math.min(120000, Math.floor(asSeconds * 1000));
+  }
+
+  const asDate = Date.parse(text);
+  if (Number.isFinite(asDate)) {
+    return Math.min(120000, Math.max(0, asDate - Date.now()));
+  }
+
+  return 0;
+}
+
+function retryDelayForResponse(response: Response, attempt: number): number {
+  if (response.status !== 429) {
+    return retryDelay(attempt);
+  }
+  const fromHeader = parseRetryAfterMs(response.headers.get("retry-after"));
+  return fromHeader > 0 ? fromHeader : retryDelay(attempt);
 }
 
 function readHttpStatusFromErrorText(text: string): number {
@@ -89,7 +116,7 @@ export class RealDebridClient {
         if (!response.ok) {
           const parsed = parseErrorBody(response.status, text, contentType);
           if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
-            await sleep(retryDelay(attempt));
+            await sleep(retryDelayForResponse(response, attempt));
             continue;
           }
           throw new Error(parsed);

@@ -6,7 +6,9 @@ export function mergePackageInputs(packages: ParsedPackageInput[]): ParsedPackag
   for (const pkg of packages) {
     const name = sanitizeFilename(pkg.name || inferPackageNameFromLinks(pkg.links));
     const list = grouped.get(name) ?? [];
-    list.push(...pkg.links);
+    for (const link of pkg.links) {
+      list.push(link);
+    }
     grouped.set(name, list);
   }
   return Array.from(grouped.entries()).map(([name, links]) => ({

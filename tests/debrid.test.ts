@@ -442,7 +442,7 @@ describe("debrid service", () => {
     expect(resolved.get(link)).toBe("Bulletproof.S01E01.German.DL.DD20.Synced.720p.AmazonHD.h264-GDR.part01.rar");
   });
 
-  it("falls back to provider unrestrict for unresolved filename scan", async () => {
+  it("does not unrestrict non-rapidgator links during filename scan", async () => {
     const settings = {
       ...defaultSettings(),
       token: "rd-token",
@@ -455,6 +455,7 @@ describe("debrid service", () => {
 
     const linkFromPage = "https://rapidgator.net/file/11111111111111111111111111111111";
     const linkFromProvider = "https://hoster.example/file/22222222222222222222222222222222";
+    let unrestrictCalls = 0;
 
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -467,6 +468,7 @@ describe("debrid service", () => {
       }
 
       if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        unrestrictCalls += 1;
         const body = init?.body;
         const bodyText = body instanceof URLSearchParams ? body.toString() : String(body || "");
         const linkValue = new URLSearchParams(bodyText).get("link") || "";
@@ -492,10 +494,10 @@ describe("debrid service", () => {
     });
 
     expect(resolved.get(linkFromPage)).toBe("from-page.part1.rar");
-    expect(resolved.get(linkFromProvider)).toBe("from-provider.part2.rar");
+    expect(resolved.has(linkFromProvider)).toBe(false);
+    expect(unrestrictCalls).toBe(0);
     expect(events).toEqual(expect.arrayContaining([
-      { link: linkFromPage, fileName: "from-page.part1.rar" },
-      { link: linkFromProvider, fileName: "from-provider.part2.rar" }
+      { link: linkFromPage, fileName: "from-page.part1.rar" }
     ]));
   });
 
@@ -533,7 +535,7 @@ describe("debrid service", () => {
     expect(unrestrictCalls).toBe(0);
   });
 
-  it("does not map AllDebrid filename infos by index when response link is missing", async () => {
+  it("maps AllDebrid filename infos by index when response link is missing", async () => {
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -572,7 +574,9 @@ describe("debrid service", () => {
 
     const service = new DebridService(settings);
     const resolved = await service.resolveFilenames([linkA, linkB]);
-    expect(resolved.size).toBe(0);
+    expect(resolved.get(linkA)).toBe("wrong-a.mkv");
+    expect(resolved.get(linkB)).toBe("wrong-b.mkv");
+    expect(resolved.size).toBe(2);
   });
 
   it("retries AllDebrid filename infos after transient server error", async () => {
@@ -736,6 +740,11 @@ describe("extractRapidgatorFilenameFromHtml", () => {
 
   it("returns empty for empty HTML", () => {
     expect(extractRapidgatorFilenameFromHtml("")).toBe("");
+  });
+
+  it("ignores broad body text that is not a labeled filename", () => {
+    const html = "<html><body>Please download file now from mirror.mkv</body></html>";
+    expect(extractRapidgatorFilenameFromHtml(html)).toBe("");
   });
 
   it("extracts from File name label in page body", () => {
