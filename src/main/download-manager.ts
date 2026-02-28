@@ -621,7 +621,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   public importQueue(json: string): { addedPackages: number; addedLinks: number } {
-    const data = JSON.parse(json) as { packages?: Array<{ name: string; links: string[] }> };
+    let data: { packages?: Array<{ name: string; links: string[] }> };
+    try {
+      data = JSON.parse(json) as { packages?: Array<{ name: string; links: string[] }> };
+    } catch {
+      throw new Error("Ungultige Queue-Datei (JSON)");
+    }
     if (!Array.isArray(data.packages)) {
       return { addedPackages: 0, addedLinks: 0 };
     }
@@ -2242,6 +2247,9 @@ export class DownloadManager extends EventEmitter {
               // ignore
             }
           }
+          item.downloadedBytes = 0;
+          item.progressPercent = 0;
+          item.totalBytes = null;
         } else if (reason === "stop") {
           item.status = "cancelled";
           item.fullStatus = "Gestoppt";
@@ -2253,6 +2261,9 @@ export class DownloadManager extends EventEmitter {
               // ignore
             }
           }
+          item.downloadedBytes = 0;
+          item.progressPercent = 0;
+          item.totalBytes = null;
         } else if (reason === "shutdown") {
           item.status = "queued";
           item.speedBps = 0;
@@ -3015,9 +3026,9 @@ export class DownloadManager extends EventEmitter {
         if (sleepMs > 0) {
           await sleep(Math.min(300, sleepMs));
         }
+      }
+      return;
     }
-    return;
-  }
 
     await this.applyGlobalSpeedLimit(chunkBytes, bytesPerSecond);
   }
@@ -3115,9 +3126,29 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
 
     const completedItems = items.filter((item) => item.status === "completed");
+
+    // Build set of item targetPaths belonging to ready archives
+    const hybridItemPaths = new Set<string>();
+    let dirFiles: string[] | undefined;
+    try {
+      dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name);
+    } catch { /* ignore */ }
+    for (const archiveKey of readyArchives) {
+      const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
+      for (const part of parts) {
+        hybridItemPaths.add(pathKey(part));
+      }
+      hybridItemPaths.add(pathKey(archiveKey));
+    }
+    const hybridItems = completedItems.filter((item) =>
+      item.targetPath && hybridItemPaths.has(pathKey(item.targetPath))
+    );
+
     const updateExtractingStatus = (text: string): void => {
       const updatedAt = nowMs();
-      for (const entry of completedItems) {
+      for (const entry of hybridItems) {
         if (isExtractedLabel(entry.fullStatus)) {
           continue;
         }
@@ -3169,9 +3200,13 @@ export class DownloadManager extends EventEmitter {
       }
 
       const updatedAt = nowMs();
-      for (const entry of completedItems) {
+      for (const entry of hybridItems) {
         if (/^Entpacken \(hybrid\)/i.test(entry.fullStatus || "")) {
-          entry.fullStatus = `Fertig (${humanSize(entry.downloadedBytes)})`;
+          if (result.extracted > 0 && result.failed === 0) {
+            entry.fullStatus = "Entpackt";
+          } else {
+            entry.fullStatus = `Fertig (${humanSize(entry.downloadedBytes)})`;
+          }
           entry.updatedAt = updatedAt;
         }
       }
@@ -3230,6 +3265,9 @@ export class DownloadManager extends EventEmitter {
       const updateExtractingStatus = (text: string): void => {
         const updatedAt = nowMs();
         for (const entry of completedItems) {
+          if (isExtractedLabel(entry.fullStatus)) {
+            continue;
+          }
           if (entry.fullStatus === text) {
             continue;
           }
