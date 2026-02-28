@@ -6,6 +6,20 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import { logger } from "./logger";
 import { APP_NAME } from "./constants";
 
+/* ── Single Instance Lock ───────────────────────────────────────── */
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+}
+
+/* ── Unhandled error protection ─────────────────────────────────── */
+process.on("uncaughtException", (error) => {
+  logger.error(`Uncaught Exception: ${String(error?.stack || error)}`);
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error(`Unhandled Rejection: ${String(reason)}`);
+});
+
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let clipboardTimer: ReturnType<typeof setInterval> | null = null;
@@ -202,6 +216,16 @@ function registerIpcHandlers(): void {
   };
 }
 
+app.on("second-instance", () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(() => {
   registerIpcHandlers();
   mainWindow = createWindow();
@@ -214,6 +238,10 @@ app.whenReady().then(() => {
       event.preventDefault();
       mainWindow?.hide();
     }
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
   });
 
   app.on("activate", () => {

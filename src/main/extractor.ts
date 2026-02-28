@@ -232,11 +232,16 @@ function readExtractResumeState(packageDir: string): Set<string> {
 }
 
 function writeExtractResumeState(packageDir: string, completedArchives: Set<string>): void {
-  const progressPath = extractProgressFilePath(packageDir);
-  const payload: ExtractResumeState = {
-    completedArchives: Array.from(completedArchives).sort((a, b) => a.localeCompare(b))
-  };
-  fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2), "utf8");
+  try {
+    fs.mkdirSync(packageDir, { recursive: true });
+    const progressPath = extractProgressFilePath(packageDir);
+    const payload: ExtractResumeState = {
+      completedArchives: Array.from(completedArchives).sort((a, b) => a.localeCompare(b))
+    };
+    fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2), "utf8");
+  } catch (error) {
+    logger.warn(`ExtractResumeState schreiben fehlgeschlagen: ${String(error)}`);
+  }
 }
 
 function clearExtractResumeState(packageDir: string): void {
@@ -582,8 +587,13 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
   const mode = effectiveConflictMode(conflictMode);
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
+  const resolvedTarget = path.resolve(targetDir);
   for (const entry of entries) {
-    const outputPath = path.join(targetDir, entry.entryName);
+    const outputPath = path.resolve(targetDir, entry.entryName);
+    if (!outputPath.startsWith(resolvedTarget + path.sep) && outputPath !== resolvedTarget) {
+      logger.warn(`ZIP-Eintrag übersprungen (Path Traversal): ${entry.entryName}`);
+      continue;
+    }
     if (entry.isDirectory) {
       fs.mkdirSync(outputPath, { recursive: true });
       continue;

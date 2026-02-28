@@ -226,7 +226,16 @@ export async function saveSessionAsync(paths: StoragePaths, session: SessionStat
     const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
     const tempPath = `${paths.sessionFile}.tmp`;
     await fsp.writeFile(tempPath, payload, "utf8");
-    await fsp.rename(tempPath, paths.sessionFile);
+    try {
+      await fsp.rename(tempPath, paths.sessionFile);
+    } catch (renameError: unknown) {
+      if ((renameError as NodeJS.ErrnoException).code === "EXDEV") {
+        await fsp.copyFile(tempPath, paths.sessionFile);
+        await fsp.rm(tempPath, { force: true }).catch(() => {});
+      } else {
+        throw renameError;
+      }
+    }
   } catch (error) {
     logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
   } finally {

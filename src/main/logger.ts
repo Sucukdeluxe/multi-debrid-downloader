@@ -5,6 +5,8 @@ let logFilePath = path.resolve(process.cwd(), "rd_downloader.log");
 let fallbackLogFilePath: string | null = null;
 const LOG_FLUSH_INTERVAL_MS = 120;
 const LOG_BUFFER_LIMIT_CHARS = 1_000_000;
+const LOG_MAX_FILE_BYTES = 10 * 1024 * 1024;
+let lastRotateCheckAt = 0;
 
 let pendingLines: string[] = [];
 let pendingChars = 0;
@@ -90,6 +92,29 @@ function scheduleFlush(immediate = false): void {
   }, LOG_FLUSH_INTERVAL_MS);
 }
 
+function rotateIfNeeded(filePath: string): void {
+  try {
+    const now = Date.now();
+    if (now - lastRotateCheckAt < 60_000) {
+      return;
+    }
+    lastRotateCheckAt = now;
+    const stat = fs.statSync(filePath);
+    if (stat.size < LOG_MAX_FILE_BYTES) {
+      return;
+    }
+    const backup = `${filePath}.old`;
+    try {
+      fs.rmSync(backup, { force: true });
+    } catch {
+      // ignore
+    }
+    fs.renameSync(filePath, backup);
+  } catch {
+    // ignore - file may not exist yet
+  }
+}
+
 async function flushAsync(): Promise<void> {
   if (flushInFlight || pendingLines.length === 0) {
     return;
@@ -101,6 +126,7 @@ async function flushAsync(): Promise<void> {
   pendingChars = 0;
 
   try {
+    rotateIfNeeded(logFilePath);
     const primary = await appendChunk(logFilePath, chunk);
     if (fallbackLogFilePath) {
       const fallback = await appendChunk(fallbackLogFilePath, chunk);
