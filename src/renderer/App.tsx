@@ -1292,6 +1292,20 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   if (prev.items.length !== next.items.length) {
     return false;
   }
+  if (prev.onCancel !== next.onCancel
+    || prev.onMoveUp !== next.onMoveUp
+    || prev.onMoveDown !== next.onMoveDown
+    || prev.onToggle !== next.onToggle
+    || prev.onRemoveItem !== next.onRemoveItem
+    || prev.onStartEdit !== next.onStartEdit
+    || prev.onFinishEdit !== next.onFinishEdit
+    || prev.onEditChange !== next.onEditChange
+    || prev.onToggleCollapse !== next.onToggleCollapse
+    || prev.onDragStart !== next.onDragStart
+    || prev.onDrop !== next.onDrop
+    || prev.onDragEnd !== next.onDragEnd) {
+    return false;
+  }
   for (let index = 0; index < prev.items.length; index += 1) {
     const a = prev.items[index];
     const b = next.items[index];
