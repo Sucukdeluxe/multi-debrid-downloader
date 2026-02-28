@@ -24,6 +24,8 @@ export interface ExtractOptions {
   passwordList?: string;
   signal?: AbortSignal;
   onProgress?: (update: ExtractProgressUpdate) => void;
+  onlyArchives?: Set<string>;
+  skipPostCleanup?: boolean;
 }
 
 export interface ExtractProgressUpdate {
@@ -43,7 +45,7 @@ const EXTRACT_PER_GIB_TIMEOUT_MS = 4 * 60 * 1000;
 const EXTRACT_MAX_TIMEOUT_MS = 120 * 60 * 1000;
 const ARCHIVE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
-function pathSetKey(filePath: string): string {
+export function pathSetKey(filePath: string): string {
   return process.platform === "win32" ? filePath.toLowerCase() : filePath;
 }
 
@@ -80,7 +82,7 @@ type ExtractResumeState = {
   completedArchives: string[];
 };
 
-function findArchiveCandidates(packageDir: string): string[] {
+export function findArchiveCandidates(packageDir: string): string[] {
   if (!packageDir || !fs.existsSync(packageDir)) {
     return [];
   }
@@ -831,23 +833,31 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     throw new Error("aborted:extract");
   }
 
-  const candidates = findArchiveCandidates(options.packageDir);
-  logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
+  const allCandidates = findArchiveCandidates(options.packageDir);
+  const candidates = options.onlyArchives
+    ? allCandidates.filter((archivePath) => {
+      const key = process.platform === "win32" ? path.resolve(archivePath).toLowerCase() : path.resolve(archivePath);
+      return options.onlyArchives!.has(key);
+    })
+    : allCandidates;
+  logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
-    const existingResume = readExtractResumeState(options.packageDir);
-    if (existingResume.size > 0 && hasAnyEntries(options.targetDir)) {
+    if (!options.onlyArchives) {
+      const existingResume = readExtractResumeState(options.packageDir);
+      if (existingResume.size > 0 && hasAnyEntries(options.targetDir)) {
+        clearExtractResumeState(options.packageDir);
+        logger.info(`Entpacken übersprungen (Archive bereinigt, Ziel hat Dateien): ${options.packageDir}`);
+        options.onProgress?.({
+          current: existingResume.size,
+          total: existingResume.size,
+          percent: 100,
+          archiveName: "",
+          phase: "done"
+        });
+        return { extracted: existingResume.size, failed: 0, lastError: "" };
+      }
       clearExtractResumeState(options.packageDir);
-      logger.info(`Entpacken übersprungen (Archive bereinigt, Ziel hat Dateien): ${options.packageDir}`);
-      options.onProgress?.({
-        current: existingResume.size,
-        total: existingResume.size,
-        percent: 100,
-        archiveName: "",
-        phase: "done"
-      });
-      return { extracted: existingResume.size, failed: 0, lastError: "" };
     }
-    clearExtractResumeState(options.packageDir);
     logger.info(`Entpacken übersprungen (keine Archive gefunden): ${options.packageDir}`);
     return { extracted: 0, failed: 0, lastError: "" };
   }
@@ -856,9 +866,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let passwordCandidates = archivePasswords(options.passwordList || "");
   const resumeCompleted = readExtractResumeState(options.packageDir);
   const resumeCompletedAtStart = resumeCompleted.size;
-  const candidateNames = new Set(candidates.map((archivePath) => path.basename(archivePath)));
+  const allCandidateNames = new Set(allCandidates.map((archivePath) => path.basename(archivePath)));
   for (const archiveName of Array.from(resumeCompleted.values())) {
-    if (!candidateNames.has(archiveName)) {
+    if (!allCandidateNames.has(archiveName)) {
       resumeCompleted.delete(archiveName);
     }
   }
@@ -869,7 +879,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   const pendingCandidates = candidates.filter((archivePath) => !resumeCompleted.has(path.basename(archivePath)));
-  let extracted = resumeCompleted.size;
+  let extracted = candidates.length - pendingCandidates.length;
   let failed = 0;
   let lastError = "";
   const extractedArchives = new Set<string>();
@@ -996,32 +1006,34 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       extracted = 0;
       logger.error(`Entpacken ohne neue Ausgabe erkannt: ${options.targetDir}. Cleanup wird NICHT ausgeführt.`);
     } else {
-      const cleanupSources = failed === 0 ? candidates : Array.from(extractedArchives.values());
-      const removedArchives = cleanupArchives(cleanupSources, options.cleanupMode);
-      if (options.cleanupMode !== "none") {
-        logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
-      }
-      if (options.removeLinks) {
-        const removedLinks = removeDownloadLinkArtifacts(options.targetDir);
-        logger.info(`Link-Artefakt-Cleanup: ${removedLinks} Datei(en) entfernt`);
-      }
-      if (options.removeSamples) {
-        const removedSamples = removeSampleArtifacts(options.targetDir);
-        logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
+      if (!options.skipPostCleanup) {
+        const cleanupSources = failed === 0 ? candidates : Array.from(extractedArchives.values());
+        const removedArchives = cleanupArchives(cleanupSources, options.cleanupMode);
+        if (options.cleanupMode !== "none") {
+          logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
+        }
+        if (options.removeLinks) {
+          const removedLinks = removeDownloadLinkArtifacts(options.targetDir);
+          logger.info(`Link-Artefakt-Cleanup: ${removedLinks} Datei(en) entfernt`);
+        }
+        if (options.removeSamples) {
+          const removedSamples = removeSampleArtifacts(options.targetDir);
+          logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
+        }
       }
 
-      if (failed === 0 && resumeCompleted.size >= candidates.length) {
+      if (failed === 0 && resumeCompleted.size >= allCandidates.length) {
         clearExtractResumeState(options.packageDir);
       }
 
-      if (options.cleanupMode === "delete" && !hasAnyFilesRecursive(options.packageDir)) {
+      if (!options.skipPostCleanup && options.cleanupMode === "delete" && !hasAnyFilesRecursive(options.packageDir)) {
         const removedDirs = removeEmptyDirectoryTree(options.packageDir);
         if (removedDirs > 0) {
           logger.info(`Leere Download-Ordner entfernt: ${removedDirs} (root=${options.packageDir})`);
         }
       }
     }
-  } else {
+  } else if (!options.skipPostCleanup) {
     try {
       if (fs.existsSync(options.targetDir) && fs.readdirSync(options.targetDir).length === 0) {
         fs.rmSync(options.targetDir, { recursive: true, force: true });
