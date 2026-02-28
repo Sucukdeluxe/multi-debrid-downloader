@@ -27,6 +27,13 @@ interface StartConflictPromptState {
   applyToAll: boolean;
 }
 
+interface ConfirmPromptState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+}
+
 const emptyStats = (): DownloadStats => ({
   totalDownloaded: 0,
   totalFiles: 0,
@@ -126,6 +133,7 @@ export function App(): ReactElement {
     { id: `tab-${nextCollectorId++}`, name: "Tab 1", text: "" }
   ]);
   const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
+  const collectorTabsRef = useRef<CollectorTab[]>(collectorTabs);
   const activeCollectorTabRef = useRef(activeCollectorTab);
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
@@ -136,16 +144,24 @@ export function App(): ReactElement {
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const actionBusyRef = useRef(false);
+  const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
   const dragOverRef = useRef(false);
   const dragDepthRef = useRef(0);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
+  const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
+  const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
   useEffect(() => {
     activeCollectorTabRef.current = activeCollectorTab;
   }, [activeCollectorTab]);
+
+  useEffect(() => {
+    collectorTabsRef.current = collectorTabs;
+  }, [collectorTabs]);
 
   useEffect(() => {
     activeTabRef.current = tab;
@@ -155,14 +171,14 @@ export function App(): ReactElement {
     packageOrderRef.current = snapshot.session.packageOrder;
   }, [snapshot.session.packageOrder]);
 
-  const showToast = (message: string, timeoutMs = 2200): void => {
+  const showToast = useCallback((message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
     if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); }
     toastTimerRef.current = setTimeout(() => {
       setStatusToast("");
       toastTimerRef.current = null;
     }, timeoutMs);
-  };
+  }, []);
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
@@ -222,12 +238,19 @@ export function App(): ReactElement {
       });
     });
     return () => {
+      mountedRef.current = false;
       if (stateFlushTimerRef.current) { clearTimeout(stateFlushTimerRef.current); }
       if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); }
+      if (actionUnlockTimerRef.current) { clearTimeout(actionUnlockTimerRef.current); }
       if (startConflictResolverRef.current) {
         const resolver = startConflictResolverRef.current;
         startConflictResolverRef.current = null;
         resolver(null);
+      }
+      if (confirmResolverRef.current) {
+        const resolver = confirmResolverRef.current;
+        confirmResolverRef.current = null;
+        resolver(false);
       }
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
@@ -290,7 +313,7 @@ export function App(): ReactElement {
       map.set(id, index);
     });
     return map;
-  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder]);
+  }, [downloadsTabActive, snapshot.session.packageOrder]);
 
   const itemsByPackage = useMemo(() => {
     if (!downloadsTabActive) {
@@ -311,14 +334,19 @@ export function App(): ReactElement {
       return;
     }
     setCollapsedPackages((prev) => {
-      const next: Record<string, boolean> = {};
+      const next: Record<string, boolean> = { ...prev };
       const defaultCollapsed = totalPackageCount >= 24;
-      for (const packageId of packageIdsForView) {
+      for (const packageId of snapshot.session.packageOrder) {
         next[packageId] = prev[packageId] ?? defaultCollapsed;
+      }
+      for (const packageId of Object.keys(next)) {
+        if (!snapshot.session.packages[packageId]) {
+          delete next[packageId];
+        }
       }
       return next;
     });
-  }, [downloadsTabActive, packageOrderKey, totalPackageCount, packageIdsForView]);
+  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
 
   const hiddenPackageCount = shouldLimitPackageRendering
     ? Math.max(0, totalPackageCount - packages.length)
@@ -399,6 +427,9 @@ export function App(): ReactElement {
   ]);
 
   const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
+    if (!mountedRef.current) {
+      return;
+    }
     if (result.error) {
       if (source === "manual") { showToast(`Update-Check fehlgeschlagen: ${result.error}`, 2800); }
       return;
@@ -407,9 +438,16 @@ export function App(): ReactElement {
       if (source === "manual") { showToast(`Kein Update verfügbar (v${result.currentVersion})`, 2000); }
       return;
     }
-    const approved = window.confirm(`Update verfügbar: ${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`);
+    const approved = await askConfirmPrompt({
+      title: "Update verfügbar",
+      message: `${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`,
+      confirmLabel: "Jetzt installieren"
+    });
     if (!approved) { showToast(`Update verfügbar: ${result.latestTag}`, 2600); return; }
     const install = await window.rd.installUpdate();
+    if (!mountedRef.current) {
+      return;
+    }
     if (install.started) { showToast("Updater gestartet - App wird geschlossen", 2600); return; }
     showToast(`Auto-Update fehlgeschlagen: ${install.message}`, 3200);
   };
@@ -457,6 +495,22 @@ export function App(): ReactElement {
         entry,
         applyToAll: false
       });
+    });
+  };
+
+  const closeConfirmPrompt = (confirmed: boolean): void => {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmPrompt(null);
+    if (resolver) {
+      resolver(confirmed);
+    }
+  };
+
+  const askConfirmPrompt = (prompt: ConfirmPromptState): Promise<boolean> => {
+    return new Promise((resolve) => {
+      confirmResolverRef.current = resolve;
+      setConfirmPrompt(prompt);
     });
   };
 
@@ -515,11 +569,14 @@ export function App(): ReactElement {
 
   const onAddLinks = async (): Promise<void> => {
     await performQuickAction(async () => {
+      const activeId = activeCollectorTabRef.current;
+      const active = collectorTabsRef.current.find((t) => t.id === activeId) ?? collectorTabsRef.current[0];
+      const rawText = active?.text ?? "";
       const persisted = await persistDraftSettings();
-      const result = await window.rd.addLinks({ rawText: currentCollectorTab.text, packageName: persisted.packageName });
+      const result = await window.rd.addLinks({ rawText, packageName: persisted.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
-        setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id ? { ...t, text: "" } : t));
+        setCollectorTabs((prev) => prev.map((t) => t.id === activeId ? { ...t, text: "" } : t));
       } else {
         showToast("Keine gültigen Links gefunden");
       }
@@ -572,7 +629,10 @@ export function App(): ReactElement {
       const a = document.createElement("a");
       a.href = url;
       a.download = "rd-queue-export.json";
+      a.style.display = "none";
+      document.body.appendChild(a);
       a.click();
+      a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       showToast("Queue exportiert");
     }, (error) => {
@@ -585,14 +645,30 @@ export function App(): ReactElement {
       return;
     }
 
+    setActionBusy(true);
+
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".json";
+
+    const releasePickerBusy = (): void => {
+      setActionBusy(actionBusyRef.current);
+    };
+
+    const onWindowFocus = (): void => {
+      window.removeEventListener("focus", onWindowFocus);
+      if (!input.files || input.files.length === 0) {
+        releasePickerBusy();
+      }
+    };
+
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) {
+        releasePickerBusy();
         return;
       }
+      releasePickerBusy();
       await performQuickAction(async () => {
         const text = await file.text();
         const result = await window.rd.importQueue(text);
@@ -601,6 +677,8 @@ export function App(): ReactElement {
         showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
       });
     };
+
+    window.addEventListener("focus", onWindowFocus, { once: true });
     input.click();
   };
 
@@ -644,9 +722,17 @@ export function App(): ReactElement {
         showToast(`Fehler: ${String(error)}`, 2600);
       }
     } finally {
-      setTimeout(() => {
+      if (actionUnlockTimerRef.current) {
+        clearTimeout(actionUnlockTimerRef.current);
+      }
+      actionUnlockTimerRef.current = setTimeout(() => {
+        if (!mountedRef.current) {
+          actionUnlockTimerRef.current = null;
+          return;
+        }
         actionBusyRef.current = false;
         setActionBusy(false);
+        actionUnlockTimerRef.current = null;
       }, 80);
     }
   };
@@ -659,6 +745,7 @@ export function App(): ReactElement {
     const target = direction === "up" ? idx - 1 : idx + 1;
     if (target < 0 || target >= order.length) { return; }
     [order[idx], order[target]] = [order[target], order[idx]];
+    setDownloadsSortDescending(false);
     packageOrderRef.current = order;
     void window.rd.reorderPackages(order);
   }, []);
@@ -671,18 +758,22 @@ export function App(): ReactElement {
     if (unchanged) {
       return;
     }
+    setDownloadsSortDescending(false);
     packageOrderRef.current = nextOrder;
     void window.rd.reorderPackages(nextOrder);
   }, []);
 
   const addCollectorTab = (): void => {
     const id = `tab-${nextCollectorId++}`;
-    const name = `Tab ${collectorTabs.length + 1}`;
-    setCollectorTabs((prev) => [...prev, { id, name, text: "" }]);
+    setCollectorTabs((prev) => {
+      const name = `Tab ${prev.length + 1}`;
+      return [...prev, { id, name, text: "" }];
+    });
     setActiveCollectorTab(id);
   };
 
   const removeCollectorTab = (id: string): void => {
+    let fallbackId = "";
     setCollectorTabs((prev) => {
       if (prev.length <= 1) {
         return prev;
@@ -693,11 +784,13 @@ export function App(): ReactElement {
       }
       const next = prev.filter((tabEntry) => tabEntry.id !== id);
       if (activeCollectorTabRef.current === id) {
-        const fallback = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
-        setActiveCollectorTab(fallback);
+        fallbackId = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
       }
       return next;
     });
+    if (fallbackId) {
+      setActiveCollectorTab(fallbackId);
+    }
   };
 
   const onPackageDragStart = useCallback((packageId: string) => {
@@ -812,11 +905,18 @@ export function App(): ReactElement {
             className="btn"
             disabled={actionBusy}
             onClick={() => {
-              const confirmed = window.confirm("Wirklich alle Einträge aus der Queue löschen?");
-              if (!confirmed) {
-                return;
-              }
-              void performQuickAction(() => window.rd.clearAll());
+              void performQuickAction(async () => {
+                const confirmed = await askConfirmPrompt({
+                  title: "Queue löschen",
+                  message: "Wirklich alle Einträge aus der Queue löschen?",
+                  confirmLabel: "Alles löschen",
+                  danger: true
+                });
+                if (!confirmed) {
+                  return;
+                }
+                await window.rd.clearAll();
+              });
             }}
           >
             Alles leeren
@@ -893,7 +993,7 @@ export function App(): ReactElement {
                 </button>
                 <button
                   className={`btn${downloadsSortDescending ? " btn-active" : ""}`}
-                  disabled={packages.length < 2}
+                  disabled={totalPackageCount < 2}
                   onClick={() => {
                     const nextDescending = !downloadsSortDescending;
                     setDownloadsSortDescending(nextDescending);
@@ -939,7 +1039,13 @@ export function App(): ReactElement {
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}
                 onStartEdit={() => { setEditingPackageId(pkg.id); setEditingName(pkg.name); }}
-                onFinishEdit={(name) => { setEditingPackageId(null); if (name.trim()) { void window.rd.renamePackage(pkg.id, name); } }}
+                onFinishEdit={(name) => {
+                  setEditingPackageId(null);
+                  const nextName = name.trim();
+                  if (nextName && nextName !== pkg.name.trim()) {
+                    void window.rd.renamePackage(pkg.id, nextName);
+                  }
+                }}
                 onEditChange={setEditingName}
                 onToggleCollapse={() => {
                   setCollapsedPackages((prev) => ({ ...prev, [pkg.id]: !(prev[pkg.id] ?? false) }));
@@ -1132,6 +1238,24 @@ export function App(): ReactElement {
         )}
       </main>
 
+      {confirmPrompt && (
+        <div className="modal-backdrop" onClick={() => closeConfirmPrompt(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>{confirmPrompt.title}</h3>
+            <p>{confirmPrompt.message}</p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => closeConfirmPrompt(false)}>Abbrechen</button>
+              <button
+                className={confirmPrompt.danger ? "btn danger" : "btn"}
+                onClick={() => closeConfirmPrompt(true)}
+              >
+                {confirmPrompt.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {startConflictPrompt && (
         <div className="modal-backdrop" onClick={() => closeStartConflictPrompt(null)}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
@@ -1289,21 +1413,15 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   if ((prev.isEditing || next.isEditing) && prev.editingName !== next.editingName) {
     return false;
   }
-  if (prev.items.length !== next.items.length) {
+  if (prev.pkg.itemIds.length !== next.pkg.itemIds.length) {
     return false;
   }
-  if (prev.onCancel !== next.onCancel
-    || prev.onMoveUp !== next.onMoveUp
-    || prev.onMoveDown !== next.onMoveDown
-    || prev.onToggle !== next.onToggle
-    || prev.onRemoveItem !== next.onRemoveItem
-    || prev.onStartEdit !== next.onStartEdit
-    || prev.onFinishEdit !== next.onFinishEdit
-    || prev.onEditChange !== next.onEditChange
-    || prev.onToggleCollapse !== next.onToggleCollapse
-    || prev.onDragStart !== next.onDragStart
-    || prev.onDrop !== next.onDrop
-    || prev.onDragEnd !== next.onDragEnd) {
+  for (let index = 0; index < prev.pkg.itemIds.length; index += 1) {
+    if (prev.pkg.itemIds[index] !== next.pkg.itemIds[index]) {
+      return false;
+    }
+  }
+  if (prev.items.length !== next.items.length) {
     return false;
   }
   for (let index = 0; index < prev.items.length; index += 1) {

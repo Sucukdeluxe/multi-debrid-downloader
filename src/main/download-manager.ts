@@ -54,7 +54,7 @@ function getDownloadStallTimeoutMs(): number {
 
 function getDownloadConnectTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_CONNECT_TIMEOUT_MS ?? NaN);
-  if (Number.isFinite(fromEnv) && fromEnv >= 2000 && fromEnv <= 180000) {
+  if (Number.isFinite(fromEnv) && fromEnv >= 250 && fromEnv <= 180000) {
     return Math.floor(fromEnv);
   }
   return DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS;
@@ -103,6 +103,13 @@ function cloneSession(session: SessionState): SessionState {
   };
 }
 
+function cloneSettings(settings: AppSettings): AppSettings {
+  return {
+    ...settings,
+    bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry }))
+  };
+}
+
 function parseContentRangeTotal(contentRange: string | null): number | null {
   if (!contentRange) {
     return null;
@@ -123,7 +130,7 @@ function parseContentDispositionFilename(contentDisposition: string | null): str
   const encodedMatch = contentDisposition.match(/filename\*\s*=\s*([^;]+)/i);
   if (encodedMatch?.[1]) {
     let value = encodedMatch[1].trim();
-    value = value.replace(/^UTF-8''/i, "");
+    value = value.replace(/^[A-Za-z0-9._-]+(?:'[^']*)?'/, "");
     value = value.replace(/^['"]+|['"]+$/g, "");
     try {
       const decoded = decodeURIComponent(value).trim();
@@ -144,13 +151,9 @@ function parseContentDispositionFilename(contentDisposition: string | null): str
   return plainMatch[1].trim().replace(/^['"]+|['"]+$/g, "");
 }
 
-function canRetryStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
 function isArchiveLikePath(filePath: string): boolean {
   const lower = path.basename(filePath).toLowerCase();
-  return /\.(?:part\d+\.rar|rar|r\d{2}|zip|z\d{2}|7z|7z\.\d{3})$/i.test(lower);
+  return /\.(?:part\d+\.rar|rar|r\d{2,3}|zip|z\d{2}|7z|7z\.\d{3})$/i.test(lower);
 }
 
 function isFetchFailure(errorText: string): boolean {
@@ -259,7 +262,7 @@ export function ensureRepackToken(baseName: string): string {
     return baseName;
   }
 
-  const withQualityToken = baseName.replace(SCENE_QUALITY_TOKEN_RE, ".REPACK.$2");
+  const withQualityToken = baseName.replace(SCENE_QUALITY_TOKEN_RE, "$1REPACK.$2");
   if (withQualityToken !== baseName) {
     return withQualityToken;
   }
@@ -357,6 +360,8 @@ export class DownloadManager extends EventEmitter {
 
   private lastGlobalProgressAt = 0;
 
+  private retryAfterByItem = new Map<string, number>();
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -428,10 +433,16 @@ export class DownloadManager extends EventEmitter {
 
     const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
 
+    const snapshotSession = cloneSession(this.session);
+    const snapshotSettings = cloneSettings(this.settings);
+    const snapshotSummary = this.summary
+      ? { ...this.summary }
+      : null;
+
     return {
-      settings: this.settings,
-      session: this.session,
-      summary: this.summary,
+      settings: snapshotSettings,
+      session: snapshotSession,
+      summary: snapshotSummary,
       stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
       etaText: paused ? "ETA: --" : `ETA: ${formatEta(eta)}`,
@@ -494,7 +505,14 @@ export class DownloadManager extends EventEmitter {
   }
 
   public reorderPackages(packageIds: string[]): void {
-    const valid = packageIds.filter((id) => this.session.packages[id]);
+    const seen = new Set<string>();
+    const valid = packageIds.filter((id) => {
+      if (!this.session.packages[id] || seen.has(id)) {
+        return false;
+      }
+      seen.add(id);
+      return true;
+    });
     const remaining = this.session.packageOrder.filter((id) => !valid.includes(id));
     this.session.packageOrder = [...valid, ...remaining];
     this.persistSoon();
@@ -508,6 +526,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.recordRunOutcome(itemId, "cancelled");
     const active = this.activeTasks.get(itemId);
+    const hasActiveTask = Boolean(active);
     if (active) {
       active.abortReason = "cancel";
       active.abortController.abort("cancel");
@@ -523,7 +542,10 @@ export class DownloadManager extends EventEmitter {
     }
     delete this.session.items[itemId];
     this.itemCount = Math.max(0, this.itemCount - 1);
-    this.releaseTargetPath(itemId);
+    this.retryAfterByItem.delete(itemId);
+    if (!hasActiveTask) {
+      this.releaseTargetPath(itemId);
+    }
     this.persistSoon();
     this.emitState(true);
   }
@@ -631,12 +653,21 @@ export class DownloadManager extends EventEmitter {
       return { addedPackages: 0, addedLinks: 0 };
     }
     const inputs: ParsedPackageInput[] = data.packages
-      .filter((pkg) => pkg.name && Array.isArray(pkg.links) && pkg.links.length > 0)
-      .map((pkg) => ({ name: pkg.name, links: pkg.links }));
+      .map((pkg) => {
+        const name = typeof pkg?.name === "string" ? pkg.name : "";
+        const linksRaw = Array.isArray(pkg?.links) ? pkg.links : [];
+        const links = linksRaw
+          .filter((link) => typeof link === "string")
+          .map((link) => link.trim())
+          .filter(Boolean);
+        return { name, links };
+      })
+      .filter((pkg) => pkg.name.trim().length > 0 && pkg.links.length > 0);
     return this.addPackages(inputs);
   }
 
   public clearAll(): void {
+    this.clearPersistTimer();
     this.stop();
     this.abortPostProcessing("clear_all");
     if (this.stateEmitTimer) {
@@ -652,6 +683,7 @@ export class DownloadManager extends EventEmitter {
     this.runPackageIds.clear();
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
+    this.retryAfterByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
     this.itemContributedBytes.clear();
@@ -663,6 +695,8 @@ export class DownloadManager extends EventEmitter {
     this.hybridExtractRequeue.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.summary = null;
+    this.nonResumableActive = 0;
+    this.retryAfterByItem.clear();
     this.persistNow();
     this.emitState(true);
   }
@@ -804,9 +838,16 @@ export class DownloadManager extends EventEmitter {
         this.runItemIds.delete(itemId);
         this.runOutcomes.delete(itemId);
         this.itemContributedBytes.delete(itemId);
+        this.retryAfterByItem.delete(itemId);
         delete this.session.items[itemId];
         this.itemCount = Math.max(0, this.itemCount - 1);
       }
+      const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+      if (postProcessController && !postProcessController.signal.aborted) {
+        postProcessController.abort("cancel");
+      }
+      this.packagePostProcessAbortControllers.delete(packageId);
+      this.packagePostProcessTasks.delete(packageId);
       delete this.session.packages[packageId];
       this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
       this.runPackageIds.delete(packageId);
@@ -818,6 +859,12 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "overwrite") {
+      const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+      if (postProcessController && !postProcessController.signal.aborted) {
+        postProcessController.abort("overwrite");
+      }
+      this.packagePostProcessAbortControllers.delete(packageId);
+      this.packagePostProcessTasks.delete(packageId);
       const canDeleteExtractDir = this.isPackageSpecificExtractDir(pkg) && !this.isExtractDirSharedWithOtherPackages(pkg.id, pkg.extractDir);
       if (canDeleteExtractDir) {
         try {
@@ -857,10 +904,12 @@ export class DownloadManager extends EventEmitter {
         item.targetPath = path.join(pkg.outputDir, sanitizeFilename(item.fileName || filenameFromUrl(item.url)));
         this.runOutcomes.delete(itemId);
         this.itemContributedBytes.delete(itemId);
+        this.retryAfterByItem.delete(itemId);
         if (this.session.running) {
           this.runItemIds.add(itemId);
         }
       }
+      this.runCompletedPackages.delete(packageId);
       pkg.status = "queued";
       pkg.updatedAt = nowMs();
       this.persistSoon();
@@ -1257,6 +1306,11 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+    if (postProcessController && !postProcessController.signal.aborted) {
+      postProcessController.abort("cancel");
+    }
+
     this.removePackageFromSession(packageId, itemIds);
     this.persistSoon();
     this.emitState(true);
@@ -1297,6 +1351,7 @@ export class DownloadManager extends EventEmitter {
       this.runPackageIds.clear();
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
+      this.retryAfterByItem.clear();
       this.reservedTargetPaths.clear();
       this.claimedTargetPathByItem.clear();
       this.session.running = false;
@@ -1312,6 +1367,7 @@ export class DownloadManager extends EventEmitter {
       this.lastGlobalProgressBytes = 0;
       this.lastGlobalProgressAt = nowMs();
       this.summary = null;
+      this.nonResumableActive = 0;
       this.persistSoon();
       this.emitState(true);
       return;
@@ -1320,6 +1376,7 @@ export class DownloadManager extends EventEmitter {
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
+    this.retryAfterByItem.clear();
 
     this.session.running = true;
     this.session.paused = false;
@@ -1340,6 +1397,7 @@ export class DownloadManager extends EventEmitter {
     this.globalSpeedLimitQueue = Promise.resolve();
     this.globalSpeedLimitNextAt = 0;
     this.summary = null;
+    this.nonResumableActive = 0;
     this.persistSoon();
     this.emitState(true);
     void this.ensureScheduler().catch((error) => {
@@ -1356,6 +1414,7 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
+    this.retryAfterByItem.clear();
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.abortPostProcessing("stop");
@@ -1369,6 +1428,7 @@ export class DownloadManager extends EventEmitter {
 
   public prepareForShutdown(): void {
     logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
+    this.clearPersistTimer();
     this.session.running = false;
     this.session.paused = false;
     this.session.reconnectUntil = 0;
@@ -1423,6 +1483,8 @@ export class DownloadManager extends EventEmitter {
     this.runPackageIds.clear();
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
+    this.retryAfterByItem.clear();
+    this.nonResumableActive = 0;
     this.session.summaryText = "";
     this.persistNow();
     this.emitState(true);
@@ -1506,8 +1568,8 @@ export class DownloadManager extends EventEmitter {
 
       if (failed > 0) {
         pkg.status = "failed";
-      } else if (cancelled > 0 && success === 0) {
-        pkg.status = "cancelled";
+      } else if (cancelled > 0) {
+        pkg.status = success > 0 ? "failed" : "cancelled";
       } else if (success > 0) {
         pkg.status = "completed";
       }
@@ -1541,6 +1603,14 @@ export class DownloadManager extends EventEmitter {
         this.session.packageOrder = this.session.packageOrder.filter((id) => id !== pkgId);
       }
     }
+  }
+
+  private clearPersistTimer(): void {
+    if (!this.persistTimer) {
+      return;
+    }
+    clearTimeout(this.persistTimer);
+    this.persistTimer = null;
   }
 
   private persistSoon(): void {
@@ -1658,10 +1728,6 @@ export class DownloadManager extends EventEmitter {
 
     const parsed = path.parse(preferredPath);
     const preferredKey = pathKey(preferredPath);
-    const baseDirKey = process.platform === "win32" ? parsed.dir.toLowerCase() : parsed.dir;
-    const baseNameKey = process.platform === "win32" ? parsed.name.toLowerCase() : parsed.name;
-    const baseExtKey = process.platform === "win32" ? parsed.ext.toLowerCase() : parsed.ext;
-    const sep = path.sep;
     const maxIndex = 10000;
     for (let index = 0; index <= maxIndex; index += 1) {
       const candidate = index === 0
@@ -1669,7 +1735,7 @@ export class DownloadManager extends EventEmitter {
         : path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`);
       const key = index === 0
         ? preferredKey
-        : `${baseDirKey}${sep}${baseNameKey} (${index})${baseExtKey}`;
+        : pathKey(candidate);
       const owner = this.reservedTargetPaths.get(key);
       const existsOnDisk = fs.existsSync(candidate);
       const allowExistingCandidate = allowExistingFile && index === 0;
@@ -1809,7 +1875,11 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      const targetStatus = failed > 0 ? "failed" : cancelled > 0 && success === 0 ? "cancelled" : "completed";
+      const targetStatus = failed > 0
+        ? "failed"
+        : cancelled > 0
+          ? (success > 0 ? "failed" : "cancelled")
+          : "completed";
       if (pkg.status !== targetStatus) {
         pkg.status = targetStatus;
         pkg.updatedAt = nowMs();
@@ -1865,7 +1935,14 @@ export class DownloadManager extends EventEmitter {
   }
 
   private removePackageFromSession(packageId: string, itemIds: string[]): void {
+    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+    if (postProcessController && !postProcessController.signal.aborted) {
+      postProcessController.abort("package_removed");
+    }
+    this.packagePostProcessAbortControllers.delete(packageId);
+    this.packagePostProcessTasks.delete(packageId);
     for (const itemId of itemIds) {
+      this.retryAfterByItem.delete(itemId);
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
     }
@@ -1918,7 +1995,7 @@ export class DownloadManager extends EventEmitter {
 
         this.runGlobalStallWatchdog(now);
 
-        if (this.activeTasks.size === 0 && !this.hasQueuedItems() && this.packagePostProcessTasks.size === 0) {
+        if (this.activeTasks.size === 0 && !this.hasQueuedItems() && !this.hasDelayedQueuedItems() && this.packagePostProcessTasks.size === 0) {
           this.finishRun();
           break;
         }
@@ -2031,7 +2108,8 @@ export class DownloadManager extends EventEmitter {
 
   private markQueuedAsReconnectWait(): boolean {
     let changed = false;
-    const waitText = `Reconnect-Wait (${Math.ceil((this.session.reconnectUntil - nowMs()) / 1000)}s)`;
+    const waitSeconds = Math.max(0, Math.ceil((this.session.reconnectUntil - nowMs()) / 1000));
+    const waitText = `Reconnect-Wait (${waitSeconds}s)`;
     const itemIds = this.runItemIds.size > 0 ? this.runItemIds : Object.keys(this.session.items);
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
@@ -2056,6 +2134,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
+    const now = nowMs();
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) {
@@ -2065,6 +2144,13 @@ export class DownloadManager extends EventEmitter {
         const item = this.session.items[itemId];
         if (!item) {
           continue;
+        }
+        const retryAfter = this.retryAfterByItem.get(itemId) || 0;
+        if (retryAfter > now) {
+          continue;
+        }
+        if (retryAfter > 0) {
+          this.retryAfterByItem.delete(itemId);
         }
         if (item.status === "queued" || item.status === "reconnect_wait") {
           return { packageId, itemId };
@@ -2076,6 +2162,28 @@ export class DownloadManager extends EventEmitter {
 
   private hasQueuedItems(): boolean {
     return this.findNextQueuedItem() !== null;
+  }
+
+  private hasDelayedQueuedItems(): boolean {
+    const now = nowMs();
+    for (const [itemId, readyAt] of this.retryAfterByItem.entries()) {
+      if (readyAt <= now) {
+        continue;
+      }
+      const item = this.session.items[itemId];
+      if (!item) {
+        continue;
+      }
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        continue;
+      }
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   private countQueuedItems(): number {
@@ -2098,6 +2206,18 @@ export class DownloadManager extends EventEmitter {
     return count;
   }
 
+  private queueRetry(item: DownloadItem, active: ActiveTask, delayMs: number, statusText: string): void {
+    const waitMs = Math.max(0, Math.floor(delayMs));
+    item.status = "queued";
+    item.speedBps = 0;
+    item.fullStatus = statusText;
+    item.updatedAt = nowMs();
+    item.attempts = 0;
+    active.abortController = new AbortController();
+    active.abortReason = "none";
+    this.retryAfterByItem.set(item.id, nowMs() + waitMs);
+  }
+
   private startItem(packageId: string, itemId: string): void {
     const item = this.session.items[itemId];
     const pkg = this.session.packages[packageId];
@@ -2107,6 +2227,8 @@ export class DownloadManager extends EventEmitter {
     if (this.activeTasks.has(itemId)) {
       return;
     }
+
+    this.retryAfterByItem.delete(itemId);
 
     item.status = "validating";
     item.fullStatus = "Link wird umgewandelt";
@@ -2154,7 +2276,7 @@ export class DownloadManager extends EventEmitter {
     const maxUnrestrictRetries = Math.max(3, REQUEST_RETRIES);
     while (true) {
       try {
-        const unrestricted = await this.debridService.unrestrictLink(item.url);
+        const unrestricted = await this.debridService.unrestrictLink(item.url, active.abortController.signal);
         if (active.abortController.signal.aborted) {
           throw new Error(`aborted:${active.abortReason}`);
         }
@@ -2191,6 +2313,10 @@ export class DownloadManager extends EventEmitter {
             this.nonResumableActive += 1;
           }
 
+          if (active.abortController.signal.aborted) {
+            throw new Error(`aborted:${active.abortReason}`);
+          }
+
           if (this.settings.enableIntegrityCheck) {
             item.status = "integrity_check";
             item.fullStatus = "CRC-Check läuft";
@@ -2198,6 +2324,9 @@ export class DownloadManager extends EventEmitter {
             this.emitState();
 
             const validation = await validateFileAgainstManifest(item.targetPath, pkg.outputDir);
+            if (active.abortController.signal.aborted) {
+              throw new Error(`aborted:${active.abortReason}`);
+            }
             if (!validation.ok) {
               item.lastError = validation.message;
               item.fullStatus = `${validation.message}, Neuversuch`;
@@ -2207,7 +2336,7 @@ export class DownloadManager extends EventEmitter {
                 // ignore
               }
               if (item.attempts < maxAttempts) {
-                item.status = "queued";
+                item.status = "integrity_check";
                 item.progressPercent = 0;
                 item.downloadedBytes = 0;
                 item.totalBytes = unrestricted.fileSize;
@@ -2217,6 +2346,10 @@ export class DownloadManager extends EventEmitter {
               }
               throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
             }
+          }
+
+          if (active.abortController.signal.aborted) {
+            throw new Error(`aborted:${active.abortReason}`);
           }
 
           const finalTargetPath = String(item.targetPath || "").trim();
@@ -2241,6 +2374,11 @@ export class DownloadManager extends EventEmitter {
 
           done = true;
         }
+
+        if (active.abortController.signal.aborted) {
+          throw new Error(`aborted:${active.abortReason}`);
+        }
+
         item.status = "completed";
         item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         item.progressPercent = 100;
@@ -2249,13 +2387,15 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
         this.recordRunOutcome(item.id, "completed");
 
-        void this.runPackagePostProcessing(pkg.id).catch((err) => {
-          logger.warn(`runPackagePostProcessing Fehler (processItem): ${compactErrorText(err)}`);
-        }).finally(() => {
-          this.applyCompletedCleanupPolicy(pkg.id, item.id);
-          this.persistSoon();
-          this.emitState();
-        });
+        if (this.session.running && !active.abortController.signal.aborted) {
+          void this.runPackagePostProcessing(pkg.id).catch((err) => {
+            logger.warn(`runPackagePostProcessing Fehler (processItem): ${compactErrorText(err)}`);
+          }).finally(() => {
+            this.applyCompletedCleanupPolicy(pkg.id, item.id);
+            this.persistSoon();
+            this.emitState();
+          });
+        }
         this.persistSoon();
         this.emitState();
         return;
@@ -2280,16 +2420,11 @@ export class DownloadManager extends EventEmitter {
           item.status = "cancelled";
           item.fullStatus = "Gestoppt";
           this.recordRunOutcome(item.id, "cancelled");
-          if (claimedTargetPath) {
-            try {
-              fs.rmSync(claimedTargetPath, { force: true });
-            } catch {
-              // ignore
-            }
+          if (!active.resumable && claimedTargetPath && !fs.existsSync(claimedTargetPath)) {
+            item.downloadedBytes = 0;
+            item.progressPercent = 0;
+            item.totalBytes = null;
           }
-          item.downloadedBytes = 0;
-          item.progressPercent = 0;
-          item.totalBytes = null;
         } else if (reason === "shutdown") {
           item.status = "queued";
           item.speedBps = 0;
@@ -2297,6 +2432,7 @@ export class DownloadManager extends EventEmitter {
           item.fullStatus = activePkg && !activePkg.enabled ? "Paket gestoppt" : "Wartet";
         } else if (reason === "reconnect") {
           item.status = "queued";
+          item.speedBps = 0;
           item.fullStatus = "Wartet auf Reconnect";
         } else if (reason === "package_toggle") {
           item.status = "queued";
@@ -2306,18 +2442,11 @@ export class DownloadManager extends EventEmitter {
           stallRetries += 1;
           if (stallRetries <= 2) {
             item.retries += 1;
-            item.status = "queued";
-            item.speedBps = 0;
-            item.fullStatus = `Keine Daten empfangen, Retry ${stallRetries}/2`;
+            this.queueRetry(item, active, 350 * stallRetries, `Keine Daten empfangen, Retry ${stallRetries}/2`);
             item.lastError = "";
-            item.attempts = 0;
-            item.updatedAt = nowMs();
-            active.abortController = new AbortController();
-            active.abortReason = "none";
             this.persistSoon();
             this.emitState();
-            await sleep(350 * stallRetries);
-            continue;
+            return;
           }
           item.status = "failed";
           item.lastError = "Download hing wiederholt";
@@ -2337,6 +2466,15 @@ export class DownloadManager extends EventEmitter {
             item.downloadedBytes = 0;
             item.totalBytes = null;
             item.progressPercent = 0;
+            item.status = "failed";
+            this.recordRunOutcome(item.id, "failed");
+            item.lastError = errorText;
+            item.fullStatus = `Fehler: ${item.lastError}`;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            this.persistSoon();
+            this.emitState();
+            return;
           }
           if (shouldFreshRetry) {
             freshRetryUsed = true;
@@ -2347,53 +2485,34 @@ export class DownloadManager extends EventEmitter {
               // ignore
             }
             this.releaseTargetPath(item.id);
-            item.status = "queued";
-            item.fullStatus = "Netzwerkfehler erkannt, frischer Retry";
+            this.queueRetry(item, active, 450, "Netzwerkfehler erkannt, frischer Retry");
             item.lastError = "";
-            item.attempts = 0;
             item.downloadedBytes = 0;
             item.totalBytes = null;
             item.progressPercent = 0;
-            item.speedBps = 0;
-            item.updatedAt = nowMs();
             this.persistSoon();
             this.emitState();
-            await sleep(450);
-            continue;
+            return;
           }
 
           if (isUnrestrictFailure(errorText) && unrestrictRetries < maxUnrestrictRetries) {
             unrestrictRetries += 1;
             item.retries += 1;
-            item.status = "queued";
-            item.fullStatus = `Unrestrict-Fehler, Retry ${unrestrictRetries}/${maxUnrestrictRetries}`;
+            this.queueRetry(item, active, Math.min(8000, 2000 * unrestrictRetries), `Unrestrict-Fehler, Retry ${unrestrictRetries}/${maxUnrestrictRetries}`);
             item.lastError = errorText;
-            item.attempts = 0;
-            item.speedBps = 0;
-            item.updatedAt = nowMs();
-            active.abortController = new AbortController();
-            active.abortReason = "none";
             this.persistSoon();
             this.emitState();
-            await sleep(Math.min(8000, 2000 * unrestrictRetries));
-            continue;
+            return;
           }
 
           if (genericErrorRetries < maxGenericErrorRetries) {
             genericErrorRetries += 1;
             item.retries += 1;
-            item.status = "queued";
-            item.fullStatus = `Fehler erkannt, Auto-Retry ${genericErrorRetries}/${maxGenericErrorRetries}`;
+            this.queueRetry(item, active, Math.min(1200, 300 * genericErrorRetries), `Fehler erkannt, Auto-Retry ${genericErrorRetries}/${maxGenericErrorRetries}`);
             item.lastError = errorText;
-            item.attempts = 0;
-            item.speedBps = 0;
-            item.updatedAt = nowMs();
-            active.abortController = new AbortController();
-            active.abortReason = "none";
             this.persistSoon();
             this.emitState();
-            await sleep(Math.min(1200, 300 * genericErrorRetries));
-            continue;
+            return;
           }
 
           item.status = "failed";
@@ -2482,6 +2601,7 @@ export class DownloadManager extends EventEmitter {
 
       if (!response.ok) {
         if (response.status === 416 && existingBytes > 0) {
+          await response.arrayBuffer().catch(() => undefined);
           const rangeTotal = parseContentRangeTotal(response.headers.get("content-range"));
           const expectedTotal = knownTotal && knownTotal > 0 ? knownTotal : rangeTotal;
           if (expectedTotal && existingBytes === expectedTotal) {
@@ -2654,6 +2774,7 @@ export class DownloadManager extends EventEmitter {
           active.abortController.signal.addEventListener("abort", onAbort, { once: true });
         });
 
+        let bodyError: unknown = null;
         try {
           const body = response.body;
           if (!body) {
@@ -2744,7 +2865,7 @@ export class DownloadManager extends EventEmitter {
               }
 
               const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-              await this.applySpeedLimit(buffer.length, windowBytes, windowStarted);
+              await this.applySpeedLimit(buffer.length, windowBytes, windowStarted, active.abortController.signal);
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
               }
@@ -2778,29 +2899,44 @@ export class DownloadManager extends EventEmitter {
             }
           } finally {
             clearInterval(idleTimer);
-          }
-        } finally {
-          await new Promise<void>((resolve, reject) => {
-            if (stream.closed || stream.destroyed) {
-              resolve();
-              return;
+            try {
+              reader.releaseLock();
+            } catch {
+              // ignore
             }
-            const onDone = (): void => {
-              stream.off("error", onError);
-              stream.off("finish", onDone);
-              stream.off("close", onDone);
-              resolve();
-            };
-            const onError = (streamError: Error): void => {
-              stream.off("finish", onDone);
-              stream.off("close", onDone);
-              reject(streamError);
-            };
-            stream.once("finish", onDone);
-            stream.once("close", onDone);
-            stream.once("error", onError);
-            stream.end();
-          });
+          }
+        } catch (error) {
+          bodyError = error;
+          throw error;
+        } finally {
+          try {
+            await new Promise<void>((resolve, reject) => {
+              if (stream.closed || stream.destroyed) {
+                resolve();
+                return;
+              }
+              const onDone = (): void => {
+                stream.off("error", onError);
+                stream.off("finish", onDone);
+                stream.off("close", onDone);
+                resolve();
+              };
+              const onError = (streamError: Error): void => {
+                stream.off("finish", onDone);
+                stream.off("close", onDone);
+                reject(streamError);
+              };
+              stream.once("finish", onDone);
+              stream.once("close", onDone);
+              stream.once("error", onError);
+              stream.end();
+            });
+          } catch (streamCloseError) {
+            if (!bodyError) {
+              throw streamCloseError;
+            }
+            logger.warn(`Stream-Abschlussfehler unterdrückt: ${compactErrorText(streamCloseError)}`);
+          }
         }
 
         item.downloadedBytes = written;
@@ -2970,8 +3106,8 @@ export class DownloadManager extends EventEmitter {
 
     if (failed > 0) {
       pkg.status = "failed";
-    } else if (cancelled > 0 && success === 0) {
-      pkg.status = "cancelled";
+    } else if (cancelled > 0) {
+      pkg.status = success > 0 ? "failed" : "cancelled";
     } else if (success > 0) {
       pkg.status = "completed";
     }
@@ -2999,6 +3135,10 @@ export class DownloadManager extends EventEmitter {
         if (!entry.enabled) {
           continue;
         }
+        if (entry.startHour === entry.endHour) {
+          this.cachedSpeedLimitKbps = entry.speedLimitKbps;
+          return this.cachedSpeedLimitKbps;
+        }
         const wraps = entry.startHour > entry.endHour;
         const inRange = wraps
           ? hour >= entry.startHour || hour < entry.endHour
@@ -3017,14 +3157,46 @@ export class DownloadManager extends EventEmitter {
     return 0;
   }
 
-  private async applyGlobalSpeedLimit(chunkBytes: number, bytesPerSecond: number): Promise<void> {
+  private async applyGlobalSpeedLimit(chunkBytes: number, bytesPerSecond: number, signal?: AbortSignal): Promise<void> {
     const task = this.globalSpeedLimitQueue
       .catch(() => undefined)
       .then(async () => {
+        if (signal?.aborted) {
+          throw new Error("aborted:speed_limit");
+        }
         const now = nowMs();
         const waitMs = Math.max(0, this.globalSpeedLimitNextAt - now);
         if (waitMs > 0) {
-          await sleep(waitMs);
+          await new Promise<void>((resolve, reject) => {
+            let timer: NodeJS.Timeout | null = setTimeout(() => {
+              timer = null;
+              if (signal) {
+                signal.removeEventListener("abort", onAbort);
+              }
+              resolve();
+            }, waitMs);
+
+            const onAbort = (): void => {
+              if (timer) {
+                clearTimeout(timer);
+                timer = null;
+              }
+              signal?.removeEventListener("abort", onAbort);
+              reject(new Error("aborted:speed_limit"));
+            };
+
+            if (signal) {
+              if (signal.aborted) {
+                onAbort();
+                return;
+              }
+              signal.addEventListener("abort", onAbort, { once: true });
+            }
+          });
+        }
+
+        if (signal?.aborted) {
+          throw new Error("aborted:speed_limit");
         }
 
         const startAt = Math.max(nowMs(), this.globalSpeedLimitNextAt);
@@ -3036,7 +3208,7 @@ export class DownloadManager extends EventEmitter {
     await task;
   }
 
-  private async applySpeedLimit(chunkBytes: number, localWindowBytes: number, localWindowStarted: number): Promise<void> {
+  private async applySpeedLimit(chunkBytes: number, localWindowBytes: number, localWindowStarted: number, signal?: AbortSignal): Promise<void> {
     const limitKbps = this.getEffectiveSpeedLimitKbps();
     if (limitKbps <= 0) {
       return;
@@ -3050,13 +3222,38 @@ export class DownloadManager extends EventEmitter {
       if (projected > allowed) {
         const sleepMs = Math.ceil(((projected - allowed) / bytesPerSecond) * 1000);
         if (sleepMs > 0) {
-          await sleep(Math.min(300, sleepMs));
+          await new Promise<void>((resolve, reject) => {
+            let timer: NodeJS.Timeout | null = setTimeout(() => {
+              timer = null;
+              if (signal) {
+                signal.removeEventListener("abort", onAbort);
+              }
+              resolve();
+            }, Math.min(300, sleepMs));
+
+            const onAbort = (): void => {
+              if (timer) {
+                clearTimeout(timer);
+                timer = null;
+              }
+              signal?.removeEventListener("abort", onAbort);
+              reject(new Error("aborted:speed_limit"));
+            };
+
+            if (signal) {
+              if (signal.aborted) {
+                onAbort();
+                return;
+              }
+              signal.addEventListener("abort", onAbort, { once: true });
+            }
+          });
         }
       }
       return;
     }
 
-    await this.applyGlobalSpeedLimit(chunkBytes, bytesPerSecond);
+    await this.applyGlobalSpeedLimit(chunkBytes, bytesPerSecond, signal);
   }
 
   private findReadyArchiveSets(pkg: PackageEntry): Set<string> {
@@ -3125,7 +3322,7 @@ export class DownloadManager extends EventEmitter {
     if (/\.rar$/i.test(entryPointName) && !/\.part\d+\.rar$/i.test(entryPointName)) {
       const stem = entryPointName.replace(/\.rar$/i, "").toLowerCase();
       const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`^${escaped}\\.r(ar|\\d{2})$`, "i").test(fileName);
+      return new RegExp(`^${escaped}\\.r(ar|\\d{2,3})$`, "i").test(fileName);
     }
     if (/\.zip\.001$/i.test(entryPointName)) {
       const stem = entryPointName.replace(/\.zip\.001$/i, "").toLowerCase();
@@ -3323,6 +3520,9 @@ export class DownloadManager extends EventEmitter {
         }
       }
       const extractDeadline = setTimeout(() => {
+        if (signal?.aborted || extractAbortController.signal.aborted) {
+          return;
+        }
         timedOut = true;
         logger.error(`Post-Processing Extraction Timeout nach ${Math.ceil(extractTimeoutMs / 1000)}s: pkg=${pkg.name}`);
         if (!extractAbortController.signal.aborted) {
@@ -3432,8 +3632,8 @@ export class DownloadManager extends EventEmitter {
       }
     } else if (failed > 0) {
       pkg.status = "failed";
-    } else if (cancelled > 0 && success === 0) {
-      pkg.status = "cancelled";
+    } else if (cancelled > 0) {
+      pkg.status = success > 0 ? "failed" : "cancelled";
     } else {
       pkg.status = "completed";
     }
@@ -3483,9 +3683,17 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "immediate") {
+      if (this.settings.autoExtract) {
+        const item = this.session.items[itemId];
+        const extracted = item ? isExtractedLabel(item.fullStatus || "") : false;
+        if (!extracted) {
+          return;
+        }
+      }
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
+      this.retryAfterByItem.delete(itemId);
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(packageId, []);
       }
@@ -3536,6 +3744,7 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesLastWindow = 0;
     this.globalSpeedLimitQueue = Promise.resolve();
     this.globalSpeedLimitNextAt = 0;
+    this.nonResumableActive = 0;
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.persistNow();

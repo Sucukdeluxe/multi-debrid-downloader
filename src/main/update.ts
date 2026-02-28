@@ -208,16 +208,15 @@ async function fetchReleasePayload(safeRepo: string, endpoint: string): Promise<
       },
       signal: timeout.signal
     });
+    const payload = await readJsonWithTimeout(response, RELEASE_FETCH_TIMEOUT_MS);
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload
+    };
   } finally {
     timeout.clear();
   }
-
-  const payload = await readJsonWithTimeout(response, RELEASE_FETCH_TIMEOUT_MS);
-  return {
-    ok: response.ok,
-    status: response.status,
-    payload
-  };
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -440,6 +439,18 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
 
   try {
     await pipeline(source, target);
+  } catch (error) {
+    try {
+      source.destroy();
+    } catch {
+      // ignore
+    }
+    try {
+      target.destroy();
+    } catch {
+      // ignore
+    }
+    throw error;
   } finally {
     clearIdleTimer();
     source.off("data", onSourceData);

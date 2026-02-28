@@ -21,7 +21,7 @@ export const LINK_ARTIFACT_EXTENSIONS = new Set([".url", ".webloc", ".dlc", ".rs
 export const SAMPLE_TOKEN_RE = /(^|[._\-\s])sample([._\-\s]|$)/i;
 
 export const ARCHIVE_TEMP_EXTENSIONS = new Set([".rar", ".zip", ".7z", ".tmp", ".part", ".tar", ".gz", ".bz2", ".xz"]);
-export const RAR_SPLIT_RE = /\.r\d{2}$/i;
+export const RAR_SPLIT_RE = /\.r\d{2,3}$/i;
 
 export const MAX_MANIFEST_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;

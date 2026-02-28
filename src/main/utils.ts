@@ -43,8 +43,9 @@ export function sanitizeFilename(name: string): string {
   }
 
   const parsed = path.parse(normalized);
-  if (WINDOWS_RESERVED_BASENAMES.has(parsed.name.toLowerCase())) {
-    normalized = `${parsed.name}_${parsed.ext}`;
+  const reservedBase = (parsed.name.split(".")[0] || parsed.name).toLowerCase();
+  if (WINDOWS_RESERVED_BASENAMES.has(reservedBase)) {
+    normalized = `${parsed.name.replace(/^([^.]*)/, "$1_")}${parsed.ext}`;
   }
 
   return normalized || "Paket";
@@ -70,10 +71,21 @@ export function extractHttpLinksFromText(text: string): string[] {
 
   for (const match of matches) {
     let candidate = String(match || "").trim();
-    while (candidate.length > 0 && /[)\],.!?;:]+$/.test(candidate)) {
-      if (candidate.endsWith(")")) {
+    while (candidate.length > 0) {
+      const lastChar = candidate[candidate.length - 1];
+      if (![")", "]", ",", ".", "!", "?", ";", ":"].includes(lastChar)) {
+        break;
+      }
+      if (lastChar === ")") {
         const openCount = (candidate.match(/\(/g) || []).length;
         const closeCount = (candidate.match(/\)/g) || []).length;
+        if (closeCount <= openCount) {
+          break;
+        }
+      }
+      if (lastChar === "]") {
+        const openCount = (candidate.match(/\[/g) || []).length;
+        const closeCount = (candidate.match(/\]/g) || []).length;
         if (closeCount <= openCount) {
           break;
         }
@@ -123,7 +135,7 @@ export function filenameFromUrl(url: string): string {
     const rawName = queryName || path.basename(parsed.pathname || "");
     const decoded = safeDecodeURIComponent(rawName || "").trim();
     const normalized = decoded
-      .replace(/\.(rar|zip|7z|tar|gz|bz2|xz|iso|part\d+\.rar|r\d{2})\.html$/i, ".$1")
+      .replace(/\.(rar|zip|7z|tar|gz|bz2|xz|iso|part\d+\.rar|r\d{2,3})\.html$/i, ".$1")
       .replace(/\.(mp4|mkv|avi|mp3|flac|srt)\.html$/i, ".$1");
     return sanitizeFilename(normalized || "download.bin");
   } catch {
@@ -206,6 +218,9 @@ export function parsePackagesFromLinksText(rawText: string, defaultPackageName: 
 }
 
 export function ensureDirPath(baseDir: string, packageName: string): string {
+  if (!path.isAbsolute(baseDir)) {
+    throw new Error("baseDir muss ein absoluter Pfad sein");
+  }
   return path.join(baseDir, sanitizeFilename(packageName));
 }
 

@@ -319,19 +319,17 @@ function winRarCandidates(): string[] {
 
   const installed = [
     path.join(programFiles, "WinRAR", "UnRAR.exe"),
-    path.join(programFiles, "WinRAR", "WinRAR.exe"),
     path.join(programFilesX86, "WinRAR", "UnRAR.exe"),
-    path.join(programFilesX86, "WinRAR", "WinRAR.exe")
+    path.join(programFilesX86, "WinRAR", "UnRAR.exe")
   ];
 
   if (localAppData) {
     installed.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
-    installed.push(path.join(localAppData, "Programs", "WinRAR", "WinRAR.exe"));
   }
 
   const ordered = resolvedExtractorCommand
-    ? [resolvedExtractorCommand, ...installed, "UnRAR.exe", "WinRAR.exe", "unrar", "winrar"]
-    : [...installed, "UnRAR.exe", "WinRAR.exe", "unrar", "winrar"];
+    ? [resolvedExtractorCommand, ...installed, "UnRAR.exe", "unrar"]
+    : [...installed, "UnRAR.exe", "unrar"];
   return Array.from(new Set(ordered.filter(Boolean)));
 }
 
@@ -378,6 +376,47 @@ type ExtractSpawnResult = {
   errorText: string;
 };
 
+function killProcessTree(child: { pid?: number; kill: () => void }): void {
+  const pid = Number(child.pid || 0);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    try {
+      child.kill();
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  if (process.platform === "win32") {
+    try {
+      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+      killer.on("error", () => {
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+      });
+    } catch {
+      try {
+        child.kill();
+      } catch {
+        // ignore
+      }
+    }
+    return;
+  }
+
+  try {
+    child.kill();
+  } catch {
+    // ignore
+  }
+}
+
 function runExtractCommand(
   command: string,
   args: string[],
@@ -394,6 +433,8 @@ function runExtractCommand(
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
     let timeoutId: NodeJS.Timeout | null = null;
+    let timedOutByWatchdog = false;
+    let abortedBySignal = false;
 
     const finish = (result: ExtractSpawnResult): void => {
       if (settled) {
@@ -412,11 +453,8 @@ function runExtractCommand(
 
     if (timeoutMs && timeoutMs > 0) {
       timeoutId = setTimeout(() => {
-        try {
-          child.kill();
-        } catch {
-          // ignore
-        }
+        timedOutByWatchdog = true;
+        killProcessTree(child);
         finish({
           ok: false,
           missingCommand: false,
@@ -429,11 +467,8 @@ function runExtractCommand(
 
     const onAbort = signal
       ? (): void => {
-        try {
-          child.kill();
-        } catch {
-          // ignore
-        }
+        abortedBySignal = true;
+        killProcessTree(child);
         finish({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
       }
       : null;
@@ -464,6 +499,20 @@ function runExtractCommand(
     });
 
     child.on("close", (code) => {
+      if (abortedBySignal) {
+        finish({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
+        return;
+      }
+      if (timedOutByWatchdog) {
+        finish({
+          ok: false,
+          missingCommand: false,
+          aborted: false,
+          timedOut: true,
+          errorText: `Entpacken Timeout nach ${Math.ceil((timeoutMs || 0) / 1000)}s`
+        });
+        return;
+      }
       if (code === 0) {
         finish({ ok: true, missingCommand: false, aborted: false, timedOut: false, errorText: "" });
         return;
@@ -543,7 +592,7 @@ async function resolveExtractorCommandInternal(): Promise<string> {
     }
     const probeArgs = command.toLowerCase().includes("winrar") ? ["-?"] : ["?"];
     const probe = await runExtractCommand(command, probeArgs, undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
-    if (!probe.missingCommand) {
+    if (probe.ok) {
       resolvedExtractorCommand = command;
       resolveFailureReason = "";
       resolveFailureAt = 0;
@@ -680,17 +729,20 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
   const resolvedTarget = path.resolve(targetDir);
+  const usedOutputs = new Set<string>();
+  const renameCounters = new Map<string, number>();
+
   for (const entry of entries) {
     if (signal?.aborted) {
       throw new Error("aborted:extract");
     }
-    const outputPath = path.resolve(targetDir, entry.entryName);
-    if (!outputPath.startsWith(resolvedTarget + path.sep) && outputPath !== resolvedTarget) {
+    const baseOutputPath = path.resolve(targetDir, entry.entryName);
+    if (!baseOutputPath.startsWith(resolvedTarget + path.sep) && baseOutputPath !== resolvedTarget) {
       logger.warn(`ZIP-Eintrag übersprungen (Path Traversal): ${entry.entryName}`);
       continue;
     }
     if (entry.isDirectory) {
-      fs.mkdirSync(outputPath, { recursive: true });
+      fs.mkdirSync(baseOutputPath, { recursive: true });
       continue;
     }
 
@@ -708,52 +760,76 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
     }).header;
     const uncompressedSize = Number(header?.size ?? header?.dataHeader?.size ?? NaN);
     const compressedSize = Number(header?.compressedSize ?? header?.dataHeader?.compressedSize ?? NaN);
-    const crc = Number(header?.crc ?? header?.dataHeader?.crc ?? 0);
 
-    if (Number.isFinite(uncompressedSize) && uncompressedSize > memoryLimitBytes) {
+    if (!Number.isFinite(uncompressedSize) || uncompressedSize < 0) {
+      throw new Error("ZIP-Eintrag ohne sichere Groessenangabe fur internen Entpacker");
+    }
+    if (!Number.isFinite(compressedSize) || compressedSize < 0) {
+      throw new Error("ZIP-Eintrag ohne sichere Groessenangabe fur internen Entpacker");
+    }
+
+    if (uncompressedSize > memoryLimitBytes) {
       const entryMb = Math.ceil(uncompressedSize / (1024 * 1024));
       const limitMb = Math.ceil(memoryLimitBytes / (1024 * 1024));
       throw new Error(`ZIP-Eintrag zu groß für internen Entpacker (${entryMb} MB > ${limitMb} MB)`);
     }
-    if (Number.isFinite(compressedSize) && compressedSize > memoryLimitBytes) {
+    if (compressedSize > memoryLimitBytes) {
       const entryMb = Math.ceil(compressedSize / (1024 * 1024));
       const limitMb = Math.ceil(memoryLimitBytes / (1024 * 1024));
       throw new Error(`ZIP-Eintrag komprimiert zu groß für internen Entpacker (${entryMb} MB > ${limitMb} MB)`);
     }
-    if ((!Number.isFinite(uncompressedSize) || uncompressedSize <= 0)
-      && Number.isFinite(compressedSize)
-      && compressedSize > 0
-      && crc !== 0) {
-      throw new Error("ZIP-Eintrag ohne sichere Groessenangabe fur internen Entpacker");
-    }
+
+    let outputPath = baseOutputPath;
+    let outputKey = pathSetKey(outputPath);
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     // TOCTOU note: There is a small race between existsSync and writeFileSync below.
     // This is acceptable here because zip extraction is single-threaded and we need
     // the exists check to implement skip/rename conflict resolution semantics.
-    if (fs.existsSync(outputPath)) {
+    if (usedOutputs.has(outputKey) || fs.existsSync(outputPath)) {
       if (mode === "skip") {
         continue;
       }
       if (mode === "rename") {
-        const parsed = path.parse(outputPath);
-        let n = 1;
-        let candidate = outputPath;
-        while (fs.existsSync(candidate)) {
+        const parsed = path.parse(baseOutputPath);
+        const counterKey = pathSetKey(baseOutputPath);
+        let n = renameCounters.get(counterKey) || 1;
+        let candidate = baseOutputPath;
+        let candidateKey = outputKey;
+        while (n <= 10000) {
           candidate = path.join(parsed.dir, `${parsed.name} (${n})${parsed.ext}`);
+          candidateKey = pathSetKey(candidate);
+          if (!usedOutputs.has(candidateKey) && !fs.existsSync(candidate)) {
+            break;
+          }
           n += 1;
         }
+        if (n > 10000) {
+          throw new Error(`ZIP-Rename-Limit erreicht für ${entry.entryName}`);
+        }
+        renameCounters.set(counterKey, n + 1);
         if (signal?.aborted) {
           throw new Error("aborted:extract");
         }
-        fs.writeFileSync(candidate, entry.getData());
-        continue;
+        outputPath = candidate;
+        outputKey = candidateKey;
       }
     }
+
     if (signal?.aborted) {
       throw new Error("aborted:extract");
     }
-    fs.writeFileSync(outputPath, entry.getData());
+    const data = entry.getData();
+    if (data.length > memoryLimitBytes) {
+      const entryMb = Math.ceil(data.length / (1024 * 1024));
+      const limitMb = Math.ceil(memoryLimitBytes / (1024 * 1024));
+      throw new Error(`ZIP-Eintrag zu groß für internen Entpacker (${entryMb} MB > ${limitMb} MB)`);
+    }
+    if (data.length > Math.max(uncompressedSize, compressedSize) * 20) {
+      throw new Error(`ZIP-Eintrag verdächtig groß nach Entpacken (${entry.entryName})`);
+    }
+    fs.writeFileSync(outputPath, data);
+    usedOutputs.add(outputKey);
   }
 }
 
@@ -795,7 +871,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   if (/\.rar$/i.test(fileName)) {
     const stem = escapeRegex(fileName.replace(/\.rar$/i, ""));
     addMatching(new RegExp(`^${stem}\\.rar$`, "i"));
-    addMatching(new RegExp(`^${stem}\\.r\\d{2}$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.r\\d{2,3}$`, "i"));
     return Array.from(targets);
   }
 
@@ -859,9 +935,37 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
   }
 
   let removed = 0;
+
+  const moveToTrashLike = (filePath: string): boolean => {
+    try {
+      const parsed = path.parse(filePath);
+      const trashDir = path.join(parsed.dir, ".rd-trash");
+      fs.mkdirSync(trashDir, { recursive: true });
+      let index = 0;
+      while (index <= 10000) {
+        const suffix = index === 0 ? "" : `-${index}`;
+        const candidate = path.join(trashDir, `${parsed.base}.${Date.now()}${suffix}`);
+        if (!fs.existsSync(candidate)) {
+          fs.renameSync(filePath, candidate);
+          return true;
+        }
+        index += 1;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  };
+
   for (const filePath of targets) {
     try {
       if (!fs.existsSync(filePath)) {
+        continue;
+      }
+      if (cleanupMode === "trash") {
+        if (moveToTrashLike(filePath)) {
+          removed += 1;
+        }
         continue;
       }
       fs.rmSync(filePath, { force: true });
@@ -877,13 +981,13 @@ function hasAnyFilesRecursive(rootDir: string): boolean {
   if (!fs.existsSync(rootDir)) {
     return false;
   }
-  const deadline = Date.now() + 70;
+  const deadline = Date.now() + 220;
   let inspectedDirs = 0;
   const stack = [rootDir];
   while (stack.length > 0) {
     inspectedDirs += 1;
     if (inspectedDirs > 8000 || Date.now() > deadline) {
-      return true;
+      return hasAnyEntries(rootDir);
     }
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
@@ -1086,7 +1190,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             if (!shouldFallbackToExternalZip(error)) {
               throw error;
             }
-            const usedPassword = await runExternalExtract(archivePath, options.targetDir, "overwrite", passwordCandidates, (value) => {
+            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
             }, options.signal);
@@ -1140,7 +1244,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     } else {
       if (!options.skipPostCleanup) {
         const cleanupSources = failed === 0 ? candidates : Array.from(extractedArchives.values());
-        const removedArchives = cleanupArchives(cleanupSources, options.cleanupMode);
+        const sourceAndTargetEqual = pathSetKey(path.resolve(options.packageDir)) === pathSetKey(path.resolve(options.targetDir));
+        const removedArchives = sourceAndTargetEqual
+          ? 0
+          : cleanupArchives(cleanupSources, options.cleanupMode);
+        if (sourceAndTargetEqual && options.cleanupMode !== "none") {
+          logger.warn(`Archive-Cleanup übersprungen (Quelle=Ziel): ${options.packageDir}`);
+        }
         if (options.cleanupMode !== "none") {
           logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
         }
@@ -1183,7 +1293,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
   }
 
-  emitProgress(candidates.length, "", "done");
+  emitProgress(extracted, "", "done");
 
   logger.info(`Entpacken beendet: extracted=${extracted}, failed=${failed}, targetDir=${options.targetDir}`);
 

@@ -9,15 +9,15 @@ async function yieldToLoop(): Promise<void> {
 }
 
 export function isArchiveOrTempFile(filePath: string): boolean {
-  const lower = filePath.toLowerCase();
-  const ext = path.extname(lower);
+  const lowerName = path.basename(filePath).toLowerCase();
+  const ext = path.extname(lowerName);
   if (ARCHIVE_TEMP_EXTENSIONS.has(ext)) {
     return true;
   }
-  if (lower.includes(".part") && lower.endsWith(".rar")) {
+  if (lowerName.includes(".part") && lowerName.endsWith(".rar")) {
     return true;
   }
-  return RAR_SPLIT_RE.test(lower);
+  return RAR_SPLIT_RE.test(lowerName);
 }
 
 export function cleanupCancelledPackageArtifacts(packageDir: string): number {

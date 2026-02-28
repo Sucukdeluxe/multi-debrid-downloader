@@ -12,13 +12,22 @@ import {
   UpdateInstallResult
 } from "../shared/types";
 import { importDlcContainers } from "./container";
-import { APP_VERSION, defaultSettings } from "./constants";
+import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSettings } from "./storage";
 import { checkGitHubUpdate, installLatestUpdate } from "./update";
+
+function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
+  const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
+  return Object.fromEntries(entries) as Partial<AppSettings>;
+}
+
+function settingsFingerprint(settings: AppSettings): string {
+  return JSON.stringify(normalizeSettings(settings));
+}
 
 export class AppController {
   private settings: AppSettings;
@@ -33,6 +42,8 @@ export class AppController {
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
+  private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
+
   public constructor() {
     configureLogger(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
@@ -45,7 +56,7 @@ export class AppController {
       megaWebUnrestrict: (link: string) => this.megaWebFallback.unrestrict(link)
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
-      this.onState?.(snapshot);
+      this.onStateHandler?.(snapshot);
     });
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
@@ -72,7 +83,16 @@ export class AppController {
     );
   }
 
-  public onState: ((snapshot: UiSnapshot) => void) | null = null;
+  public get onState(): ((snapshot: UiSnapshot) => void) | null {
+    return this.onStateHandler;
+  }
+
+  public set onState(handler: ((snapshot: UiSnapshot) => void) | null) {
+    this.onStateHandler = handler;
+    if (handler) {
+      handler(this.manager.getSnapshot());
+    }
+  }
 
   public getSnapshot(): UiSnapshot {
     return this.manager.getSnapshot();
@@ -87,13 +107,13 @@ export class AppController {
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
+    const sanitizedPatch = sanitizeSettingsPatch(partial);
     const nextSettings = normalizeSettings({
-      ...defaultSettings(),
       ...this.settings,
-      ...partial
+      ...sanitizedPatch
     });
 
-    if (JSON.stringify(nextSettings) === JSON.stringify(this.settings)) {
+    if (settingsFingerprint(nextSettings) === settingsFingerprint(this.settings)) {
       return this.settings;
     }
 
