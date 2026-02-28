@@ -116,11 +116,42 @@ export function sortPackageOrderByName(order: string[], packages: Record<string,
   return sorted;
 }
 
+function sameStringArray(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function formatMbpsInputFromKbps(kbps: number): string {
+  const mbps = Math.max(0, Number(kbps) || 0) / 1024;
+  return String(Number(mbps.toFixed(2)));
+}
+
+function parseMbpsInput(value: string): number | null {
+  const normalized = String(value || "").trim().replace(/,/g, ".");
+  if (!normalized) {
+    return 0;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [tab, setTab] = useState<Tab>("collector");
   const [statusToast, setStatusToast] = useState("");
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
+  const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
+  const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
   const [settingsDirty, setSettingsDirty] = useState(false);
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
@@ -138,6 +169,9 @@ export function App(): ReactElement {
   const activeCollectorTabRef = useRef(activeCollectorTab);
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
+  const serverPackageOrderRef = useRef<string[]>([]);
+  const pendingPackageOrderRef = useRef<string[] | null>(null);
+  const pendingPackageOrderAtRef = useRef(0);
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
@@ -153,6 +187,8 @@ export function App(): ReactElement {
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const confirmQueueRef = useRef<Array<{ prompt: ConfirmPromptState; resolve: (confirmed: boolean) => void }>>([]);
+  const importQueueFocusHandlerRef = useRef<(() => void) | null>(null);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -169,8 +205,36 @@ export function App(): ReactElement {
   }, [tab]);
 
   useEffect(() => {
-    packageOrderRef.current = snapshot.session.packageOrder;
+    const incoming = snapshot.session.packageOrder;
+    serverPackageOrderRef.current = incoming;
+
+    const pending = pendingPackageOrderRef.current;
+    if (!pending) {
+      packageOrderRef.current = incoming;
+      return;
+    }
+
+    if (sameStringArray(pending, incoming)) {
+      pendingPackageOrderRef.current = null;
+      pendingPackageOrderAtRef.current = 0;
+      packageOrderRef.current = incoming;
+      return;
+    }
+
+    const maxOptimisticHoldMs = 1500;
+    if (Date.now() - pendingPackageOrderAtRef.current >= maxOptimisticHoldMs) {
+      pendingPackageOrderRef.current = null;
+      pendingPackageOrderAtRef.current = 0;
+      packageOrderRef.current = incoming;
+      return;
+    }
+
+    packageOrderRef.current = pending;
   }, [snapshot.session.packageOrder]);
+
+  useEffect(() => {
+    setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
+  }, [settingsDraft.speedLimitKbps]);
 
   const showToast = useCallback((message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
@@ -179,6 +243,15 @@ export function App(): ReactElement {
       setStatusToast("");
       toastTimerRef.current = null;
     }, timeoutMs);
+  }, []);
+
+  const clearImportQueueFocusListener = useCallback((): void => {
+    const handler = importQueueFocusHandlerRef.current;
+    if (!handler) {
+      return;
+    }
+    window.removeEventListener("focus", handler);
+    importQueueFocusHandlerRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -243,6 +316,7 @@ export function App(): ReactElement {
       if (stateFlushTimerRef.current) { clearTimeout(stateFlushTimerRef.current); }
       if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); }
       if (actionUnlockTimerRef.current) { clearTimeout(actionUnlockTimerRef.current); }
+      clearImportQueueFocusListener();
       if (startConflictResolverRef.current) {
         const resolver = startConflictResolverRef.current;
         startConflictResolverRef.current = null;
@@ -253,10 +327,14 @@ export function App(): ReactElement {
         confirmResolverRef.current = null;
         resolver(false);
       }
+      while (confirmQueueRef.current.length > 0) {
+        const request = confirmQueueRef.current.shift();
+        request?.resolve(false);
+      }
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
     };
-  }, []);
+  }, [clearImportQueueFocusListener]);
 
   const downloadsTabActive = tab === "downloads";
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
@@ -449,6 +527,9 @@ export function App(): ReactElement {
       message: `${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`,
       confirmLabel: "Jetzt installieren"
     });
+    if (!mountedRef.current) {
+      return;
+    }
     if (!approved) { showToast(`Update verfügbar: ${result.latestTag}`, 2600); return; }
     const install = await window.rd.installUpdate();
     if (!mountedRef.current) {
@@ -507,21 +588,34 @@ export function App(): ReactElement {
     });
   };
 
-  const closeConfirmPrompt = (confirmed: boolean): void => {
+  const pumpConfirmQueue = useCallback((): void => {
+    if (confirmResolverRef.current) {
+      return;
+    }
+    const next = confirmQueueRef.current.shift();
+    if (!next) {
+      return;
+    }
+    confirmResolverRef.current = next.resolve;
+    setConfirmPrompt(next.prompt);
+  }, []);
+
+  const closeConfirmPrompt = useCallback((confirmed: boolean): void => {
     const resolver = confirmResolverRef.current;
     confirmResolverRef.current = null;
     setConfirmPrompt(null);
     if (resolver) {
       resolver(confirmed);
     }
-  };
+    pumpConfirmQueue();
+  }, [pumpConfirmQueue]);
 
-  const askConfirmPrompt = (prompt: ConfirmPromptState): Promise<boolean> => {
+  const askConfirmPrompt = useCallback((prompt: ConfirmPromptState): Promise<boolean> => {
     return new Promise((resolve) => {
-      confirmResolverRef.current = resolve;
-      setConfirmPrompt(prompt);
+      confirmQueueRef.current.push({ prompt, resolve });
+      pumpConfirmQueue();
     });
-  };
+  }, [pumpConfirmQueue]);
 
   const onStartDownloads = async (): Promise<void> => {
     await performQuickAction(async () => {
@@ -665,14 +759,14 @@ export function App(): ReactElement {
     };
 
     const onWindowFocus = (): void => {
-      window.removeEventListener("focus", onWindowFocus);
+      clearImportQueueFocusListener();
       if (!input.files || input.files.length === 0) {
         releasePickerBusy();
       }
     };
 
     input.onchange = async () => {
-      window.removeEventListener("focus", onWindowFocus);
+      clearImportQueueFocusListener();
       const file = input.files?.[0];
       if (!file) {
         releasePickerBusy();
@@ -688,6 +782,8 @@ export function App(): ReactElement {
       });
     };
 
+    clearImportQueueFocusListener();
+    importQueueFocusHandlerRef.current = onWindowFocus;
     window.addEventListener("focus", onWindowFocus, { once: true });
     input.click();
   };
@@ -760,8 +856,13 @@ export function App(): ReactElement {
     if (target < 0 || target >= order.length) { return; }
     [order[idx], order[target]] = [order[target], order[idx]];
     setDownloadsSortDescending(false);
-    packageOrderRef.current = order;
+    pendingPackageOrderRef.current = [...order];
+    pendingPackageOrderAtRef.current = Date.now();
+    packageOrderRef.current = [...order];
     void window.rd.reorderPackages(order).catch((error) => {
+      pendingPackageOrderRef.current = null;
+      pendingPackageOrderAtRef.current = 0;
+      packageOrderRef.current = serverPackageOrderRef.current;
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
   }, [showToast]);
@@ -775,8 +876,13 @@ export function App(): ReactElement {
       return;
     }
     setDownloadsSortDescending(false);
-    packageOrderRef.current = nextOrder;
+    pendingPackageOrderRef.current = [...nextOrder];
+    pendingPackageOrderAtRef.current = Date.now();
+    packageOrderRef.current = [...nextOrder];
     void window.rd.reorderPackages(nextOrder).catch((error) => {
+      pendingPackageOrderRef.current = null;
+      pendingPackageOrderAtRef.current = 0;
+      packageOrderRef.current = serverPackageOrderRef.current;
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
   }, [showToast]);
@@ -874,6 +980,33 @@ export function App(): ReactElement {
   }, [showToast]);
 
   const schedules = settingsDraft.bandwidthSchedules ?? [];
+
+  useEffect(() => {
+    setScheduleSpeedInputs((prev) => {
+      const syncFromSettings = !settingsDirtyRef.current;
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (let index = 0; index < schedules.length; index += 1) {
+        const schedule = schedules[index];
+        const key = schedule.id || `schedule-${index}`;
+        const normalized = formatMbpsInputFromKbps(schedule.speedLimitKbps);
+        if (syncFromSettings || !Object.prototype.hasOwnProperty.call(prev, key)) {
+          next[key] = normalized;
+          if (prev[key] !== normalized) {
+            changed = true;
+          }
+        } else {
+          next[key] = prev[key];
+        }
+      }
+      const prevKeys = Object.keys(prev);
+      if (prevKeys.length !== Object.keys(next).length) {
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [schedules, settingsDirty]);
+
   const addSchedule = (): void => {
     settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
@@ -1066,7 +1199,10 @@ export function App(): ReactElement {
                     const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
                     const sorted = sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
                     packageOrderRef.current = sorted;
-                    void window.rd.reorderPackages(sorted);
+                    void window.rd.reorderPackages(sorted).catch((error) => {
+                      packageOrderRef.current = serverPackageOrderRef.current;
+                      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+                    });
                   }}
                 >
                   {downloadsSortDescending ? "Z-A" : "A-Z"}
@@ -1221,8 +1357,17 @@ export function App(): ReactElement {
                       type="number"
                       min={0}
                       step={0.1}
-                      value={Number((settingsDraft.speedLimitKbps / 1024).toFixed(2))}
-                      onChange={(e) => setSpeedLimitMbps(Number(e.target.value) || 0)}
+                      value={speedLimitInput}
+                      onChange={(event) => setSpeedLimitInput(event.target.value)}
+                      onBlur={(event) => {
+                        const parsed = parseMbpsInput(event.target.value);
+                        if (parsed === null) {
+                          setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
+                          return;
+                        }
+                        setSpeedLimitMbps(parsed);
+                        setSpeedLimitInput(formatMbpsInputFromKbps(Math.floor(parsed * 1024)));
+                      }}
                       disabled={!settingsDraft.speedLimitEnabled}
                     />
                   </div>
@@ -1243,25 +1388,42 @@ export function App(): ReactElement {
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                 <h4>Bandbreitenplanung</h4>
-                {schedules.map((s, i) => (
-                  <div key={s.id || `schedule-${i}`} className="schedule-row">
-                    <input type="number" min={0} max={23} value={s.startHour} onChange={(e) => updateSchedule(i, "startHour", Number(e.target.value))} title="Von (Stunde)" />
-                    <span>-</span>
-                    <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => updateSchedule(i, "endHour", Number(e.target.value))} title="Bis (Stunde)" />
-                    <span>Uhr</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.1}
-                      value={Number((s.speedLimitKbps / 1024).toFixed(2))}
-                      onChange={(e) => updateSchedule(i, "speedLimitKbps", Math.floor((Number(e.target.value) || 0) * 1024))}
-                      title="MB/s (0=unbegrenzt)"
-                    />
-                    <span>MB/s</span>
-                    <input type="checkbox" checked={s.enabled} onChange={(e) => updateSchedule(i, "enabled", e.target.checked)} />
-                    <button className="btn danger" onClick={() => removeSchedule(i)}>X</button>
-                  </div>
-                ))}
+                {schedules.map((s, i) => {
+                  const scheduleKey = s.id || `schedule-${i}`;
+                  const speedInput = scheduleSpeedInputs[scheduleKey] ?? formatMbpsInputFromKbps(s.speedLimitKbps);
+                  return (
+                    <div key={scheduleKey} className="schedule-row">
+                      <input type="number" min={0} max={23} value={s.startHour} onChange={(e) => updateSchedule(i, "startHour", Number(e.target.value))} title="Von (Stunde)" />
+                      <span>-</span>
+                      <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => updateSchedule(i, "endHour", Number(e.target.value))} title="Bis (Stunde)" />
+                      <span>Uhr</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={speedInput}
+                        onChange={(event) => {
+                          const nextText = event.target.value;
+                          setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: nextText }));
+                        }}
+                        onBlur={(event) => {
+                          const parsed = parseMbpsInput(event.target.value);
+                          if (parsed === null) {
+                            setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: formatMbpsInputFromKbps(s.speedLimitKbps) }));
+                            return;
+                          }
+                          const nextKbps = Math.floor(parsed * 1024);
+                          setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: formatMbpsInputFromKbps(nextKbps) }));
+                          updateSchedule(i, "speedLimitKbps", nextKbps);
+                        }}
+                        title="MB/s (0=unbegrenzt)"
+                      />
+                      <span>MB/s</span>
+                      <input type="checkbox" checked={s.enabled} onChange={(e) => updateSchedule(i, "enabled", e.target.checked)} />
+                      <button className="btn danger" onClick={() => removeSchedule(i)}>X</button>
+                    </div>
+                  );
+                })}
                 <button className="btn" onClick={addSchedule}>Zeitregel hinzufügen</button>
               </article>
 

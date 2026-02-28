@@ -1,7 +1,7 @@
 import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
 import { compactErrorText, sleep } from "./utils";
 
-const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.29";
+const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.30";
 
 export interface UnrestrictedLink {
   fileName: string;
