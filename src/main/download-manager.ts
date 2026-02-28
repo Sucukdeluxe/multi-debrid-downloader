@@ -20,7 +20,7 @@ import {
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor } from "./debrid";
-import { collectArchiveCleanupTargets, extractPackageArchives } from "./extractor";
+import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { StoragePaths, saveSession, saveSessionAsync } from "./storage";
@@ -319,6 +319,8 @@ export class DownloadManager extends EventEmitter {
 
   private packagePostProcessAbortControllers = new Map<string, AbortController>();
 
+  private hybridExtractRequeue = new Set<string>();
+
   private reservedTargetPaths = new Map<string, string>();
 
   private claimedTargetPathByItem = new Map<string, string>();
@@ -526,8 +528,12 @@ export class DownloadManager extends EventEmitter {
     pkg.enabled = nextEnabled;
 
     if (!nextEnabled) {
-      if (pkg.status === "downloading") {
+      if (pkg.status === "downloading" || pkg.status === "extracting") {
         pkg.status = "paused";
+      }
+      const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+      if (postProcessController && !postProcessController.signal.aborted) {
+        postProcessController.abort("package_toggle");
       }
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
@@ -627,6 +633,7 @@ export class DownloadManager extends EventEmitter {
     this.itemContributedBytes.clear();
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
+    this.hybridExtractRequeue.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.summary = null;
     this.persistNow();
@@ -1671,6 +1678,7 @@ export class DownloadManager extends EventEmitter {
   private runPackagePostProcessing(packageId: string): Promise<void> {
     const existing = this.packagePostProcessTasks.get(packageId);
     if (existing) {
+      this.hybridExtractRequeue.add(packageId);
       return existing;
     }
 
@@ -1690,6 +1698,11 @@ export class DownloadManager extends EventEmitter {
         this.packagePostProcessAbortControllers.delete(packageId);
         this.persistSoon();
         this.emitState();
+        if (this.hybridExtractRequeue.delete(packageId)) {
+          void this.runPackagePostProcessing(packageId).catch((err) =>
+            logger.warn(`runPackagePostProcessing Fehler (hybridRequeue): ${compactErrorText(err)}`)
+          );
+        }
       });
 
     this.packagePostProcessTasks.set(packageId, task);
@@ -1808,6 +1821,7 @@ export class DownloadManager extends EventEmitter {
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
     this.runPackageIds.delete(packageId);
     this.runCompletedPackages.delete(packageId);
+    this.hybridExtractRequeue.delete(packageId);
   }
 
   private async ensureScheduler(): Promise<void> {
@@ -2961,6 +2975,169 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private findReadyArchiveSets(pkg: PackageEntry): Set<string> {
+    const ready = new Set<string>();
+    if (!pkg.outputDir || !fs.existsSync(pkg.outputDir)) {
+      return ready;
+    }
+
+    const completedPaths = new Set<string>();
+    const pendingPaths = new Set<string>();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) {
+        continue;
+      }
+      if (item.status === "completed" && item.targetPath) {
+        completedPaths.add(pathKey(item.targetPath));
+      } else if (item.targetPath) {
+        pendingPaths.add(pathKey(item.targetPath));
+      }
+    }
+    if (completedPaths.size === 0) {
+      return ready;
+    }
+
+    const candidates = findArchiveCandidates(pkg.outputDir);
+    if (candidates.length === 0) {
+      return ready;
+    }
+
+    let dirFiles: string[] | undefined;
+    try {
+      dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name);
+    } catch {
+      return ready;
+    }
+
+    for (const candidate of candidates) {
+      const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
+      const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
+      if (!allPartsCompleted) {
+        continue;
+      }
+      const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
+        const pendingName = path.basename(pendingPath).toLowerCase();
+        const candidateStem = path.basename(candidate).toLowerCase();
+        return this.looksLikeArchivePart(pendingName, candidateStem);
+      });
+      if (hasUnstartedParts) {
+        continue;
+      }
+      ready.add(pathKey(candidate));
+    }
+
+    return ready;
+  }
+
+  private looksLikeArchivePart(fileName: string, entryPointName: string): boolean {
+    const multipartMatch = entryPointName.match(/^(.*)\.part0*1\.rar$/i);
+    if (multipartMatch) {
+      const prefix = multipartMatch[1].toLowerCase();
+      return new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.part\\d+\\.rar$`, "i").test(fileName);
+    }
+    if (/\.rar$/i.test(entryPointName) && !/\.part\d+\.rar$/i.test(entryPointName)) {
+      const stem = entryPointName.replace(/\.rar$/i, "").toLowerCase();
+      const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`^${escaped}\\.r(ar|\\d{2})$`, "i").test(fileName);
+    }
+    if (/\.zip\.001$/i.test(entryPointName)) {
+      const stem = entryPointName.replace(/\.zip\.001$/i, "").toLowerCase();
+      const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`^${escaped}\\.zip(\\.\\d{3})?$`, "i").test(fileName);
+    }
+    if (/\.7z\.001$/i.test(entryPointName)) {
+      const stem = entryPointName.replace(/\.7z\.001$/i, "").toLowerCase();
+      const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`^${escaped}\\.7z(\\.\\d{3})?$`, "i").test(fileName);
+    }
+    return false;
+  }
+
+  private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<void> {
+    const readyArchives = this.findReadyArchiveSets(pkg);
+    if (readyArchives.size === 0) {
+      logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
+      return;
+    }
+
+    logger.info(`Hybrid-Extract Start: pkg=${pkg.name}, readyArchives=${readyArchives.size}`);
+    pkg.status = "extracting";
+    this.emitState();
+
+    const completedItems = items.filter((item) => item.status === "completed");
+    const updateExtractingStatus = (text: string): void => {
+      const updatedAt = nowMs();
+      for (const entry of completedItems) {
+        if (isExtractedLabel(entry.fullStatus)) {
+          continue;
+        }
+        if (entry.fullStatus === text) {
+          continue;
+        }
+        entry.fullStatus = text;
+        entry.updatedAt = updatedAt;
+      }
+    };
+
+    updateExtractingStatus("Entpacken (hybrid) 0%");
+    this.emitState();
+
+    try {
+      const result = await extractPackageArchives({
+        packageDir: pkg.outputDir,
+        targetDir: pkg.extractDir,
+        cleanupMode: this.settings.cleanupMode,
+        conflictMode: this.settings.extractConflictMode,
+        removeLinks: false,
+        removeSamples: false,
+        passwordList: this.settings.archivePasswordList,
+        signal,
+        onlyArchives: readyArchives,
+        skipPostCleanup: true,
+        onProgress: (progress) => {
+          if (progress.phase === "done") {
+            return;
+          }
+          const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
+          const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
+            ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
+            : "";
+          const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+          const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+          const label = `Entpacken (hybrid) ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+          updateExtractingStatus(label);
+          this.emitState();
+        }
+      });
+
+      logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
+      if (result.extracted > 0) {
+        this.autoRenameExtractedVideoFiles(pkg.extractDir);
+      }
+      if (result.failed > 0) {
+        logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
+      }
+
+      const updatedAt = nowMs();
+      for (const entry of completedItems) {
+        if (/^Entpacken \(hybrid\)/i.test(entry.fullStatus || "")) {
+          entry.fullStatus = `Fertig (${humanSize(entry.downloadedBytes)})`;
+          entry.updatedAt = updatedAt;
+        }
+      }
+    } catch (error) {
+      const errorText = String(error || "");
+      if (errorText.includes("aborted:extract")) {
+        logger.info(`Hybrid-Extract abgebrochen: pkg=${pkg.name}`);
+        return;
+      }
+      logger.warn(`Hybrid-Extract Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
+    }
+  }
+
   private async handlePackagePostProcessing(packageId: string, signal?: AbortSignal): Promise<void> {
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) {
@@ -2975,8 +3152,23 @@ export class DownloadManager extends EventEmitter {
     const cancelled = items.filter((item) => item.status === "cancelled").length;
     logger.info(`Post-Processing Start: pkg=${pkg.name}, success=${success}, failed=${failed}, cancelled=${cancelled}, autoExtract=${this.settings.autoExtract}`);
 
-    if (success + failed + cancelled < items.length) {
-      pkg.status = "downloading";
+    const allDone = success + failed + cancelled >= items.length;
+
+    if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
+      await this.runHybridExtraction(packageId, pkg, items, signal);
+      if (signal?.aborted) {
+        pkg.status = pkg.enabled ? "queued" : "paused";
+        pkg.updatedAt = nowMs();
+        return;
+      }
+      pkg.status = pkg.enabled ? "downloading" : "paused";
+      pkg.updatedAt = nowMs();
+      this.emitState();
+      return;
+    }
+
+    if (!allDone) {
+      pkg.status = pkg.enabled ? "downloading" : "paused";
       logger.info(`Post-Processing verschoben: pkg=${pkg.name}, noch offene items`);
       return;
     }
