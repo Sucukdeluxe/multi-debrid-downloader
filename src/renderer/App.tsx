@@ -743,6 +743,7 @@ export function App(): ReactElement {
       className={`app-shell${dragOver ? " drag-over" : ""}`}
       onDragEnter={(event) => {
         event.preventDefault();
+        if (draggedPackageIdRef.current) { return; }
         dragDepthRef.current += 1;
         if (!dragOverRef.current) {
           dragOverRef.current = true;
@@ -753,6 +754,7 @@ export function App(): ReactElement {
         e.preventDefault();
       }}
       onDragLeave={() => {
+        if (draggedPackageIdRef.current) { return; }
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0 && dragOverRef.current) {
           dragOverRef.current = false;
@@ -869,6 +871,34 @@ export function App(): ReactElement {
               >
                 {allPackagesCollapsed ? "Alles ausklappen" : "Alles einklappen"}
               </button>
+              <button
+                className="btn"
+                disabled={packages.length < 2}
+                onClick={() => {
+                  const sorted = [...snapshot.session.packageOrder].sort((a, b) => {
+                    const nameA = (snapshot.session.packages[a]?.name ?? "").toLowerCase();
+                    const nameB = (snapshot.session.packages[b]?.name ?? "").toLowerCase();
+                    return nameA.localeCompare(nameB);
+                  });
+                  void window.rd.reorderPackages(sorted);
+                }}
+              >
+                A-Z
+              </button>
+              <button
+                className="btn"
+                disabled={packages.length < 2}
+                onClick={() => {
+                  const sorted = [...snapshot.session.packageOrder].sort((a, b) => {
+                    const nameA = (snapshot.session.packages[a]?.name ?? "").toLowerCase();
+                    const nameB = (snapshot.session.packages[b]?.name ?? "").toLowerCase();
+                    return nameB.localeCompare(nameA);
+                  });
+                  void window.rd.reorderPackages(sorted);
+                }}
+              >
+                Z-A
+              </button>
               <input
                 className="search-input"
                 type="search"
@@ -907,7 +937,7 @@ export function App(): ReactElement {
                 onToggleCollapse={() => {
                   setCollapsedPackages((prev) => ({ ...prev, [pkg.id]: !(prev[pkg.id] ?? false) }));
                 }}
-                onCancel={() => { void performQuickAction(() => window.rd.cancelPackage(pkg.id)); }}
+                onCancel={() => { void window.rd.cancelPackage(pkg.id); }}
                 onMoveUp={() => movePackage(pkg.id, "up")}
                 onMoveDown={() => movePackage(pkg.id, "down")}
                 onToggle={() => { void window.rd.togglePackage(pkg.id); }}
@@ -1201,7 +1231,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
           <button className="btn" disabled={isFirst} onClick={onMoveUp} title="Nach oben">&#9650;</button>
           <button className="btn" disabled={isLast} onClick={onMoveDown} title="Nach unten">&#9660;</button>
           <button className={`btn${pkg.enabled ? "" : " btn-active"}`} onClick={onToggle}>{pkg.enabled ? "Paket stoppen" : "Paket starten"}</button>
-          <button className="btn danger" onClick={onCancel}>Paket abbrechen</button>
+          <button className="btn danger" onClick={onCancel}>Paket löschen</button>
         </div>
       </header>
       <div className="progress"><div style={{ width: `${progress}%` }} /></div>
