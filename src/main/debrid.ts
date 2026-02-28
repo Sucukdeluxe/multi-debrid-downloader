@@ -5,6 +5,7 @@ import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
+const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.28";
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
 const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
@@ -35,8 +36,7 @@ type BestDebridRequest = {
 function canonicalLink(link: string): string {
   try {
     const parsed = new URL(link);
-    const query = parsed.searchParams.toString();
-    return `${parsed.hostname}${parsed.pathname}${query ? `?${query}` : ""}`.toLowerCase();
+    return `${parsed.host.toLowerCase()}${parsed.pathname}${parsed.search}`;
   } catch {
     return link.trim().toLowerCase();
   }
@@ -69,6 +69,34 @@ function isRetryableErrorText(text: string): boolean {
     || lower.includes("enotfound")
     || lower.includes("etimedout")
     || lower.includes("html statt json");
+}
+
+async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await sleep(ms);
+    return;
+  }
+  if (signal.aborted) {
+    throw new Error("aborted:debrid");
+  }
+  await new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = setTimeout(() => {
+      timer = null;
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(0, ms));
+
+    const onAbort = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("aborted:debrid"));
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -105,7 +133,7 @@ function pickNumber(payload: Record<string, unknown> | null, keys: string[]): nu
   }
   for (const key of keys) {
     const value = Number(payload[key] ?? NaN);
-    if (Number.isFinite(value) && value > 0) {
+    if (Number.isFinite(value) && value >= 0) {
       return Math.floor(value);
     }
   }
@@ -122,6 +150,15 @@ function parseError(status: number, responseText: string, payload: Record<string
     return compact;
   }
   return `HTTP ${status}`;
+}
+
+function parseAllDebridError(payload: Record<string, unknown> | null): string {
+  const errorValue = payload?.error;
+  if (typeof errorValue === "string" && errorValue.trim()) {
+    return errorValue.trim();
+  }
+  const errorObj = asRecord(errorValue);
+  return pickString(errorObj, ["message", "code"]) || "AllDebrid API error";
 }
 
 function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
@@ -219,8 +256,7 @@ export function extractRapidgatorFilenameFromHtml(html: string): string {
     /<title>([^<]+)<\/title>/i,
     /(?:Dateiname|File\s*name)\s*[:\-]\s*<[^>]*>\s*([^<]+)\s*</i,
     /(?:Dateiname|File\s*name)\s*[:\-]\s*([^<\r\n]+)/i,
-    /download\s+file\s+([^<\r\n]+)/i,
-    /([A-Za-z0-9][A-Za-z0-9._\-()[\] ]{2,220}\.(?:part\d+\.rar|r\d{2}|rar|zip|7z|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|m2ts|ts|webm|mp3|flac|aac|srt|ass|sub))/i
+    /download\s+file\s+([^<\r\n]+)/i
   ];
 
   for (const pattern of patterns) {
@@ -243,6 +279,7 @@ async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (i
   }
   const size = Math.max(1, Math.min(concurrency, items.length));
   let index = 0;
+  let firstError: unknown = null;
   const next = (): T | undefined => {
     if (index >= items.length) {
       return undefined;
@@ -254,20 +291,40 @@ async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (i
   const runners = Array.from({ length: size }, async () => {
     let current = next();
     while (current !== undefined) {
-      await worker(current);
+      try {
+        await worker(current);
+      } catch (error) {
+        if (!firstError) {
+          firstError = error;
+        }
+      }
       current = next();
     }
   });
   await Promise.all(runners);
+  if (firstError) {
+    throw firstError;
+  }
 }
 
-async function resolveRapidgatorFilename(link: string): Promise<string> {
+function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  if (!signal) {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+}
+
+async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Promise<string> {
   if (!isRapidgatorLink(link)) {
     return "";
   }
   const fromUrl = filenameFromRapidgatorUrlPath(link);
   if (fromUrl) {
     return fromUrl;
+  }
+
+  if (signal?.aborted) {
+    throw new Error("aborted:debrid");
   }
 
   for (let attempt = 1; attempt <= REQUEST_RETRIES + 2; attempt += 1) {
@@ -279,26 +336,44 @@ async function resolveRapidgatorFilename(link: string): Promise<string> {
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
         },
-        signal: AbortSignal.timeout(API_TIMEOUT_MS)
+        signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
       });
       if (!response.ok) {
         if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES + 2) {
-          await sleep(retryDelay(attempt));
+          await sleepWithSignal(retryDelay(attempt), signal);
           continue;
         }
         return "";
       }
+
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      if (contentType
+        && !contentType.includes("text/html")
+        && !contentType.includes("application/xhtml")
+        && !contentType.includes("text/plain")
+        && !contentType.includes("text/xml")
+        && !contentType.includes("application/xml")) {
+        return "";
+      }
+
       const html = await response.text();
       const fromHtml = extractRapidgatorFilenameFromHtml(html);
       if (fromHtml) {
         return fromHtml;
       }
-    } catch {
-      // retry below
+      return "";
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      if (/aborted/i.test(errorText)) {
+        throw error;
+      }
+      if (attempt >= REQUEST_RETRIES + 2 || !isRetryableErrorText(errorText)) {
+        return "";
+      }
     }
 
     if (attempt < REQUEST_RETRIES + 2) {
-      await sleep(retryDelay(attempt));
+      await sleepWithSignal(retryDelay(attempt), signal);
     }
   }
 
@@ -338,6 +413,9 @@ class MegaDebridClient {
         web.retriesUsed = attempt - 1;
         return web;
       }
+      if (web && !web.directUrl) {
+        throw new Error("Mega-Web Antwort ohne Download-Link");
+      }
       if (!lastError) {
         lastError = web ? "Mega-Web Antwort ohne Download-Link" : "Mega-Web Antwort leer";
       }
@@ -376,7 +454,7 @@ class BestDebridClient {
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
       try {
         const headers: Record<string, string> = {
-          "User-Agent": "RD-Node-Downloader/1.1.12"
+          "User-Agent": DEBRID_USER_AGENT
         };
         if (request.useAuthHeader) {
           headers.Authorization = `Bearer ${this.token}`;
@@ -402,6 +480,14 @@ class BestDebridClient {
 
         const directUrl = pickString(payload, ["download", "debridLink", "link"]);
         if (directUrl) {
+          try {
+            const parsedDirect = new URL(directUrl);
+            if (parsedDirect.protocol !== "https:" && parsedDirect.protocol !== "http:") {
+              throw new Error("invalid_protocol");
+            }
+          } catch {
+            throw new Error("BestDebrid Antwort enthält ungültige Download-URL");
+          }
           const fileName = pickString(payload, ["filename", "fileName"]) || filenameFromUrl(originalLink);
           const fileSize = pickNumber(payload, ["filesize", "size", "bytes"]);
           return {
@@ -426,7 +512,7 @@ class BestDebridClient {
         await sleep(retryDelay(attempt));
       }
     }
-    throw new Error(lastError || "BestDebrid Request fehlgeschlagen");
+    throw new Error(String(lastError || "BestDebrid Request fehlgeschlagen").replace(/^Error:\s*/i, ""));
   }
 }
 
@@ -473,7 +559,7 @@ class AllDebridClient {
             headers: {
               Authorization: `Bearer ${this.token}`,
               "Content-Type": "application/x-www-form-urlencoded",
-              "User-Agent": "RD-Node-Downloader/1.1.15"
+              "User-Agent": DEBRID_USER_AGENT
             },
             body,
             signal: AbortSignal.timeout(API_TIMEOUT_MS)
@@ -501,8 +587,7 @@ class AllDebridClient {
 
           const status = pickString(payload, ["status"]);
           if (status && status.toLowerCase() === "error") {
-            const errorObj = asRecord(payload?.error);
-            throw new Error(pickString(errorObj, ["message", "code"]) || "AllDebrid API error");
+            throw new Error(parseAllDebridError(payload));
           }
 
           chunkResolved = true;
@@ -534,7 +619,9 @@ class AllDebridClient {
 
         const responseLink = pickString(info, ["link"]);
         const byResponse = canonicalToInput.get(canonicalLink(responseLink));
-        const byIndex = chunk.length === 1 ? chunk[0] : "";
+        const byIndex = chunk.length === 1
+          ? chunk[0]
+          : "";
         const original = byResponse || byIndex;
         if (!original) {
           continue;
@@ -555,7 +642,7 @@ class AllDebridClient {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "RD-Node-Downloader/1.1.12"
+            "User-Agent": DEBRID_USER_AGENT
           },
           body: new URLSearchParams({ link }),
           signal: AbortSignal.timeout(API_TIMEOUT_MS)
@@ -577,11 +664,13 @@ class AllDebridClient {
         if (looksHtml) {
           throw new Error("AllDebrid lieferte HTML statt JSON");
         }
+        if (!payload) {
+          throw new Error("AllDebrid Antwort ist kein JSON-Objekt");
+        }
 
         const status = pickString(payload, ["status"]);
         if (status && status.toLowerCase() === "error") {
-          const errorObj = asRecord(payload?.error);
-          throw new Error(pickString(errorObj, ["message", "code"]) || "AllDebrid API error");
+          throw new Error(parseAllDebridError(payload));
         }
 
         const data = asRecord(payload?.data);
@@ -612,29 +701,24 @@ class AllDebridClient {
 export class DebridService {
   private settings: AppSettings;
 
-  private realDebridClient: RealDebridClient;
-
-  private allDebridClient: AllDebridClient;
-
   private options: DebridServiceOptions;
 
   public constructor(settings: AppSettings, options: DebridServiceOptions = {}) {
     this.settings = settings;
     this.options = options;
-    this.realDebridClient = new RealDebridClient(settings.token);
-    this.allDebridClient = new AllDebridClient(settings.allDebridToken);
   }
 
   public setSettings(next: AppSettings): void {
     this.settings = next;
-    this.realDebridClient = new RealDebridClient(next.token);
-    this.allDebridClient = new AllDebridClient(next.allDebridToken);
   }
 
   public async resolveFilenames(
     links: string[],
-    onResolved?: (link: string, fileName: string) => void
+    onResolved?: (link: string, fileName: string) => void,
+    signal?: AbortSignal
   ): Promise<Map<string, string>> {
+    const settings = { ...this.settings };
+    const allDebridClient = new AllDebridClient(settings.allDebridToken);
     const unresolved = links.filter((link) => looksLikeOpaqueFilename(filenameFromUrl(link)));
     if (unresolved.length === 0) {
       return new Map<string, string>();
@@ -653,10 +737,10 @@ export class DebridService {
       onResolved?.(link, normalized);
     };
 
-    const token = this.settings.allDebridToken.trim();
+    const token = settings.allDebridToken.trim();
     if (token) {
       try {
-        const infos = await this.allDebridClient.getLinkInfos(unresolved);
+        const infos = await allDebridClient.getLinkInfos(unresolved);
         for (const [link, fileName] of infos.entries()) {
           reportResolved(link, fileName);
         }
@@ -667,14 +751,14 @@ export class DebridService {
 
     const remaining = unresolved.filter((link) => !clean.has(link) && isRapidgatorLink(link));
     await runWithConcurrency(remaining, 6, async (link) => {
-      const fromPage = await resolveRapidgatorFilename(link);
+      const fromPage = await resolveRapidgatorFilename(link, signal);
       reportResolved(link, fromPage);
     });
 
     const stillUnresolved = unresolved.filter((link) => !clean.has(link) && !isRapidgatorLink(link));
     await runWithConcurrency(stillUnresolved, 4, async (link) => {
       try {
-        const unrestricted = await this.unrestrictLink(link);
+        const unrestricted = await this.unrestrictLink(link, signal, settings);
         reportResolved(link, unrestricted.fileName || "");
       } catch {
         // ignore final fallback errors
@@ -684,23 +768,24 @@ export class DebridService {
     return clean;
   }
 
-  public async unrestrictLink(link: string): Promise<ProviderUnrestrictedLink> {
+  public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
+    const settings = settingsSnapshot ? { ...settingsSnapshot } : { ...this.settings };
     const order = toProviderOrder(
-      this.settings.providerPrimary,
-      this.settings.providerSecondary,
-      this.settings.providerTertiary
+      settings.providerPrimary,
+      settings.providerSecondary,
+      settings.providerTertiary
     );
 
     const primary = order[0];
-    if (!this.settings.autoProviderFallback) {
-      if (!this.isProviderConfigured(primary)) {
+    if (!settings.autoProviderFallback) {
+      if (!this.isProviderConfiguredFor(settings, primary)) {
         throw new Error(`${PROVIDER_LABELS[primary]} nicht konfiguriert`);
       }
       try {
-        const result = await this.unrestrictViaProvider(primary, link);
+        const result = await this.unrestrictViaProvider(settings, primary, link, signal);
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
-          const fromPage = await resolveRapidgatorFilename(link);
+          const fromPage = await resolveRapidgatorFilename(link, signal);
           if (fromPage) {
             fileName = fromPage;
           }
@@ -720,16 +805,16 @@ export class DebridService {
     const attempts: string[] = [];
 
     for (const provider of order) {
-      if (!this.isProviderConfigured(provider)) {
+      if (!this.isProviderConfiguredFor(settings, provider)) {
         continue;
       }
       configuredFound = true;
 
       try {
-        const result = await this.unrestrictViaProvider(provider, link);
+        const result = await this.unrestrictViaProvider(settings, provider, link, signal);
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
-          const fromPage = await resolveRapidgatorFilename(link);
+          const fromPage = await resolveRapidgatorFilename(link, signal);
           if (fromPage) {
             fileName = fromPage;
           }
@@ -752,29 +837,29 @@ export class DebridService {
     throw new Error(`Unrestrict fehlgeschlagen: ${attempts.join(" | ")}`);
   }
 
-  private isProviderConfigured(provider: DebridProvider): boolean {
+  private isProviderConfiguredFor(settings: AppSettings, provider: DebridProvider): boolean {
     if (provider === "realdebrid") {
-      return Boolean(this.settings.token.trim());
+      return Boolean(settings.token.trim());
     }
     if (provider === "megadebrid") {
-      return Boolean(this.settings.megaLogin.trim() && this.settings.megaPassword.trim() && this.options.megaWebUnrestrict);
+      return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim() && this.options.megaWebUnrestrict);
     }
     if (provider === "alldebrid") {
-      return Boolean(this.settings.allDebridToken.trim());
+      return Boolean(settings.allDebridToken.trim());
     }
-    return Boolean(this.settings.bestToken.trim());
+    return Boolean(settings.bestToken.trim());
   }
 
-  private async unrestrictViaProvider(provider: DebridProvider, link: string): Promise<UnrestrictedLink> {
+  private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
     if (provider === "realdebrid") {
-      return this.realDebridClient.unrestrictLink(link);
+      return new RealDebridClient(settings.token).unrestrictLink(link, signal);
     }
     if (provider === "megadebrid") {
       return new MegaDebridClient(this.options.megaWebUnrestrict).unrestrictLink(link);
     }
     if (provider === "alldebrid") {
-      return this.allDebridClient.unrestrictLink(link);
+      return new AllDebridClient(settings.allDebridToken).unrestrictLink(link);
     }
-    return new BestDebridClient(this.settings.bestToken).unrestrictLink(link);
+    return new BestDebridClient(settings.bestToken).unrestrictLink(link);
   }
 }

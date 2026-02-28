@@ -14,6 +14,16 @@ function validateString(value: unknown, name: string): string {
   }
   return value;
 }
+
+function validatePlainObject(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${name} muss ein Objekt sein`);
+  }
+  return value as Record<string, unknown>;
+}
+
+const IMPORT_QUEUE_MAX_BYTES = 10 * 1024 * 1024;
+const RENAME_PACKAGE_MAX_CHARS = 240;
 function validateStringArray(value: unknown, name: string): string[] {
   if (!Array.isArray(value) || !value.every(v => typeof v === "string")) {
     throw new Error(`${name} muss ein String-Array sein`);
@@ -121,7 +131,21 @@ function extractLinksFromText(text: string): string[] {
 }
 
 function normalizeClipboardText(text: string): string {
-  return String(text || "").slice(0, CLIPBOARD_MAX_TEXT_CHARS);
+  const normalized = String(text || "");
+  if (normalized.length <= CLIPBOARD_MAX_TEXT_CHARS) {
+    return normalized;
+  }
+  const truncated = normalized.slice(0, CLIPBOARD_MAX_TEXT_CHARS);
+  const lastBreak = Math.max(
+    truncated.lastIndexOf("\n"),
+    truncated.lastIndexOf("\r"),
+    truncated.lastIndexOf("\t"),
+    truncated.lastIndexOf(" ")
+  );
+  if (lastBreak >= Math.floor(CLIPBOARD_MAX_TEXT_CHARS * 0.7)) {
+    return truncated.slice(0, lastBreak);
+  }
+  return truncated;
 }
 
 function startClipboardWatcher(): void {
@@ -193,13 +217,21 @@ function registerIpcHandlers(): void {
     }
   });
   ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: Partial<AppSettings>) => {
-    const result = controller.updateSettings(partial ?? {});
+    const validated = validatePlainObject(partial ?? {}, "partial");
+    const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
+    validatePlainObject(payload ?? {}, "payload");
     validateString(payload?.rawText, "rawText");
+    if (payload.packageName !== undefined) {
+      validateString(payload.packageName, "packageName");
+    }
+    if (payload.duplicatePolicy !== undefined && payload.duplicatePolicy !== "keep" && payload.duplicatePolicy !== "skip" && payload.duplicatePolicy !== "overwrite") {
+      throw new Error("duplicatePolicy muss 'keep', 'skip' oder 'overwrite' sein");
+    }
     return controller.addLinks(payload);
   });
   ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => {
@@ -227,6 +259,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
     validateString(packageId, "packageId");
     validateString(newName, "newName");
+    if (newName.length > RENAME_PACKAGE_MAX_CHARS) {
+      throw new Error(`newName zu lang (max ${RENAME_PACKAGE_MAX_CHARS} Zeichen)`);
+    }
     return controller.renamePackage(packageId, newName);
   });
   ipcMain.handle(IPC_CHANNELS.REORDER_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
@@ -244,6 +279,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, () => controller.exportQueue());
   ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
     validateString(json, "json");
+    const bytes = Buffer.byteLength(json, "utf8");
+    if (bytes > IMPORT_QUEUE_MAX_BYTES) {
+      throw new Error(`Queue-Import zu groß (max ${IMPORT_QUEUE_MAX_BYTES} Bytes)`);
+    }
     return controller.importQueue(json);
   });
   ipcMain.handle(IPC_CHANNELS.TOGGLE_CLIPBOARD, () => {

@@ -57,11 +57,20 @@ function normalizeBandwidthSchedules(raw: unknown): BandwidthScheduleEntry[] {
   return normalized;
 }
 
+function normalizeAbsoluteDir(value: unknown, fallback: string): string {
+  const text = asText(value);
+  if (/^\/[\s\S]+/.test(text)) {
+    return text.replace(/\\/g, "/");
+  }
+  if (!text || !path.isAbsolute(text)) {
+    return path.resolve(fallback);
+  }
+  return path.resolve(text);
+}
+
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const normalized: AppSettings = {
-    ...defaults,
-    ...settings,
     token: asText(settings.token),
     megaLogin: asText(settings.megaLogin),
     megaPassword: asText(settings.megaPassword),
@@ -69,23 +78,30 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     allDebridToken: asText(settings.allDebridToken),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
+    providerPrimary: settings.providerPrimary,
+    providerSecondary: settings.providerSecondary,
+    providerTertiary: settings.providerTertiary,
     autoProviderFallback: Boolean(settings.autoProviderFallback),
-    outputDir: asText(settings.outputDir) || defaults.outputDir,
+    outputDir: normalizeAbsoluteDir(settings.outputDir, defaults.outputDir),
     packageName: asText(settings.packageName),
     autoExtract: Boolean(settings.autoExtract),
     autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),
-    extractDir: asText(settings.extractDir) || defaults.extractDir,
+    extractDir: normalizeAbsoluteDir(settings.extractDir, defaults.extractDir),
     createExtractSubfolder: Boolean(settings.createExtractSubfolder),
     hybridExtract: Boolean(settings.hybridExtract),
+    cleanupMode: settings.cleanupMode,
+    extractConflictMode: settings.extractConflictMode,
     removeLinkFilesAfterExtract: Boolean(settings.removeLinkFilesAfterExtract),
     removeSamplesAfterExtract: Boolean(settings.removeSamplesAfterExtract),
     enableIntegrityCheck: Boolean(settings.enableIntegrityCheck),
     autoResumeOnStart: Boolean(settings.autoResumeOnStart),
     autoReconnect: Boolean(settings.autoReconnect),
     maxParallel: clampNumber(settings.maxParallel, defaults.maxParallel, 1, 50),
+    reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
+    completedCleanupPolicy: settings.completedCleanupPolicy,
     speedLimitEnabled: Boolean(settings.speedLimitEnabled),
     speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
-    reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
+    speedLimitMode: settings.speedLimitMode,
     autoUpdateCheck: Boolean(settings.autoUpdateCheck),
     updateRepo: asText(settings.updateRepo) || defaults.updateRepo,
     clipboardWatch: Boolean(settings.clipboardWatch),
@@ -101,6 +117,12 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     normalized.providerSecondary = "none";
   }
   if (!VALID_FALLBACK_PROVIDERS.has(normalized.providerTertiary)) {
+    normalized.providerTertiary = "none";
+  }
+  if (normalized.providerSecondary === normalized.providerPrimary) {
+    normalized.providerSecondary = "none";
+  }
+  if (normalized.providerTertiary === normalized.providerPrimary || normalized.providerTertiary === normalized.providerSecondary) {
     normalized.providerTertiary = "none";
   }
   if (!VALID_CLEANUP_MODES.has(normalized.cleanupMode)) {
@@ -264,9 +286,16 @@ function normalizeLoadedSession(raw: unknown): SessionState {
   }
 
   const rawOrder = Array.isArray(parsed.packageOrder) ? parsed.packageOrder : [];
+  const seenOrder = new Set<string>();
   const packageOrder = rawOrder
     .map((entry) => asText(entry))
-    .filter((id) => id in packagesById);
+    .filter((id) => {
+      if (!(id in packagesById) || seenOrder.has(id)) {
+        return false;
+      }
+      seenOrder.add(id);
+      return true;
+    });
   for (const packageId of Object.keys(packagesById)) {
     if (!packageOrder.includes(packageId)) {
       packageOrder.push(packageId);
@@ -330,6 +359,10 @@ function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void
       throw renameError;
     }
   }
+}
+
+function sessionTempPath(sessionFile: string, kind: "sync" | "async"): string {
+  return `${sessionFile}.${kind}.tmp`;
 }
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
@@ -396,7 +429,7 @@ export function loadSession(paths: StoragePaths): SessionState {
 export function saveSession(paths: StoragePaths, session: SessionState): void {
   ensureBaseDir(paths.baseDir);
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
-  const tempPath = `${paths.sessionFile}.tmp`;
+  const tempPath = sessionTempPath(paths.sessionFile, "sync");
   fs.writeFileSync(tempPath, payload, "utf8");
   syncRenameWithExdevFallback(tempPath, paths.sessionFile);
 }
@@ -406,7 +439,7 @@ let asyncSaveQueued: { paths: StoragePaths; payload: string } | null = null;
 
 async function writeSessionPayload(paths: StoragePaths, payload: string): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  const tempPath = `${paths.sessionFile}.tmp`;
+  const tempPath = sessionTempPath(paths.sessionFile, "async");
   await fsp.writeFile(tempPath, payload, "utf8");
   try {
     await fsp.rename(tempPath, paths.sessionFile);

@@ -1,6 +1,8 @@
 import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
 import { compactErrorText, sleep } from "./utils";
 
+const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.28";
+
 export interface UnrestrictedLink {
   fileName: string;
   directUrl: string;
@@ -14,6 +16,33 @@ function shouldRetryStatus(status: number): boolean {
 
 function retryDelay(attempt: number): number {
   return Math.min(5000, 400 * 2 ** attempt);
+}
+
+function readHttpStatusFromErrorText(text: string): number {
+  const match = String(text || "").match(/HTTP\s+(\d{3})/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function isRetryableErrorText(text: string): boolean {
+  const status = readHttpStatusFromErrorText(text);
+  if (status === 429 || status >= 500) {
+    return true;
+  }
+  const lower = String(text || "").toLowerCase();
+  return lower.includes("timeout")
+    || lower.includes("network")
+    || lower.includes("fetch failed")
+    || lower.includes("aborted")
+    || lower.includes("econnreset")
+    || lower.includes("enotfound")
+    || lower.includes("etimedout");
+}
+
+function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  if (!signal) {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 }
 
 function looksLikeHtmlResponse(contentType: string, body: string): boolean {
@@ -39,7 +68,7 @@ export class RealDebridClient {
     this.token = token;
   }
 
-  public async unrestrictLink(link: string): Promise<UnrestrictedLink> {
+  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
     let lastError = "";
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
       try {
@@ -49,10 +78,10 @@ export class RealDebridClient {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "RD-Node-Downloader/1.1.12"
+            "User-Agent": DEBRID_USER_AGENT
           },
           body,
-          signal: AbortSignal.timeout(30000)
+          signal: withTimeoutSignal(signal, 30000)
         });
 
         const text = await response.text();
@@ -91,7 +120,10 @@ export class RealDebridClient {
         };
       } catch (error) {
         lastError = compactErrorText(error);
-        if (attempt >= REQUEST_RETRIES) {
+        if (signal?.aborted || /aborted/i.test(lastError)) {
+          break;
+        }
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
           break;
         }
         await sleep(retryDelay(attempt));

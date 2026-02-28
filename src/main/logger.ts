@@ -57,8 +57,10 @@ function flushSyncPending(): void {
   pendingLines = [];
   pendingChars = 0;
 
+  rotateIfNeeded(logFilePath);
   const primary = appendLine(logFilePath, chunk);
   if (fallbackLogFilePath) {
+    rotateIfNeeded(fallbackLogFilePath);
     const fallback = appendLine(fallbackLogFilePath, chunk);
     if (!primary.ok && !fallback.ok) {
       writeStderr(`LOGGER write failed (primary+fallback): ${primary.errorText} | ${fallback.errorText}\n`);
