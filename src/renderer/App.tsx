@@ -123,6 +123,7 @@ export function App(): ReactElement {
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const settingsDirtyRef = useRef(false);
+  const settingsDraftRevisionRef = useRef(0);
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -334,17 +335,22 @@ export function App(): ReactElement {
       return;
     }
     setCollapsedPackages((prev) => {
+      let changed = false;
       const next: Record<string, boolean> = { ...prev };
       const defaultCollapsed = totalPackageCount >= 24;
       for (const packageId of snapshot.session.packageOrder) {
-        next[packageId] = prev[packageId] ?? defaultCollapsed;
+        if (!(packageId in prev)) {
+          next[packageId] = defaultCollapsed;
+          changed = true;
+        }
       }
       for (const packageId of Object.keys(next)) {
         if (!snapshot.session.packages[packageId]) {
           delete next[packageId];
+          changed = true;
         }
       }
-      return next;
+      return changed ? next : prev;
     });
   }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
 
@@ -472,10 +478,13 @@ export function App(): ReactElement {
   };
 
   const persistDraftSettings = async (): Promise<AppSettings> => {
+    const revisionAtStart = settingsDraftRevisionRef.current;
     const result = await window.rd.updateSettings(normalizedSettingsDraft);
-    setSettingsDraft(result);
-    settingsDirtyRef.current = false;
-    setSettingsDirty(false);
+    if (settingsDraftRevisionRef.current === revisionAtStart) {
+      setSettingsDraft(result);
+      settingsDirtyRef.current = false;
+      setSettingsDirty(false);
+    }
     return result;
   };
 
@@ -663,6 +672,7 @@ export function App(): ReactElement {
     };
 
     input.onchange = async () => {
+      window.removeEventListener("focus", onWindowFocus);
       const file = input.files?.[0];
       if (!file) {
         releasePickerBusy();
@@ -683,22 +693,26 @@ export function App(): ReactElement {
   };
 
   const setBool = (key: keyof AppSettings, value: boolean): void => {
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setText = (key: keyof AppSettings, value: string): void => {
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setNum = (key: keyof AppSettings, value: number): void => {
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setSpeedLimitMbps = (value: number): void => {
     const mbps = Number.isFinite(value) ? Math.max(0, value) : 0;
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
@@ -747,8 +761,10 @@ export function App(): ReactElement {
     [order[idx], order[target]] = [order[target], order[idx]];
     setDownloadsSortDescending(false);
     packageOrderRef.current = order;
-    void window.rd.reorderPackages(order);
-  }, []);
+    void window.rd.reorderPackages(order).catch((error) => {
+      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
 
   const reorderPackagesByDrop = useCallback((draggedPackageId: string, targetPackageId: string) => {
     const currentOrder = packageOrderRef.current;
@@ -760,8 +776,10 @@ export function App(): ReactElement {
     }
     setDownloadsSortDescending(false);
     packageOrderRef.current = nextOrder;
-    void window.rd.reorderPackages(nextOrder);
-  }, []);
+    void window.rd.reorderPackages(nextOrder).catch((error) => {
+      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
 
   const addCollectorTab = (): void => {
     const id = `tab-${nextCollectorId++}`;
@@ -810,8 +828,54 @@ export function App(): ReactElement {
     draggedPackageIdRef.current = null;
   }, []);
 
+  const onPackageStartEdit = useCallback((packageId: string, packageName: string): void => {
+    setEditingPackageId(packageId);
+    setEditingName(packageName);
+  }, []);
+
+  const onPackageFinishEdit = useCallback((packageId: string, currentName: string, nextName: string): void => {
+    setEditingPackageId(null);
+    const normalized = nextName.trim();
+    if (normalized && normalized !== currentName.trim()) {
+      void window.rd.renamePackage(packageId, normalized).catch((error) => {
+        showToast(`Umbenennen fehlgeschlagen: ${String(error)}`, 2400);
+      });
+    }
+  }, [showToast]);
+
+  const onPackageToggleCollapse = useCallback((packageId: string): void => {
+    setCollapsedPackages((prev) => ({ ...prev, [packageId]: !(prev[packageId] ?? false) }));
+  }, []);
+
+  const onPackageCancel = useCallback((packageId: string): void => {
+    void window.rd.cancelPackage(packageId).catch((error) => {
+      showToast(`Paket-Löschung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
+
+  const onPackageMoveUp = useCallback((packageId: string): void => {
+    movePackage(packageId, "up");
+  }, [movePackage]);
+
+  const onPackageMoveDown = useCallback((packageId: string): void => {
+    movePackage(packageId, "down");
+  }, [movePackage]);
+
+  const onPackageToggle = useCallback((packageId: string): void => {
+    void window.rd.togglePackage(packageId).catch((error) => {
+      showToast(`Paket-Umschalten fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
+
+  const onPackageRemoveItem = useCallback((itemId: string): void => {
+    void window.rd.removeItem(itemId).catch((error) => {
+      showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
+
   const schedules = settingsDraft.bandwidthSchedules ?? [];
   const addSchedule = (): void => {
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({
@@ -820,6 +884,7 @@ export function App(): ReactElement {
     }));
   };
   const removeSchedule = (idx: number): void => {
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({
@@ -828,6 +893,7 @@ export function App(): ReactElement {
     }));
   };
   const updateSchedule = (idx: number, field: keyof BandwidthScheduleEntry, value: number | boolean): void => {
+    settingsDraftRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({
@@ -1038,25 +1104,17 @@ export function App(): ReactElement {
                 isEditing={editingPackageId === pkg.id}
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}
-                onStartEdit={() => { setEditingPackageId(pkg.id); setEditingName(pkg.name); }}
-                onFinishEdit={(name) => {
-                  setEditingPackageId(null);
-                  const nextName = name.trim();
-                  if (nextName && nextName !== pkg.name.trim()) {
-                    void window.rd.renamePackage(pkg.id, nextName);
-                  }
-                }}
+                onStartEdit={onPackageStartEdit}
+                onFinishEdit={onPackageFinishEdit}
                 onEditChange={setEditingName}
-                onToggleCollapse={() => {
-                  setCollapsedPackages((prev) => ({ ...prev, [pkg.id]: !(prev[pkg.id] ?? false) }));
-                }}
-                onCancel={() => { void window.rd.cancelPackage(pkg.id); }}
-                onMoveUp={() => movePackage(pkg.id, "up")}
-                onMoveDown={() => movePackage(pkg.id, "down")}
-                onToggle={() => { void window.rd.togglePackage(pkg.id); }}
-                onRemoveItem={(itemId) => { void window.rd.removeItem(itemId); }}
-                onDragStart={() => onPackageDragStart(pkg.id)}
-                onDrop={() => onPackageDrop(pkg.id)}
+                onToggleCollapse={onPackageToggleCollapse}
+                onCancel={onPackageCancel}
+                onMoveUp={onPackageMoveUp}
+                onMoveDown={onPackageMoveDown}
+                onToggle={onPackageToggle}
+                onRemoveItem={onPackageRemoveItem}
+                onDragStart={onPackageDragStart}
+                onDrop={onPackageDrop}
                 onDragEnd={onPackageDragEnd}
               />
             ))}
@@ -1309,17 +1367,17 @@ interface PackageCardProps {
   isEditing: boolean;
   editingName: string;
   collapsed: boolean;
-  onStartEdit: () => void;
-  onFinishEdit: (name: string) => void;
+  onStartEdit: (packageId: string, packageName: string) => void;
+  onFinishEdit: (packageId: string, currentName: string, nextName: string) => void;
   onEditChange: (name: string) => void;
-  onToggleCollapse: () => void;
-  onCancel: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onToggle: () => void;
+  onToggleCollapse: (packageId: string) => void;
+  onCancel: (packageId: string) => void;
+  onMoveUp: (packageId: string) => void;
+  onMoveDown: (packageId: string) => void;
+  onToggle: (packageId: string) => void;
   onRemoveItem: (itemId: string) => void;
-  onDragStart: () => void;
-  onDrop: () => void;
+  onDragStart: (packageId: string) => void;
+  onDrop: (packageId: string) => void;
   onDragEnd: () => void;
 }
 
@@ -1331,27 +1389,27 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   const progress = Math.floor((done / total) * 100);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === "Enter") { onFinishEdit(editingName); }
-    if (e.key === "Escape") { onFinishEdit(pkg.name); }
+    if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
+    if (e.key === "Escape") { onFinishEdit(pkg.id, pkg.name, pkg.name); }
   };
 
   return (
     <article
       className={`package-card${pkg.enabled ? "" : " disabled-pkg"}`}
       draggable
-      onDragStart={(event) => { event.stopPropagation(); onDragStart(); }}
+      onDragStart={(event) => { event.stopPropagation(); onDragStart(pkg.id); }}
       onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
-      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(); }}
+      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(pkg.id); }}
       onDragEnd={(event) => { event.stopPropagation(); onDragEnd(); }}
     >
       <header>
         <div className="pkg-info">
           <div className="pkg-name-row">
-            <input type="checkbox" checked={pkg.enabled} onChange={onToggle} title={pkg.enabled ? "Paket aktiv" : "Paket deaktiviert"} />
+            <input type="checkbox" checked={pkg.enabled} onChange={() => onToggle(pkg.id)} title={pkg.enabled ? "Paket aktiv" : "Paket deaktiviert"} />
             {isEditing ? (
-              <input className="rename-input" value={editingName} onChange={(e) => onEditChange(e.target.value)} onBlur={() => onFinishEdit(editingName)} onKeyDown={onKeyDown} autoFocus />
+              <input className="rename-input" value={editingName} onChange={(e) => onEditChange(e.target.value)} onBlur={() => onFinishEdit(pkg.id, pkg.name, editingName)} onKeyDown={onKeyDown} autoFocus />
             ) : (
-              <h4 onDoubleClick={onStartEdit} title="Doppelklick zum Umbenennen">{pkg.name}</h4>
+              <h4 onDoubleClick={() => onStartEdit(pkg.id, pkg.name)} title="Doppelklick zum Umbenennen">{pkg.name}</h4>
             )}
           </div>
           <span>{done}/{total} fertig {failed > 0 && `· ${failed} Fehler `}{cancelled > 0 && `· ${cancelled} abgebrochen `}
@@ -1359,11 +1417,11 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
           </span>
         </div>
         <div className="pkg-actions">
-          <button className="btn" onClick={onToggleCollapse}>{collapsed ? "Ausklappen" : "Einklappen"}</button>
-          <button className="btn" disabled={isFirst} onClick={onMoveUp} title="Nach oben">&#9650;</button>
-          <button className="btn" disabled={isLast} onClick={onMoveDown} title="Nach unten">&#9660;</button>
-          <button className={`btn${pkg.enabled ? "" : " btn-active"}`} onClick={onToggle}>{pkg.enabled ? "Paket stoppen" : "Paket starten"}</button>
-          <button className="btn danger" onClick={onCancel}>Paket löschen</button>
+          <button className="btn" onClick={() => onToggleCollapse(pkg.id)}>{collapsed ? "Ausklappen" : "Einklappen"}</button>
+          <button className="btn" disabled={isFirst} onClick={() => onMoveUp(pkg.id)} title="Nach oben">&#9650;</button>
+          <button className="btn" disabled={isLast} onClick={() => onMoveDown(pkg.id)} title="Nach unten">&#9660;</button>
+          <button className={`btn${pkg.enabled ? "" : " btn-active"}`} onClick={() => onToggle(pkg.id)}>{pkg.enabled ? "Paket stoppen" : "Paket starten"}</button>
+          <button className="btn danger" onClick={() => onCancel(pkg.id)}>Paket löschen</button>
         </div>
       </header>
       <div className="progress"><div style={{ width: `${progress}%` }} /></div>
