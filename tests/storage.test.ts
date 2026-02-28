@@ -149,6 +149,23 @@ describe("settings storage", () => {
     expect(normalized.archivePasswordList).toBe("one\ntwo\nthree");
   });
 
+  it("assigns and preserves bandwidth schedule ids", () => {
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      bandwidthSchedules: [{ startHour: 1, endHour: 6, speedLimitKbps: 1024, enabled: true }]
+    });
+
+    const generatedId = normalized.bandwidthSchedules[0]?.id;
+    expect(typeof generatedId).toBe("string");
+    expect(generatedId?.length).toBeGreaterThan(0);
+
+    const normalizedAgain = normalizeSettings({
+      ...defaultSettings(),
+      bandwidthSchedules: normalized.bandwidthSchedules
+    });
+    expect(normalizedAgain.bandwidthSchedules[0]?.id).toBe(generatedId);
+  });
+
   it("resets stale active statuses to queued on session load", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

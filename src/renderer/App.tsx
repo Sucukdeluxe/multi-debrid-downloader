@@ -81,6 +81,23 @@ function humanSize(bytes: number): string {
 
 let nextCollectorId = 1;
 
+function createScheduleId(): string {
+  return `schedule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function reorderPackageOrderByDrop(order: string[], draggedPackageId: string, targetPackageId: string): string[] {
+  const fromIndex = order.indexOf(draggedPackageId);
+  const toIndex = order.indexOf(targetPackageId);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+    return order;
+  }
+  const next = [...order];
+  const [dragged] = next.splice(fromIndex, 1);
+  const insertIndex = Math.max(0, Math.min(next.length, toIndex));
+  next.splice(insertIndex, 0, dragged);
+  return next;
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [tab, setTab] = useState<Tab>("collector");
@@ -122,10 +139,6 @@ export function App(): ReactElement {
     activeTabRef.current = tab;
   }, [tab]);
 
-  useEffect(() => {
-    settingsDirtyRef.current = settingsDirty;
-  }, [settingsDirty]);
-
   const showToast = (message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
     if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); }
@@ -141,6 +154,7 @@ export function App(): ReactElement {
     void window.rd.getSnapshot().then((state) => {
       setSnapshot(state);
       setSettingsDraft(state.settings);
+      settingsDirtyRef.current = false;
       setSettingsDirty(false);
       applyTheme(state.settings.theme);
       if (state.settings.autoUpdateCheck) {
@@ -406,6 +420,7 @@ export function App(): ReactElement {
   const persistDraftSettings = async (): Promise<AppSettings> => {
     const result = await window.rd.updateSettings(normalizedSettingsDraft);
     setSettingsDraft(result);
+    settingsDirtyRef.current = false;
     setSettingsDirty(false);
     return result;
   };
@@ -485,8 +500,8 @@ export function App(): ReactElement {
 
   const onAddLinks = async (): Promise<void> => {
     await performQuickAction(async () => {
-      await persistDraftSettings();
-      const result = await window.rd.addLinks({ rawText: currentCollectorTab.text, packageName: settingsDraft.packageName });
+      const persisted = await persistDraftSettings();
+      const result = await window.rd.addLinks({ rawText: currentCollectorTab.text, packageName: persisted.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
         setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id ? { ...t, text: "" } : t));
@@ -575,19 +590,23 @@ export function App(): ReactElement {
   };
 
   const setBool = (key: keyof AppSettings, value: boolean): void => {
+    settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setText = (key: keyof AppSettings, value: string): void => {
+    settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setNum = (key: keyof AppSettings, value: number): void => {
+    settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setSpeedLimitMbps = (value: number): void => {
     const mbps = Number.isFinite(value) ? Math.max(0, value) : 0;
+    settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
   };
@@ -628,16 +647,13 @@ export function App(): ReactElement {
   }, [snapshot.session.packageOrder]);
 
   const reorderPackagesByDrop = useCallback((draggedPackageId: string, targetPackageId: string) => {
-    const order = [...snapshot.session.packageOrder];
-    const fromIndex = order.indexOf(draggedPackageId);
-    const toIndex = order.indexOf(targetPackageId);
-    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+    const nextOrder = reorderPackageOrderByDrop(snapshot.session.packageOrder, draggedPackageId, targetPackageId);
+    const unchanged = nextOrder.length === snapshot.session.packageOrder.length
+      && nextOrder.every((id, index) => id === snapshot.session.packageOrder[index]);
+    if (unchanged) {
       return;
     }
-    const [dragged] = order.splice(fromIndex, 1);
-    const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-    order.splice(insertIndex, 0, dragged);
-    void window.rd.reorderPackages(order);
+    void window.rd.reorderPackages(nextOrder);
   }, [snapshot.session.packageOrder]);
 
   const addCollectorTab = (): void => {
@@ -684,18 +700,24 @@ export function App(): ReactElement {
 
   const schedules = settingsDraft.bandwidthSchedules ?? [];
   const addSchedule = (): void => {
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
     setSettingsDraft((prev) => ({
       ...prev,
-      bandwidthSchedules: [...(prev.bandwidthSchedules ?? []), { startHour: 0, endHour: 8, speedLimitKbps: 0, enabled: true }]
+      bandwidthSchedules: [...(prev.bandwidthSchedules ?? []), { id: createScheduleId(), startHour: 0, endHour: 8, speedLimitKbps: 0, enabled: true }]
     }));
   };
   const removeSchedule = (idx: number): void => {
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
     setSettingsDraft((prev) => ({
       ...prev,
       bandwidthSchedules: (prev.bandwidthSchedules ?? []).filter((_, i) => i !== idx)
     }));
   };
   const updateSchedule = (idx: number, field: keyof BandwidthScheduleEntry, value: number | boolean): void => {
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
     setSettingsDraft((prev) => ({
       ...prev,
       bandwidthSchedules: (prev.bandwidthSchedules ?? []).map((s, i) => i === idx ? { ...s, [field]: value } : s)
@@ -909,6 +931,7 @@ export function App(): ReactElement {
                 <button className="btn" disabled={actionBusy} onClick={onCheckUpdates}>Updates prüfen</button>
                 <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
                   const next = settingsDraft.theme === "dark" ? "light" : "dark";
+                  settingsDirtyRef.current = true;
                   setSettingsDirty(true);
                   setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
                   applyTheme(next as AppTheme);
@@ -1019,7 +1042,7 @@ export function App(): ReactElement {
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                 <h4>Bandbreitenplanung</h4>
                 {schedules.map((s, i) => (
-                  <div key={i} className="schedule-row">
+                  <div key={s.id || `schedule-${i}`} className="schedule-row">
                     <input type="number" min={0} max={23} value={s.startHour} onChange={(e) => updateSchedule(i, "startHour", Number(e.target.value))} title="Von (Stunde)" />
                     <span>-</span>
                     <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => updateSchedule(i, "endHour", Number(e.target.value))} title="Bis (Stunde)" />

@@ -3636,6 +3636,150 @@ describe("download manager", () => {
     expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt (Quelle fehlt)");
   });
 
+  it("does not delete stale target file when stopping during unrestrict phase", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "stop-unrestrict", links: ["https://dummy/slow-unrestrict"] }]);
+    const initialSnapshot = manager.getSnapshot();
+    const pkgId = initialSnapshot.session.packageOrder[0];
+    const itemId = initialSnapshot.session.packages[pkgId]?.itemIds[0] || "";
+    if (!itemId) {
+      throw new Error("item missing");
+    }
+
+    const item = manager.getSnapshot().session.items[itemId];
+    const staleTargetPath = path.join(path.dirname(item.targetPath), "existing-before-start.mkv");
+    fs.mkdirSync(path.dirname(staleTargetPath), { recursive: true });
+    fs.writeFileSync(staleTargetPath, "keep", "utf8");
+
+    const mutableSession = manager.getSnapshot().session;
+    if (mutableSession.items[itemId]) {
+      mutableSession.items[itemId].targetPath = staleTargetPath;
+      mutableSession.items[itemId].fileName = path.basename(staleTargetPath);
+      mutableSession.items[itemId].downloadedBytes = 0;
+      mutableSession.items[itemId].progressPercent = 0;
+    }
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        return new Response(
+          JSON.stringify({
+            download: "https://cdn.example/unused.bin",
+            filename: "new-file.mkv",
+            filesize: 1024
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    manager.start();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    manager.stop();
+    await waitFor(() => manager.getSnapshot().session.items[itemId]?.status === "cancelled", 12000);
+    expect(fs.existsSync(staleTargetPath)).toBe(true);
+  });
+
+  it("counts re-enabled package items in run summary totals", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const payload = Buffer.alloc(96 * 1024, 5);
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/slow") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      setTimeout(() => {
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(payload.length));
+        res.end(payload);
+      }, 180);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/slow`;
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "episode.mkv",
+            filesize: payload.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input);
+    }) as typeof fetch;
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([
+        { name: "pkg-a", links: ["https://dummy/a"] },
+        { name: "pkg-b", links: ["https://dummy/b"] }
+      ]);
+
+      const packageIds = manager.getSnapshot().session.packageOrder;
+      const packageToToggle = packageIds[0];
+      manager.start();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      manager.togglePackage(packageToToggle);
+      manager.togglePackage(packageToToggle);
+
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+      const summary = manager.getSnapshot().summary;
+      expect(summary?.total).toBe(2);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("auto-renames extracted 4SF scene files to folder format", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

@@ -141,15 +141,42 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
 
   let removedFiles = 0;
   let removedDirs = 0;
-  const allDirs: string[] = [];
+  const sampleDirs: string[] = [];
   const stack = [extractDir];
+
+  const countFilesRecursive = (rootDir: string): number => {
+    let count = 0;
+    const dirs = [rootDir];
+    while (dirs.length > 0) {
+      const current = dirs.pop() as string;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          dirs.push(full);
+        } else if (entry.isFile()) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  };
 
   while (stack.length > 0) {
     const current = stack.pop() as string;
-    allDirs.push(current);
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
+        const base = entry.name.toLowerCase();
+        if (SAMPLE_DIR_NAMES.has(base)) {
+          sampleDirs.push(full);
+          continue;
+        }
         stack.push(full);
         continue;
       }
@@ -157,13 +184,11 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
         continue;
       }
 
-      const parent = path.basename(path.dirname(full)).toLowerCase();
       const stem = path.parse(entry.name).name.toLowerCase();
       const ext = path.extname(entry.name).toLowerCase();
-      const inSampleDir = SAMPLE_DIR_NAMES.has(parent);
       const isSampleVideo = SAMPLE_VIDEO_EXTENSIONS.has(ext) && SAMPLE_TOKEN_RE.test(stem);
 
-      if (inSampleDir || isSampleVideo) {
+      if (isSampleVideo) {
         try {
           fs.rmSync(full, { force: true });
           removedFiles += 1;
@@ -174,17 +199,12 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
     }
   }
 
-  allDirs.sort((a, b) => b.length - a.length);
-  for (const dir of allDirs) {
-    if (dir === extractDir) {
-      continue;
-    }
-    const base = path.basename(dir).toLowerCase();
-    if (!SAMPLE_DIR_NAMES.has(base)) {
-      continue;
-    }
+  sampleDirs.sort((a, b) => b.length - a.length);
+  for (const dir of sampleDirs) {
     try {
+      const filesInDir = countFilesRecursive(dir);
       fs.rmSync(dir, { recursive: true, force: true });
+      removedFiles += filesInDir;
       removedDirs += 1;
     } catch {
       // ignore

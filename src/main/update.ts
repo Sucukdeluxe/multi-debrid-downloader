@@ -12,6 +12,7 @@ import { logger } from "./logger";
 
 const RELEASE_FETCH_TIMEOUT_MS = 12000;
 const CONNECT_TIMEOUT_MS = 30000;
+const DOWNLOAD_BODY_IDLE_TIMEOUT_MS = 45000;
 const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1500;
 const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
@@ -67,6 +68,14 @@ function timeoutController(ms: number): { signal: AbortSignal; clear: () => void
     signal: controller.signal,
     clear: () => clearTimeout(timer)
   };
+}
+
+function getDownloadBodyIdleTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 1000 && fromEnv <= 30 * 60 * 1000) {
+    return Math.floor(fromEnv);
+  }
+  return DOWNLOAD_BODY_IDLE_TIMEOUT_MS;
 }
 
 export function parseVersionParts(version: string): number[] {
@@ -200,9 +209,9 @@ function readHttpStatusFromError(error: unknown): number {
   return match ? Number(match[1]) : 0;
 }
 
-function isRecoverableDownloadError(error: unknown): boolean {
+function isRetryableDownloadError(error: unknown): boolean {
   const status = readHttpStatusFromError(error);
-  if (status === 404 || status === 403 || status === 429 || status >= 500) {
+  if (status === 429 || status >= 500) {
     return true;
   }
 
@@ -213,6 +222,14 @@ function isRecoverableDownloadError(error: unknown): boolean {
     || text.includes("econnreset")
     || text.includes("enotfound")
     || text.includes("aborted");
+}
+
+function shouldTryNextDownloadCandidate(error: unknown): boolean {
+  const status = readHttpStatusFromError(error);
+  if (status >= 400 && status <= 599) {
+    return true;
+  }
+  return isRetryableDownloadError(error);
 }
 
 function deriveUpdateFileName(check: UpdateCheckResult, url: string): string {
@@ -298,7 +315,55 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   const source = Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>);
   const target = fs.createWriteStream(targetPath);
-  await pipeline(source, target);
+  const idleTimeoutMs = getDownloadBodyIdleTimeoutMs();
+  let idleTimer: NodeJS.Timeout | null = null;
+  const clearIdleTimer = (): void => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  const onIdleTimeout = (): void => {
+    const timeoutError = new Error(`Update Download Body Timeout nach ${Math.ceil(idleTimeoutMs / 1000)}s`);
+    source.destroy(timeoutError);
+    target.destroy(timeoutError);
+  };
+  const resetIdleTimer = (): void => {
+    if (idleTimeoutMs <= 0) {
+      return;
+    }
+    clearIdleTimer();
+    idleTimer = setTimeout(onIdleTimeout, idleTimeoutMs);
+  };
+
+  const onSourceData = (): void => {
+    resetIdleTimer();
+  };
+  const onSourceDone = (): void => {
+    clearIdleTimer();
+  };
+
+  if (idleTimeoutMs > 0) {
+    source.on("data", onSourceData);
+    source.on("end", onSourceDone);
+    source.on("close", onSourceDone);
+    source.on("error", onSourceDone);
+    target.on("close", onSourceDone);
+    target.on("error", onSourceDone);
+    resetIdleTimer();
+  }
+
+  try {
+    await pipeline(source, target);
+  } finally {
+    clearIdleTimer();
+    source.off("data", onSourceData);
+    source.off("end", onSourceDone);
+    source.off("close", onSourceDone);
+    source.off("error", onSourceDone);
+    target.off("close", onSourceDone);
+    target.off("error", onSourceDone);
+  }
   logger.info(`Update-Download abgeschlossen: ${targetPath}`);
 }
 
@@ -319,7 +384,7 @@ async function downloadWithRetries(url: string, targetPath: string): Promise<voi
       } catch {
         // ignore
       }
-      if (attempt < RETRIES_PER_CANDIDATE && isRecoverableDownloadError(error)) {
+      if (attempt < RETRIES_PER_CANDIDATE && isRetryableDownloadError(error)) {
         logger.warn(`Update-Download Retry ${attempt}/${RETRIES_PER_CANDIDATE} für ${url}: ${compactErrorText(error)}`);
         await sleep(RETRY_DELAY_MS * attempt);
         continue;
@@ -342,7 +407,7 @@ async function downloadFromCandidates(candidates: string[], targetPath: string):
     } catch (error) {
       lastError = error;
       logger.warn(`Update-Download Kandidat ${index + 1}/${candidates.length} endgültig fehlgeschlagen: ${compactErrorText(error)}`);
-      if (index < candidates.length - 1 && isRecoverableDownloadError(error)) {
+      if (index < candidates.length - 1 && shouldTryNextDownloadCandidate(error)) {
         continue;
       }
       break;

@@ -14,6 +14,10 @@ describe("utils", () => {
     expect(sanitizeFilename("   ")).toBe("Paket");
     expect(sanitizeFilename("test\0file.txt")).toBe("testfile.txt");
     expect(sanitizeFilename("\0\0\0")).toBe("Paket");
+    expect(sanitizeFilename("..")).toBe("Paket");
+    expect(sanitizeFilename(".")).toBe("Paket");
+    expect(sanitizeFilename("release... ")).toBe("release");
+    expect(sanitizeFilename(" con ")).toBe("con_");
   });
 
   it("parses package markers", () => {

@@ -106,7 +106,51 @@ describe("update", () => {
     const result = await installLatestUpdate("owner/repo", prechecked);
     expect(result.started).toBe(true);
     expect(requestedUrls.some((url) => url.includes("/releases/latest/download/"))).toBe(true);
+    expect(requestedUrls.filter((url) => url.includes("stale-setup.exe"))).toHaveLength(1);
   });
+
+  it("aborts hanging update body downloads on idle timeout", async () => {
+    const previousTimeout = process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS;
+    process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS = "1000";
+
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes("hang-setup.exe")) {
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1, 2, 3]));
+            }
+          });
+          return new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "application/octet-stream" }
+          });
+        }
+        return new Response("missing", { status: 404 });
+      }) as typeof fetch;
+
+      const prechecked: UpdateCheckResult = {
+        updateAvailable: true,
+        currentVersion: APP_VERSION,
+        latestVersion: "9.9.9",
+        latestTag: "v9.9.9",
+        releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+        setupAssetUrl: "https://example.invalid/hang-setup.exe",
+        setupAssetName: ""
+      };
+
+      const result = await installLatestUpdate("owner/repo", prechecked);
+      expect(result.started).toBe(false);
+      expect(result.message).toMatch(/timeout/i);
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS;
+      } else {
+        process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS = previousTimeout;
+      }
+    }
+  }, 20000);
 });
 
 describe("normalizeUpdateRepo extended", () => {
