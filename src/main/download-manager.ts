@@ -134,6 +134,13 @@ function isFetchFailure(errorText: string): boolean {
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
 }
 
+function isUnrestrictFailure(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("unrestrict") || text.includes("mega-web") || text.includes("mega-debrid")
+    || text.includes("bestdebrid") || text.includes("alldebrid") || text.includes("kein debrid")
+    || text.includes("session") || text.includes("login");
+}
+
 function isFinishedStatus(status: DownloadStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
@@ -304,7 +311,7 @@ export class DownloadManager extends EventEmitter {
 
     return {
       settings: this.settings,
-      session: this.session,
+      session: cloneSession(this.session),
       summary: this.summary,
       stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
@@ -494,6 +501,10 @@ export class DownloadManager extends EventEmitter {
   public clearAll(): void {
     this.stop();
     this.abortPostProcessing("clear_all");
+    if (this.stateEmitTimer) {
+      clearTimeout(this.stateEmitTimer);
+      this.stateEmitTimer = null;
+    }
     this.session.packageOrder = [];
     this.session.packages = {};
     this.session.items = {};
@@ -1394,8 +1405,8 @@ export class DownloadManager extends EventEmitter {
     }
 
     const parsed = path.parse(preferredPath);
-    let index = 0;
-    while (true) {
+    const maxIndex = 10000;
+    for (let index = 0; index <= maxIndex; index += 1) {
       const candidate = index === 0
         ? preferredPath
         : path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`);
@@ -1408,8 +1419,11 @@ export class DownloadManager extends EventEmitter {
         this.claimedTargetPathByItem.set(itemId, candidate);
         return candidate;
       }
-      index += 1;
     }
+    logger.error(`claimTargetPath: Limit erreicht für ${preferredPath}`);
+    this.reservedTargetPaths.set(pathKey(preferredPath), itemId);
+    this.claimedTargetPathByItem.set(itemId, preferredPath);
+    return preferredPath;
   }
 
   private releaseTargetPath(itemId: string): void {
@@ -1804,6 +1818,9 @@ export class DownloadManager extends EventEmitter {
     if (!item || !pkg || pkg.cancelled || !pkg.enabled) {
       return;
     }
+    if (this.activeTasks.has(itemId)) {
+      return;
+    }
 
     item.status = "validating";
     item.fullStatus = "Link wird umgewandelt";
@@ -1844,7 +1861,9 @@ export class DownloadManager extends EventEmitter {
     let freshRetryUsed = false;
     let stallRetries = 0;
     let genericErrorRetries = 0;
+    let unrestrictRetries = 0;
     const maxGenericErrorRetries = Math.max(2, REQUEST_RETRIES);
+    const maxUnrestrictRetries = Math.max(3, REQUEST_RETRIES);
     while (true) {
       try {
         const unrestricted = await this.debridService.unrestrictLink(item.url);
@@ -2036,6 +2055,23 @@ export class DownloadManager extends EventEmitter {
             this.persistSoon();
             this.emitState();
             await sleep(450);
+            continue;
+          }
+
+          if (isUnrestrictFailure(errorText) && unrestrictRetries < maxUnrestrictRetries) {
+            unrestrictRetries += 1;
+            item.retries += 1;
+            item.status = "queued";
+            item.fullStatus = `Unrestrict-Fehler, Retry ${unrestrictRetries}/${maxUnrestrictRetries}`;
+            item.lastError = errorText;
+            item.attempts = 0;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            active.abortController = new AbortController();
+            active.abortReason = "none";
+            this.persistSoon();
+            this.emitState();
+            await sleep(Math.min(8000, 2000 * unrestrictRetries));
             continue;
           }
 
@@ -2728,6 +2764,10 @@ export class DownloadManager extends EventEmitter {
       updateExtractingStatus("Entpacken 0%");
       this.emitState();
 
+      const extractTimeoutMs = 4 * 60 * 60 * 1000;
+      const extractDeadline = setTimeout(() => {
+        logger.error(`Post-Processing Extraction Timeout nach 4h: pkg=${pkg.name}`);
+      }, extractTimeoutMs);
       try {
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
@@ -2754,6 +2794,7 @@ export class DownloadManager extends EventEmitter {
             this.emitState();
           }
         });
+        clearTimeout(extractDeadline);
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
@@ -2783,6 +2824,7 @@ export class DownloadManager extends EventEmitter {
           pkg.status = "completed";
         }
       } catch (error) {
+        clearTimeout(extractDeadline);
         const reasonRaw = String(error || "");
         if (reasonRaw.includes("aborted:extract")) {
           for (const entry of completedItems) {
