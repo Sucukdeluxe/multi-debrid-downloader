@@ -52,6 +52,10 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
     const filePath = path.join(packageDir, entry.name);
     let lines: string[];
     try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > 5 * 1024 * 1024) {
+        continue;
+      }
       lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
     } catch {
       continue;

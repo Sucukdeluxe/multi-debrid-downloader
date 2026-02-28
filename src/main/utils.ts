@@ -21,7 +21,7 @@ export function compactErrorText(message: unknown, maxLen = 220): string {
 }
 
 export function sanitizeFilename(name: string): string {
-  const cleaned = String(name || "").trim().replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = String(name || "").trim().replace(/\0/g, "").replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
   return cleaned || "Paket";
 }
 
