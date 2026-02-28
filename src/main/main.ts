@@ -197,7 +197,11 @@ function registerIpcHandlers(): void {
     validateString(payload?.rawText, "rawText");
     return controller.addLinks(payload);
   });
-  ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => controller.addContainers(filePaths ?? []));
+  ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => {
+    const validPaths = validateStringArray(filePaths ?? [], "filePaths");
+    const safePaths = validPaths.filter((p) => path.isAbsolute(p) && !p.includes(".."));
+    return controller.addContainers(safePaths);
+  });
   ipcMain.handle(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   ipcMain.handle(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {
     validateString(packageId, "packageId");
