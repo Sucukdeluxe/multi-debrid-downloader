@@ -320,6 +320,9 @@ class MegaDebridClient {
         web.retriesUsed = attempt - 1;
         return web;
       }
+      if (!lastError) {
+        lastError = web ? "Mega-Web Antwort ohne Download-Link" : "Mega-Web Antwort leer";
+      }
       if (attempt < REQUEST_RETRIES) {
         await sleep(retryDelay(attempt));
       }
@@ -358,7 +361,7 @@ class BestDebridClient {
           "User-Agent": "RD-Node-Downloader/1.1.12"
         };
         if (request.useAuthHeader) {
-          headers.Authorization = this.token;
+          headers.Authorization = `Bearer ${this.token}`;
         }
 
         const response = await fetch(request.url, {
@@ -478,7 +481,7 @@ class AllDebridClient {
 
         const responseLink = pickString(info, ["link"]);
         const byResponse = canonicalToInput.get(canonicalLink(responseLink));
-        const byIndex = chunk[i] || "";
+        const byIndex = chunk.length === 1 ? chunk[0] : "";
         const original = byResponse || byIndex;
         if (!original) {
           continue;
@@ -609,7 +612,7 @@ export class DebridService {
       reportResolved(link, fromPage);
     });
 
-    const stillUnresolved = unresolved.filter((link) => !clean.has(link));
+    const stillUnresolved = unresolved.filter((link) => !clean.has(link) && !isRapidgatorLink(link));
     await runWithConcurrency(stillUnresolved, 4, async (link) => {
       try {
         const unrestricted = await this.unrestrictLink(link);
@@ -629,6 +632,31 @@ export class DebridService {
       this.settings.providerTertiary
     );
 
+    const primary = order[0];
+    if (!this.settings.autoProviderFallback) {
+      if (!this.isProviderConfigured(primary)) {
+        throw new Error(`${PROVIDER_LABELS[primary]} nicht konfiguriert`);
+      }
+      try {
+        const result = await this.unrestrictViaProvider(primary, link);
+        let fileName = result.fileName;
+        if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
+          const fromPage = await resolveRapidgatorFilename(link);
+          if (fromPage) {
+            fileName = fromPage;
+          }
+        }
+        return {
+          ...result,
+          fileName,
+          provider: primary,
+          providerLabel: PROVIDER_LABELS[primary]
+        };
+      } catch (error) {
+        throw new Error(`Unrestrict fehlgeschlagen: ${PROVIDER_LABELS[primary]}: ${compactErrorText(error)}`);
+      }
+    }
+
     let configuredFound = false;
     const attempts: string[] = [];
 
@@ -637,9 +665,6 @@ export class DebridService {
         continue;
       }
       configuredFound = true;
-      if (!this.settings.autoProviderFallback && attempts.length > 0) {
-        break;
-      }
 
       try {
         const result = await this.unrestrictViaProvider(provider, link);

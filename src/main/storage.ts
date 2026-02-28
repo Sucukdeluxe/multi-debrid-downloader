@@ -25,18 +25,25 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
   return Math.max(min, Math.min(max, Math.floor(num)));
 }
 
+function createScheduleId(index: number): string {
+  return `sched-${Date.now().toString(36)}-${index.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function normalizeBandwidthSchedules(raw: unknown): BandwidthScheduleEntry[] {
   if (!Array.isArray(raw)) {
     return [];
   }
 
   const normalized: BandwidthScheduleEntry[] = [];
-  for (const entry of raw) {
+  for (let index = 0; index < raw.length; index += 1) {
+    const entry = raw[index];
     if (!entry || typeof entry !== "object") {
       continue;
     }
     const value = entry as Partial<BandwidthScheduleEntry>;
+    const rawId = typeof value.id === "string" ? value.id.trim() : "";
     normalized.push({
+      id: rawId || createScheduleId(index),
       startHour: clampNumber(value.startHour, 0, 0, 23),
       endHour: clampNumber(value.endHour, 8, 0, 23),
       speedLimitKbps: clampNumber(value.speedLimitKbps, 0, 0, 500000),

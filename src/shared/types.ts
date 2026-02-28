@@ -19,6 +19,7 @@ export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
 
 export interface BandwidthScheduleEntry {
+  id?: string;
   startHour: number;
   endHour: number;
   speedLimitKbps: number;

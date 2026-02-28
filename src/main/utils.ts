@@ -9,6 +9,12 @@ function safeDecodeURIComponent(value: string): string {
   }
 }
 
+const WINDOWS_RESERVED_BASENAMES = new Set([
+  "con", "prn", "aux", "nul",
+  "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+  "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+]);
+
 export function compactErrorText(message: unknown, maxLen = 220): string {
   const raw = String(message ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   if (!raw) {
@@ -21,8 +27,27 @@ export function compactErrorText(message: unknown, maxLen = 220): string {
 }
 
 export function sanitizeFilename(name: string): string {
-  const cleaned = String(name || "").trim().replace(/\0/g, "").replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
-  return cleaned || "Paket";
+  const cleaned = String(name || "")
+    .replace(/\0/g, "")
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let normalized = cleaned
+    .replace(/^[.\s]+/g, "")
+    .replace(/[.\s]+$/g, "")
+    .trim();
+
+  if (!normalized || normalized === "." || normalized === ".." || /^\.+$/.test(normalized)) {
+    return "Paket";
+  }
+
+  const parsed = path.parse(normalized);
+  if (WINDOWS_RESERVED_BASENAMES.has(parsed.name.toLowerCase())) {
+    normalized = `${parsed.name}_${parsed.ext}`;
+  }
+
+  return normalized || "Paket";
 }
 
 export function isHttpLink(value: string): boolean {

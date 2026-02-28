@@ -114,6 +114,44 @@ describe("debrid service", () => {
     expect(result.fileSize).toBe(2048);
   });
 
+  it("sends Bearer auth header to BestDebrid", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "best-token",
+      providerPrimary: "bestdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    let authHeader = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/api/v1/generateLink?link=")) {
+        const headers = init?.headers;
+        if (headers instanceof Headers) {
+          authHeader = headers.get("Authorization") || "";
+        } else if (Array.isArray(headers)) {
+          const tuple = headers.find(([key]) => key.toLowerCase() === "authorization");
+          authHeader = tuple?.[1] || "";
+        } else {
+          authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+        }
+        return new Response(JSON.stringify({ download: "https://best.example/file.bin", filename: "file.bin", filesize: 42 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://hoster.example/file/abc");
+    expect(result.provider).toBe("bestdebrid");
+    expect(authHeader).toBe("Bearer best-token");
+  });
+
   it("supports AllDebrid unlock", async () => {
     const settings = {
       ...defaultSettings(),
@@ -214,6 +252,30 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     await expect(service.unrestrictLink("https://rapidgator.net/file/example.part5.rar.html")).rejects.toThrow();
     expect(allDebridCalls).toBe(0);
+  });
+
+  it("does not use secondary provider when fallback is disabled and primary is missing", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "megadebrid" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const megaWeb = vi.fn(async () => ({
+      fileName: "should-not-run.bin",
+      directUrl: "https://unused",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    await expect(service.unrestrictLink("https://rapidgator.net/file/example.part5.rar.html")).rejects.toThrow(/nicht konfiguriert/i);
+    expect(megaWeb).toHaveBeenCalledTimes(0);
   });
 
   it("allows disabling secondary and tertiary providers", async () => {
@@ -366,6 +428,82 @@ describe("debrid service", () => {
       { link: linkFromPage, fileName: "from-page.part1.rar" },
       { link: linkFromProvider, fileName: "from-provider.part2.rar" }
     ]));
+  });
+
+  it("does not unrestrict rapidgator links during filename scan after page lookup miss", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      allDebridToken: ""
+    };
+
+    const link = "https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let unrestrictCalls = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(JSON.stringify({ error: "should-not-be-called" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url === link) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const resolved = await service.resolveFilenames([link]);
+    expect(resolved.size).toBe(0);
+    expect(unrestrictCalls).toBe(0);
+  });
+
+  it("does not map AllDebrid filename infos by index when response link is missing", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "ad-token",
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const linkA = "https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const linkB = "https://rapidgator.net/file/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.alldebrid.com/v4/link/infos")) {
+        return new Response(JSON.stringify({
+          status: "success",
+          data: {
+            infos: [
+              { filename: "wrong-a.mkv" },
+              { filename: "wrong-b.mkv" }
+            ]
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url === linkA || url === linkB) {
+        return new Response("no title", { status: 404 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const resolved = await service.resolveFilenames([linkA, linkB]);
+    expect(resolved.size).toBe(0);
   });
 });
 

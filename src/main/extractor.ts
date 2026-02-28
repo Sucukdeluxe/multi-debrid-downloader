@@ -12,7 +12,11 @@ const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installi
 
 let resolvedExtractorCommand: string | null = null;
 let resolveFailureReason = "";
+let resolveFailureAt = 0;
 let externalExtractorSupportsPerfFlags = true;
+
+const EXTRACTOR_RETRY_AFTER_MS = 30_000;
+const DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB = 256;
 
 export interface ExtractOptions {
   packageDir: string;
@@ -44,6 +48,14 @@ const EXTRACT_BASE_TIMEOUT_MS = 6 * 60 * 1000;
 const EXTRACT_PER_GIB_TIMEOUT_MS = 4 * 60 * 1000;
 const EXTRACT_MAX_TIMEOUT_MS = 120 * 60 * 1000;
 const ARCHIVE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function zipEntryMemoryLimitBytes(): number {
+  const fromEnvMb = Number(process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB ?? NaN);
+  if (Number.isFinite(fromEnvMb) && fromEnvMb >= 8 && fromEnvMb <= 4096) {
+    return Math.floor(fromEnvMb * 1024 * 1024);
+  }
+  return DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB * 1024 * 1024;
+}
 
 export function pathSetKey(filePath: string): string {
   return process.platform === "win32" ? filePath.toLowerCase() : filePath;
@@ -490,7 +502,12 @@ async function resolveExtractorCommand(): Promise<string> {
     return resolvedExtractorCommand;
   }
   if (resolveFailureReason) {
-    throw new Error(resolveFailureReason);
+    const age = Date.now() - resolveFailureAt;
+    if (age < EXTRACTOR_RETRY_AFTER_MS) {
+      throw new Error(resolveFailureReason);
+    }
+    resolveFailureReason = "";
+    resolveFailureAt = 0;
   }
 
   const candidates = winRarCandidates();
@@ -503,12 +520,14 @@ async function resolveExtractorCommand(): Promise<string> {
     if (!probe.missingCommand) {
       resolvedExtractorCommand = command;
       resolveFailureReason = "";
+      resolveFailureAt = 0;
       logger.info(`Entpacker erkannt: ${command}`);
       return command;
     }
   }
 
   resolveFailureReason = NO_EXTRACTOR_MESSAGE;
+  resolveFailureAt = Date.now();
   throw new Error(resolveFailureReason);
 }
 
@@ -581,6 +600,7 @@ async function runExternalExtract(
     if (result.missingCommand) {
       resolvedExtractorCommand = null;
       resolveFailureReason = NO_EXTRACTOR_MESSAGE;
+      resolveFailureAt = Date.now();
       throw new Error(NO_EXTRACTOR_MESSAGE);
     }
 
@@ -592,6 +612,7 @@ async function runExternalExtract(
 
 function extractZipArchive(archivePath: string, targetDir: string, conflictMode: ConflictMode): void {
   const mode = effectiveConflictMode(conflictMode);
+  const memoryLimitBytes = zipEntryMemoryLimitBytes();
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
   const resolvedTarget = path.resolve(targetDir);
@@ -605,6 +626,14 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
       fs.mkdirSync(outputPath, { recursive: true });
       continue;
     }
+
+    const uncompressedSize = Number((entry as unknown as { header?: { size?: number } }).header?.size ?? NaN);
+    if (Number.isFinite(uncompressedSize) && uncompressedSize > memoryLimitBytes) {
+      const entryMb = Math.ceil(uncompressedSize / (1024 * 1024));
+      const limitMb = Math.ceil(memoryLimitBytes / (1024 * 1024));
+      throw new Error(`ZIP-Eintrag zu groß für internen Entpacker (${entryMb} MB > ${limitMb} MB)`);
+    }
+
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     // TOCTOU note: There is a small race between existsSync and writeFileSync below.
     // This is acceptable here because zip extraction is single-threaded and we need
