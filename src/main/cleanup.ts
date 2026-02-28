@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ARCHIVE_TEMP_EXTENSIONS, LINK_ARTIFACT_EXTENSIONS, RAR_SPLIT_RE, SAMPLE_DIR_NAMES, SAMPLE_TOKEN_RE, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
+import { ARCHIVE_TEMP_EXTENSIONS, LINK_ARTIFACT_EXTENSIONS, MAX_LINK_ARTIFACT_BYTES, RAR_SPLIT_RE, SAMPLE_DIR_NAMES, SAMPLE_TOKEN_RE, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
 
 async function yieldToLoop(): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -111,7 +111,7 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
         if (/[._\- ](links?|downloads?|urls?|dlc)([._\- ]|$)/i.test(name)) {
           try {
             const stat = fs.statSync(full);
-            if (stat.size <= 256 * 1024) {
+            if (stat.size <= MAX_LINK_ARTIFACT_BYTES) {
               const text = fs.readFileSync(full, "utf8");
               shouldDelete = /https?:\/\//i.test(text);
             }

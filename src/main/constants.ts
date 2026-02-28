@@ -20,8 +20,13 @@ export const SAMPLE_VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", 
 export const LINK_ARTIFACT_EXTENSIONS = new Set([".url", ".webloc", ".dlc", ".rsdf", ".ccf"]);
 export const SAMPLE_TOKEN_RE = /(^|[._\-\s])sample([._\-\s]|$)/i;
 
-export const ARCHIVE_TEMP_EXTENSIONS = new Set([".rar", ".zip", ".7z", ".tmp", ".part"]);
+export const ARCHIVE_TEMP_EXTENSIONS = new Set([".rar", ".zip", ".7z", ".tmp", ".part", ".tar", ".gz", ".bz2", ".xz"]);
 export const RAR_SPLIT_RE = /\.r\d{2}$/i;
+
+export const MAX_MANIFEST_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;
+export const SPEED_WINDOW_SECONDS = 3;
+export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
 
 export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader";
 

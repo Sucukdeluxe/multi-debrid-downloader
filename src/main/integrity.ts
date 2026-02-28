@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ParsedHashEntry } from "../shared/types";
+import { MAX_MANIFEST_FILE_BYTES } from "./constants";
 
 export function parseHashLine(line: string): ParsedHashEntry | null {
   const text = String(line || "").trim();
@@ -53,7 +54,7 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
     let lines: string[];
     try {
       const stat = fs.statSync(filePath);
-      if (stat.size > 5 * 1024 * 1024) {
+      if (stat.size > MAX_MANIFEST_FILE_BYTES) {
         continue;
       }
       lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);

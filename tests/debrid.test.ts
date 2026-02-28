@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings } from "../src/main/constants";
-import { DebridService } from "../src/main/debrid";
+import { DebridService, extractRapidgatorFilenameFromHtml, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -366,5 +366,104 @@ describe("debrid service", () => {
       { link: linkFromPage, fileName: "from-page.part1.rar" },
       { link: linkFromProvider, fileName: "from-provider.part2.rar" }
     ]));
+  });
+});
+
+describe("normalizeResolvedFilename", () => {
+  it("strips HTML entities", () => {
+    expect(normalizeResolvedFilename("Show.S01E01.German.DL.720p.part01.rar")).toBe("Show.S01E01.German.DL.720p.part01.rar");
+    expect(normalizeResolvedFilename("File&amp;Name.part1.rar")).toBe("File&Name.part1.rar");
+    expect(normalizeResolvedFilename("File&quot;Name&quot;.part1.rar")).toBe('File"Name".part1.rar');
+  });
+
+  it("strips HTML tags and collapses whitespace", () => {
+    // Tags are replaced by spaces, then multiple spaces collapsed
+    const result = normalizeResolvedFilename("<b>Show.S01E01</b>.part01.rar");
+    expect(result).toBe("Show.S01E01 .part01.rar");
+
+    // Entity decoding happens before tag removal, so &lt;...&gt; becomes <...> then gets stripped
+    const entityTagResult = normalizeResolvedFilename("File&lt;Tag&gt;.part1.rar");
+    expect(entityTagResult).toBe("File .part1.rar");
+  });
+
+  it("strips 'download file' prefix", () => {
+    expect(normalizeResolvedFilename("Download file Show.S01E01.part01.rar")).toBe("Show.S01E01.part01.rar");
+    expect(normalizeResolvedFilename("download file Movie.2024.mkv")).toBe("Movie.2024.mkv");
+  });
+
+  it("strips Rapidgator suffix", () => {
+    expect(normalizeResolvedFilename("Show.S01E01.part01.rar - Rapidgator")).toBe("Show.S01E01.part01.rar");
+    expect(normalizeResolvedFilename("Movie.mkv | Rapidgator.net")).toBe("Movie.mkv");
+  });
+
+  it("returns empty for opaque or non-filename values", () => {
+    expect(normalizeResolvedFilename("")).toBe("");
+    expect(normalizeResolvedFilename("just some text")).toBe("");
+    expect(normalizeResolvedFilename("e51f6809bb6ca615601f5ac5db433737")).toBe("");
+    expect(normalizeResolvedFilename("download.bin")).toBe("");
+  });
+
+  it("handles combined transforms", () => {
+    // "Download file" prefix stripped, &amp; decoded to &, "- Rapidgator" suffix stripped
+    expect(normalizeResolvedFilename("Download file Show.S01E01.part01.rar - Rapidgator"))
+      .toBe("Show.S01E01.part01.rar");
+  });
+});
+
+describe("filenameFromRapidgatorUrlPath", () => {
+  it("extracts filename from standard rapidgator URL", () => {
+    expect(filenameFromRapidgatorUrlPath("https://rapidgator.net/file/abc123/Show.S01E01.part01.rar.html"))
+      .toBe("Show.S01E01.part01.rar");
+  });
+
+  it("extracts filename without .html suffix", () => {
+    expect(filenameFromRapidgatorUrlPath("https://rapidgator.net/file/abc123/Movie.2024.mkv"))
+      .toBe("Movie.2024.mkv");
+  });
+
+  it("returns empty for hash-only URL paths", () => {
+    expect(filenameFromRapidgatorUrlPath("https://rapidgator.net/file/e51f6809bb6ca615601f5ac5db433737"))
+      .toBe("");
+  });
+
+  it("returns empty for invalid URLs", () => {
+    expect(filenameFromRapidgatorUrlPath("not-a-url")).toBe("");
+    expect(filenameFromRapidgatorUrlPath("")).toBe("");
+  });
+
+  it("handles URL-encoded path segments", () => {
+    expect(filenameFromRapidgatorUrlPath("https://rapidgator.net/file/id/Show%20Name.S01E01.part01.rar.html"))
+      .toBe("Show Name.S01E01.part01.rar");
+  });
+});
+
+describe("extractRapidgatorFilenameFromHtml", () => {
+  it("extracts filename from title tag", () => {
+    const html = "<html><head><title>Download file Show.S01E01.German.DL.720p.part01.rar - Rapidgator</title></head></html>";
+    expect(extractRapidgatorFilenameFromHtml(html)).toBe("Show.S01E01.German.DL.720p.part01.rar");
+  });
+
+  it("extracts filename from og:title meta tag", () => {
+    const html = '<html><head><meta property="og:title" content="Movie.2024.German.DL.1080p.mkv"></head></html>';
+    expect(extractRapidgatorFilenameFromHtml(html)).toBe("Movie.2024.German.DL.1080p.mkv");
+  });
+
+  it("extracts filename from reversed og:title attribute order", () => {
+    const html = '<html><head><meta content="Movie.2024.German.DL.1080p.mkv" property="og:title"></head></html>';
+    expect(extractRapidgatorFilenameFromHtml(html)).toBe("Movie.2024.German.DL.1080p.mkv");
+  });
+
+  it("returns empty for HTML without recognizable filenames", () => {
+    const html = "<html><head><title>Rapidgator: Fast, Pair and Unlimited</title></head><body>No file here</body></html>";
+    expect(extractRapidgatorFilenameFromHtml(html)).toBe("");
+  });
+
+  it("returns empty for empty HTML", () => {
+    expect(extractRapidgatorFilenameFromHtml("")).toBe("");
+  });
+
+  it("extracts from File name label in page body", () => {
+    const html = '<html><body>File name: <b>Show.S02E03.720p.part01.rar</b></body></html>';
+    expect(extractRapidgatorFilenameFromHtml(html)).toBe("Show.S02E03.720p.part01.rar");
   });
 });

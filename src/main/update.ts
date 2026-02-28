@@ -69,12 +69,12 @@ function timeoutController(ms: number): { signal: AbortSignal; clear: () => void
   };
 }
 
-function parseVersionParts(version: string): number[] {
+export function parseVersionParts(version: string): number[] {
   const cleaned = version.replace(/^v/i, "").trim();
   return cleaned.split(".").map((part) => Number(part.replace(/[^0-9].*$/, "") || "0"));
 }
 
-function isRemoteNewer(currentVersion: string, latestVersion: string): boolean {
+export function isRemoteNewer(currentVersion: string, latestVersion: string): boolean {
   const current = parseVersionParts(currentVersion);
   const latest = parseVersionParts(latestVersion);
   const maxLen = Math.max(current.length, latest.length);

@@ -160,7 +160,7 @@ function looksLikeFileName(value: string): boolean {
   return /\.(?:part\d+\.rar|r\d{2}|rar|zip|7z|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|m2ts|ts|webm|mp3|flac|aac|srt|ass|sub)$/i.test(value);
 }
 
-function normalizeResolvedFilename(value: string): string {
+export function normalizeResolvedFilename(value: string): string {
   const candidate = decodeHtmlEntities(String(value || ""))
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
@@ -174,7 +174,7 @@ function normalizeResolvedFilename(value: string): string {
   return candidate;
 }
 
-function filenameFromRapidgatorUrlPath(link: string): string {
+export function filenameFromRapidgatorUrlPath(link: string): string {
   try {
     const parsed = new URL(link);
     const pathParts = parsed.pathname.split("/").filter(Boolean);
@@ -191,10 +191,10 @@ function filenameFromRapidgatorUrlPath(link: string): string {
   }
 }
 
-function extractRapidgatorFilenameFromHtml(html: string): string {
+export function extractRapidgatorFilenameFromHtml(html: string): string {
   const patterns = [
-    /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i,
-    /<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+(?:property=["']og:title["'][^>]+content=["']([^"']+)["']|content=["']([^"']+)["'][^>]+property=["']og:title["'])/i,
+    /<meta[^>]+(?:name=["']title["'][^>]+content=["']([^"']+)["']|content=["']([^"']+)["'][^>]+name=["']title["'])/i,
     /<title>([^<]+)<\/title>/i,
     /(?:Dateiname|File\s*name)\s*[:\-]\s*<[^>]*>\s*([^<]+)\s*</i,
     /(?:Dateiname|File\s*name)\s*[:\-]\s*([^<\r\n]+)/i,
@@ -204,7 +204,10 @@ function extractRapidgatorFilenameFromHtml(html: string): string {
 
   for (const pattern of patterns) {
     const match = html.match(pattern);
-    const normalized = normalizeResolvedFilename(match?.[1] || "");
+    // Some patterns have multiple capture groups for attribute-order independence;
+    // pick the first non-empty group.
+    const raw = match?.[1] || match?.[2] || "";
+    const normalized = normalizeResolvedFilename(raw);
     if (normalized) {
       return normalized;
     }

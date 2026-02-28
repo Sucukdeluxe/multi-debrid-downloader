@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkGitHubUpdate, installLatestUpdate, normalizeUpdateRepo } from "../src/main/update";
+import { checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
 import { UpdateCheckResult } from "../src/shared/types";
 
@@ -106,5 +106,93 @@ describe("update", () => {
     const result = await installLatestUpdate("owner/repo", prechecked);
     expect(result.started).toBe(true);
     expect(requestedUrls.some((url) => url.includes("/releases/latest/download/"))).toBe(true);
+  });
+});
+
+describe("normalizeUpdateRepo extended", () => {
+  it("handles trailing slashes and extra path segments", () => {
+    expect(normalizeUpdateRepo("owner/repo/")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("/owner/repo/")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("https://github.com/owner/repo/tree/main/src")).toBe("owner/repo");
+  });
+
+  it("handles ssh-style git URLs", () => {
+    expect(normalizeUpdateRepo("git@github.com:user/project.git")).toBe("user/project");
+  });
+
+  it("returns default for malformed inputs", () => {
+    expect(normalizeUpdateRepo("just-one-part")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("   ")).toBe("Sucukdeluxe/real-debrid-downloader");
+  });
+
+  it("handles www prefix", () => {
+    expect(normalizeUpdateRepo("https://www.github.com/owner/repo")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("www.github.com/owner/repo")).toBe("owner/repo");
+  });
+});
+
+describe("isRemoteNewer", () => {
+  it("detects newer major version", () => {
+    expect(isRemoteNewer("1.0.0", "2.0.0")).toBe(true);
+  });
+
+  it("detects newer minor version", () => {
+    expect(isRemoteNewer("1.2.0", "1.3.0")).toBe(true);
+  });
+
+  it("detects newer patch version", () => {
+    expect(isRemoteNewer("1.2.3", "1.2.4")).toBe(true);
+  });
+
+  it("returns false for same version", () => {
+    expect(isRemoteNewer("1.2.3", "1.2.3")).toBe(false);
+  });
+
+  it("returns false for older version", () => {
+    expect(isRemoteNewer("2.0.0", "1.0.0")).toBe(false);
+    expect(isRemoteNewer("1.3.0", "1.2.0")).toBe(false);
+    expect(isRemoteNewer("1.2.4", "1.2.3")).toBe(false);
+  });
+
+  it("handles versions with different segment counts", () => {
+    expect(isRemoteNewer("1.2", "1.2.1")).toBe(true);
+    expect(isRemoteNewer("1.2.1", "1.2")).toBe(false);
+    expect(isRemoteNewer("1", "1.0.1")).toBe(true);
+  });
+
+  it("handles v-prefix in version strings", () => {
+    expect(isRemoteNewer("v1.0.0", "v2.0.0")).toBe(true);
+    expect(isRemoteNewer("v1.0.0", "v1.0.0")).toBe(false);
+  });
+});
+
+describe("parseVersionParts", () => {
+  it("parses standard version strings", () => {
+    expect(parseVersionParts("1.2.3")).toEqual([1, 2, 3]);
+    expect(parseVersionParts("10.20.30")).toEqual([10, 20, 30]);
+  });
+
+  it("strips v prefix", () => {
+    expect(parseVersionParts("v1.2.3")).toEqual([1, 2, 3]);
+    expect(parseVersionParts("V1.2.3")).toEqual([1, 2, 3]);
+  });
+
+  it("handles single segment", () => {
+    expect(parseVersionParts("5")).toEqual([5]);
+  });
+
+  it("handles version with pre-release suffix", () => {
+    // Non-numeric suffixes are stripped per part
+    expect(parseVersionParts("1.2.3-beta")).toEqual([1, 2, 3]);
+    expect(parseVersionParts("1.2.3rc1")).toEqual([1, 2, 3]);
+  });
+
+  it("handles empty and whitespace", () => {
+    expect(parseVersionParts("")).toEqual([0]);
+    expect(parseVersionParts("  ")).toEqual([0]);
+  });
+
+  it("handles versions with extra dots", () => {
+    expect(parseVersionParts("1.2.3.4")).toEqual([1, 2, 3, 4]);
   });
 });

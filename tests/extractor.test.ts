@@ -447,4 +447,111 @@ describe("extractor", () => {
     expect(fs.existsSync(path.join(targetDir, "safe.txt"))).toBe(true);
     expect(fs.existsSync(path.join(root, "escaped.txt"))).toBe(false);
   });
+
+  it("builds external extract args for 7z-style extractor", () => {
+    const args7z = buildExternalExtractArgs("7z.exe", "archive.7z", "C:\\target", "overwrite");
+    expect(args7z[0]).toBe("x");
+    expect(args7z).toContain("-y");
+    expect(args7z).toContain("-aoa");
+    expect(args7z).toContain("-p");
+    expect(args7z).toContain("archive.7z");
+    expect(args7z).toContain("-oC:\\target");
+  });
+
+  it("builds 7z args with skip conflict mode", () => {
+    const args = buildExternalExtractArgs("7z", "archive.zip", "/out", "skip");
+    expect(args).toContain("-aos");
+  });
+
+  it("builds 7z args with rename conflict mode", () => {
+    const args = buildExternalExtractArgs("7z", "archive.zip", "/out", "rename");
+    expect(args).toContain("-aou");
+  });
+
+  it("builds 7z args with password", () => {
+    const args = buildExternalExtractArgs("7z", "archive.7z", "/out", "overwrite", "secretpass");
+    expect(args).toContain("-psecretpass");
+  });
+
+  it("builds WinRAR args with empty password uses -p-", () => {
+    const args = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "/out", "overwrite", "");
+    expect(args).toContain("-p-");
+  });
+
+  it("builds WinRAR args with skip conflict mode uses -o-", () => {
+    const args = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "/out", "skip");
+    expect(args[1]).toBe("-o-");
+  });
+
+  it("collects split zip companion parts for cleanup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const mainZip = path.join(packageDir, "release.zip");
+    const z01 = path.join(packageDir, "release.z01");
+    const z02 = path.join(packageDir, "release.z02");
+    const otherZip = path.join(packageDir, "other.zip");
+
+    fs.writeFileSync(mainZip, "a", "utf8");
+    fs.writeFileSync(z01, "b", "utf8");
+    fs.writeFileSync(z02, "c", "utf8");
+    fs.writeFileSync(otherZip, "x", "utf8");
+
+    const targets = new Set(collectArchiveCleanupTargets(mainZip));
+    expect(targets.has(mainZip)).toBe(true);
+    expect(targets.has(z01)).toBe(true);
+    expect(targets.has(z02)).toBe(true);
+    expect(targets.has(otherZip)).toBe(false);
+  });
+
+  it("collects numbered split zip parts (.zip.001, .zip.002) for cleanup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const part1 = path.join(packageDir, "movie.zip.001");
+    const part2 = path.join(packageDir, "movie.zip.002");
+    const part3 = path.join(packageDir, "movie.zip.003");
+    const mainZip = path.join(packageDir, "movie.zip");
+    const other = path.join(packageDir, "other.zip.001");
+
+    fs.writeFileSync(part1, "a", "utf8");
+    fs.writeFileSync(part2, "b", "utf8");
+    fs.writeFileSync(part3, "c", "utf8");
+    fs.writeFileSync(mainZip, "d", "utf8");
+    fs.writeFileSync(other, "x", "utf8");
+
+    const targets = new Set(collectArchiveCleanupTargets(part1));
+    expect(targets.has(part1)).toBe(true);
+    expect(targets.has(part2)).toBe(true);
+    expect(targets.has(part3)).toBe(true);
+    expect(targets.has(mainZip)).toBe(true);
+    expect(targets.has(other)).toBe(false);
+  });
+
+  it("collects old-style rar split parts (.r00, .r01) for cleanup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const mainRar = path.join(packageDir, "show.rar");
+    const r00 = path.join(packageDir, "show.r00");
+    const r01 = path.join(packageDir, "show.r01");
+    const r02 = path.join(packageDir, "show.r02");
+
+    fs.writeFileSync(mainRar, "a", "utf8");
+    fs.writeFileSync(r00, "b", "utf8");
+    fs.writeFileSync(r01, "c", "utf8");
+    fs.writeFileSync(r02, "d", "utf8");
+
+    const targets = new Set(collectArchiveCleanupTargets(mainRar));
+    expect(targets.has(mainRar)).toBe(true);
+    expect(targets.has(r00)).toBe(true);
+    expect(targets.has(r01)).toBe(true);
+    expect(targets.has(r02)).toBe(true);
+  });
 });
