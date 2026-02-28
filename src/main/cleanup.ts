@@ -28,7 +28,9 @@ export function cleanupCancelledPackageArtifacts(packageDir: string): number {
   const stack = [packageDir];
   while (stack.length > 0) {
     const current = stack.pop() as string;
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
@@ -94,7 +96,9 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
   const stack = [extractDir];
   while (stack.length > 0) {
     const current = stack.pop() as string;
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
@@ -177,7 +181,9 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
 
   while (stack.length > 0) {
     const current = stack.pop() as string;
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory() || entry.isSymbolicLink()) {
         const base = entry.name.toLowerCase();

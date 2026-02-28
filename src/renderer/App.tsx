@@ -80,6 +80,9 @@ function formatSpeedMbps(speedBps: number): string {
 }
 
 function humanSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "0 B";
+  }
   if (bytes < 1024) { return `${bytes} B`; }
   if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
   if (bytes < 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
@@ -258,6 +261,9 @@ export function App(): ReactElement {
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
     void window.rd.getSnapshot().then((state) => {
+      if (!mountedRef.current) {
+        return;
+      }
       setSnapshot(state);
       setSettingsDraft(state.settings);
       settingsDirtyRef.current = false;
@@ -265,6 +271,9 @@ export function App(): ReactElement {
       applyTheme(state.settings.theme);
       if (state.settings.autoUpdateCheck) {
         void window.rd.checkUpdates().then((result) => {
+          if (!mountedRef.current) {
+            return;
+          }
           void handleUpdateResult(result, "startup");
         }).catch(() => undefined);
       }
@@ -717,7 +726,8 @@ export function App(): ReactElement {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
       });
     } else if (droppedText.trim()) {
-      setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id
+      const activeCollectorId = activeCollectorTabRef.current;
+      setCollectorTabs((prev) => prev.map((t) => t.id === activeCollectorId
         ? { ...t, text: t.text ? `${t.text}\n${droppedText}` : droppedText } : t));
       setTab("collector");
       showToast("Links per Drag-and-Drop eingefügt");
@@ -748,6 +758,7 @@ export function App(): ReactElement {
       return;
     }
 
+    actionBusyRef.current = true;
     setActionBusy(true);
 
     const input = document.createElement("input");
@@ -755,7 +766,8 @@ export function App(): ReactElement {
     input.accept = ".json";
 
     const releasePickerBusy = (): void => {
-      setActionBusy(actionBusyRef.current);
+      actionBusyRef.current = false;
+      setActionBusy(false);
     };
 
     const onWindowFocus = (): void => {
@@ -1198,8 +1210,12 @@ export function App(): ReactElement {
                     setDownloadsSortDescending(nextDescending);
                     const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
                     const sorted = sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
+                    pendingPackageOrderRef.current = [...sorted];
+                    pendingPackageOrderAtRef.current = Date.now();
                     packageOrderRef.current = sorted;
                     void window.rd.reorderPackages(sorted).catch((error) => {
+                      pendingPackageOrderRef.current = null;
+                      pendingPackageOrderAtRef.current = 0;
                       packageOrderRef.current = serverPackageOrderRef.current;
                       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
                     });
@@ -1268,6 +1284,7 @@ export function App(): ReactElement {
                 <button className="btn" disabled={actionBusy} onClick={onCheckUpdates}>Updates prüfen</button>
                 <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
                   const next = settingsDraft.theme === "dark" ? "light" : "dark";
+                  settingsDraftRevisionRef.current += 1;
                   settingsDirtyRef.current = true;
                   setSettingsDirty(true);
                   setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
@@ -1462,7 +1479,7 @@ export function App(): ReactElement {
         <div className="modal-backdrop" onClick={() => closeConfirmPrompt(false)}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <h3>{confirmPrompt.title}</h3>
-            <p>{confirmPrompt.message}</p>
+            <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
             <div className="modal-actions">
               <button className="btn" onClick={() => closeConfirmPrompt(false)}>Abbrechen</button>
               <button
@@ -1653,6 +1670,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     if (a.id !== b.id
       || a.updatedAt !== b.updatedAt
       || a.status !== b.status
+      || a.fileName !== b.fileName
       || a.progressPercent !== b.progressPercent
       || a.speedBps !== b.speedBps
       || a.retries !== b.retries

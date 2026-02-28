@@ -1,11 +1,11 @@
 import { AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
-import { REQUEST_RETRIES } from "./constants";
+import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
-const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.30";
+const DEBRID_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
@@ -781,6 +781,15 @@ class AllDebridClient {
         if (!directUrl) {
           throw new Error("AllDebrid Antwort ohne Download-Link");
         }
+        let parsedDirect: URL;
+        try {
+          parsedDirect = new URL(directUrl);
+        } catch {
+          throw new Error("AllDebrid Antwort enthält keine gültige Download-URL");
+        }
+        if (parsedDirect.protocol !== "https:" && parsedDirect.protocol !== "http:") {
+          throw new Error(`AllDebrid Antwort enthält ungültiges Download-URL-Protokoll (${parsedDirect.protocol})`);
+        }
 
         return {
           fileName: pickString(data, ["filename"]) || filenameFromUrl(link),
@@ -850,7 +859,11 @@ export class DebridService {
         for (const [link, fileName] of infos.entries()) {
           reportResolved(link, fileName);
         }
-      } catch {
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || /aborted/i.test(errorText)) {
+          throw error;
+        }
         // ignore and continue with host page fallback
       }
     }
@@ -922,6 +935,10 @@ export class DebridService {
           providerLabel: PROVIDER_LABELS[provider]
         };
       } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || /aborted/i.test(errorText)) {
+          throw error;
+        }
         attempts.push(`${PROVIDER_LABELS[provider]}: ${compactErrorText(error)}`);
       }
     }

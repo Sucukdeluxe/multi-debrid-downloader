@@ -1,7 +1,7 @@
-import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
+import { API_BASE_URL, APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { compactErrorText, sleep } from "./utils";
 
-const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.30";
+const DEBRID_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 
 export interface UnrestrictedLink {
   fileName: string;
@@ -72,6 +72,35 @@ function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): 
   return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 }
 
+async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await sleep(ms);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = setTimeout(() => {
+      timer = null;
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(0, ms));
+
+    const onAbort = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("aborted"));
+    };
+
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function looksLikeHtmlResponse(contentType: string, body: string): boolean {
   const type = String(contentType || "").toLowerCase();
   if (type.includes("text/html") || type.includes("application/xhtml+xml")) {
@@ -116,7 +145,7 @@ export class RealDebridClient {
         if (!response.ok) {
           const parsed = parseErrorBody(response.status, text, contentType);
           if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
-            await sleep(retryDelayForResponse(response, attempt));
+            await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
             continue;
           }
           throw new Error(parsed);
@@ -153,7 +182,7 @@ export class RealDebridClient {
         if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
           break;
         }
-        await sleep(retryDelay(attempt));
+        await sleepWithSignal(retryDelay(attempt), signal);
       }
     }
 

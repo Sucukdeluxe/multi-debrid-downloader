@@ -18,7 +18,7 @@ import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSettings } from "./storage";
-import { checkGitHubUpdate, installLatestUpdate } from "./update";
+import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -44,6 +44,8 @@ export class AppController {
 
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
 
+  private autoResumePending = false;
+
   public constructor() {
     configureLogger(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
@@ -66,8 +68,8 @@ export class AppController {
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
       const hasConflicts = this.manager.getStartConflicts().length > 0;
       if (hasPending && this.hasAnyProviderToken(this.settings) && !hasConflicts) {
-        this.manager.start();
-        logger.info("Auto-Resume beim Start aktiviert");
+        this.autoResumePending = true;
+        logger.info("Auto-Resume beim Start vorgemerkt");
       } else if (hasPending && hasConflicts) {
         logger.info("Auto-Resume übersprungen: Start-Konflikte erkannt");
       }
@@ -91,6 +93,11 @@ export class AppController {
     this.onStateHandler = handler;
     if (handler) {
       handler(this.manager.getSnapshot());
+      if (this.autoResumePending) {
+        this.autoResumePending = false;
+        this.manager.start();
+        logger.info("Auto-Resume beim Start aktiviert");
+      }
     }
   }
 
@@ -217,6 +224,7 @@ export class AppController {
   }
 
   public shutdown(): void {
+    abortActiveUpdateDownload();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
     logger.info("App beendet");

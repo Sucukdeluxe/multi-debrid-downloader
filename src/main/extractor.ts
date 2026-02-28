@@ -1111,6 +1111,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   const conflictMode = effectiveConflictMode(options.conflictMode);
+  if (options.conflictMode === "ask") {
+    logger.warn("Extract-ConflictMode 'ask' wird ohne Prompt als 'skip' behandelt");
+  }
   let passwordCandidates = archivePasswords(options.passwordList || "");
   const resumeCompleted = readExtractResumeState(options.packageDir, options.packageId);
   const resumeCompletedAtStart = resumeCompleted.size;
@@ -1154,15 +1157,19 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       const boundedArchivePercent = Math.max(0, Math.min(100, Number(archivePercent ?? 0)));
       percent = Math.max(0, Math.min(100, Math.floor(((boundedCurrent + (boundedArchivePercent / 100)) / total) * 100)));
     }
-    options.onProgress({
-      current,
-      total,
-      percent,
-      archiveName,
-      archivePercent,
-      elapsedMs,
-      phase
-    });
+    try {
+      options.onProgress({
+        current,
+        total,
+        percent,
+        archiveName,
+        archivePercent,
+        elapsedMs,
+        phase
+      });
+    } catch (error) {
+      logger.warn(`onProgress callback Fehler unterdrückt: ${cleanErrorText(String(error))}`);
+    }
   };
 
   emitProgress(extracted, "", "extracting");
