@@ -333,6 +333,8 @@ export class DownloadManager extends EventEmitter {
 
   private runCompletedPackages = new Set<string>();
 
+  private itemCount = 0;
+
   private lastSchedulerHeartbeatAt = 0;
 
   private lastReconnectMarkAt = 0;
@@ -347,6 +349,7 @@ export class DownloadManager extends EventEmitter {
     super();
     this.settings = settings;
     this.session = cloneSession(session);
+    this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
     this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
     this.applyOnStartCleanupPolicy();
@@ -415,7 +418,7 @@ export class DownloadManager extends EventEmitter {
 
     return {
       settings: this.settings,
-      session: cloneSession(this.session),
+      session: this.session,
       summary: this.summary,
       stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
@@ -429,7 +432,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public getStats(now = nowMs()): DownloadStats {
-    const itemCount = Object.keys(this.session.items).length;
+    const itemCount = this.itemCount;
     if (this.statsCache && this.session.running && itemCount >= 500 && now - this.statsCacheAt < 1500) {
       return this.statsCache;
     }
@@ -459,7 +462,7 @@ export class DownloadManager extends EventEmitter {
     const stats = {
       totalDownloaded,
       totalFiles,
-      totalPackages: Object.keys(this.session.packages).length,
+      totalPackages: this.session.packageOrder.length,
       sessionStartedAt: this.session.runStartedAt
     };
     this.statsCache = stats;
@@ -507,6 +510,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
     delete this.session.items[itemId];
+    this.itemCount = Math.max(0, this.itemCount - 1);
     this.releaseTargetPath(itemId);
     this.persistSoon();
     this.emitState(true);
@@ -612,6 +616,7 @@ export class DownloadManager extends EventEmitter {
     this.session.packageOrder = [];
     this.session.packages = {};
     this.session.items = {};
+    this.itemCount = 0;
     this.session.summaryText = "";
     this.runItemIds.clear();
     this.runPackageIds.clear();
@@ -679,6 +684,7 @@ export class DownloadManager extends EventEmitter {
         };
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
+        this.itemCount += 1;
         if (this.session.running) {
           this.runItemIds.add(itemId);
           this.runPackageIds.add(packageId);
@@ -762,6 +768,7 @@ export class DownloadManager extends EventEmitter {
         }
         this.releaseTargetPath(itemId);
         delete this.session.items[itemId];
+        this.itemCount = Math.max(0, this.itemCount - 1);
       }
       delete this.session.packages[packageId];
       this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
@@ -1468,6 +1475,7 @@ export class DownloadManager extends EventEmitter {
         }
         if (item.status === "completed") {
           delete this.session.items[itemId];
+          this.itemCount = Math.max(0, this.itemCount - 1);
           return false;
         }
         return true;
@@ -1484,7 +1492,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const itemCount = Object.keys(this.session.items).length;
+    const itemCount = this.itemCount;
     const minGapMs = this.session.running
       ? itemCount >= 1500
         ? 3000
@@ -1524,7 +1532,7 @@ export class DownloadManager extends EventEmitter {
     if (this.stateEmitTimer) {
       return;
     }
-    const itemCount = Object.keys(this.session.items).length;
+    const itemCount = this.itemCount;
     const emitDelay = this.session.running
       ? itemCount >= 1500
         ? 1200
@@ -1548,7 +1556,7 @@ export class DownloadManager extends EventEmitter {
       this.speedBytesLastWindow = Math.max(0, this.speedBytesLastWindow - this.speedEvents[this.speedEventsHead].bytes);
       this.speedEventsHead += 1;
     }
-    if (this.speedEventsHead > 50) {
+    if (this.speedEventsHead > 200) {
       this.speedEvents = this.speedEvents.slice(this.speedEventsHead);
       this.speedEventsHead = 0;
     }
@@ -1590,12 +1598,19 @@ export class DownloadManager extends EventEmitter {
     }
 
     const parsed = path.parse(preferredPath);
+    const preferredKey = pathKey(preferredPath);
+    const baseDirKey = process.platform === "win32" ? parsed.dir.toLowerCase() : parsed.dir;
+    const baseNameKey = process.platform === "win32" ? parsed.name.toLowerCase() : parsed.name;
+    const baseExtKey = process.platform === "win32" ? parsed.ext.toLowerCase() : parsed.ext;
+    const sep = path.sep;
     const maxIndex = 10000;
     for (let index = 0; index <= maxIndex; index += 1) {
       const candidate = index === 0
         ? preferredPath
         : path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`);
-      const key = pathKey(candidate);
+      const key = index === 0
+        ? preferredKey
+        : `${baseDirKey}${sep}${baseNameKey} (${index})${baseExtKey}`;
       const owner = this.reservedTargetPaths.get(key);
       const existsOnDisk = fs.existsSync(candidate);
       const allowExistingCandidate = allowExistingFile && index === 0;
@@ -1787,6 +1802,7 @@ export class DownloadManager extends EventEmitter {
   private removePackageFromSession(packageId: string, itemIds: string[]): void {
     for (const itemId of itemIds) {
       delete this.session.items[itemId];
+      this.itemCount = Math.max(0, this.itemCount - 1);
     }
     delete this.session.packages[packageId];
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
@@ -1887,25 +1903,31 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const stalled = Array.from(this.activeTasks.values()).filter((active) => {
+    let stalledCount = 0;
+    for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
-        return false;
+        continue;
       }
       const item = this.session.items[active.itemId];
-      return Boolean(item && item.status === "downloading");
-    });
-    if (stalled.length === 0) {
+      if (item && item.status === "downloading") {
+        stalledCount += 1;
+      }
+    }
+    if (stalledCount === 0) {
       this.lastGlobalProgressAt = now;
       return;
     }
 
-    logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalled.length} Task(s) neu starten`);
-    for (const active of stalled) {
+    logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalledCount} Task(s) neu starten`);
+    for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
         continue;
       }
-      active.abortReason = "stall";
-      active.abortController.abort("stall");
+      const item = this.session.items[active.itemId];
+      if (item && item.status === "downloading") {
+        active.abortReason = "stall";
+        active.abortController.abort("stall");
+      }
     }
     this.lastGlobalProgressAt = now;
   }
@@ -1943,14 +1965,20 @@ export class DownloadManager extends EventEmitter {
 
   private markQueuedAsReconnectWait(): boolean {
     let changed = false;
-    for (const item of Object.values(this.session.items)) {
+    const waitText = `Reconnect-Wait (${Math.ceil((this.session.reconnectUntil - nowMs()) / 1000)}s)`;
+    const itemIds = this.runItemIds.size > 0 ? this.runItemIds : Object.keys(this.session.items);
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) {
+        continue;
+      }
       const pkg = this.session.packages[item.packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
       if (item.status === "queued") {
         item.status = "reconnect_wait";
-        item.fullStatus = `Reconnect-Wait (${Math.ceil((this.session.reconnectUntil - nowMs()) / 1000)}s)`;
+        item.fullStatus = waitText;
         item.updatedAt = nowMs();
         changed = true;
       }
@@ -1981,22 +2009,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private hasQueuedItems(): boolean {
-    for (const packageId of this.session.packageOrder) {
-      const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled || !pkg.enabled) {
-        continue;
-      }
-      for (const itemId of pkg.itemIds) {
-        const item = this.session.items[itemId];
-        if (!item) {
-          continue;
-        }
-        if (item.status === "queued" || item.status === "reconnect_wait") {
-          return true;
-        }
-      }
-    }
-    return false;
+    return this.findNextQueuedItem() !== null;
   }
 
   private countQueuedItems(): number {
@@ -2487,7 +2500,7 @@ export class DownloadManager extends EventEmitter {
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
         let windowStarted = nowMs();
-        const itemCount = Object.keys(this.session.items).length;
+        const itemCount = this.itemCount;
         const uiUpdateIntervalMs = itemCount >= 1500
           ? 650
           : itemCount >= 700
@@ -2496,7 +2509,6 @@ export class DownloadManager extends EventEmitter {
               ? 280
               : 170;
         let lastUiEmitAt = 0;
-        let lastProgressPercent = item.progressPercent;
         const stallTimeoutMs = getDownloadStallTimeoutMs();
         const drainTimeoutMs = Math.max(4000, Math.min(45000, stallTimeoutMs > 0 ? stallTimeoutMs : 15000));
 
@@ -2678,12 +2690,10 @@ export class DownloadManager extends EventEmitter {
               item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
               item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
               const nowTick = nowMs();
-              const progressChanged = item.progressPercent !== lastProgressPercent;
-              if (progressChanged || nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
+              if (nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
                 item.updatedAt = nowTick;
                 this.emitState();
                 lastUiEmitAt = nowTick;
-                lastProgressPercent = item.progressPercent;
               }
             }
           } finally {
@@ -3132,6 +3142,7 @@ export class DownloadManager extends EventEmitter {
     if (policy === "immediate") {
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       delete this.session.items[itemId];
+      this.itemCount = Math.max(0, this.itemCount - 1);
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(packageId, []);
       }
