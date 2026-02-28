@@ -343,6 +343,13 @@ function isNoExtractorError(errorText: string): boolean {
   return String(errorText || "").toLowerCase().includes("nicht gefunden");
 }
 
+function isUnsupportedArchiveFormatError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("kein rar-archiv")
+    || text.includes("not a rar archive")
+    || text.includes("is not a rar archive");
+}
+
 function isUnsupportedExtractorSwitchError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("unknown switch")
@@ -706,15 +713,24 @@ async function runExternalExtract(
 
 function isZipSafetyGuardError(error: unknown): boolean {
   const text = String(error || "").toLowerCase();
+  return text.includes("path traversal")
+    || text.includes("zip-eintrag verdächtig groß")
+    || text.includes("zip-eintrag verdaechtig gross");
+}
+
+function isZipInternalLimitError(error: unknown): boolean {
+  const text = String(error || "").toLowerCase();
   return text.includes("zip-eintrag zu groß")
     || text.includes("zip-eintrag komprimiert zu groß")
-    || text.includes("zip-eintrag ohne sichere groessenangabe")
-    || text.includes("path traversal");
+    || text.includes("zip-eintrag ohne sichere groessenangabe");
 }
 
 function shouldFallbackToExternalZip(error: unknown): boolean {
   if (isZipSafetyGuardError(error)) {
     return false;
+  }
+  if (isZipInternalLimitError(error)) {
+    return true;
   }
   const text = String(error || "").toLowerCase();
   if (text.includes("aborted:extract") || text.includes("extract_aborted")) {
@@ -1190,11 +1206,18 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             if (!shouldFallbackToExternalZip(error)) {
               throw error;
             }
-            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
-              archivePercent = Math.max(archivePercent, value);
-              emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-            }, options.signal);
-            passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
+            try {
+              const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+                archivePercent = Math.max(archivePercent, value);
+                emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+              }, options.signal);
+              passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
+            } catch (externalError) {
+              if (isNoExtractorError(String(externalError)) || isUnsupportedArchiveFormatError(String(externalError))) {
+                throw error;
+              }
+              throw externalError;
+            }
           }
         }
       } else {

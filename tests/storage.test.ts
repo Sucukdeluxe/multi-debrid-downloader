@@ -409,7 +409,7 @@ describe("settings storage", () => {
 
     // Old fields should be preserved
     expect(loaded.token).toBe("my-token");
-    expect(loaded.outputDir).toBe("/custom/output");
+    expect(loaded.outputDir).toBe(path.resolve("/custom/output"));
 
     // Missing new fields should get default values
     expect(loaded.autoProviderFallback).toBe(defaults.autoProviderFallback);

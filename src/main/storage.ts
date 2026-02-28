@@ -59,9 +59,6 @@ function normalizeBandwidthSchedules(raw: unknown): BandwidthScheduleEntry[] {
 
 function normalizeAbsoluteDir(value: unknown, fallback: string): string {
   const text = asText(value);
-  if (/^\/[\s\S]+/.test(text)) {
-    return text.replace(/\\/g, "/");
-  }
   if (!text || !path.isAbsolute(text)) {
     return path.resolve(fallback);
   }

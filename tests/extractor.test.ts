@@ -555,7 +555,7 @@ describe("extractor", () => {
     expect(targets.has(r02)).toBe(true);
   });
 
-  it("does not fallback to external extractor when ZIP safety guard triggers", async () => {
+  it("keeps original ZIP size guard error when external fallback is unavailable", async () => {
     const previousLimit = process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
     process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB = "8";
 

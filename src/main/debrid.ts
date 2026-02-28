@@ -5,7 +5,7 @@ import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
-const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.29";
+const DEBRID_USER_AGENT = "RD-Node-Downloader/1.4.30";
 const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";

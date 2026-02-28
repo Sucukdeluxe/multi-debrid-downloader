@@ -34,7 +34,8 @@ function validateStringArray(value: unknown, name: string): string[] {
 /* ── Single Instance Lock ───────────────────────────────────────── */
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  app.exit(0);
+  process.exit(0);
 }
 
 /* ── Unhandled error protection ─────────────────────────────────── */
