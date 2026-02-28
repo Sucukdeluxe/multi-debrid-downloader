@@ -62,6 +62,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     outputDir: asText(settings.outputDir) || defaults.outputDir,
     packageName: asText(settings.packageName),
     autoExtract: Boolean(settings.autoExtract),
+    autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),
     extractDir: asText(settings.extractDir) || defaults.extractDir,
     createExtractSubfolder: Boolean(settings.createExtractSubfolder),
     hybridExtract: Boolean(settings.hybridExtract),

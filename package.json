@@ -1,10 +1,11 @@
 {
   "name": "real-debrid-downloader",
-  "version": "1.4.18",
+  "version": "1.4.19",
   "description": "Real-Debrid Downloader Desktop (Electron + React + TypeScript)",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
   "license": "MIT",
+  "type": "module",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:main:watch\" \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite",

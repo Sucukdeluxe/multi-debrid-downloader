@@ -17,7 +17,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot
 } from "../shared/types";
-import { REQUEST_RETRIES } from "./constants";
+import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives } from "./extractor";
@@ -192,6 +192,95 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   }
   const withSep = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
   return file.startsWith(withSep);
+}
+
+const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
+const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:[._\-\s]|$)/i;
+const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
+const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
+const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
+const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
+
+function extractEpisodeToken(fileName: string): string | null {
+  const match = String(fileName || "").match(SCENE_EPISODE_RE);
+  if (!match) {
+    return null;
+  }
+
+  const season = Number(match[1]);
+  const episode = Number(match[2]);
+  if (!Number.isFinite(season) || !Number.isFinite(episode) || season < 0 || episode < 0) {
+    return null;
+  }
+
+  return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+}
+
+function applyEpisodeTokenToFolderName(folderName: string, episodeToken: string): string {
+  const trimmed = String(folderName || "").trim();
+  if (!trimmed) {
+    return episodeToken;
+  }
+
+  const withEpisode = trimmed.replace(
+    /(^|[._\-\s])s\d{1,2}e\d{1,3}(?=[._\-\s]|$)/i,
+    `$1${episodeToken}`
+  );
+  if (withEpisode !== trimmed) {
+    return withEpisode;
+  }
+
+  const withSeason = trimmed.replace(SCENE_SEASON_ONLY_RE, `$1${episodeToken}`);
+  if (withSeason !== trimmed) {
+    return withSeason;
+  }
+
+  const withSuffixInsert = trimmed.replace(/-(4sf|4sj)$/i, `.${episodeToken}-$1`);
+  if (withSuffixInsert !== trimmed) {
+    return withSuffixInsert;
+  }
+
+  return `${trimmed}.${episodeToken}`;
+}
+
+function sourceHasRpToken(fileName: string): boolean {
+  return SCENE_RP_TOKEN_RE.test(String(fileName || ""));
+}
+
+function ensureRepackToken(baseName: string): string {
+  if (SCENE_REPACK_TOKEN_RE.test(baseName)) {
+    return baseName;
+  }
+
+  const withQualityToken = baseName.replace(SCENE_QUALITY_TOKEN_RE, ".REPACK.$2");
+  if (withQualityToken !== baseName) {
+    return withQualityToken;
+  }
+
+  const withSuffixToken = baseName.replace(/-(4sf|4sj)$/i, ".REPACK-$1");
+  if (withSuffixToken !== baseName) {
+    return withSuffixToken;
+  }
+
+  return `${baseName}.REPACK`;
+}
+
+function buildAutoRenameBaseName(folderName: string, sourceFileName: string): string | null {
+  if (!SCENE_RELEASE_FOLDER_RE.test(folderName)) {
+    return null;
+  }
+
+  const episodeToken = extractEpisodeToken(sourceFileName);
+  if (!episodeToken) {
+    return null;
+  }
+
+  let next = applyEpisodeTokenToFolderName(folderName, episodeToken);
+  if (sourceHasRpToken(sourceFileName)) {
+    next = ensureRepackToken(next);
+  }
+
+  return sanitizeFilename(next);
 }
 
 export class DownloadManager extends EventEmitter {
@@ -1013,6 +1102,83 @@ export class DownloadManager extends EventEmitter {
       }
     }
     return removed;
+  }
+
+  private collectVideoFiles(rootDir: string): string[] {
+    if (!rootDir || !fs.existsSync(rootDir)) {
+      return [];
+    }
+
+    const files: string[] = [];
+    const stack = [rootDir];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+        const extension = path.extname(entry.name).toLowerCase();
+        if (!SAMPLE_VIDEO_EXTENSIONS.has(extension)) {
+          continue;
+        }
+        files.push(fullPath);
+      }
+    }
+
+    return files;
+  }
+
+  private autoRenameExtractedVideoFiles(extractDir: string): number {
+    if (!this.settings.autoRename4sf4sj) {
+      return 0;
+    }
+
+    const videoFiles = this.collectVideoFiles(extractDir);
+    let renamed = 0;
+
+    for (const sourcePath of videoFiles) {
+      const sourceName = path.basename(sourcePath);
+      const sourceExt = path.extname(sourceName);
+      const sourceBaseName = path.basename(sourceName, sourceExt);
+      const folderName = path.basename(path.dirname(sourcePath));
+      const targetBaseName = buildAutoRenameBaseName(folderName, sourceBaseName);
+      if (!targetBaseName) {
+        continue;
+      }
+
+      const targetPath = path.join(path.dirname(sourcePath), `${targetBaseName}${sourceExt}`);
+      if (pathKey(targetPath) === pathKey(sourcePath)) {
+        continue;
+      }
+      if (fs.existsSync(targetPath)) {
+        logger.warn(`Auto-Rename übersprungen (Ziel existiert): ${targetPath}`);
+        continue;
+      }
+
+      try {
+        fs.renameSync(sourcePath, targetPath);
+        renamed += 1;
+      } catch (error) {
+        logger.warn(`Auto-Rename fehlgeschlagen (${sourceName}): ${compactErrorText(error)}`);
+      }
+    }
+
+    if (renamed > 0) {
+      logger.info(`Auto-Rename (4SF/4SJ): ${renamed} Datei(en) umbenannt`);
+    }
+    return renamed;
   }
 
   public cancelPackage(packageId: string): void {
@@ -2827,6 +2993,9 @@ export class DownloadManager extends EventEmitter {
           pkg.status = "failed";
         } else {
           const hasExtractedOutput = this.directoryHasAnyFiles(pkg.extractDir);
+          if (result.extracted > 0 || hasExtractedOutput) {
+            this.autoRenameExtractedVideoFiles(pkg.extractDir);
+          }
           const sourceExists = fs.existsSync(pkg.outputDir);
           let finalStatusText = "";
 
