@@ -3175,6 +3175,7 @@ export class DownloadManager extends EventEmitter {
         signal,
         onlyArchives: readyArchives,
         skipPostCleanup: true,
+        packageId,
         onProgress: (progress) => {
           if (progress.phase === "done") {
             return;
@@ -3312,6 +3313,7 @@ export class DownloadManager extends EventEmitter {
           removeSamples: this.settings.removeSamplesAfterExtract,
           passwordList: this.settings.archivePasswordList,
           signal: extractAbortController.signal,
+          packageId,
           onProgress: (progress) => {
             const label = progress.phase === "done"
               ? "Entpacken 100%"

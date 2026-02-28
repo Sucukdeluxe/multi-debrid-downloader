@@ -98,6 +98,17 @@ export function reorderPackageOrderByDrop(order: string[], draggedPackageId: str
   return next;
 }
 
+export function sortPackageOrderByName(order: string[], packages: Record<string, PackageEntry>, descending: boolean): string[] {
+  const sorted = [...order];
+  sorted.sort((a, b) => {
+    const nameA = (packages[a]?.name ?? "").toLowerCase();
+    const nameB = (packages[b]?.name ?? "").toLowerCase();
+    const cmp = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: "base" });
+    return descending ? -cmp : cmp;
+  });
+  return sorted;
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [tab, setTab] = useState<Tab>("collector");
@@ -120,6 +131,7 @@ export function App(): ReactElement {
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
+  const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const actionBusyRef = useRef(false);
@@ -127,7 +139,6 @@ export function App(): ReactElement {
   const dragDepthRef = useRef(0);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
-  const startConflictGlobalPolicyRef = useRef<Extract<DuplicatePolicy, "skip" | "overwrite"> | null>(null);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -456,7 +467,7 @@ export function App(): ReactElement {
       const conflicts = await window.rd.getStartConflicts();
       let skipped = 0;
       let overwritten = 0;
-      let rememberedPolicy = startConflictGlobalPolicyRef.current;
+      let rememberedPolicy: Extract<DuplicatePolicy, "skip" | "overwrite"> | null = null;
 
       for (const conflict of conflicts) {
         let decisionPolicy = rememberedPolicy;
@@ -468,7 +479,6 @@ export function App(): ReactElement {
           }
           decisionPolicy = decision.policy;
           if (decision.applyToAll) {
-            startConflictGlobalPolicyRef.current = decision.policy;
             rememberedPolicy = decision.policy;
           }
         }
@@ -558,7 +568,7 @@ export function App(): ReactElement {
       a.href = url;
       a.download = "rd-queue-export.json";
       a.click();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
       showToast("Queue exportiert");
     }, (error) => {
       showToast(`Export fehlgeschlagen: ${String(error)}`, 2600);
@@ -855,50 +865,36 @@ export function App(): ReactElement {
               </div>
             )}
             <div className="downloads-toolbar">
-              <button
-                className="btn"
-                disabled={packages.length === 0}
-                onClick={() => {
-                  setCollapsedPackages((prev) => {
-                    const next: Record<string, boolean> = { ...prev };
-                    const targetState = !allPackagesCollapsed;
-                    for (const pkg of packages) {
-                      next[pkg.id] = targetState;
-                    }
-                    return next;
-                  });
-                }}
-              >
-                {allPackagesCollapsed ? "Alles ausklappen" : "Alles einklappen"}
-              </button>
-              <button
-                className="btn"
-                disabled={packages.length < 2}
-                onClick={() => {
-                  const sorted = [...snapshot.session.packageOrder].sort((a, b) => {
-                    const nameA = (snapshot.session.packages[a]?.name ?? "").toLowerCase();
-                    const nameB = (snapshot.session.packages[b]?.name ?? "").toLowerCase();
-                    return nameA.localeCompare(nameB);
-                  });
-                  void window.rd.reorderPackages(sorted);
-                }}
-              >
-                A-Z
-              </button>
-              <button
-                className="btn"
-                disabled={packages.length < 2}
-                onClick={() => {
-                  const sorted = [...snapshot.session.packageOrder].sort((a, b) => {
-                    const nameA = (snapshot.session.packages[a]?.name ?? "").toLowerCase();
-                    const nameB = (snapshot.session.packages[b]?.name ?? "").toLowerCase();
-                    return nameB.localeCompare(nameA);
-                  });
-                  void window.rd.reorderPackages(sorted);
-                }}
-              >
-                Z-A
-              </button>
+              <div className="downloads-toolbar-actions">
+                <button
+                  className="btn"
+                  disabled={packages.length === 0}
+                  onClick={() => {
+                    setCollapsedPackages((prev) => {
+                      const next: Record<string, boolean> = { ...prev };
+                      const targetState = !allPackagesCollapsed;
+                      for (const pkg of packages) {
+                        next[pkg.id] = targetState;
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  {allPackagesCollapsed ? "Alles ausklappen" : "Alles einklappen"}
+                </button>
+                <button
+                  className={`btn${downloadsSortDescending ? " btn-active" : ""}`}
+                  disabled={packages.length < 2}
+                  onClick={() => {
+                    const nextDescending = !downloadsSortDescending;
+                    setDownloadsSortDescending(nextDescending);
+                    const sorted = sortPackageOrderByName(snapshot.session.packageOrder, snapshot.session.packages, nextDescending);
+                    void window.rd.reorderPackages(sorted);
+                  }}
+                >
+                  {downloadsSortDescending ? "Z-A" : "A-Z"}
+                </button>
+              </div>
               <input
                 className="search-input"
                 type="search"

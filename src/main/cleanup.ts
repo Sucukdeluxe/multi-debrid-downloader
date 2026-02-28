@@ -30,7 +30,7 @@ export function cleanupCancelledPackageArtifacts(packageDir: string): number {
     const current = stack.pop() as string;
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
       } else if (entry.isFile() && isArchiveOrTempFile(full)) {
         try {
@@ -66,7 +66,7 @@ export async function cleanupCancelledPackageArtifactsAsync(packageDir: string):
 
     for (const entry of entries) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
       } else if (entry.isFile() && isArchiveOrTempFile(full)) {
         try {
@@ -96,7 +96,7 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
     const current = stack.pop() as string;
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
         continue;
       }
@@ -158,6 +158,14 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
       for (const entry of entries) {
         const full = path.join(current, entry.name);
         if (entry.isDirectory()) {
+          try {
+            const stat = fs.lstatSync(full);
+            if (stat.isSymbolicLink()) {
+              continue;
+            }
+          } catch {
+            continue;
+          }
           dirs.push(full);
         } else if (entry.isFile()) {
           count += 1;
@@ -171,13 +179,15 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
     const current = stack.pop() as string;
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() || entry.isSymbolicLink()) {
         const base = entry.name.toLowerCase();
         if (SAMPLE_DIR_NAMES.has(base)) {
           sampleDirs.push(full);
           continue;
         }
-        stack.push(full);
+        if (entry.isDirectory()) {
+          stack.push(full);
+        }
         continue;
       }
       if (!entry.isFile()) {
@@ -202,6 +212,12 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
   sampleDirs.sort((a, b) => b.length - a.length);
   for (const dir of sampleDirs) {
     try {
+      const stat = fs.lstatSync(dir);
+      if (stat.isSymbolicLink()) {
+        fs.rmSync(dir, { force: true });
+        removedDirs += 1;
+        continue;
+      }
       const filesInDir = countFilesRecursive(dir);
       fs.rmSync(dir, { recursive: true, force: true });
       removedFiles += filesInDir;

@@ -444,27 +444,61 @@ class AllDebridClient {
         body.append("link[]", link);
       }
 
-      const response = await fetch(`${ALL_DEBRID_API_BASE}/link/infos`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "RD-Node-Downloader/1.1.15"
-        },
-        body,
-        signal: AbortSignal.timeout(API_TIMEOUT_MS)
-      });
+      let payload: Record<string, unknown> | null = null;
+      let chunkResolved = false;
+      for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+        let response: Response;
+        let text = "";
+        try {
+          response = await fetch(`${ALL_DEBRID_API_BASE}/link/infos`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.token}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+              "User-Agent": "RD-Node-Downloader/1.1.15"
+            },
+            body,
+            signal: AbortSignal.timeout(API_TIMEOUT_MS)
+          });
 
-      const text = await response.text();
-      const payload = asRecord(parseJson(text));
-      if (!response.ok) {
-        throw new Error(parseError(response.status, text, payload));
+          text = await response.text();
+          payload = asRecord(parseJson(text));
+          if (!response.ok) {
+            const reason = parseError(response.status, text, payload);
+            if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+              await sleep(retryDelay(attempt));
+              continue;
+            }
+            throw new Error(reason);
+          }
+
+          const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+          const looksHtml = contentType.includes("text/html") || /^\s*<(!doctype\s+html|html\b)/i.test(text);
+          if (looksHtml) {
+            throw new Error("AllDebrid lieferte HTML statt JSON");
+          }
+          if (!payload) {
+            throw new Error("AllDebrid Antwort ist kein JSON-Objekt");
+          }
+
+          const status = pickString(payload, ["status"]);
+          if (status && status.toLowerCase() === "error") {
+            const errorObj = asRecord(payload?.error);
+            throw new Error(pickString(errorObj, ["message", "code"]) || "AllDebrid API error");
+          }
+
+          chunkResolved = true;
+          break;
+        } catch (error) {
+          if (attempt >= REQUEST_RETRIES) {
+            throw error;
+          }
+          await sleep(retryDelay(attempt));
+        }
       }
 
-      const status = pickString(payload, ["status"]);
-      if (status && status.toLowerCase() === "error") {
-        const errorObj = asRecord(payload?.error);
-        throw new Error(pickString(errorObj, ["message", "code"]) || "AllDebrid API error");
+      if (!chunkResolved || !payload) {
+        throw new Error("AllDebrid Link-Infos konnten nicht geladen werden");
       }
 
       const data = asRecord(payload?.data);
@@ -517,6 +551,12 @@ class AllDebridClient {
             continue;
           }
           throw new Error(reason);
+        }
+
+        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+        const looksHtml = contentType.includes("text/html") || /^\s*<(!doctype\s+html|html\b)/i.test(text);
+        if (looksHtml) {
+          throw new Error("AllDebrid lieferte HTML statt JSON");
         }
 
         const status = pickString(payload, ["status"]);
