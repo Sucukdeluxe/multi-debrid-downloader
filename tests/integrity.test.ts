@@ -70,4 +70,15 @@ describe("integrity", () => {
     expect(parseHashLine("")).toBeNull();
     expect(parseHashLine("   ")).toBeNull();
   });
+
+  it("keeps first hash entry when duplicate filename appears across manifests", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-int-"));
+    tempDirs.push(dir);
+
+    fs.writeFileSync(path.join(dir, "disc1.md5"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  movie.mkv\n", "utf8");
+    fs.writeFileSync(path.join(dir, "disc2.md5"), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  movie.mkv\n", "utf8");
+
+    const manifest = readHashManifest(dir);
+    expect(manifest.get("movie.mkv")?.digest).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  });
 });

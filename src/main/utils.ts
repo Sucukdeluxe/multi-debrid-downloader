@@ -63,6 +63,33 @@ export function isHttpLink(value: string): boolean {
   }
 }
 
+export function extractHttpLinksFromText(text: string): string[] {
+  const matches = String(text || "").match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+  const seen = new Set<string>();
+  const links: string[] = [];
+
+  for (const match of matches) {
+    let candidate = String(match || "").trim();
+    while (candidate.length > 0 && /[)\],.!?;:]+$/.test(candidate)) {
+      if (candidate.endsWith(")")) {
+        const openCount = (candidate.match(/\(/g) || []).length;
+        const closeCount = (candidate.match(/\)/g) || []).length;
+        if (closeCount <= openCount) {
+          break;
+        }
+      }
+      candidate = candidate.slice(0, -1);
+    }
+    if (!candidate || !isHttpLink(candidate) || seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    links.push(candidate);
+  }
+
+  return links;
+}
+
 export function humanSize(bytes: number): string {
   const value = Number(bytes);
   if (!Number.isFinite(value) || value < 0) {
@@ -84,6 +111,9 @@ export function humanSize(bytes: number): string {
 export function filenameFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "download.bin";
+    }
     const queryName = parsed.searchParams.get("filename")
       || parsed.searchParams.get("file")
       || parsed.searchParams.get("name")

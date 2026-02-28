@@ -128,6 +128,7 @@ export function App(): ReactElement {
   const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
   const activeCollectorTabRef = useRef(activeCollectorTab);
   const activeTabRef = useRef<Tab>(tab);
+  const packageOrderRef = useRef<string[]>([]);
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
@@ -149,6 +150,10 @@ export function App(): ReactElement {
   useEffect(() => {
     activeTabRef.current = tab;
   }, [tab]);
+
+  useEffect(() => {
+    packageOrderRef.current = snapshot.session.packageOrder;
+  }, [snapshot.session.packageOrder]);
 
   const showToast = (message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
@@ -647,24 +652,28 @@ export function App(): ReactElement {
   };
 
   const movePackage = useCallback((packageId: string, direction: "up" | "down") => {
-    const order = [...snapshot.session.packageOrder];
+    const currentOrder = packageOrderRef.current;
+    const order = [...currentOrder];
     const idx = order.indexOf(packageId);
     if (idx < 0) { return; }
     const target = direction === "up" ? idx - 1 : idx + 1;
     if (target < 0 || target >= order.length) { return; }
     [order[idx], order[target]] = [order[target], order[idx]];
+    packageOrderRef.current = order;
     void window.rd.reorderPackages(order);
-  }, [snapshot.session.packageOrder]);
+  }, []);
 
   const reorderPackagesByDrop = useCallback((draggedPackageId: string, targetPackageId: string) => {
-    const nextOrder = reorderPackageOrderByDrop(snapshot.session.packageOrder, draggedPackageId, targetPackageId);
-    const unchanged = nextOrder.length === snapshot.session.packageOrder.length
-      && nextOrder.every((id, index) => id === snapshot.session.packageOrder[index]);
+    const currentOrder = packageOrderRef.current;
+    const nextOrder = reorderPackageOrderByDrop(currentOrder, draggedPackageId, targetPackageId);
+    const unchanged = nextOrder.length === currentOrder.length
+      && nextOrder.every((id, index) => id === currentOrder[index]);
     if (unchanged) {
       return;
     }
+    packageOrderRef.current = nextOrder;
     void window.rd.reorderPackages(nextOrder);
-  }, [snapshot.session.packageOrder]);
+  }, []);
 
   const addCollectorTab = (): void => {
     const id = `tab-${nextCollectorId++}`;
@@ -888,7 +897,9 @@ export function App(): ReactElement {
                   onClick={() => {
                     const nextDescending = !downloadsSortDescending;
                     setDownloadsSortDescending(nextDescending);
-                    const sorted = sortPackageOrderByName(snapshot.session.packageOrder, snapshot.session.packages, nextDescending);
+                    const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
+                    const sorted = sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
+                    packageOrderRef.current = sorted;
                     void window.rd.reorderPackages(sorted);
                   }}
                 >
@@ -1021,6 +1032,7 @@ export function App(): ReactElement {
                 </div>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Auto-Extract</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (4SF/4SJ)</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
                 <label>Passwortliste (eine Zeile pro Passwort)</label>
                 <textarea

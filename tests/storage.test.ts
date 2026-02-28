@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
-import { createStoragePaths, emptySession, loadSession, loadSettings, normalizeSettings, saveSession, saveSettings } from "../src/main/storage";
+import { createStoragePaths, emptySession, loadSession, loadSettings, normalizeSettings, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 
@@ -152,7 +152,7 @@ describe("settings storage", () => {
   it("assigns and preserves bandwidth schedule ids", () => {
     const normalized = normalizeSettings({
       ...defaultSettings(),
-      bandwidthSchedules: [{ startHour: 1, endHour: 6, speedLimitKbps: 1024, enabled: true }]
+      bandwidthSchedules: [{ id: "", startHour: 1, endHour: 6, speedLimitKbps: 1024, enabled: true }]
     });
 
     const generatedId = normalized.bandwidthSchedules[0]?.id;
@@ -312,6 +312,80 @@ describe("settings storage", () => {
     expect(loaded.maxParallel).toBe(defaults.maxParallel);
     expect(loaded.outputDir).toBe(defaults.outputDir);
     expect(loaded.cleanupMode).toBe(defaults.cleanupMode);
+  });
+
+  it("loads backup config when primary config is corrupted", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const backupSettings = {
+      ...defaultSettings(),
+      outputDir: path.join(dir, "backup-output"),
+      packageName: "from-backup"
+    };
+    fs.writeFileSync(`${paths.configFile}.bak`, JSON.stringify(backupSettings, null, 2), "utf8");
+    fs.writeFileSync(paths.configFile, "{broken-json", "utf8");
+
+    const loaded = loadSettings(paths);
+    expect(loaded.outputDir).toBe(backupSettings.outputDir);
+    expect(loaded.packageName).toBe("from-backup");
+  });
+
+  it("sanitizes malformed persisted session structures", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    fs.writeFileSync(paths.sessionFile, JSON.stringify({
+      version: "invalid",
+      packageOrder: [123, "pkg-valid"],
+      packages: {
+        "1": "bad-entry",
+        "pkg-valid": {
+          id: "pkg-valid",
+          name: "Valid Package",
+          outputDir: "C:/tmp/out",
+          extractDir: "C:/tmp/extract",
+          status: "downloading",
+          itemIds: ["item-valid", 123],
+          cancelled: false,
+          enabled: true
+        }
+      },
+      items: {
+        "item-valid": {
+          id: "item-valid",
+          packageId: "pkg-valid",
+          url: "https://example.com/file",
+          status: "queued",
+          fileName: "file.bin",
+          targetPath: "C:/tmp/out/file.bin"
+        },
+        "item-bad": "broken"
+      }
+    }), "utf8");
+
+    const loaded = loadSession(paths);
+    expect(Object.keys(loaded.packages)).toEqual(["pkg-valid"]);
+    expect(Object.keys(loaded.items)).toEqual(["item-valid"]);
+    expect(loaded.packageOrder).toEqual(["pkg-valid"]);
+  });
+
+  it("captures async session save payload before later mutations", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const session = emptySession();
+    session.summaryText = "before-mutation";
+
+    const pending = saveSessionAsync(paths, session);
+    session.summaryText = "after-mutation";
+    await pending;
+
+    const persisted = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as { summaryText: string };
+    expect(persisted.summaryText).toBe("before-mutation");
   });
 
   it("applies defaults for missing fields when loading old config", () => {

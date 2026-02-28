@@ -1,10 +1,15 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
 import { UpdateCheckResult } from "../src/shared/types";
 
 const originalFetch = globalThis.fetch;
+
+function sha256Hex(buffer: Buffer): string {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -58,7 +63,8 @@ describe("update", () => {
           },
           {
             name: "Real-Debrid-Downloader Setup 9.9.9.exe",
-            browser_download_url: "https://example.invalid/setup.exe"
+            browser_download_url: "https://example.invalid/setup.exe",
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
         ]
       }),
@@ -76,6 +82,7 @@ describe("update", () => {
 
   it("falls back to alternate download URL when setup asset URL returns 404", async () => {
     const executablePayload = fs.readFileSync(process.execPath);
+    const executableDigest = sha256Hex(executablePayload);
     const requestedUrls: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -100,13 +107,111 @@ describe("update", () => {
       latestTag: "v9.9.9",
       releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "https://example.invalid/stale-setup.exe",
-      setupAssetName: "Real-Debrid-Downloader Setup 9.9.9.exe"
+      setupAssetName: "Real-Debrid-Downloader Setup 9.9.9.exe",
+      setupAssetDigest: `sha256:${executableDigest}`
     };
 
     const result = await installLatestUpdate("owner/repo", prechecked);
     expect(result.started).toBe(true);
     expect(requestedUrls.some((url) => url.includes("/releases/latest/download/"))).toBe(true);
     expect(requestedUrls.filter((url) => url.includes("stale-setup.exe"))).toHaveLength(1);
+  });
+
+  it("skips draft tag payload and resolves setup asset from stable latest release", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      requestedUrls.push(url);
+
+      if (url.endsWith("/releases/tags/v9.9.9")) {
+        return new Response(JSON.stringify({
+          tag_name: "v9.9.9",
+          draft: true,
+          prerelease: false,
+          assets: [
+            {
+              name: "Draft Setup 9.9.9.exe",
+              browser_download_url: "https://example.invalid/draft-setup.exe"
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (url.endsWith("/releases/latest")) {
+        const stableDigest = sha256Hex(executablePayload);
+        return new Response(JSON.stringify({
+          tag_name: "v9.9.9",
+          draft: false,
+          prerelease: false,
+          assets: [
+            {
+              name: "Stable Setup 9.9.9.exe",
+              browser_download_url: "https://example.invalid/stable-setup.exe",
+              digest: `sha256:${stableDigest}`
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (url.includes("stable-setup.exe")) {
+        return new Response(executablePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" }
+        });
+      }
+
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const prechecked: UpdateCheckResult = {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "v9.9.9",
+      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "",
+      setupAssetName: ""
+    };
+
+    const result = await installLatestUpdate("owner/repo", prechecked);
+    expect(result.started).toBe(true);
+    expect(requestedUrls.some((url) => url.endsWith("/releases/tags/v9.9.9"))).toBe(true);
+    expect(requestedUrls.some((url) => url.endsWith("/releases/latest"))).toBe(true);
+    expect(requestedUrls.some((url) => url.includes("stable-setup.exe"))).toBe(true);
+    expect(requestedUrls.some((url) => url.includes("draft-setup.exe"))).toBe(false);
+  });
+
+  it("times out hanging release JSON body reads", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancelSpy = vi.fn(async () => undefined);
+      globalThis.fetch = (async (): Promise<Response> => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        json: () => new Promise(() => undefined),
+        body: {
+          cancel: cancelSpy
+        }
+      } as unknown as Response)) as typeof fetch;
+
+      const pending = checkGitHubUpdate("owner/repo");
+      await vi.advanceTimersByTimeAsync(13000);
+      const result = await pending;
+      expect(result.updateAvailable).toBe(false);
+      expect(String(result.error || "")).toMatch(/timeout/i);
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("aborts hanging update body downloads on idle timeout", async () => {
@@ -137,7 +242,8 @@ describe("update", () => {
         latestTag: "v9.9.9",
         releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
         setupAssetUrl: "https://example.invalid/hang-setup.exe",
-        setupAssetName: ""
+        setupAssetName: "",
+        setupAssetDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       };
 
       const result = await installLatestUpdate("owner/repo", prechecked);
@@ -151,6 +257,35 @@ describe("update", () => {
       }
     }
   }, 20000);
+
+  it("blocks installer start when SHA256 digest mismatches", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("mismatch-setup.exe")) {
+        return new Response(executablePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" }
+        });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const prechecked: UpdateCheckResult = {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "v9.9.9",
+      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "https://example.invalid/mismatch-setup.exe",
+      setupAssetName: "setup.exe",
+      setupAssetDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    };
+
+    const result = await installLatestUpdate("owner/repo", prechecked);
+    expect(result.started).toBe(false);
+    expect(result.message).toMatch(/integrit|sha256|mismatch/i);
+  });
 });
 
 describe("normalizeUpdateRepo extended", () => {
@@ -167,6 +302,12 @@ describe("normalizeUpdateRepo extended", () => {
   it("returns default for malformed inputs", () => {
     expect(normalizeUpdateRepo("just-one-part")).toBe("Sucukdeluxe/real-debrid-downloader");
     expect(normalizeUpdateRepo("   ")).toBe("Sucukdeluxe/real-debrid-downloader");
+  });
+
+  it("rejects traversal-like owner or repo segments", () => {
+    expect(normalizeUpdateRepo("../owner/repo")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("owner/../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("https://github.com/owner/../../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
   });
 
   it("handles www prefix", () => {

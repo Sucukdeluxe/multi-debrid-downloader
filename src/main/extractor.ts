@@ -18,6 +18,7 @@ let resolveExtractorCommandInFlight: Promise<string> | null = null;
 
 const EXTRACTOR_RETRY_AFTER_MS = 30_000;
 const DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB = 256;
+const EXTRACTOR_PROBE_TIMEOUT_MS = 8_000;
 
 export interface ExtractOptions {
   packageDir: string;
@@ -61,6 +62,10 @@ function zipEntryMemoryLimitBytes(): number {
 
 export function pathSetKey(filePath: string): string {
   return process.platform === "win32" ? filePath.toLowerCase() : filePath;
+}
+
+function archiveNameKey(fileName: string): string {
+  return process.platform === "win32" ? String(fileName || "").toLowerCase() : String(fileName || "");
 }
 
 function archiveSortKey(filePath: string): string {
@@ -244,7 +249,7 @@ function readExtractResumeState(packageDir: string, packageId?: string): Set<str
   try {
     const payload = JSON.parse(fs.readFileSync(progressPath, "utf8")) as Partial<ExtractResumeState>;
     const names = Array.isArray(payload.completedArchives) ? payload.completedArchives : [];
-    return new Set(names.map((value) => String(value || "").trim()).filter(Boolean));
+    return new Set(names.map((value) => archiveNameKey(String(value || "").trim())).filter(Boolean));
   } catch {
     return new Set<string>();
   }
@@ -255,7 +260,9 @@ function writeExtractResumeState(packageDir: string, completedArchives: Set<stri
     fs.mkdirSync(packageDir, { recursive: true });
     const progressPath = extractProgressFilePath(packageDir, packageId);
     const payload: ExtractResumeState = {
-      completedArchives: Array.from(completedArchives).sort((a, b) => a.localeCompare(b))
+      completedArchives: Array.from(completedArchives)
+        .map((name) => archiveNameKey(name))
+        .sort((a, b) => a.localeCompare(b))
     };
     fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2), "utf8");
   } catch (error) {
@@ -457,9 +464,23 @@ function runExtractCommand(
     });
 
     child.on("close", (code) => {
-      if (code === 0 || code === 1) {
+      if (code === 0) {
         finish({ ok: true, missingCommand: false, aborted: false, timedOut: false, errorText: "" });
         return;
+      }
+      if (code === 1) {
+        const lowered = output.toLowerCase();
+        const warningOnly = !lowered.includes("crc failed")
+          && !lowered.includes("checksum error")
+          && !lowered.includes("wrong password")
+          && !lowered.includes("cannot open")
+          && !lowered.includes("fatal error")
+          && !lowered.includes("unexpected end of archive")
+          && !lowered.includes("error:");
+        if (warningOnly) {
+          finish({ ok: true, missingCommand: false, aborted: false, timedOut: false, errorText: "" });
+          return;
+        }
       }
       const cleaned = cleanErrorText(output);
       finish({
@@ -521,7 +542,7 @@ async function resolveExtractorCommandInternal(): Promise<string> {
       continue;
     }
     const probeArgs = command.toLowerCase().includes("winrar") ? ["-?"] : ["?"];
-    const probe = await runExtractCommand(command, probeArgs);
+    const probe = await runExtractCommand(command, probeArgs, undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
     if (!probe.missingCommand) {
       resolvedExtractorCommand = command;
       resolveFailureReason = "";
@@ -634,13 +655,35 @@ async function runExternalExtract(
   throw new Error(lastError || "Entpacken fehlgeschlagen");
 }
 
-function extractZipArchive(archivePath: string, targetDir: string, conflictMode: ConflictMode): void {
+function isZipSafetyGuardError(error: unknown): boolean {
+  const text = String(error || "").toLowerCase();
+  return text.includes("zip-eintrag zu groß")
+    || text.includes("zip-eintrag komprimiert zu groß")
+    || text.includes("zip-eintrag ohne sichere groessenangabe")
+    || text.includes("path traversal");
+}
+
+function shouldFallbackToExternalZip(error: unknown): boolean {
+  if (isZipSafetyGuardError(error)) {
+    return false;
+  }
+  const text = String(error || "").toLowerCase();
+  if (text.includes("aborted:extract") || text.includes("extract_aborted")) {
+    return false;
+  }
+  return true;
+}
+
+function extractZipArchive(archivePath: string, targetDir: string, conflictMode: ConflictMode, signal?: AbortSignal): void {
   const mode = effectiveConflictMode(conflictMode);
   const memoryLimitBytes = zipEntryMemoryLimitBytes();
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
   const resolvedTarget = path.resolve(targetDir);
   for (const entry of entries) {
+    if (signal?.aborted) {
+      throw new Error("aborted:extract");
+    }
     const outputPath = path.resolve(targetDir, entry.entryName);
     if (!outputPath.startsWith(resolvedTarget + path.sep) && outputPath !== resolvedTarget) {
       logger.warn(`ZIP-Eintrag übersprungen (Path Traversal): ${entry.entryName}`);
@@ -700,9 +743,15 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
           candidate = path.join(parsed.dir, `${parsed.name} (${n})${parsed.ext}`);
           n += 1;
         }
+        if (signal?.aborted) {
+          throw new Error("aborted:extract");
+        }
         fs.writeFileSync(candidate, entry.getData());
         continue;
       }
+    }
+    if (signal?.aborted) {
+      throw new Error("aborted:extract");
     }
     fs.writeFileSync(outputPath, entry.getData());
   }
@@ -945,7 +994,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let passwordCandidates = archivePasswords(options.passwordList || "");
   const resumeCompleted = readExtractResumeState(options.packageDir, options.packageId);
   const resumeCompletedAtStart = resumeCompleted.size;
-  const allCandidateNames = new Set(allCandidates.map((archivePath) => path.basename(archivePath)));
+  const allCandidateNames = new Set(allCandidates.map((archivePath) => archiveNameKey(path.basename(archivePath))));
   for (const archiveName of Array.from(resumeCompleted.values())) {
     if (!allCandidateNames.has(archiveName)) {
       resumeCompleted.delete(archiveName);
@@ -957,13 +1006,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     clearExtractResumeState(options.packageDir, options.packageId);
   }
 
-  const pendingCandidates = candidates.filter((archivePath) => !resumeCompleted.has(path.basename(archivePath)));
+  const pendingCandidates = candidates.filter((archivePath) => !resumeCompleted.has(archiveNameKey(path.basename(archivePath))));
   let extracted = candidates.length - pendingCandidates.length;
   let failed = 0;
   let lastError = "";
   const extractedArchives = new Set<string>();
   for (const archivePath of candidates) {
-    if (resumeCompleted.has(path.basename(archivePath))) {
+    if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
       extractedArchives.add(archivePath);
     }
   }
@@ -1002,7 +1051,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     if (options.signal?.aborted) {
       throw new Error("aborted:extract");
     }
-    const archiveName = path.basename(archivePath);
+      const archiveName = path.basename(archivePath);
+      const archiveResumeKey = archiveNameKey(archiveName);
     const archiveStartedAt = Date.now();
     let archivePercent = 0;
     emitProgress(extracted + failed, archiveName, "extracting", archivePercent, 0);
@@ -1023,16 +1073,19 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
-              extractZipArchive(archivePath, options.targetDir, options.conflictMode);
+              extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
             } else {
               throw error;
             }
           }
         } else {
           try {
-            extractZipArchive(archivePath, options.targetDir, options.conflictMode);
+            extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
             archivePercent = 100;
-          } catch {
+          } catch (error) {
+            if (!shouldFallbackToExternalZip(error)) {
+              throw error;
+            }
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, "overwrite", passwordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
@@ -1049,7 +1102,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
       extracted += 1;
       extractedArchives.add(archivePath);
-      resumeCompleted.add(archiveName);
+      resumeCompleted.add(archiveResumeKey);
       writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
       archivePercent = 100;

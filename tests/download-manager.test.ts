@@ -3900,4 +3900,191 @@ describe("download manager", () => {
     expect(fs.existsSync(originalExtractedPath)).toBe(true);
     expect(fs.existsSync(path.join(extractDir, unexpectedName))).toBe(false);
   });
+
+  it("throws a controlled error for invalid queue import JSON", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    expect(() => manager.importQueue("{not-json")).toThrow(/Ungultige Queue-Datei/i);
+  });
+
+  it("applies global speed limit path when global mode is enabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        speedLimitEnabled: true,
+        speedLimitMode: "global",
+        speedLimitKbps: 512
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const internal = manager as unknown as {
+      applySpeedLimit: (chunkBytes: number, localWindowBytes: number, localWindowStarted: number) => Promise<void>;
+      globalSpeedLimitNextAt: number;
+    };
+
+    const start = Date.now();
+    await internal.applySpeedLimit(1024, 0, start);
+    expect(internal.globalSpeedLimitNextAt).toBeGreaterThan(start);
+  });
+
+  it("resets speed window head when start finds no runnable items", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const internal = manager as unknown as {
+      speedEvents: Array<{ at: number; bytes: number }>;
+      speedEventsHead: number;
+      speedBytesLastWindow: number;
+    };
+    internal.speedEvents = [{ at: Date.now() - 10_000, bytes: 999 }];
+    internal.speedEventsHead = 5;
+    internal.speedBytesLastWindow = 999;
+
+    manager.start();
+    expect(internal.speedEventsHead).toBe(0);
+    expect(internal.speedEvents.length).toBe(0);
+    expect(internal.speedBytesLastWindow).toBe(0);
+  });
+
+  it("cleans run tracking when start conflict is skipped", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "conflict-skip", links: ["https://dummy/skip"] }]);
+    const snapshot = manager.getSnapshot();
+    const packageId = snapshot.session.packageOrder[0];
+    const itemId = snapshot.session.packages[packageId]?.itemIds[0] || "";
+
+    const internal = manager as unknown as {
+      runItemIds: Set<string>;
+      runPackageIds: Set<string>;
+      runOutcomes: Map<string, "completed" | "failed" | "cancelled">;
+    };
+    internal.runItemIds.add(itemId);
+    internal.runPackageIds.add(packageId);
+    internal.runOutcomes.set(itemId, "completed");
+
+    const result = await manager.resolveStartConflict(packageId, "skip");
+    expect(result.skipped).toBe(true);
+    expect(internal.runItemIds.has(itemId)).toBe(false);
+    expect(internal.runPackageIds.has(packageId)).toBe(false);
+    expect(internal.runOutcomes.has(itemId)).toBe(false);
+  });
+
+  it("clears stale run outcomes on overwrite conflict resolution", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "conflict-overwrite", links: ["https://dummy/overwrite"] }]);
+    const snapshot = manager.getSnapshot();
+    const packageId = snapshot.session.packageOrder[0];
+    const itemId = snapshot.session.packages[packageId]?.itemIds[0] || "";
+
+    const internal = manager as unknown as {
+      runOutcomes: Map<string, "completed" | "failed" | "cancelled">;
+    };
+    internal.runOutcomes.set(itemId, "failed");
+
+    const result = await manager.resolveStartConflict(packageId, "overwrite");
+    expect(result.overwritten).toBe(true);
+    expect(internal.runOutcomes.has(itemId)).toBe(false);
+    expect(manager.getSnapshot().session.items[itemId]?.status).toBe("queued");
+  });
+
+  it("clears speed display buffers when run finishes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const internal = manager as unknown as {
+      runItemIds: Set<string>;
+      runOutcomes: Map<string, "completed" | "failed" | "cancelled">;
+      runCompletedPackages: Set<string>;
+      session: { runStartedAt: number; totalDownloadedBytes: number; running: boolean; paused: boolean };
+      speedEvents: Array<{ at: number; bytes: number }>;
+      speedEventsHead: number;
+      speedBytesLastWindow: number;
+      finishRun: () => void;
+    };
+
+    internal.session.running = true;
+    internal.session.paused = false;
+    internal.session.runStartedAt = Date.now() - 2000;
+    internal.session.totalDownloadedBytes = 4096;
+    internal.runItemIds = new Set(["x"]);
+    internal.runOutcomes = new Map([["x", "completed"]]);
+    internal.runCompletedPackages = new Set();
+    internal.speedEvents = [{ at: Date.now(), bytes: 4096 }];
+    internal.speedEventsHead = 1;
+    internal.speedBytesLastWindow = 4096;
+
+    internal.finishRun();
+
+    expect(internal.speedEvents.length).toBe(0);
+    expect(internal.speedEventsHead).toBe(0);
+    expect(internal.speedBytesLastWindow).toBe(0);
+  });
 });

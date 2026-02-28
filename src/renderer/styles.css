@@ -278,10 +278,20 @@ body,
 
 .downloads-toolbar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.downloads-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.downloads-toolbar .search-input {
+  margin-left: auto;
 }
 
 .search-input {
@@ -727,6 +737,11 @@ td {
   .settings-toolbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .downloads-toolbar .search-input {
+    width: 100%;
+    margin-left: 0;
   }
 
   .settings-toolbar-actions {

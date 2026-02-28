@@ -89,4 +89,21 @@ describe("cleanup", () => {
     // Non-matching files should be kept
     expect(fs.existsSync(path.join(dir, "readme.txt"))).toBe(true);
   });
+
+  it("does not recurse into sample symlink or junction targets", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-"));
+    const external = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-ext-"));
+    tempDirs.push(dir, external);
+
+    const outsideFile = path.join(external, "outside-sample.mkv");
+    fs.writeFileSync(outsideFile, "keep", "utf8");
+
+    const linkedSampleDir = path.join(dir, "sample");
+    const linkType: fs.symlink.Type = process.platform === "win32" ? "junction" : "dir";
+    fs.symlinkSync(external, linkedSampleDir, linkType);
+
+    const result = removeSampleArtifacts(dir);
+    expect(result.files).toBe(0);
+    expect(fs.existsSync(outsideFile)).toBe(true);
+  });
 });

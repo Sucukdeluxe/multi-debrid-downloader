@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultSettings } from "../src/main/constants";
+import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { DebridService, extractRapidgatorFilenameFromHtml, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
@@ -80,7 +80,7 @@ describe("debrid service", () => {
     expect(megaWeb).toHaveBeenCalledTimes(0);
   });
 
-  it("supports BestDebrid auth query fallback", async () => {
+  it("uses BestDebrid auth header without token query fallback", async () => {
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -91,15 +91,11 @@ describe("debrid service", () => {
       autoProviderFallback: true
     };
 
+    const calledUrls: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
       if (url.includes("/api/v1/generateLink?link=")) {
-        return new Response(JSON.stringify({ message: "Bad token, expired, or invalid" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        });
-      }
-      if (url.includes("/api/v1/generateLink?auth=")) {
         return new Response(JSON.stringify({ download: "https://best.example/file.bin", filename: "file.bin", filesize: 2048 }), {
           status: 200,
           headers: { "Content-Type": "application/json" }
@@ -112,6 +108,7 @@ describe("debrid service", () => {
     const result = await service.unrestrictLink("https://rapidgator.net/file/example.part3.rar.html");
     expect(result.provider).toBe("bestdebrid");
     expect(result.fileSize).toBe(2048);
+    expect(calledUrls.some((url) => url.includes("auth="))).toBe(false);
   });
 
   it("sends Bearer auth header to BestDebrid", async () => {
@@ -152,6 +149,63 @@ describe("debrid service", () => {
     expect(authHeader).toBe("Bearer best-token");
   });
 
+  it("does not retry BestDebrid auth failures (401)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "best-token",
+      providerPrimary: "bestdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/api/v1/generateLink?link=")) {
+        calls += 1;
+        return new Response(JSON.stringify({ message: "Unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/file/no-retry")).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
+  it("does not retry AllDebrid auth failures (403)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "ad-token",
+      providerPrimary: "alldebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.alldebrid.com/v4/link/unlock")) {
+        calls += 1;
+        return new Response(JSON.stringify({ status: "error", error: { message: "forbidden" } }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/file/no-retry-ad")).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
   it("supports AllDebrid unlock", async () => {
     const settings = {
       ...defaultSettings(),
@@ -187,6 +241,21 @@ describe("debrid service", () => {
     expect(result.provider).toBe("alldebrid");
     expect(result.directUrl).toBe("https://alldebrid.example/file.bin");
     expect(result.fileSize).toBe(4096);
+  });
+
+  it("treats MegaDebrid as not configured when web fallback callback is unavailable", async () => {
+    const settings = {
+      ...defaultSettings(),
+      megaLogin: "user",
+      megaPassword: "pass",
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://rapidgator.net/file/missing-mega-web")).rejects.toThrow(/nicht konfiguriert/i);
   });
 
   it("uses Mega web path exclusively", async () => {
@@ -504,6 +573,75 @@ describe("debrid service", () => {
     const service = new DebridService(settings);
     const resolved = await service.resolveFilenames([linkA, linkB]);
     expect(resolved.size).toBe(0);
+  });
+
+  it("retries AllDebrid filename infos after transient server error", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "ad-token"
+    };
+
+    const link = "https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let infoCalls = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.alldebrid.com/v4/link/infos")) {
+        infoCalls += 1;
+        if (infoCalls === 1) {
+          return new Response("temporary error", { status: 500 });
+        }
+        return new Response(JSON.stringify({
+          status: "success",
+          data: {
+            infos: [
+              { link, filename: "resolved-from-infos.mkv" }
+            ]
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const resolved = await service.resolveFilenames([link]);
+    expect(resolved.get(link)).toBe("resolved-from-infos.mkv");
+    expect(infoCalls).toBe(2);
+  });
+
+  it("retries AllDebrid filename infos when HTML challenge is returned", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "ad-token"
+    };
+
+    const link = "https://rapidgator.net/file/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let infoCalls = 0;
+    let pageCalls = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.alldebrid.com/v4/link/infos")) {
+        infoCalls += 1;
+        return new Response("<html><title>cf challenge</title></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      if (url === link) {
+        pageCalls += 1;
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const resolved = await service.resolveFilenames([link]);
+    expect(resolved.size).toBe(0);
+    expect(infoCalls).toBe(REQUEST_RETRIES);
+    expect(pageCalls).toBe(1);
   });
 });
 

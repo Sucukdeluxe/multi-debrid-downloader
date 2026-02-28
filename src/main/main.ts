@@ -5,6 +5,7 @@ import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { logger } from "./logger";
 import { APP_NAME } from "./constants";
+import { extractHttpLinksFromText } from "./utils";
 
 /* ── IPC validation helpers ────────────────────────────────────── */
 function validateString(value: unknown, name: string): string {
@@ -39,6 +40,7 @@ let tray: Tray | null = null;
 let clipboardTimer: ReturnType<typeof setInterval> | null = null;
 let lastClipboardText = "";
 const controller = new AppController();
+const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
 
 function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
@@ -115,21 +117,24 @@ function destroyTray(): void {
 }
 
 function extractLinksFromText(text: string): string[] {
-  const matches = text.match(/https?:\/\/[^\s<>"']+/gi);
-  return matches ? Array.from(new Set(matches)) : [];
+  return extractHttpLinksFromText(text);
+}
+
+function normalizeClipboardText(text: string): string {
+  return String(text || "").slice(0, CLIPBOARD_MAX_TEXT_CHARS);
 }
 
 function startClipboardWatcher(): void {
   if (clipboardTimer) {
     return;
   }
-  lastClipboardText = clipboard.readText().slice(0, 50000);
+  lastClipboardText = normalizeClipboardText(clipboard.readText());
   clipboardTimer = setInterval(() => {
-    const text = clipboard.readText();
+    const text = normalizeClipboardText(clipboard.readText());
     if (text === lastClipboardText || !text.trim()) {
       return;
     }
-    lastClipboardText = text.slice(0, 50000);
+    lastClipboardText = text;
     const links = extractLinksFromText(text);
     if (links.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(IPC_CHANNELS.CLIPBOARD_DETECTED, links);

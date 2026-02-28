@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { AppSettings, BandwidthScheduleEntry, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, DownloadStatus, PackageEntry, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
@@ -12,6 +12,10 @@ const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
 const VALID_SPEED_MODES = new Set(["global", "per_download"]);
 const VALID_THEMES = new Set(["dark", "light"]);
+const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
+  "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
+]);
+const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
 
 function asText(value: unknown): string {
   return String(value ?? "").trim();
@@ -148,24 +152,171 @@ function ensureBaseDir(baseDir: string): void {
   fs.mkdirSync(baseDir, { recursive: true });
 }
 
-export function loadSettings(paths: StoragePaths): AppSettings {
-  ensureBaseDir(paths.baseDir);
-  if (!fs.existsSync(paths.configFile)) {
-    return defaultSettings();
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
+  return value as Record<string, unknown>;
+}
+
+function readSettingsFile(filePath: string): AppSettings | null {
   try {
-    // Safe: parsed is spread into a fresh object with defaults first, and normalizeSettings
-    // validates every field, so prototype pollution via __proto__ / constructor is not a concern.
-    const parsed = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as AppSettings;
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
     const merged = normalizeSettings({
       ...defaultSettings(),
       ...parsed
     });
     return sanitizeCredentialPersistence(merged);
-  } catch (error) {
-    logger.error(`Konfiguration konnte nicht geladen werden: ${String(error)}`);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLoadedSession(raw: unknown): SessionState {
+  const fallback = emptySession();
+  const parsed = asRecord(raw);
+  if (!parsed) {
+    return fallback;
+  }
+
+  const now = Date.now();
+  const itemsById: Record<string, DownloadItem> = {};
+  const rawItems = asRecord(parsed.items) ?? {};
+  for (const [entryId, rawItem] of Object.entries(rawItems)) {
+    const item = asRecord(rawItem);
+    if (!item) {
+      continue;
+    }
+    const id = asText(item.id) || entryId;
+    const packageId = asText(item.packageId);
+    const url = asText(item.url);
+    if (!id || !packageId || !url) {
+      continue;
+    }
+
+    const statusRaw = asText(item.status) as DownloadStatus;
+    const status: DownloadStatus = VALID_DOWNLOAD_STATUSES.has(statusRaw) ? statusRaw : "queued";
+    const providerRaw = asText(item.provider) as DebridProvider;
+
+    itemsById[id] = {
+      id,
+      packageId,
+      url,
+      provider: VALID_ITEM_PROVIDERS.has(providerRaw) ? providerRaw : null,
+      status,
+      retries: clampNumber(item.retries, 0, 0, 1_000_000),
+      speedBps: clampNumber(item.speedBps, 0, 0, 10_000_000_000),
+      downloadedBytes: clampNumber(item.downloadedBytes, 0, 0, 10_000_000_000_000),
+      totalBytes: item.totalBytes == null ? null : clampNumber(item.totalBytes, 0, 0, 10_000_000_000_000),
+      progressPercent: clampNumber(item.progressPercent, 0, 0, 100),
+      fileName: asText(item.fileName) || "download.bin",
+      targetPath: asText(item.targetPath),
+      resumable: item.resumable === undefined ? true : Boolean(item.resumable),
+      attempts: clampNumber(item.attempts, 0, 0, 10_000),
+      lastError: asText(item.lastError),
+      fullStatus: asText(item.fullStatus),
+      createdAt: clampNumber(item.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
+      updatedAt: clampNumber(item.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
+    };
+  }
+
+  const packagesById: Record<string, PackageEntry> = {};
+  const rawPackages = asRecord(parsed.packages) ?? {};
+  for (const [entryId, rawPkg] of Object.entries(rawPackages)) {
+    const pkg = asRecord(rawPkg);
+    if (!pkg) {
+      continue;
+    }
+    const id = asText(pkg.id) || entryId;
+    if (!id) {
+      continue;
+    }
+    const statusRaw = asText(pkg.status) as DownloadStatus;
+    const status: DownloadStatus = VALID_DOWNLOAD_STATUSES.has(statusRaw) ? statusRaw : "queued";
+    const rawItemIds = Array.isArray(pkg.itemIds) ? pkg.itemIds : [];
+    packagesById[id] = {
+      id,
+      name: asText(pkg.name) || "Paket",
+      outputDir: asText(pkg.outputDir),
+      extractDir: asText(pkg.extractDir),
+      status,
+      itemIds: rawItemIds
+        .map((value) => asText(value))
+        .filter((value) => value.length > 0),
+      cancelled: Boolean(pkg.cancelled),
+      enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
+      createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
+      updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
+    };
+  }
+
+  for (const [itemId, item] of Object.entries(itemsById)) {
+    if (!packagesById[item.packageId]) {
+      delete itemsById[itemId];
+    }
+  }
+
+  for (const pkg of Object.values(packagesById)) {
+    pkg.itemIds = pkg.itemIds.filter((itemId) => {
+      const item = itemsById[itemId];
+      return Boolean(item) && item.packageId === pkg.id;
+    });
+  }
+
+  const rawOrder = Array.isArray(parsed.packageOrder) ? parsed.packageOrder : [];
+  const packageOrder = rawOrder
+    .map((entry) => asText(entry))
+    .filter((id) => id in packagesById);
+  for (const packageId of Object.keys(packagesById)) {
+    if (!packageOrder.includes(packageId)) {
+      packageOrder.push(packageId);
+    }
+  }
+
+  return {
+    ...fallback,
+    version: clampNumber(parsed.version, fallback.version, 1, 10),
+    packageOrder,
+    packages: packagesById,
+    items: itemsById,
+    runStartedAt: clampNumber(parsed.runStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+    totalDownloadedBytes: clampNumber(parsed.totalDownloadedBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    summaryText: asText(parsed.summaryText),
+    reconnectUntil: clampNumber(parsed.reconnectUntil, 0, 0, Number.MAX_SAFE_INTEGER),
+    reconnectReason: asText(parsed.reconnectReason),
+    paused: Boolean(parsed.paused),
+    running: Boolean(parsed.running),
+    updatedAt: clampNumber(parsed.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
+  };
+}
+
+export function loadSettings(paths: StoragePaths): AppSettings {
+  ensureBaseDir(paths.baseDir);
+  if (!fs.existsSync(paths.configFile)) {
     return defaultSettings();
   }
+  const loaded = readSettingsFile(paths.configFile);
+  if (loaded) {
+    return loaded;
+  }
+
+  const backupFile = `${paths.configFile}.bak`;
+  const backupLoaded = fs.existsSync(backupFile) ? readSettingsFile(backupFile) : null;
+  if (backupLoaded) {
+    logger.warn("Konfiguration defekt, Backup-Datei wird verwendet");
+    try {
+      const payload = JSON.stringify(backupLoaded, null, 2);
+      const tempPath = `${paths.configFile}.tmp`;
+      fs.writeFileSync(tempPath, payload, "utf8");
+      syncRenameWithExdevFallback(tempPath, paths.configFile);
+    } catch {
+      // ignore restore write failure
+    }
+    return backupLoaded;
+  }
+
+  logger.error("Konfiguration konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  return defaultSettings();
 }
 
 function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void {
@@ -221,14 +372,8 @@ export function loadSession(paths: StoragePaths): SessionState {
     return emptySession();
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as Partial<SessionState>;
-    const session: SessionState = {
-      ...emptySession(),
-      ...parsed,
-      packages: parsed.packages ?? {},
-      items: parsed.items ?? {},
-      packageOrder: parsed.packageOrder ?? []
-    };
+    const parsed = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as unknown;
+    const session = normalizeLoadedSession(parsed);
 
     // Reset transient fields that may be stale from a previous crash
     const ACTIVE_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
@@ -257,29 +402,32 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
 }
 
 let asyncSaveRunning = false;
-let asyncSaveQueued: { paths: StoragePaths; session: SessionState } | null = null;
+let asyncSaveQueued: { paths: StoragePaths; payload: string } | null = null;
 
-export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
+async function writeSessionPayload(paths: StoragePaths, payload: string): Promise<void> {
+  await fs.promises.mkdir(paths.baseDir, { recursive: true });
+  const tempPath = `${paths.sessionFile}.tmp`;
+  await fsp.writeFile(tempPath, payload, "utf8");
+  try {
+    await fsp.rename(tempPath, paths.sessionFile);
+  } catch (renameError: unknown) {
+    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      await fsp.copyFile(tempPath, paths.sessionFile);
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+    } else {
+      throw renameError;
+    }
+  }
+}
+
+async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Promise<void> {
   if (asyncSaveRunning) {
-    asyncSaveQueued = { paths, session };
+    asyncSaveQueued = { paths, payload };
     return;
   }
   asyncSaveRunning = true;
   try {
-    await fs.promises.mkdir(paths.baseDir, { recursive: true });
-    const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
-    const tempPath = `${paths.sessionFile}.tmp`;
-    await fsp.writeFile(tempPath, payload, "utf8");
-    try {
-      await fsp.rename(tempPath, paths.sessionFile);
-    } catch (renameError: unknown) {
-      if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-        await fsp.copyFile(tempPath, paths.sessionFile);
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-      } else {
-        throw renameError;
-      }
-    }
+    await writeSessionPayload(paths, payload);
   } catch (error) {
     logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
   } finally {
@@ -287,7 +435,12 @@ export async function saveSessionAsync(paths: StoragePaths, session: SessionStat
     if (asyncSaveQueued) {
       const queued = asyncSaveQueued;
       asyncSaveQueued = null;
-      void saveSessionAsync(queued.paths, queued.session);
+      void saveSessionPayloadAsync(queued.paths, queued.payload);
     }
   }
+}
+
+export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
+  const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
+  await saveSessionPayloadAsync(paths, payload);
 }
