@@ -30,6 +30,72 @@ afterEach(() => {
 });
 
 describe("download manager", () => {
+  function createCompletedArchiveSession(root: string, packageName: string, extractedFileName: string): {
+    session: ReturnType<typeof emptySession>;
+    packageId: string;
+    itemId: string;
+    outputDir: string;
+    extractDir: string;
+    originalExtractedPath: string;
+  } {
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const zip = new AdmZip();
+    zip.addFile(extractedFileName, Buffer.from("video"));
+    const archivePath = path.join(outputDir, "episode.zip");
+    zip.writeZip(archivePath);
+    const archiveSize = fs.statSync(archivePath).size;
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const itemId = `${packageName}-item`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: `https://dummy/${packageName}`,
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (100 MB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    return {
+      session,
+      packageId,
+      itemId,
+      outputDir,
+      extractDir,
+      originalExtractedPath: path.join(extractDir, extractedFileName)
+    };
+  }
+
   it("retries interrupted streams and resumes download", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -3568,5 +3634,126 @@ describe("download manager", () => {
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
     expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt (Quelle fehlt)");
+  });
+
+  it("auto-renames extracted 4SF scene files to folder format", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Asbest.S02.GERMAN.720p.WEB.AVC-4SF";
+    const sourceFileName = "4sf-asbest.web.7p-s02e01.mkv";
+    const expectedFileName = "Asbest.S02E01.GERMAN.720p.WEB.AVC-4SF.mkv";
+    const { session, packageId, itemId, extractDir, originalExtractedPath } = createCompletedArchiveSession(root, packageName, sourceFileName);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const expectedPath = path.join(extractDir, expectedFileName);
+    await waitFor(() => fs.existsSync(expectedPath), 12000);
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]?.status).toBe("completed");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
+    expect(fs.existsSync(expectedPath)).toBe(true);
+    expect(fs.existsSync(originalExtractedPath)).toBe(false);
+  });
+
+  it("adds REPACK marker from rp token and supports 4SJ folders", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Asbest.S02.GERMAN.720p.WEB.AVC-4SJ";
+    const sourceFileName = "4sf-asbest.rp.web.7p-s02e01.mkv";
+    const expectedFileName = "Asbest.S02E01.GERMAN.REPACK.720p.WEB.AVC-4SJ.mkv";
+    const { session, itemId, extractDir, originalExtractedPath } = createCompletedArchiveSession(root, packageName, sourceFileName);
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const expectedPath = path.join(extractDir, expectedFileName);
+    await waitFor(() => fs.existsSync(expectedPath), 12000);
+    expect(fs.existsSync(expectedPath)).toBe(true);
+    expect(fs.existsSync(originalExtractedPath)).toBe(false);
+  });
+
+  it("skips auto-rename when no SxxExx token exists in source filename", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Asbest.S02.GERMAN.720p.WEB.AVC-4SF";
+    const sourceFileName = "4sf-asbest.rp.web.7p-episode.mkv";
+    const unexpectedName = "Asbest.S02.GERMAN.REPACK.720p.WEB.AVC-4SF.mkv";
+    const { session, itemId, extractDir, originalExtractedPath } = createCompletedArchiveSession(root, packageName, sourceFileName);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt"), 12000);
+    expect(fs.existsSync(originalExtractedPath)).toBe(true);
+    expect(fs.existsSync(path.join(extractDir, unexpectedName))).toBe(false);
+  });
+
+  it("does not rename extracted scene files when auto-rename is disabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Asbest.S02.GERMAN.720p.WEB.AVC-4SF";
+    const sourceFileName = "4sf-asbest.web.7p-s02e01.mkv";
+    const unexpectedName = "Asbest.S02E01.GERMAN.720p.WEB.AVC-4SF.mkv";
+    const { session, itemId, extractDir, originalExtractedPath } = createCompletedArchiveSession(root, packageName, sourceFileName);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt"), 12000);
+    expect(fs.existsSync(originalExtractedPath)).toBe(true);
+    expect(fs.existsSync(path.join(extractDir, unexpectedName))).toBe(false);
   });
 });

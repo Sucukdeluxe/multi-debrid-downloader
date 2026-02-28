@@ -47,6 +47,7 @@ export interface AppSettings {
   outputDir: string;
   packageName: string;
   autoExtract: boolean;
+  autoRename4sf4sj: boolean;
   extractDir: string;
   createExtractSubfolder: boolean;
   hybridExtract: boolean;

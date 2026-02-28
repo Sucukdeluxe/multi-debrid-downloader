@@ -40,7 +40,7 @@ const emptySnapshot = (): UiSnapshot => ({
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
-    autoExtract: true, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
+    autoExtract: true, autoRename4sf4sj: false, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
@@ -971,6 +971,7 @@ export function App(): ReactElement {
                   <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("extractDir", s); } }); }}>Wählen</button>
                 </div>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Auto-Extract</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (4SF/4SJ)</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
                 <label>Passwortliste (eine Zeile pro Passwort)</label>
                 <textarea

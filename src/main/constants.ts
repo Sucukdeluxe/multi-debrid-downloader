@@ -42,6 +42,7 @@ export function defaultSettings(): AppSettings {
     outputDir: baseDir,
     packageName: "",
     autoExtract: true,
+    autoRename4sf4sj: false,
     extractDir: path.join(baseDir, "_entpackt"),
     createExtractSubfolder: true,
     hybridExtract: true,
