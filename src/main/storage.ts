@@ -158,13 +158,26 @@ export function loadSettings(paths: StoragePaths): AppSettings {
   }
 }
 
+function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void {
+  try {
+    fs.renameSync(tempPath, targetPath);
+  } catch (renameError: unknown) {
+    if ((renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      fs.copyFileSync(tempPath, targetPath);
+      try { fs.rmSync(tempPath, { force: true }); } catch {}
+    } else {
+      throw renameError;
+    }
+  }
+}
+
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   ensureBaseDir(paths.baseDir);
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
   const payload = JSON.stringify(persisted, null, 2);
   const tempPath = `${paths.configFile}.tmp`;
   fs.writeFileSync(tempPath, payload, "utf8");
-  fs.renameSync(tempPath, paths.configFile);
+  syncRenameWithExdevFallback(tempPath, paths.configFile);
 }
 
 export function emptySession(): SessionState {
@@ -209,7 +222,7 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
   const tempPath = `${paths.sessionFile}.tmp`;
   fs.writeFileSync(tempPath, payload, "utf8");
-  fs.renameSync(tempPath, paths.sessionFile);
+  syncRenameWithExdevFallback(tempPath, paths.sessionFile);
 }
 
 let asyncSaveRunning = false;

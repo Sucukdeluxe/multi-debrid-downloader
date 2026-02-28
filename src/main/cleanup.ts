@@ -110,8 +110,11 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
       if (!shouldDelete && [".txt", ".html", ".htm", ".nfo"].includes(ext)) {
         if (/[._\- ](links?|downloads?|urls?|dlc)([._\- ]|$)/i.test(name)) {
           try {
-            const text = fs.readFileSync(full, "utf8");
-            shouldDelete = /https?:\/\//i.test(text);
+            const stat = fs.statSync(full);
+            if (stat.size <= 256 * 1024) {
+              const text = fs.readFileSync(full, "utf8");
+              shouldDelete = /https?:\/\//i.test(text);
+            }
           } catch {
             shouldDelete = false;
           }

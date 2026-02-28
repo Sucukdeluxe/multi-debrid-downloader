@@ -936,7 +936,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             extractZipArchive(archivePath, options.targetDir, options.conflictMode);
             archivePercent = 100;
           } catch {
-            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+            const usedPassword = await runExternalExtract(archivePath, options.targetDir, "overwrite", passwordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
             }, options.signal);

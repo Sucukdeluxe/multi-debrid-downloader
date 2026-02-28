@@ -76,7 +76,21 @@ type DownloadManagerOptions = {
 };
 
 function cloneSession(session: SessionState): SessionState {
-  return JSON.parse(JSON.stringify(session)) as SessionState;
+  const clonedItems: Record<string, DownloadItem> = {};
+  for (const key of Object.keys(session.items)) {
+    clonedItems[key] = { ...session.items[key] };
+  }
+  const clonedPackages: Record<string, PackageEntry> = {};
+  for (const key of Object.keys(session.packages)) {
+    const pkg = session.packages[key];
+    clonedPackages[key] = { ...pkg, itemIds: [...pkg.itemIds] };
+  }
+  return {
+    ...session,
+    packageOrder: [...session.packageOrder],
+    packages: clonedPackages,
+    items: clonedItems
+  };
 }
 
 function parseContentRangeTotal(contentRange: string | null): number | null {
@@ -1605,6 +1619,8 @@ export class DownloadManager extends EventEmitter {
     }
     delete this.session.packages[packageId];
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
+    this.runPackageIds.delete(packageId);
+    this.runCompletedPackages.delete(packageId);
   }
 
   private async ensureScheduler(): Promise<void> {
@@ -2120,7 +2136,13 @@ export class DownloadManager extends EventEmitter {
     let lastError = "";
     let effectiveTargetPath = targetPath;
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
-      const existingBytes = fs.existsSync(effectiveTargetPath) ? fs.statSync(effectiveTargetPath).size : 0;
+      let existingBytes = 0;
+      try {
+        const stat = await fs.promises.stat(effectiveTargetPath);
+        existingBytes = stat.size;
+      } catch {
+        // file does not exist
+      }
       const headers: Record<string, string> = {};
       if (existingBytes > 0) {
         headers.Range = `bytes=${existingBytes}-`;
@@ -2884,13 +2906,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    for (const itemId of pkg.itemIds) {
-      delete this.session.items[itemId];
-    }
-    delete this.session.packages[packageId];
-    this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
-    this.runPackageIds.delete(packageId);
-    this.runCompletedPackages.delete(packageId);
+    this.removePackageFromSession(packageId, [...pkg.itemIds]);
   }
 
   private applyCompletedCleanupPolicy(packageId: string, itemId: string): void {
@@ -2907,28 +2923,20 @@ export class DownloadManager extends EventEmitter {
     if (policy === "immediate") {
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       delete this.session.items[itemId];
+      if (pkg.itemIds.length === 0) {
+        this.removePackageFromSession(packageId, []);
+      }
+      return;
     }
 
     if (policy === "package_done") {
       const hasOpen = pkg.itemIds.some((id) => {
         const item = this.session.items[id];
-        if (!item) {
-          return false;
-        }
-        return item.status !== "completed";
+        return item != null && item.status !== "completed";
       });
       if (!hasOpen) {
-        for (const id of pkg.itemIds) {
-          delete this.session.items[id];
-        }
-        delete this.session.packages[packageId];
-        this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
+        this.removePackageFromSession(packageId, [...pkg.itemIds]);
       }
-    }
-
-    if (pkg.itemIds.length === 0) {
-      delete this.session.packages[packageId];
-      this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
     }
   }
 

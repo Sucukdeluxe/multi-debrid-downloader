@@ -421,4 +421,30 @@ describe("extractor", () => {
     expect(result.failed).toBe(0);
     expect(result.extracted).toBe(0);
   });
+
+  it("rejects zip entries with path traversal", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zip = new AdmZip();
+    zip.addFile("safe.txt", Buffer.from("safe"));
+    zip.addFile("../escaped.txt", Buffer.from("malicious"));
+    zip.writeZip(path.join(packageDir, "traversal.zip"));
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(1);
+    expect(fs.existsSync(path.join(targetDir, "safe.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "escaped.txt"))).toBe(false);
+  });
 });

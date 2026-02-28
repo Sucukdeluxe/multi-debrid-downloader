@@ -12,6 +12,8 @@ describe("utils", () => {
   it("sanitizes filenames", () => {
     expect(sanitizeFilename("foo/bar:baz*")).toBe("foo bar baz");
     expect(sanitizeFilename("   ")).toBe("Paket");
+    expect(sanitizeFilename("test\0file.txt")).toBe("testfile.txt");
+    expect(sanitizeFilename("\0\0\0")).toBe("Paket");
   });
 
   it("parses package markers", () => {
