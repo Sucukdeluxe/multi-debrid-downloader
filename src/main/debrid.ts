@@ -50,6 +50,27 @@ function retryDelay(attempt: number): number {
   return Math.min(5000, 400 * 2 ** attempt);
 }
 
+function readHttpStatusFromErrorText(text: string): number {
+  const match = String(text || "").match(/HTTP\s+(\d{3})/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function isRetryableErrorText(text: string): boolean {
+  const status = readHttpStatusFromErrorText(text);
+  if (status === 429 || status >= 500) {
+    return true;
+  }
+  const lower = String(text || "").toLowerCase();
+  return lower.includes("timeout")
+    || lower.includes("network")
+    || lower.includes("fetch failed")
+    || lower.includes("aborted")
+    || lower.includes("econnreset")
+    || lower.includes("enotfound")
+    || lower.includes("etimedout")
+    || lower.includes("html statt json");
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -286,15 +307,12 @@ async function resolveRapidgatorFilename(link: string): Promise<string> {
 
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
   const linkParam = encodeURIComponent(link);
-  const authParam = encodeURIComponent(token);
+  const safeToken = String(token || "").trim();
+  const useAuthHeader = Boolean(safeToken);
   return [
     {
       url: `${BEST_DEBRID_API_BASE}/generateLink?link=${linkParam}`,
-      useAuthHeader: true
-    },
-    {
-      url: `${BEST_DEBRID_API_BASE}/generateLink?auth=${authParam}&link=${linkParam}`,
-      useAuthHeader: false
+      useAuthHeader
     }
   ];
 }
@@ -402,7 +420,7 @@ class BestDebridClient {
         throw new Error("BestDebrid Antwort ohne Download-Link");
       } catch (error) {
         lastError = compactErrorText(error);
-        if (attempt >= REQUEST_RETRIES) {
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
           break;
         }
         await sleep(retryDelay(attempt));
@@ -490,7 +508,8 @@ class AllDebridClient {
           chunkResolved = true;
           break;
         } catch (error) {
-          if (attempt >= REQUEST_RETRIES) {
+          const errorText = compactErrorText(error);
+          if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
             throw error;
           }
           await sleep(retryDelay(attempt));
@@ -579,7 +598,7 @@ class AllDebridClient {
         };
       } catch (error) {
         lastError = compactErrorText(error);
-        if (attempt >= REQUEST_RETRIES) {
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
           break;
         }
         await sleep(retryDelay(attempt));
@@ -738,7 +757,7 @@ export class DebridService {
       return Boolean(this.settings.token.trim());
     }
     if (provider === "megadebrid") {
-      return Boolean(this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
+      return Boolean(this.settings.megaLogin.trim() && this.settings.megaPassword.trim() && this.options.megaWebUnrestrict);
     }
     if (provider === "alldebrid") {
       return Boolean(this.settings.allDebridToken.trim());

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePackagesFromLinksText, isHttpLink, sanitizeFilename, formatEta, filenameFromUrl, looksLikeOpaqueFilename } from "../src/main/utils";
+import { extractHttpLinksFromText, parsePackagesFromLinksText, isHttpLink, sanitizeFilename, formatEta, filenameFromUrl, looksLikeOpaqueFilename } from "../src/main/utils";
 
 describe("utils", () => {
   it("validates http links", () => {
@@ -7,6 +7,15 @@ describe("utils", () => {
     expect(isHttpLink("http://example.com/file")).toBe(true);
     expect(isHttpLink("ftp://example.com")).toBe(false);
     expect(isHttpLink("foo bar")).toBe(false);
+  });
+
+  it("extracts links from text and trims trailing punctuation", () => {
+    const links = extractHttpLinksFromText("See (https://example.com/test) and https://rapidgator.net/file/abc123, plus https://example.com/a.b.");
+    expect(links).toEqual([
+      "https://example.com/test",
+      "https://rapidgator.net/file/abc123",
+      "https://example.com/a.b"
+    ]);
   });
 
   it("sanitizes filenames", () => {
@@ -42,6 +51,8 @@ describe("utils", () => {
     expect(filenameFromUrl("https://debrid.example/dl/abc?filename=Movie.S01E01.mkv")).toBe("Movie.S01E01.mkv");
     expect(filenameFromUrl("https://debrid.example/dl/%E0%A4%A")).toBe("%E0%A4%A");
     expect(filenameFromUrl("https://debrid.example/dl/e51f6809bb6ca615601f5ac5db433737")).toBe("e51f6809bb6ca615601f5ac5db433737");
+    expect(filenameFromUrl("data:text/plain;base64,SGVsbG8=")).toBe("download.bin");
+    expect(filenameFromUrl("blob:https://example.com/12345678-1234-1234-1234-1234567890ab")).toBe("download.bin");
     expect(looksLikeOpaqueFilename("download.bin")).toBe(true);
     expect(looksLikeOpaqueFilename("e51f6809bb6ca615601f5ac5db433737")).toBe(true);
     expect(looksLikeOpaqueFilename("movie.part1.rar")).toBe(false);

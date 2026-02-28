@@ -554,4 +554,68 @@ describe("extractor", () => {
     expect(targets.has(r01)).toBe(true);
     expect(targets.has(r02)).toBe(true);
   });
+
+  it("does not fallback to external extractor when ZIP safety guard triggers", async () => {
+    const previousLimit = process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
+    process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB = "8";
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const zipPath = path.join(packageDir, "too-large.zip");
+    const zip = new AdmZip();
+    zip.addFile("large.bin", Buffer.alloc(9 * 1024 * 1024, 7));
+    zip.writeZip(zipPath);
+
+    try {
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(String(result.lastError)).toMatch(/ZIP-Eintrag.*groß/i);
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
+      } else {
+        process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB = previousLimit;
+      }
+    }
+  });
+
+  it("matches resume-state archive names case-insensitively on Windows", async () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    const archivePath = path.join(packageDir, "episode.zip");
+    fs.writeFileSync(archivePath, "not-a-zip", "utf8");
+    fs.writeFileSync(path.join(packageDir, ".rd_extract_progress.json"), JSON.stringify({ completedArchives: ["EPISODE.ZIP"] }), "utf8");
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result.extracted).toBe(1);
+    expect(result.failed).toBe(0);
+  });
 });

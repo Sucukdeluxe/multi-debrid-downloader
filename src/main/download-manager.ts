@@ -655,6 +655,9 @@ export class DownloadManager extends EventEmitter {
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
     this.itemContributedBytes.clear();
+    this.speedEvents = [];
+    this.speedEventsHead = 0;
+    this.speedBytesLastWindow = 0;
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
     this.hybridExtractRequeue.clear();
@@ -798,11 +801,17 @@ export class DownloadManager extends EventEmitter {
           active.abortController.abort("cancel");
         }
         this.releaseTargetPath(itemId);
+        this.runItemIds.delete(itemId);
+        this.runOutcomes.delete(itemId);
+        this.itemContributedBytes.delete(itemId);
         delete this.session.items[itemId];
         this.itemCount = Math.max(0, this.itemCount - 1);
       }
       delete this.session.packages[packageId];
       this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
+      this.runPackageIds.delete(packageId);
+      this.runCompletedPackages.delete(packageId);
+      this.hybridExtractRequeue.delete(packageId);
       this.persistSoon();
       this.emitState(true);
       return { skipped: true, overwritten: false };
@@ -846,6 +855,11 @@ export class DownloadManager extends EventEmitter {
         item.fullStatus = "Wartet";
         item.updatedAt = nowMs();
         item.targetPath = path.join(pkg.outputDir, sanitizeFilename(item.fileName || filenameFromUrl(item.url)));
+        this.runOutcomes.delete(itemId);
+        this.itemContributedBytes.delete(itemId);
+        if (this.session.running) {
+          this.runItemIds.add(itemId);
+        }
       }
       pkg.status = "queued";
       pkg.updatedAt = nowMs();
@@ -1294,6 +1308,7 @@ export class DownloadManager extends EventEmitter {
       this.session.reconnectReason = "";
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
+      this.speedEventsHead = 0;
       this.lastGlobalProgressBytes = 0;
       this.lastGlobalProgressAt = nowMs();
       this.summary = null;
@@ -1319,6 +1334,7 @@ export class DownloadManager extends EventEmitter {
     this.consecutiveReconnects = 0;
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
+    this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
     this.globalSpeedLimitQueue = Promise.resolve();
@@ -1326,7 +1342,13 @@ export class DownloadManager extends EventEmitter {
     this.summary = null;
     this.persistSoon();
     this.emitState(true);
-    this.ensureScheduler();
+    void this.ensureScheduler().catch((error) => {
+      logger.error(`Scheduler abgestürzt: ${compactErrorText(error)}`);
+      this.session.running = false;
+      this.session.paused = false;
+      this.persistSoon();
+      this.emitState(true);
+    });
   }
 
   public stop(): void {
@@ -1396,6 +1418,7 @@ export class DownloadManager extends EventEmitter {
 
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
+    this.speedEventsHead = 0;
     this.runItemIds.clear();
     this.runPackageIds.clear();
     this.runOutcomes.clear();
@@ -1599,6 +1622,9 @@ export class DownloadManager extends EventEmitter {
 
   private recordSpeed(bytes: number): void {
     const now = nowMs();
+    if (bytes > 0 && this.consecutiveReconnects > 0) {
+      this.consecutiveReconnects = 0;
+    }
     const bucket = now - (now % 120);
     const last = this.speedEvents[this.speedEvents.length - 1];
     if (last && last.at === bucket) {
@@ -3363,7 +3389,9 @@ export class DownloadManager extends EventEmitter {
         }
       } catch (error) {
         const reasonRaw = String(error || "");
-        if (reasonRaw.includes("aborted:extract") || reasonRaw.includes("extract_timeout")) {
+        const isExtractAbort = reasonRaw.includes("aborted:extract") || reasonRaw.includes("extract_timeout");
+        let timeoutHandled = false;
+        if (isExtractAbort) {
           if (timedOut) {
             const timeoutReason = `Entpacken Timeout nach ${Math.ceil(extractTimeoutMs / 1000)}s`;
             logger.error(`Post-Processing Entpacken Timeout: pkg=${pkg.name}`);
@@ -3373,6 +3401,7 @@ export class DownloadManager extends EventEmitter {
             }
             pkg.status = "failed";
             pkg.updatedAt = nowMs();
+            timeoutHandled = true;
           } else {
             for (const entry of completedItems) {
               if (/^Entpacken/i.test(entry.fullStatus || "")) {
@@ -3386,13 +3415,15 @@ export class DownloadManager extends EventEmitter {
             return;
           }
         }
-        const reason = compactErrorText(error);
-        logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
-        for (const entry of completedItems) {
-          entry.fullStatus = `Entpack-Fehler: ${reason}`;
-          entry.updatedAt = nowMs();
+        if (!timeoutHandled) {
+          const reason = compactErrorText(error);
+          logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
+          for (const entry of completedItems) {
+            entry.fullStatus = `Entpack-Fehler: ${reason}`;
+            entry.updatedAt = nowMs();
+          }
+          pkg.status = "failed";
         }
-        pkg.status = "failed";
       } finally {
         clearTimeout(extractDeadline);
         if (signal) {
@@ -3500,6 +3531,9 @@ export class DownloadManager extends EventEmitter {
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
     this.itemContributedBytes.clear();
+    this.speedEvents = [];
+    this.speedEventsHead = 0;
+    this.speedBytesLastWindow = 0;
     this.globalSpeedLimitQueue = Promise.resolve();
     this.globalSpeedLimitNextAt = 0;
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;

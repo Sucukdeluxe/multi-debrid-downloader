@@ -16,7 +16,18 @@ function retryDelay(attempt: number): number {
   return Math.min(5000, 400 * 2 ** attempt);
 }
 
-function parseErrorBody(status: number, body: string): string {
+function looksLikeHtmlResponse(contentType: string, body: string): boolean {
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("text/html") || type.includes("application/xhtml+xml")) {
+    return true;
+  }
+  return /^\s*<(!doctype\s+html|html\b)/i.test(String(body || ""));
+}
+
+function parseErrorBody(status: number, body: string, contentType: string): string {
+  if (looksLikeHtmlResponse(contentType, body)) {
+    return `Real-Debrid lieferte HTML statt JSON (HTTP ${status})`;
+  }
   const clean = compactErrorText(body);
   return clean || `HTTP ${status}`;
 }
@@ -45,8 +56,9 @@ export class RealDebridClient {
         });
 
         const text = await response.text();
+        const contentType = String(response.headers.get("content-type") || "");
         if (!response.ok) {
-          const parsed = parseErrorBody(response.status, text);
+          const parsed = parseErrorBody(response.status, text, contentType);
           if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
             await sleep(retryDelay(attempt));
             continue;
@@ -54,11 +66,15 @@ export class RealDebridClient {
           throw new Error(parsed);
         }
 
+        if (looksLikeHtmlResponse(contentType, text)) {
+          throw new Error("Real-Debrid lieferte HTML statt JSON");
+        }
+
         let payload: Record<string, unknown>;
         try {
           payload = JSON.parse(text) as Record<string, unknown>;
         } catch {
-          throw new Error(`Ungültige JSON-Antwort: ${text.slice(0, 120)}`);
+          throw new Error("Ungültige JSON-Antwort von Real-Debrid");
         }
         const directUrl = String(payload.download || payload.link || "").trim();
         if (!directUrl) {

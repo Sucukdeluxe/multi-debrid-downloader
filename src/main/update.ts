@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -20,6 +21,7 @@ const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 type ReleaseAsset = {
   name: string;
   browser_download_url: string;
+  digest: string;
 };
 
 export function normalizeUpdateRepo(repo: string): string {
@@ -27,6 +29,17 @@ export function normalizeUpdateRepo(repo: string): string {
   if (!raw) {
     return DEFAULT_UPDATE_REPO;
   }
+
+  const isValidRepoPart = (value: string): boolean => {
+    const part = String(value || "").trim();
+    if (!part || part === "." || part === "..") {
+      return false;
+    }
+    if (part.includes("..")) {
+      return false;
+    }
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(part);
+  };
 
   const normalizeParts = (input: string): string => {
     const cleaned = input
@@ -37,7 +50,11 @@ export function normalizeUpdateRepo(repo: string): string {
       .replace(/^\/+|\/+$/g, "");
     const parts = cleaned.split("/").filter(Boolean);
     if (parts.length >= 2) {
-      return `${parts[0]}/${parts[1]}`;
+      const owner = parts[0];
+      const repository = parts[1];
+      if (isValidRepoPart(owner) && isValidRepoPart(repository)) {
+        return `${owner}/${repository}`;
+      }
     }
     return "";
   };
@@ -68,6 +85,31 @@ function timeoutController(ms: number): { signal: AbortSignal; clear: () => void
     signal: controller.signal,
     clear: () => clearTimeout(timer)
   };
+}
+
+async function readJsonWithTimeout(response: Response, timeoutMs: number): Promise<Record<string, unknown> | null> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void response.body?.cancel().catch(() => undefined);
+      reject(new Error(`timeout:${timeoutMs}`));
+    }, timeoutMs);
+  });
+
+  try {
+    const payload = await Promise.race([
+      response.json().catch(() => null) as Promise<unknown>,
+      timeoutPromise
+    ]);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return null;
+    }
+    return payload as Record<string, unknown>;
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function getDownloadBodyIdleTimeoutMs(): number {
@@ -116,7 +158,8 @@ function readReleaseAssets(payload: Record<string, unknown>): ReleaseAsset[] {
   return assets
     .map((asset) => ({
       name: String(asset.name || ""),
-      browser_download_url: String(asset.browser_download_url || "")
+      browser_download_url: String(asset.browser_download_url || ""),
+      digest: String(asset.digest || "").trim()
     }))
     .filter((asset) => asset.name && asset.browser_download_url);
 }
@@ -145,8 +188,13 @@ function parseReleasePayload(payload: Record<string, unknown>, fallback: UpdateC
     latestTag,
     releaseUrl,
     setupAssetUrl: setup?.browser_download_url || "",
-    setupAssetName: setup?.name || ""
+    setupAssetName: setup?.name || "",
+    setupAssetDigest: setup?.digest || ""
   };
+}
+
+function isDraftOrPrereleaseRelease(payload: Record<string, unknown>): boolean {
+  return Boolean(payload.draft) || Boolean(payload.prerelease);
 }
 
 async function fetchReleasePayload(safeRepo: string, endpoint: string): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> | null }> {
@@ -164,7 +212,7 @@ async function fetchReleasePayload(safeRepo: string, endpoint: string): Promise<
     timeout.clear();
   }
 
-  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+  const payload = await readJsonWithTimeout(response, RELEASE_FETCH_TIMEOUT_MS);
   return {
     ok: response.ok,
     status: response.status,
@@ -245,7 +293,40 @@ function deriveUpdateFileName(check: UpdateCheckResult, url: string): string {
   }
 }
 
-async function resolveSetupAssetFromApi(safeRepo: string, tagHint: string): Promise<{ setupAssetUrl: string; setupAssetName: string } | null> {
+function normalizeSha256Digest(raw: string): string {
+  const text = String(raw || "").trim();
+  const prefixed = text.match(/^sha256:([a-fA-F0-9]{64})$/i);
+  if (prefixed) {
+    return prefixed[1].toLowerCase();
+  }
+  const plain = text.match(/^([a-fA-F0-9]{64})$/);
+  return plain ? plain[1].toLowerCase() : "";
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = crypto.createHash("sha256");
+  const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+  return await new Promise<string>((resolve, reject) => {
+    stream.on("data", (chunk: string | Buffer) => {
+      hash.update(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    });
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex").toLowerCase()));
+  });
+}
+
+async function verifyDownloadedInstaller(targetPath: string, expectedDigestRaw: string): Promise<void> {
+  const expectedDigest = normalizeSha256Digest(expectedDigestRaw);
+  if (!expectedDigest) {
+    throw new Error("Update-Asset ohne gültigen SHA256-Digest");
+  }
+  const actualDigest = await sha256File(targetPath);
+  if (actualDigest !== expectedDigest) {
+    throw new Error("Update-Integritätsprüfung fehlgeschlagen (SHA256 mismatch)");
+  }
+}
+
+async function resolveSetupAssetFromApi(safeRepo: string, tagHint: string): Promise<{ setupAssetUrl: string; setupAssetName: string; setupAssetDigest: string } | null> {
   const endpointCandidates = uniqueStrings([
     tagHint ? `releases/tags/${encodeURIComponent(tagHint)}` : "",
     "releases/latest"
@@ -257,13 +338,17 @@ async function resolveSetupAssetFromApi(safeRepo: string, tagHint: string): Prom
       if (!release.ok || !release.payload) {
         continue;
       }
+      if (isDraftOrPrereleaseRelease(release.payload)) {
+        continue;
+      }
       const setup = pickSetupAsset(readReleaseAssets(release.payload));
       if (!setup) {
         continue;
       }
       return {
         setupAssetUrl: setup.browser_download_url,
-        setupAssetName: setup.name
+        setupAssetName: setup.name,
+        setupAssetDigest: setup.digest
       };
     } catch {
       // ignore and continue with next endpoint candidate
@@ -433,16 +518,18 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
   let effectiveCheck: UpdateCheckResult = {
     ...check,
     setupAssetUrl: String(check.setupAssetUrl || ""),
-    setupAssetName: String(check.setupAssetName || "")
+    setupAssetName: String(check.setupAssetName || ""),
+    setupAssetDigest: String(check.setupAssetDigest || "")
   };
 
-  if (!effectiveCheck.setupAssetUrl) {
+  if (!effectiveCheck.setupAssetUrl || !effectiveCheck.setupAssetDigest) {
     const refreshed = await resolveSetupAssetFromApi(safeRepo, effectiveCheck.latestTag);
     if (refreshed) {
       effectiveCheck = {
         ...effectiveCheck,
         setupAssetUrl: refreshed.setupAssetUrl,
-        setupAssetName: refreshed.setupAssetName
+        setupAssetName: refreshed.setupAssetName,
+        setupAssetDigest: refreshed.setupAssetDigest
       };
     }
   }
@@ -457,6 +544,7 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
 
   try {
     await downloadFromCandidates(candidates, targetPath);
+    await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
     const child = spawn(targetPath, [], {
       detached: true,
       stdio: "ignore"

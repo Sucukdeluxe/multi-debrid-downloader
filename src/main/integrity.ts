@@ -41,7 +41,17 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
     return map;
   }
 
-  for (const entry of fs.readdirSync(packageDir, { withFileTypes: true })) {
+  const manifestFiles = fs.readdirSync(packageDir, { withFileTypes: true })
+    .filter((entry) => {
+      if (!entry.isFile()) {
+        return false;
+      }
+      const ext = path.extname(entry.name).toLowerCase();
+      return patterns.some(([pattern]) => pattern === ext);
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+  for (const entry of manifestFiles) {
     if (!entry.isFile()) {
       continue;
     }
@@ -70,7 +80,11 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
         ...parsed,
         algorithm: hit[1]
       };
-      map.set(parsed.fileName.toLowerCase(), normalized);
+      const key = parsed.fileName.toLowerCase();
+      if (map.has(key)) {
+        continue;
+      }
+      map.set(key, normalized);
     }
   }
   return map;

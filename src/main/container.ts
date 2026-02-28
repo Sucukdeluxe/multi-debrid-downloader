@@ -5,6 +5,8 @@ import { DCRYPT_UPLOAD_URL, DLC_AES_IV, DLC_AES_KEY, DLC_SERVICE_URL } from "./c
 import { compactErrorText, inferPackageNameFromLinks, isHttpLink, sanitizeFilename, uniquePreserveOrder } from "./utils";
 import { ParsedPackageInput } from "../shared/types";
 
+const MAX_DLC_FILE_BYTES = 8 * 1024 * 1024;
+
 function decodeDcryptPayload(responseText: string): unknown {
   let text = String(responseText || "").trim();
   const m = text.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/i);
@@ -62,6 +64,14 @@ function decryptRcPayload(base64Rc: string): Buffer {
   return Buffer.concat([decipher.update(rcBytes), decipher.final()]);
 }
 
+function readDlcFileWithLimit(filePath: string): Buffer {
+  const stat = fs.statSync(filePath);
+  if (stat.size <= 0 || stat.size > MAX_DLC_FILE_BYTES) {
+    throw new Error(`DLC-Datei ungültig oder zu groß (${Math.floor(stat.size)} B)`);
+  }
+  return fs.readFileSync(filePath);
+}
+
 function parsePackagesFromDlcXml(xml: string): ParsedPackageInput[] {
   const packages: ParsedPackageInput[] = [];
   const packageRegex = /<package\s+[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/package>/gi;
@@ -104,7 +114,7 @@ function parsePackagesFromDlcXml(xml: string): ParsedPackageInput[] {
 }
 
 async function decryptDlcLocal(filePath: string): Promise<ParsedPackageInput[]> {
-  const content = fs.readFileSync(filePath, "ascii").trim();
+  const content = readDlcFileWithLimit(filePath).toString("ascii").trim();
   if (content.length < 89) {
     return [];
   }
@@ -129,10 +139,19 @@ async function decryptDlcLocal(filePath: string): Promise<ParsedPackageInput[]> 
   decipher.setAutoPadding(false);
   let decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
 
-  const pad = decrypted[decrypted.length - 1];
-  if (pad > 0 && pad <= 16) {
-    decrypted = decrypted.subarray(0, decrypted.length - pad);
+  if (decrypted.length === 0) {
+    throw new Error("DLC-Entschlüsselung lieferte keine Daten");
   }
+  const pad = decrypted[decrypted.length - 1];
+  if (pad <= 0 || pad > 16 || pad > decrypted.length) {
+    throw new Error("Ungültiges DLC-Padding");
+  }
+  for (let index = 1; index <= pad; index += 1) {
+    if (decrypted[decrypted.length - index] !== pad) {
+      throw new Error("Ungültiges DLC-Padding");
+    }
+  }
+  decrypted = decrypted.subarray(0, decrypted.length - pad);
 
   const xmlData = Buffer.from(decrypted.toString("utf8"), "base64").toString("utf8");
   return parsePackagesFromDlcXml(xmlData);
@@ -140,7 +159,7 @@ async function decryptDlcLocal(filePath: string): Promise<ParsedPackageInput[]> 
 
 async function decryptDlcViaDcrypt(filePath: string): Promise<ParsedPackageInput[]> {
   const fileName = path.basename(filePath);
-  const blob = new Blob([fs.readFileSync(filePath)]);
+  const blob = new Blob([new Uint8Array(readDlcFileWithLimit(filePath))]);
   const form = new FormData();
   form.set("dlcfile", blob, fileName);
 

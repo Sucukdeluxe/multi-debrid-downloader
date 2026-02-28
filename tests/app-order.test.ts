@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reorderPackageOrderByDrop } from "../src/renderer/App";
+import { reorderPackageOrderByDrop, sortPackageOrderByName } from "../src/renderer/App";
 
 describe("reorderPackageOrderByDrop", () => {
   it("moves adjacent package down by one on drop", () => {
@@ -17,5 +17,33 @@ describe("reorderPackageOrderByDrop", () => {
     expect(reorderPackageOrderByDrop(order, "x", "b")).toEqual(order);
     expect(reorderPackageOrderByDrop(order, "a", "x")).toEqual(order);
     expect(reorderPackageOrderByDrop(order, "a", "a")).toEqual(order);
+  });
+});
+
+describe("sortPackageOrderByName", () => {
+  it("sorts package IDs alphabetically ascending", () => {
+    const sorted = sortPackageOrderByName(
+      ["pkg3", "pkg1", "pkg2"],
+      {
+        pkg1: { id: "pkg1", name: "Alpha", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
+        pkg2: { id: "pkg2", name: "beta", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
+        pkg3: { id: "pkg3", name: "Gamma", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 }
+      },
+      false
+    );
+    expect(sorted).toEqual(["pkg1", "pkg2", "pkg3"]);
+  });
+
+  it("sorts package IDs alphabetically descending", () => {
+    const sorted = sortPackageOrderByName(
+      ["pkg1", "pkg2", "pkg3"],
+      {
+        pkg1: { id: "pkg1", name: "Alpha", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
+        pkg2: { id: "pkg2", name: "beta", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
+        pkg3: { id: "pkg3", name: "Gamma", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 }
+      },
+      true
+    );
+    expect(sorted).toEqual(["pkg3", "pkg2", "pkg1"]);
   });
 });
