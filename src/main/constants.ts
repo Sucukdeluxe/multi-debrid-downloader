@@ -8,6 +8,7 @@ export const APP_VERSION: string = packageJson.version;
 export const API_BASE_URL = "https://api.real-debrid.com/rest/1.0";
 
 export const DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload";
+export const DCRYPT_PASTE_URL = "https://dcrypt.it/decrypt/paste";
 export const DLC_SERVICE_URL = "https://service.jdownloader.org/dlcrypt/service.php?srcType=dlc&destType=pylo&data={KEY}";
 export const DLC_AES_KEY = Buffer.from("cb99b5cbc24db398", "utf8");
 export const DLC_AES_IV = Buffer.from("9bc24cb995cb8db3", "utf8");

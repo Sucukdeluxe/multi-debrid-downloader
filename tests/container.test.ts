@@ -21,24 +21,27 @@ describe("container", () => {
     tempDirs.push(dir);
     const oversizedFilePath = path.join(dir, "oversized.dlc");
     fs.writeFileSync(oversizedFilePath, Buffer.alloc((8 * 1024 * 1024) + 1, 1));
-    
+
     // Create a valid mockup DLC that would be skipped if an error was thrown
     const validFilePath = path.join(dir, "valid.dlc");
     // Just needs to be short enough to pass file limits but fail parsing, triggering dcrypt fallback
     fs.writeFileSync(validFilePath, Buffer.from("Valid but not real DLC content..."));
 
-    const fetchSpy = vi.fn(async () => {
-      // Mock dcrypt response for valid.dlc
-      return new Response("http://example.com/file1.rar\nhttp://example.com/file2.rar", { status: 200 });
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
+        return new Response("http://example.com/file1.rar\nhttp://example.com/file2.rar", { status: 200 });
+      }
+      return new Response("", { status: 404 });
     });
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const result = await importDlcContainers([oversizedFilePath, validFilePath]);
-    
-    // Expect the oversized to be silently skipped, and valid to be parsed into 2 packages (one per link name)
-    expect(result).toHaveLength(2);
-    expect(result[0].links).toEqual(["http://example.com/file1.rar"]);
-    expect(result[1].links).toEqual(["http://example.com/file2.rar"]);
+
+    // Expect the oversized to be silently skipped, and valid to be parsed into 1 package with DLC filename
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("valid");
+    expect(result[0].links).toEqual(["http://example.com/file1.rar", "http://example.com/file2.rar"]);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -56,24 +59,27 @@ describe("container", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
     tempDirs.push(dir);
     const filePath = path.join(dir, "fallback.dlc");
-    
+
     // A file large enough to trigger local decryption attempt (needs > 89 bytes to pass the slice check)
     fs.writeFileSync(filePath, Buffer.alloc(100, 1).toString("base64"));
 
     const fetchSpy = vi.fn(async (url: string | URL | Request) => {
       const urlStr = String(url);
-      if (urlStr.includes("rc")) {
-        // Mock local RC service failure (returning 404 or empty string)
+      if (urlStr.includes("service.jdownloader.org")) {
+        // Mock local RC service failure (returning 404)
         return new Response("", { status: 404 });
-      } else {
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
         // Mock dcrypt fallback success
         return new Response("http://fallback.com/1", { status: 200 });
       }
+      return new Response("", { status: 404 });
     });
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const result = await importDlcContainers([filePath]);
     expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("fallback");
     expect(result[0].links).toEqual(["http://fallback.com/1"]);
     // Should have tried both!
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -90,14 +96,71 @@ describe("container", () => {
       if (urlStr.includes("service.jdownloader.org")) {
         return new Response(`<rc>${Buffer.alloc(16).toString("base64")}</rc>`, { status: 200 });
       }
-      return new Response("http://example.com/fallback1", { status: 200 });
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
+        return new Response("http://example.com/fallback1", { status: 200 });
+      }
+      return new Response("", { status: 404 });
     });
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const result = await importDlcContainers([filePath]);
     expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("invalid-local");
     expect(result[0].links).toEqual(["http://example.com/fallback1"]);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to paste endpoint when upload returns 413", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "big-dlc.dlc");
+    fs.writeFileSync(filePath, Buffer.alloc(100, 1).toString("base64"));
+
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes("service.jdownloader.org")) {
+        return new Response("", { status: 404 });
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
+        return new Response("Request Entity Too Large", { status: 413 });
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/paste")) {
+        return new Response("http://paste-fallback.com/file1.rar\nhttp://paste-fallback.com/file2.rar", { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const result = await importDlcContainers([filePath]);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("big-dlc");
+    expect(result[0].links).toEqual(["http://paste-fallback.com/file1.rar", "http://paste-fallback.com/file2.rar"]);
+    // local RC + upload + paste = 3 calls
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws when both dcrypt endpoints fail", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "doomed.dlc");
+    fs.writeFileSync(filePath, Buffer.from("not a valid dlc payload at all"));
+
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes("service.jdownloader.org")) {
+        return new Response("", { status: 404 });
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
+        return new Response("Request Entity Too Large", { status: 413 });
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/paste")) {
+        return new Response("paste failure", { status: 500 });
+      }
+      return new Response("", { status: 500 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await expect(importDlcContainers([filePath])).rejects.toThrow(/DLC konnte nicht importiert werden/i);
   });
 
   it("throws clear error when all dlc imports fail", async () => {
@@ -111,7 +174,10 @@ describe("container", () => {
       if (urlStr.includes("service.jdownloader.org")) {
         return new Response("", { status: 404 });
       }
-      return new Response("upstream failure", { status: 500 });
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
+        return new Response("upstream failure", { status: 500 });
+      }
+      return new Response("", { status: 500 });
     });
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 

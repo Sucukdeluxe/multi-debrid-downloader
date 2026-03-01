@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { DCRYPT_UPLOAD_URL, DLC_AES_IV, DLC_AES_KEY, DLC_SERVICE_URL } from "./constants";
+import { DCRYPT_PASTE_URL, DCRYPT_UPLOAD_URL, DLC_AES_IV, DLC_AES_KEY, DLC_SERVICE_URL } from "./constants";
 import { compactErrorText, inferPackageNameFromLinks, isHttpLink, sanitizeFilename, uniquePreserveOrder } from "./utils";
 import { ParsedPackageInput } from "../shared/types";
 
@@ -162,9 +162,17 @@ async function decryptDlcLocal(filePath: string): Promise<ParsedPackageInput[]> 
   return parsePackagesFromDlcXml(xmlData);
 }
 
-async function decryptDlcViaDcrypt(filePath: string): Promise<ParsedPackageInput[]> {
-  const fileName = path.basename(filePath);
-  const blob = new Blob([new Uint8Array(readDlcFileWithLimit(filePath))]);
+function extractLinksFromResponse(text: string): string[] {
+  const payload = decodeDcryptPayload(text);
+  let links = extractUrlsRecursive(payload);
+  if (links.length === 0) {
+    links = extractUrlsRecursive(text);
+  }
+  return uniquePreserveOrder(links.filter((l) => isHttpLink(l)));
+}
+
+async function tryDcryptUpload(fileContent: Buffer, fileName: string): Promise<string[] | null> {
+  const blob = new Blob([new Uint8Array(fileContent)]);
   const form = new FormData();
   form.set("dlcfile", blob, fileName);
 
@@ -172,22 +180,44 @@ async function decryptDlcViaDcrypt(filePath: string): Promise<ParsedPackageInput
     method: "POST",
     body: form
   });
+  if (response.status === 413) {
+    return null;
+  }
   const text = await response.text();
   if (!response.ok) {
     throw new Error(compactErrorText(text));
   }
-  const payload = decodeDcryptPayload(text);
-  let packages = extractPackagesFromPayload(payload);
-  if (packages.length === 1) {
-    const regrouped = groupLinksByName(packages[0].links);
-    if (regrouped.length > 1) {
-      packages = regrouped;
-    }
+  return extractLinksFromResponse(text);
+}
+
+async function tryDcryptPaste(fileContent: Buffer): Promise<string[]> {
+  const form = new FormData();
+  form.set("content", fileContent.toString("ascii"));
+
+  const response = await fetch(DCRYPT_PASTE_URL, {
+    method: "POST",
+    body: form
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(compactErrorText(text));
   }
-  if (packages.length === 0) {
-    packages = groupLinksByName(extractUrlsRecursive(text));
+  return extractLinksFromResponse(text);
+}
+
+async function decryptDlcViaDcrypt(filePath: string): Promise<ParsedPackageInput[]> {
+  const fileContent = readDlcFileWithLimit(filePath);
+  const fileName = path.basename(filePath);
+  const packageName = sanitizeFilename(path.basename(filePath, ".dlc")) || "Paket";
+
+  let links = await tryDcryptUpload(fileContent, fileName);
+  if (links === null) {
+    links = await tryDcryptPaste(fileContent);
   }
-  return packages;
+  if (links.length === 0) {
+    return [];
+  }
+  return [{ name: packageName, links }];
 }
 
 export async function importDlcContainers(filePaths: string[]): Promise<ParsedPackageInput[]> {
