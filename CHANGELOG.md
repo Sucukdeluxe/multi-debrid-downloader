@@ -2,6 +2,24 @@
 
 Alle nennenswerten Aenderungen werden in dieser Datei dokumentiert.
 
+## 1.4.66 - 2026-03-01
+
+Hotfix fuer haengende "Link wird umgewandelt"-Faelle (insbesondere Mega-Web-Pfad), bei denen nur ein App-Neustart geholfen hat.
+
+### Fixes
+
+- Mega-Web-Unrestrict ist jetzt komplett abort-/timeout-faehig:
+  - Abort-Signale werden bis in den Mega-Web-Fallback durchgereicht.
+  - Laufende Polling-/Fetch-Schritte respektieren Stop/Timeout sofort.
+  - Wartende Jobs in der exklusiven Mega-Web-Queue koennen bei Abort sauber abbrechen.
+- Download-Manager kann haengende Unrestrict-Phasen dadurch wieder automatisch per Timeout + Retry aufloesen, statt dauerhaft in "Link wird umgewandelt" zu bleiben.
+
+### Tests
+
+- Neue Tests sichern den Fix ab:
+  - Abort-Weitergabe bei Mega-Web-Unrestrict in `tests/debrid.test.ts`.
+  - Abort waehrend Mega-Web-Polling in `tests/mega-web-fallback.test.ts`.
+
 ## 1.4.33 - 2026-03-02
 
 Hotfix-Release fuer zwei reale Produktionsprobleme: falsche Gesamt-Statistik bei leerer Queue und stilles DLC-Import-Failure bei Drag-and-Drop.

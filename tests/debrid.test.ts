@@ -290,6 +290,44 @@ describe("debrid service", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(0);
   });
 
+  it("aborts Mega web unrestrict when caller signal is cancelled", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const megaWeb = vi.fn((_link: string, signal?: AbortSignal): Promise<never> => new Promise((_, reject) => {
+      const onAbort = (): void => reject(new Error("aborted:mega-web-test"));
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => {
+      controller.abort("test");
+    }, 25);
+
+    try {
+      await expect(service.unrestrictLink("https://rapidgator.net/file/abort-mega-web", controller.signal)).rejects.toThrow(/aborted/i);
+      expect(megaWeb).toHaveBeenCalledTimes(1);
+      expect(megaWeb.mock.calls[0]?.[1]).toBe(controller.signal);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  });
+
   it("respects provider selection and does not append hidden providers", async () => {
     const settings = {
       ...defaultSettings(),

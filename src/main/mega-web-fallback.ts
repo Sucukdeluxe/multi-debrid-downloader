@@ -88,6 +88,93 @@ function parseDebridJson(text: string): { link: string; text: string } | null {
   }
 }
 
+function abortError(): Error {
+  return new Error("aborted:mega-web");
+}
+
+function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!signal) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([signal, timeoutSignal]);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw abortError();
+  }
+}
+
+async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await sleep(ms);
+    return;
+  }
+  if (signal.aborted) {
+    throw abortError();
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = setTimeout(() => {
+      timer = null;
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(0, ms));
+
+    const onAbort = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    throw abortError();
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    promise.then((value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      resolve(value);
+    }, (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+  });
+}
+
 export class MegaWebFallback {
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -101,22 +188,23 @@ export class MegaWebFallback {
     this.getCredentials = getCredentials;
   }
 
-  public async unrestrict(link: string): Promise<UnrestrictedLink | null> {
+  public async unrestrict(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
     return this.runExclusive(async () => {
+      throwIfAborted(signal);
       const creds = this.getCredentials();
       if (!creds.login.trim() || !creds.password.trim()) {
         return null;
       }
 
       if (!this.cookie || Date.now() - this.cookieSetAt > 20 * 60 * 1000) {
-        await this.login(creds.login, creds.password);
+        await this.login(creds.login, creds.password, signal);
       }
 
-      const generated = await this.generate(link);
+      const generated = await this.generate(link, signal);
       if (!generated) {
         this.cookie = "";
-        await this.login(creds.login, creds.password);
-        const retry = await this.generate(link);
+        await this.login(creds.login, creds.password, signal);
+        const retry = await this.generate(link, signal);
         if (!retry) {
           return null;
         }
@@ -134,16 +222,21 @@ export class MegaWebFallback {
         fileSize: null,
         retriesUsed: 0
       };
-    });
+    }, signal);
   }
 
-  private async runExclusive<T>(job: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(job, job);
+  private async runExclusive<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const guardedJob = async (): Promise<T> => {
+      throwIfAborted(signal);
+      return job();
+    };
+    const run = this.queue.then(guardedJob, guardedJob);
     this.queue = run.then(() => undefined, () => undefined);
-    return run;
+    return raceWithAbort(run, signal);
   }
 
-  private async login(login: string, password: string): Promise<void> {
+  private async login(login: string, password: string, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const response = await fetch(LOGIN_URL, {
       method: "POST",
       headers: {
@@ -156,7 +249,7 @@ export class MegaWebFallback {
         remember: "on"
       }),
       redirect: "manual",
-      signal: AbortSignal.timeout(30000)
+      signal: withTimeoutSignal(signal, 30000)
     });
 
     const cookie = parseSetCookieFromHeaders(response.headers);
@@ -171,7 +264,7 @@ export class MegaWebFallback {
         Cookie: cookie,
         Referer: DEBRID_REFERER
       },
-      signal: AbortSignal.timeout(30000)
+      signal: withTimeoutSignal(signal, 30000)
     });
     const verifyHtml = await verify.text();
     const hasDebridForm = /id=["']debridForm["']/i.test(verifyHtml) || /name=["']links["']/i.test(verifyHtml);
@@ -183,7 +276,8 @@ export class MegaWebFallback {
     this.cookieSetAt = Date.now();
   }
 
-  private async generate(link: string): Promise<{ directUrl: string; fileName: string } | null> {
+  private async generate(link: string, signal?: AbortSignal): Promise<{ directUrl: string; fileName: string } | null> {
+    throwIfAborted(signal);
     const page = await fetch(DEBRID_URL, {
       method: "POST",
       headers: {
@@ -197,7 +291,7 @@ export class MegaWebFallback {
         password: "",
         showLinks: "1"
       }),
-      signal: AbortSignal.timeout(30000)
+      signal: withTimeoutSignal(signal, 30000)
     });
 
     const html = await page.text();
@@ -207,6 +301,7 @@ export class MegaWebFallback {
     }
 
     for (let attempt = 1; attempt <= 60; attempt += 1) {
+      throwIfAborted(signal);
       const res = await fetch(DEBRID_AJAX_URL, {
         method: "POST",
         headers: {
@@ -219,12 +314,12 @@ export class MegaWebFallback {
           code,
           autodl: "0"
         }),
-        signal: AbortSignal.timeout(15000)
+        signal: withTimeoutSignal(signal, 15000)
       });
 
       const text = (await res.text()).trim();
       if (text === "reload") {
-        await sleep(650);
+        await sleepWithSignal(650, signal);
         continue;
       }
       if (text === "false") {
@@ -238,7 +333,7 @@ export class MegaWebFallback {
 
       if (!parsed.link) {
         if (/hoster does not respond correctly|could not be done for this moment/i.test(parsed.text || "")) {
-          await sleep(1200);
+          await sleepWithSignal(1200, signal);
           continue;
         }
         return null;
