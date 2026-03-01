@@ -79,6 +79,21 @@ npm run dev
 | `npm test` | Runs Vitest unit tests |
 | `npm run self-check` | Runs integrated end-to-end self-checks |
 | `npm run release:win` | Creates Windows installer and portable build |
+| `npm run release:codeberg -- <version> [notes]` | One-command version bump + build + tag + Codeberg release upload |
+
+### One-command Codeberg release
+
+```bash
+npm run release:codeberg -- 1.4.42 "- Maintenance update"
+```
+
+This command will:
+
+1. Bump `package.json` version.
+2. Build setup/portable artifacts (`npm run release:win`).
+3. Commit and push `main` to your Codeberg remote.
+4. Create and push tag `v<version>`.
+5. Create/update the Codeberg release and upload required assets.
 
 ## Typical workflow
 
