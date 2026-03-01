@@ -3,9 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { APP_VERSION, DEFAULT_UPDATE_REPO } from "./constants";
 import { UpdateCheckResult, UpdateInstallProgress, UpdateInstallResult } from "../shared/types";
 import { compactErrorText, humanSize } from "./utils";
@@ -700,7 +697,8 @@ async function downloadFile(url: string, targetPath: string, onProgress?: Update
   try {
     response = await fetch(url, {
       headers: {
-        "User-Agent": UPDATE_USER_AGENT
+        "User-Agent": UPDATE_USER_AGENT,
+        "Accept-Encoding": "identity"
       },
       redirect: "follow",
       signal: combineSignals(timeout.signal, shutdownSignal)
@@ -741,80 +739,63 @@ async function downloadFile(url: string, targetPath: string, onProgress?: Update
   emitDownloadProgress(true);
 
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
-  const source = Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>);
-  const target = fs.createWriteStream(targetPath);
+
   const idleTimeoutMs = getDownloadBodyIdleTimeoutMs();
   let idleTimer: NodeJS.Timeout | null = null;
+  let idleTimedOut = false;
   const clearIdleTimer = (): void => {
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
   };
-  const onIdleTimeout = (): void => {
-    const timeoutError = new Error(`Update Download Body Timeout nach ${Math.ceil(idleTimeoutMs / 1000)}s`);
-    source.destroy(timeoutError);
-    target.destroy(timeoutError);
-  };
   const resetIdleTimer = (): void => {
     if (idleTimeoutMs <= 0) {
       return;
     }
     clearIdleTimer();
-    idleTimer = setTimeout(onIdleTimeout, idleTimeoutMs);
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true;
+      reader.cancel().catch(() => undefined);
+    }, idleTimeoutMs);
   };
 
-  const onSourceData = (chunk: string | Buffer): void => {
-    downloadedBytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
-    resetIdleTimer();
-    emitDownloadProgress(false);
-  };
-  const onSourceDone = (): void => {
-    clearIdleTimer();
-  };
-
-  if (idleTimeoutMs > 0) {
-    source.on("data", onSourceData);
-    source.on("end", onSourceDone);
-    source.on("close", onSourceDone);
-    source.on("error", onSourceDone);
-    target.on("close", onSourceDone);
-    target.on("error", onSourceDone);
-    resetIdleTimer();
-  }
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
 
   try {
-    await pipeline(source, target);
-  } catch (error) {
-    try {
-      source.destroy();
-    } catch {
-      // ignore
+    resetIdleTimer();
+    for (;;) {
+      if (shutdownSignal?.aborted) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("aborted:update_shutdown");
+      }
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+      chunks.push(buf);
+      downloadedBytes += buf.byteLength;
+      resetIdleTimer();
+      emitDownloadProgress(false);
     }
-    try {
-      target.destroy();
-    } catch {
-      // ignore
-    }
-    throw error;
   } finally {
     clearIdleTimer();
-    source.off("data", onSourceData);
-    source.off("end", onSourceDone);
-    source.off("close", onSourceDone);
-    source.off("error", onSourceDone);
-    target.off("close", onSourceDone);
-    target.off("error", onSourceDone);
   }
-  emitDownloadProgress(true);
-  logger.info(`Update-Download abgeschlossen: ${targetPath}`);
 
-  if (totalBytes) {
-    const actualSize = (await fs.promises.stat(targetPath)).size;
-    if (actualSize !== totalBytes) {
-      throw new Error(`Update Download unvollständig (${actualSize} / ${totalBytes} Bytes)`);
-    }
+  if (idleTimedOut) {
+    throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleTimeoutMs / 1000)}s`);
   }
+
+  const fileBuffer = Buffer.concat(chunks);
+  if (totalBytes && fileBuffer.byteLength !== totalBytes) {
+    throw new Error(`Update Download unvollständig (${fileBuffer.byteLength} / ${totalBytes} Bytes)`);
+  }
+
+  await fs.promises.writeFile(targetPath, fileBuffer);
+  emitDownloadProgress(true);
+  logger.info(`Update-Download abgeschlossen: ${targetPath} (${fileBuffer.byteLength} Bytes)`);
 
   return { expectedBytes: totalBytes };
 }
