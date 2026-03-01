@@ -88,8 +88,10 @@ export async function cleanupCancelledPackageArtifactsAsync(packageDir: string):
   return removed;
 }
 
-export function removeDownloadLinkArtifacts(extractDir: string): number {
-  if (!fs.existsSync(extractDir)) {
+export async function removeDownloadLinkArtifacts(extractDir: string): Promise<number> {
+  try {
+    await fs.promises.access(extractDir);
+  } catch {
     return 0;
   }
   let removed = 0;
@@ -97,7 +99,7 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
   while (stack.length > 0) {
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
@@ -114,9 +116,9 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
       if (!shouldDelete && [".txt", ".html", ".htm", ".nfo"].includes(ext)) {
         if (/[._\- ](links?|downloads?|urls?|dlc)([._\- ]|$)/i.test(name)) {
           try {
-            const stat = fs.statSync(full);
+            const stat = await fs.promises.stat(full);
             if (stat.size <= MAX_LINK_ARTIFACT_BYTES) {
-              const text = fs.readFileSync(full, "utf8");
+              const text = await fs.promises.readFile(full, "utf8");
               shouldDelete = /https?:\/\//i.test(text);
             }
           } catch {
@@ -127,7 +129,7 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
 
       if (shouldDelete) {
         try {
-          fs.rmSync(full, { force: true });
+          await fs.promises.rm(full, { force: true });
           removed += 1;
         } catch {
           // ignore
@@ -138,8 +140,10 @@ export function removeDownloadLinkArtifacts(extractDir: string): number {
   return removed;
 }
 
-export function removeSampleArtifacts(extractDir: string): { files: number; dirs: number } {
-  if (!fs.existsSync(extractDir)) {
+export async function removeSampleArtifacts(extractDir: string): Promise<{ files: number; dirs: number }> {
+  try {
+    await fs.promises.access(extractDir);
+  } catch {
     return { files: 0, dirs: 0 };
   }
 
@@ -148,14 +152,14 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
   const sampleDirs: string[] = [];
   const stack = [extractDir];
 
-  const countFilesRecursive = (rootDir: string): number => {
+  const countFilesRecursive = async (rootDir: string): Promise<number> => {
     let count = 0;
     const dirs = [rootDir];
     while (dirs.length > 0) {
       const current = dirs.pop() as string;
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -163,7 +167,7 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
         const full = path.join(current, entry.name);
         if (entry.isDirectory()) {
           try {
-            const stat = fs.lstatSync(full);
+            const stat = await fs.promises.lstat(full);
             if (stat.isSymbolicLink()) {
               continue;
             }
@@ -182,7 +186,7 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
   while (stack.length > 0) {
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory() || entry.isSymbolicLink()) {
@@ -206,7 +210,7 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
 
       if (isSampleVideo) {
         try {
-          fs.rmSync(full, { force: true });
+          await fs.promises.rm(full, { force: true });
           removedFiles += 1;
         } catch {
           // ignore
@@ -218,14 +222,14 @@ export function removeSampleArtifacts(extractDir: string): { files: number; dirs
   sampleDirs.sort((a, b) => b.length - a.length);
   for (const dir of sampleDirs) {
     try {
-      const stat = fs.lstatSync(dir);
+      const stat = await fs.promises.lstat(dir);
       if (stat.isSymbolicLink()) {
-        fs.rmSync(dir, { force: true });
+        await fs.promises.rm(dir, { force: true });
         removedDirs += 1;
         continue;
       }
-      const filesInDir = countFilesRecursive(dir);
-      fs.rmSync(dir, { recursive: true, force: true });
+      const filesInDir = await countFilesRecursive(dir);
+      await fs.promises.rm(dir, { recursive: true, force: true });
       removedFiles += filesInDir;
       removedDirs += 1;
     } catch {

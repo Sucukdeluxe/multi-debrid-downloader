@@ -239,8 +239,12 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: 
     history.push({ time: now, speed: paused ? 0 : totalSpeed });
 
     const cutoff = now - 60000;
-    while (history.length > 0 && history[0].time < cutoff) {
-      history.shift();
+    let trimIndex = 0;
+    while (trimIndex < history.length && history[trimIndex].time < cutoff) {
+      trimIndex += 1;
+    }
+    if (trimIndex > 0) {
+      speedHistoryRef.current = history.slice(trimIndex);
     }
 
     lastUpdateRef.current = now;

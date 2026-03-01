@@ -653,6 +653,39 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
   return null;
 }
 
+function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
+  const entryLower = archiveName.toLowerCase();
+  const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
+  if (multipartMatch) {
+    const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
+    return items.filter((item) => {
+      const name = path.basename(item.targetPath || item.fileName || "");
+      return pattern.test(name);
+    });
+  }
+  const rarMatch = entryLower.match(/^(.*)\.rar$/);
+  if (rarMatch) {
+    const stem = rarMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
+    return items.filter((item) => {
+      const name = path.basename(item.targetPath || item.fileName || "");
+      return pattern.test(name);
+    });
+  }
+  return items.filter((item) => {
+    const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
+    return name === entryLower;
+  });
+}
+
+function retryDelayWithJitter(attempt: number, baseMs: number): number {
+  const exponential = baseMs * Math.pow(1.5, Math.min(attempt - 1, 8));
+  const capped = Math.min(exponential, 30000);
+  const jitter = capped * (0.5 + Math.random() * 0.5);
+  return Math.floor(jitter);
+}
+
 export class DownloadManager extends EventEmitter {
   private settings: AppSettings;
 
@@ -738,17 +771,17 @@ export class DownloadManager extends EventEmitter {
     this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
-    this.recoverRetryableItems("startup");
+    void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
     this.resolveExistingQueuedOpaqueFilenames();
-    this.cleanupExistingExtractedArchives();
+    void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
   }
 
   public setSettings(next: AppSettings): void {
     this.settings = next;
     this.debridService.setSettings(next);
     this.resolveExistingQueuedOpaqueFilenames();
-    this.cleanupExistingExtractedArchives();
+    void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
     this.emitState();
   }
 
@@ -1174,7 +1207,7 @@ export class DownloadManager extends EventEmitter {
     return { addedPackages, addedLinks };
   }
 
-  public getStartConflicts(): StartConflictEntry[] {
+  public async getStartConflicts(): Promise<StartConflictEntry[]> {
     const hasFilesByExtractDir = new Map<string, boolean>();
     const conflicts: StartConflictEntry[] = [];
     for (const packageId of this.session.packageOrder) {
@@ -1201,7 +1234,7 @@ export class DownloadManager extends EventEmitter {
       const extractDirKey = pathKey(pkg.extractDir);
       const hasExtractedFiles = hasFilesByExtractDir.has(extractDirKey)
         ? Boolean(hasFilesByExtractDir.get(extractDirKey))
-        : this.directoryHasAnyFiles(pkg.extractDir);
+        : await this.directoryHasAnyFiles(pkg.extractDir);
       if (!hasFilesByExtractDir.has(extractDirKey)) {
         hasFilesByExtractDir.set(extractDirKey, hasExtractedFiles);
       }
@@ -1446,7 +1479,7 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private cleanupExistingExtractedArchives(): void {
+  private async cleanupExistingExtractedArchives(): Promise<void> {
     if (this.settings.cleanupMode === "none") {
       return;
     }
@@ -1481,7 +1514,7 @@ export class DownloadManager extends EventEmitter {
 
       const hasExtractMarker = items.some((item) => isExtractedLabel(item.fullStatus));
       const extractDirIsUnique = (extractDirUsage.get(pathKey(pkg.extractDir)) || 0) === 1;
-      const hasExtractedOutput = extractDirIsUnique && this.directoryHasAnyFiles(pkg.extractDir);
+      const hasExtractedOutput = extractDirIsUnique && await this.directoryHasAnyFiles(pkg.extractDir);
       if (!hasExtractMarker && !hasExtractedOutput) {
         continue;
       }
@@ -1498,7 +1531,7 @@ export class DownloadManager extends EventEmitter {
         let filesInDir = dirFilesCache.get(dir);
         if (!filesInDir) {
           try {
-            filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+            filesInDir = (await fs.promises.readdir(dir, { withFileTypes: true }))
               .filter((entry) => entry.isFile())
               .map((entry) => entry.name);
           } catch {
@@ -1532,7 +1565,7 @@ export class DownloadManager extends EventEmitter {
 
           let removed = 0;
           for (const targetPath of targets) {
-            if (!fs.existsSync(targetPath)) {
+            if (!await this.existsAsync(targetPath)) {
               continue;
             }
             try {
@@ -1545,8 +1578,8 @@ export class DownloadManager extends EventEmitter {
 
           if (removed > 0) {
             logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: ${removed} Datei(en) gelöscht`);
-            if (!this.directoryHasAnyFiles(pkg.outputDir)) {
-              const removedDirs = this.removeEmptyDirectoryTree(pkg.outputDir);
+            if (!await this.directoryHasAnyFiles(pkg.outputDir)) {
+              const removedDirs = await this.removeEmptyDirectoryTree(pkg.outputDir);
               if (removedDirs > 0) {
                 logger.info(`Nachträgliches Cleanup entfernte leere Download-Ordner für ${pkg.name}: ${removedDirs}`);
               }
@@ -1561,8 +1594,13 @@ export class DownloadManager extends EventEmitter {
       });
   }
 
-  private directoryHasAnyFiles(rootDir: string): boolean {
-    if (!rootDir || !fs.existsSync(rootDir)) {
+  private async directoryHasAnyFiles(rootDir: string): Promise<boolean> {
+    if (!rootDir) {
+      return false;
+    }
+    try {
+      await fs.promises.access(rootDir);
+    } catch {
       return false;
     }
     const deadline = nowMs() + 55;
@@ -1576,7 +1614,7 @@ export class DownloadManager extends EventEmitter {
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -1593,8 +1631,13 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  private removeEmptyDirectoryTree(rootDir: string): number {
-    if (!rootDir || !fs.existsSync(rootDir)) {
+  private async removeEmptyDirectoryTree(rootDir: string): Promise<number> {
+    if (!rootDir) {
+      return 0;
+    }
+    try {
+      await fs.promises.access(rootDir);
+    } catch {
       return 0;
     }
 
@@ -1604,7 +1647,7 @@ export class DownloadManager extends EventEmitter {
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -1621,21 +1664,21 @@ export class DownloadManager extends EventEmitter {
     let removed = 0;
     for (const dirPath of dirs) {
       try {
-        let entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        let entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
         for (const entry of entries) {
           if (!entry.isFile() || !isIgnorableEmptyDirFileName(entry.name)) {
             continue;
           }
           try {
-            fs.rmSync(path.join(dirPath, entry.name), { force: true });
+            await fs.promises.rm(path.join(dirPath, entry.name), { force: true });
           } catch {
             // ignore and keep directory untouched
           }
         }
 
-        entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
         if (entries.length === 0) {
-          fs.rmdirSync(dirPath);
+          await fs.promises.rmdir(dirPath);
           removed += 1;
         }
       } catch {
@@ -1645,8 +1688,13 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private collectFilesByExtensions(rootDir: string, extensions: Set<string>): string[] {
-    if (!rootDir || !fs.existsSync(rootDir) || extensions.size === 0) {
+  private async collectFilesByExtensions(rootDir: string, extensions: Set<string>): Promise<string[]> {
+    if (!rootDir || extensions.size === 0) {
+      return [];
+    }
+    try {
+      await fs.promises.access(rootDir);
+    } catch {
       return [];
     }
 
@@ -1667,7 +1715,7 @@ export class DownloadManager extends EventEmitter {
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -1692,23 +1740,24 @@ export class DownloadManager extends EventEmitter {
     return files;
   }
 
-  private collectVideoFiles(rootDir: string): string[] {
-    return this.collectFilesByExtensions(rootDir, SAMPLE_VIDEO_EXTENSIONS);
+  private async collectVideoFiles(rootDir: string): Promise<string[]> {
+    return await this.collectFilesByExtensions(rootDir, SAMPLE_VIDEO_EXTENSIONS);
   }
 
-  private existsSyncSafe(filePath: string): boolean {
+  private async existsAsync(filePath: string): Promise<boolean> {
     try {
-      return fs.existsSync(toWindowsLongPathIfNeeded(filePath));
+      await fs.promises.access(toWindowsLongPathIfNeeded(filePath));
+      return true;
     } catch {
       return false;
     }
   }
 
-  private renamePathWithExdevFallback(sourcePath: string, targetPath: string): void {
+  private async renamePathWithExdevFallback(sourcePath: string, targetPath: string): Promise<void> {
     const sourceFsPath = toWindowsLongPathIfNeeded(sourcePath);
     const targetFsPath = toWindowsLongPathIfNeeded(targetPath);
     try {
-      fs.renameSync(sourceFsPath, targetFsPath);
+      await fs.promises.rename(sourceFsPath, targetFsPath);
       return;
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error
@@ -1719,8 +1768,8 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    fs.copyFileSync(sourceFsPath, targetFsPath);
-    fs.rmSync(sourceFsPath, { force: true });
+    await fs.promises.copyFile(sourceFsPath, targetFsPath);
+    await fs.promises.rm(sourceFsPath, { force: true });
   }
 
   private isPathLengthRenameError(error: unknown): boolean {
@@ -1827,12 +1876,12 @@ export class DownloadManager extends EventEmitter {
     return next;
   }
 
-  private autoRenameExtractedVideoFiles(extractDir: string): number {
+  private async autoRenameExtractedVideoFiles(extractDir: string): Promise<number> {
     if (!this.settings.autoRename4sf4sj) {
       return 0;
     }
 
-    const videoFiles = this.collectVideoFiles(extractDir);
+    const videoFiles = await this.collectVideoFiles(extractDir);
     let renamed = 0;
 
     for (const sourcePath of videoFiles) {
@@ -1882,13 +1931,13 @@ export class DownloadManager extends EventEmitter {
       if (pathKey(targetPath) === pathKey(sourcePath)) {
         continue;
       }
-      if (this.existsSyncSafe(targetPath)) {
+      if (await this.existsAsync(targetPath)) {
         logger.warn(`Auto-Rename übersprungen (Ziel existiert): ${targetPath}`);
         continue;
       }
 
       try {
-        this.renamePathWithExdevFallback(sourcePath, targetPath);
+        await this.renamePathWithExdevFallback(sourcePath, targetPath);
         renamed += 1;
       } catch (error) {
         if (this.isPathLengthRenameError(error)) {
@@ -1902,11 +1951,11 @@ export class DownloadManager extends EventEmitter {
             if (!fallbackPath || pathKey(fallbackPath) === pathKey(sourcePath)) {
               continue;
             }
-            if (this.existsSyncSafe(fallbackPath)) {
+            if (await this.existsAsync(fallbackPath)) {
               continue;
             }
             try {
-              this.renamePathWithExdevFallback(sourcePath, fallbackPath);
+              await this.renamePathWithExdevFallback(sourcePath, fallbackPath);
               logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(fallbackPath)}`);
               renamed += 1;
               fallbackRenamed = true;
@@ -1929,12 +1978,12 @@ export class DownloadManager extends EventEmitter {
     return renamed;
   }
 
-  private moveFileWithExdevFallback(sourcePath: string, targetPath: string): void {
-    this.renamePathWithExdevFallback(sourcePath, targetPath);
+  private async moveFileWithExdevFallback(sourcePath: string, targetPath: string): Promise<void> {
+    await this.renamePathWithExdevFallback(sourcePath, targetPath);
   }
 
-  private cleanupNonMkvResidualFiles(rootDir: string, targetDir: string): number {
-    if (!rootDir || !this.existsSyncSafe(rootDir)) {
+  private async cleanupNonMkvResidualFiles(rootDir: string, targetDir: string): Promise<number> {
+    if (!rootDir || !await this.existsAsync(rootDir)) {
       return 0;
     }
 
@@ -1944,7 +1993,7 @@ export class DownloadManager extends EventEmitter {
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
       try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -1966,7 +2015,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         try {
-          fs.rmSync(toWindowsLongPathIfNeeded(fullPath), { force: true });
+          await fs.promises.rm(toWindowsLongPathIfNeeded(fullPath), { force: true });
           removed += 1;
         } catch {
           // ignore and keep file
@@ -1977,11 +2026,11 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private cleanupRemainingArchiveArtifacts(packageDir: string): number {
+  private async cleanupRemainingArchiveArtifacts(packageDir: string): Promise<number> {
     if (this.settings.cleanupMode === "none") {
       return 0;
     }
-    const candidates = findArchiveCandidates(packageDir);
+    const candidates = await findArchiveCandidates(packageDir);
     if (candidates.length === 0) {
       return 0;
     }
@@ -1994,7 +2043,7 @@ export class DownloadManager extends EventEmitter {
       let filesInDir = dirFilesCache.get(dir);
       if (!filesInDir) {
         try {
-          filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+          filesInDir = (await fs.promises.readdir(dir, { withFileTypes: true }))
             .filter((entry) => entry.isFile())
             .map((entry) => entry.name);
         } catch {
@@ -2009,21 +2058,21 @@ export class DownloadManager extends EventEmitter {
 
     for (const targetPath of targets) {
       try {
-        if (!this.existsSyncSafe(targetPath)) {
+        if (!await this.existsAsync(targetPath)) {
           continue;
         }
         if (this.settings.cleanupMode === "trash") {
           const parsed = path.parse(targetPath);
           const trashDir = path.join(parsed.dir, ".rd-trash");
-          fs.mkdirSync(trashDir, { recursive: true });
+          await fs.promises.mkdir(trashDir, { recursive: true });
           let moved = false;
           for (let index = 0; index <= 1000; index += 1) {
             const suffix = index === 0 ? "" : `-${index}`;
             const candidate = path.join(trashDir, `${parsed.base}.${Date.now()}${suffix}`);
-            if (this.existsSyncSafe(candidate)) {
+            if (await this.existsAsync(candidate)) {
               continue;
             }
-            this.renamePathWithExdevFallback(targetPath, candidate);
+            await this.renamePathWithExdevFallback(targetPath, candidate);
             moved = true;
             break;
           }
@@ -2032,7 +2081,7 @@ export class DownloadManager extends EventEmitter {
           }
           continue;
         }
-        fs.rmSync(toWindowsLongPathIfNeeded(targetPath), { force: true });
+        await fs.promises.rm(toWindowsLongPathIfNeeded(targetPath), { force: true });
         removed += 1;
       } catch {
         // ignore
@@ -2042,7 +2091,7 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): string {
+  private async buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): Promise<string> {
     const parsed = path.parse(path.basename(sourcePath));
     const extension = parsed.ext || ".mkv";
     const baseName = sanitizeFilename(parsed.name || "video");
@@ -2058,7 +2107,7 @@ export class DownloadManager extends EventEmitter {
         index += 1;
         continue;
       }
-      if (!fs.existsSync(candidatePath)) {
+      if (!await this.existsAsync(candidatePath)) {
         reserved.add(candidateKey);
         return candidatePath;
       }
@@ -2066,7 +2115,7 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private collectMkvFilesToLibrary(packageId: string, pkg: PackageEntry): void {
+  private async collectMkvFilesToLibrary(packageId: string, pkg: PackageEntry): Promise<void> {
     if (!this.settings.collectMkvToLibrary) {
       return;
     }
@@ -2078,19 +2127,19 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const targetDir = path.resolve(targetDirRaw);
-    if (!fs.existsSync(sourceDir)) {
+    if (!await this.existsAsync(sourceDir)) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, Quelle fehlt (${sourceDir})`);
       return;
     }
 
     try {
-      fs.mkdirSync(targetDir, { recursive: true });
+      await fs.promises.mkdir(targetDir, { recursive: true });
     } catch (error) {
       logger.warn(`MKV-Sammelordner konnte nicht erstellt werden: pkg=${pkg.name}, dir=${targetDir}, reason=${compactErrorText(error)}`);
       return;
     }
 
-    const mkvFiles = this.collectFilesByExtensions(sourceDir, new Set([".mkv"]));
+    const mkvFiles = await this.collectFilesByExtensions(sourceDir, new Set([".mkv"]));
     if (mkvFiles.length === 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV gefunden`);
       return;
@@ -2106,14 +2155,14 @@ export class DownloadManager extends EventEmitter {
         skipped += 1;
         continue;
       }
-      const targetPath = this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets);
+      const targetPath = await this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets);
       if (pathKey(sourcePath) === pathKey(targetPath)) {
         skipped += 1;
         continue;
       }
 
       try {
-        this.moveFileWithExdevFallback(sourcePath, targetPath);
+        await this.moveFileWithExdevFallback(sourcePath, targetPath);
         moved += 1;
       } catch (error) {
         failed += 1;
@@ -2121,12 +2170,12 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    if (moved > 0 && fs.existsSync(sourceDir)) {
-      const removedResidual = this.cleanupNonMkvResidualFiles(sourceDir, targetDir);
+    if (moved > 0 && await this.existsAsync(sourceDir)) {
+      const removedResidual = await this.cleanupNonMkvResidualFiles(sourceDir, targetDir);
       if (removedResidual > 0) {
         logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, entfernt=${removedResidual}`);
       }
-      const removedDirs = this.removeEmptyDirectoryTree(sourceDir);
+      const removedDirs = await this.removeEmptyDirectoryTree(sourceDir);
       if (removedDirs > 0) {
         logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, entfernt=${removedDirs}`);
       }
@@ -2178,12 +2227,12 @@ export class DownloadManager extends EventEmitter {
       });
   }
 
-  public start(): void {
+  public async start(): Promise<void> {
     if (this.session.running) {
       return;
     }
 
-    const recoveredItems = this.recoverRetryableItems("start");
+    const recoveredItems = await this.recoverRetryableItems("start");
 
     let recoveredStoppedItems = 0;
     for (const item of Object.values(this.session.items)) {
@@ -3615,7 +3664,7 @@ export class DownloadManager extends EventEmitter {
           item.retries += 1;
           item.fullStatus = `Verbindungsfehler, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
-          await sleep(300 * attempt);
+          await sleep(retryDelayWithJitter(attempt, 300));
           continue;
         }
         throw error;
@@ -3640,7 +3689,7 @@ export class DownloadManager extends EventEmitter {
           }
 
           try {
-            fs.rmSync(effectiveTargetPath, { force: true });
+            await fs.promises.rm(effectiveTargetPath, { force: true });
           } catch {
             // ignore
           }
@@ -3654,7 +3703,7 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
           if (attempt < maxAttempts) {
             item.retries += 1;
-            await sleep(280 * attempt);
+            await sleep(retryDelayWithJitter(attempt, 280));
             continue;
           }
           lastError = "HTTP 416";
@@ -3673,7 +3722,7 @@ export class DownloadManager extends EventEmitter {
           item.retries += 1;
           item.fullStatus = `Serverfehler ${response.status}, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
-          await sleep(350 * attempt);
+          await sleep(retryDelayWithJitter(attempt, 350));
           continue;
         }
         throw new Error(lastError);
@@ -3720,11 +3769,11 @@ export class DownloadManager extends EventEmitter {
             this.itemContributedBytes.set(active.itemId, 0);
           }
           if (existingBytes > 0) {
-            fs.rmSync(effectiveTargetPath, { force: true });
+            await fs.promises.rm(effectiveTargetPath, { force: true });
           }
         }
 
-        fs.mkdirSync(path.dirname(effectiveTargetPath), { recursive: true });
+        await fs.promises.mkdir(path.dirname(effectiveTargetPath), { recursive: true });
         const stream = fs.createWriteStream(effectiveTargetPath, { flags: writeMode });
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
@@ -4004,7 +4053,7 @@ export class DownloadManager extends EventEmitter {
           item.retries += 1;
           item.fullStatus = `Downloadfehler, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
-          await sleep(350 * attempt);
+          await sleep(retryDelayWithJitter(attempt, 350));
           continue;
         }
         throw new Error(lastError || "Download fehlgeschlagen");
@@ -4014,7 +4063,7 @@ export class DownloadManager extends EventEmitter {
     throw new Error(lastError || "Download fehlgeschlagen");
   }
 
-  private recoverRetryableItems(trigger: "startup" | "start"): number {
+  private async recoverRetryableItems(trigger: "startup" | "start"): Promise<number> {
     let recovered = 0;
     const touchedPackages = new Set<string>();
     const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
@@ -4033,7 +4082,7 @@ export class DownloadManager extends EventEmitter {
         }
 
         const is416Failure = this.isHttp416Failure(item);
-        const hasZeroByteArchive = this.hasZeroByteArchiveArtifact(item);
+        const hasZeroByteArchive = await this.hasZeroByteArchiveArtifact(item);
 
         if (item.status === "failed") {
           if (!is416Failure && !hasZeroByteArchive && item.retries >= maxAutoRetryFailures) {
@@ -4112,18 +4161,19 @@ export class DownloadManager extends EventEmitter {
     return /(^|\D)416(\D|$)/.test(text);
   }
 
-  private hasZeroByteArchiveArtifact(item: DownloadItem): boolean {
+  private async hasZeroByteArchiveArtifact(item: DownloadItem): Promise<boolean> {
     const targetPath = String(item.targetPath || "").trim();
     const archiveCandidate = isArchiveLikePath(targetPath || item.fileName);
     if (!archiveCandidate) {
       return false;
     }
 
-    if (targetPath && fs.existsSync(targetPath)) {
+    if (targetPath) {
       try {
-        return fs.statSync(targetPath).size <= 0;
+        const stat = await fs.promises.stat(targetPath);
+        return stat.size <= 0;
       } catch {
-        return false;
+        // file does not exist
       }
     }
 
@@ -4319,9 +4369,14 @@ export class DownloadManager extends EventEmitter {
     await this.applyGlobalSpeedLimit(chunkBytes, bytesPerSecond, signal);
   }
 
-  private findReadyArchiveSets(pkg: PackageEntry): Set<string> {
+  private async findReadyArchiveSets(pkg: PackageEntry): Promise<Set<string>> {
     const ready = new Set<string>();
-    if (!pkg.outputDir || !fs.existsSync(pkg.outputDir)) {
+    if (!pkg.outputDir) {
+      return ready;
+    }
+    try {
+      await fs.promises.access(pkg.outputDir);
+    } catch {
       return ready;
     }
 
@@ -4342,14 +4397,14 @@ export class DownloadManager extends EventEmitter {
       return ready;
     }
 
-    const candidates = findArchiveCandidates(pkg.outputDir);
+    const candidates = await findArchiveCandidates(pkg.outputDir);
     if (candidates.length === 0) {
       return ready;
     }
 
     let dirFiles: string[] | undefined;
     try {
-      dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
+      dirFiles = (await fs.promises.readdir(pkg.outputDir, { withFileTypes: true }))
         .filter((entry) => entry.isFile())
         .map((entry) => entry.name);
     } catch {
@@ -4401,7 +4456,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<void> {
-    const readyArchives = this.findReadyArchiveSets(pkg);
+    const readyArchives = await this.findReadyArchiveSets(pkg);
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
       return;
@@ -4417,7 +4472,7 @@ export class DownloadManager extends EventEmitter {
     const hybridItemPaths = new Set<string>();
     let dirFiles: string[] | undefined;
     try {
-      dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
+      dirFiles = (await fs.promises.readdir(pkg.outputDir, { withFileTypes: true }))
         .filter((entry) => entry.isFile())
         .map((entry) => entry.name);
     } catch { /* ignore */ }
@@ -4432,25 +4487,8 @@ export class DownloadManager extends EventEmitter {
       item.targetPath && hybridItemPaths.has(pathKey(item.targetPath))
     );
 
-    // Resolve items belonging to a specific archive entry point by filename pattern matching.
-    // This avoids pathKey mismatches by comparing basenames directly.
-    const resolveArchiveItems = (archiveName: string): DownloadItem[] => {
-      const entryLower = archiveName.toLowerCase();
-      const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
-      if (multipartMatch) {
-        const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
-        return hybridItems.filter((item) => {
-          const name = path.basename(item.targetPath || item.fileName || "");
-          return pattern.test(name);
-        });
-      }
-      // Single-file archive: match only that exact file
-      return hybridItems.filter((item) => {
-        const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
-        return name === entryLower;
-      });
-    };
+    const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
+      resolveArchiveItemsFromList(archiveName, hybridItems);
 
     let currentArchiveItems: DownloadItem[] = hybridItems;
     const updateExtractingStatus = (text: string): void => {
@@ -4532,7 +4570,7 @@ export class DownloadManager extends EventEmitter {
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       if (result.extracted > 0) {
-        this.autoRenameExtractedVideoFiles(pkg.extractDir);
+        await this.autoRenameExtractedVideoFiles(pkg.extractDir);
       }
       if (result.failed > 0) {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
@@ -4608,33 +4646,8 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "extracting";
       this.emitState();
 
-      // Resolve items belonging to a specific archive entry point by filename pattern matching
-      const resolveArchiveItems = (archiveName: string): DownloadItem[] => {
-        const entryLower = archiveName.toLowerCase();
-        const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
-        if (multipartMatch) {
-          const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
-          return completedItems.filter((item) => {
-            const name = path.basename(item.targetPath || item.fileName || "");
-            return pattern.test(name);
-          });
-        }
-        // Single-file archive or non-multipart RAR: match based on archive stem
-        const rarMatch = entryLower.match(/^(.*)\.rar$/);
-        if (rarMatch) {
-          const stem = rarMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
-          return completedItems.filter((item) => {
-            const name = path.basename(item.targetPath || item.fileName || "");
-            return pattern.test(name);
-          });
-        }
-        return completedItems.filter((item) => {
-          const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
-          return name === entryLower;
-        });
-      };
+      const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
+        resolveArchiveItemsFromList(archiveName, completedItems);
 
       let currentArchiveItems: DownloadItem[] = completedItems;
       const updateExtractingStatus = (text: string): void => {
@@ -4747,11 +4760,11 @@ export class DownloadManager extends EventEmitter {
           }
           pkg.status = "failed";
         } else {
-          const hasExtractedOutput = this.directoryHasAnyFiles(pkg.extractDir);
+          const hasExtractedOutput = await this.directoryHasAnyFiles(pkg.extractDir);
           if (result.extracted > 0 || hasExtractedOutput) {
-            this.autoRenameExtractedVideoFiles(pkg.extractDir);
+            await this.autoRenameExtractedVideoFiles(pkg.extractDir);
           }
-          const sourceExists = fs.existsSync(pkg.outputDir);
+          const sourceExists = await this.existsAsync(pkg.outputDir);
           let finalStatusText = "";
 
           if (result.extracted > 0 || hasExtractedOutput) {
@@ -4821,14 +4834,14 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
-      const removedArchives = this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
+      const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
       if (removedArchives > 0) {
         logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
       }
     }
 
     if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
-      this.collectMkvFilesToLibrary(packageId, pkg);
+      await this.collectMkvFilesToLibrary(packageId, pkg);
     }
     if (this.runPackageIds.has(packageId)) {
       if (pkg.status === "completed") {
