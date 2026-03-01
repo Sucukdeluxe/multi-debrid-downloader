@@ -135,6 +135,7 @@ export interface DownloadSummary {
 export interface ParsedPackageInput {
   name: string;
   links: string[];
+  fileNames?: string[];
 }
 
 export interface ContainerImportResult {

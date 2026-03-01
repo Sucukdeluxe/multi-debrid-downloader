@@ -165,7 +165,8 @@ export class AppController {
     const packages = await importDlcContainers(filePaths);
     const merged: ParsedPackageInput[] = packages.map((pkg) => ({
       name: pkg.name,
-      links: pkg.links
+      links: pkg.links,
+      ...(pkg.fileNames ? { fileNames: pkg.fileNames } : {})
     }));
     const result = this.manager.addPackages(merged);
     return result;
