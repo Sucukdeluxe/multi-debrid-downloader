@@ -118,6 +118,26 @@ function rotateIfNeeded(filePath: string): void {
   }
 }
 
+async function rotateIfNeededAsync(filePath: string): Promise<void> {
+  try {
+    const now = Date.now();
+    const lastRotateCheckAt = rotateCheckAtByFile.get(filePath) || 0;
+    if (now - lastRotateCheckAt < 60_000) {
+      return;
+    }
+    rotateCheckAtByFile.set(filePath, now);
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size < LOG_MAX_FILE_BYTES) {
+      return;
+    }
+    const backup = `${filePath}.old`;
+    await fs.promises.rm(backup, { force: true }).catch(() => {});
+    await fs.promises.rename(filePath, backup);
+  } catch {
+    // ignore - file may not exist yet
+  }
+}
+
 async function flushAsync(): Promise<void> {
   if (flushInFlight || pendingLines.length === 0) {
     return;
@@ -128,11 +148,11 @@ async function flushAsync(): Promise<void> {
   const chunk = linesSnapshot.join("");
 
   try {
-    rotateIfNeeded(logFilePath);
+    await rotateIfNeededAsync(logFilePath);
     const primary = await appendChunk(logFilePath, chunk);
     let wroteAny = primary.ok;
     if (fallbackLogFilePath) {
-      rotateIfNeeded(fallbackLogFilePath);
+      await rotateIfNeededAsync(fallbackLogFilePath);
       const fallback = await appendChunk(fallbackLogFilePath, chunk);
       wroteAny = wroteAny || fallback.ok;
       if (!primary.ok && !fallback.ok) {

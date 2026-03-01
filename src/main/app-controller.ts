@@ -68,12 +68,16 @@ export class AppController {
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
-      const hasConflicts = this.manager.getStartConflicts().length > 0;
-      if (hasPending && this.hasAnyProviderToken(this.settings) && !hasConflicts) {
-        this.autoResumePending = true;
-        logger.info("Auto-Resume beim Start vorgemerkt");
-      } else if (hasPending && hasConflicts) {
-        logger.info("Auto-Resume übersprungen: Start-Konflikte erkannt");
+      if (hasPending) {
+        void this.manager.getStartConflicts().then((conflicts) => {
+          const hasConflicts = conflicts.length > 0;
+          if (this.hasAnyProviderToken(this.settings) && !hasConflicts) {
+            this.autoResumePending = true;
+            logger.info("Auto-Resume beim Start vorgemerkt");
+          } else if (hasConflicts) {
+            logger.info("Auto-Resume übersprungen: Start-Konflikte erkannt");
+          }
+        }).catch((err) => logger.warn(`getStartConflicts Fehler (constructor): ${String(err)}`));
       }
     }
   }
@@ -97,7 +101,7 @@ export class AppController {
       handler(this.manager.getSnapshot());
       if (this.autoResumePending) {
         this.autoResumePending = false;
-        this.manager.start();
+        void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
         logger.info("Auto-Resume beim Start aktiviert");
       }
     }
@@ -174,7 +178,7 @@ export class AppController {
     return result;
   }
 
-  public getStartConflicts(): StartConflictEntry[] {
+  public async getStartConflicts(): Promise<StartConflictEntry[]> {
     return this.manager.getStartConflicts();
   }
 
@@ -186,8 +190,8 @@ export class AppController {
     this.manager.clearAll();
   }
 
-  public start(): void {
-    this.manager.start();
+  public async start(): Promise<void> {
+    await this.manager.start();
   }
 
   public stop(): void {

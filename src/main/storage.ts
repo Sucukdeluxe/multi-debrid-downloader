@@ -477,9 +477,7 @@ let asyncSaveQueued: { paths: StoragePaths; payload: string } | null = null;
 
 async function writeSessionPayload(paths: StoragePaths, payload: string): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  if (fs.existsSync(paths.sessionFile)) {
-    await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
-  }
+  await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
   const tempPath = sessionTempPath(paths.sessionFile, "async");
   await fsp.writeFile(tempPath, payload, "utf8");
   try {

@@ -102,14 +102,19 @@ type ExtractResumeState = {
   completedArchives: string[];
 };
 
-export function findArchiveCandidates(packageDir: string): string[] {
-  if (!packageDir || !fs.existsSync(packageDir)) {
+export async function findArchiveCandidates(packageDir: string): Promise<string[]> {
+  if (!packageDir) {
+    return [];
+  }
+  try {
+    await fs.promises.access(packageDir);
+  } catch {
     return [];
   }
 
   let files: string[] = [];
   try {
-    files = fs.readdirSync(packageDir, { withFileTypes: true })
+    files = (await fs.promises.readdir(packageDir, { withFileTypes: true }))
       .filter((entry) => entry.isFile())
       .map((entry) => path.join(packageDir, entry.name));
   } catch {
@@ -204,28 +209,28 @@ function parseProgressPercent(chunk: string): number | null {
   return latest;
 }
 
-function shouldPreferExternalZip(archivePath: string): boolean {
+async function shouldPreferExternalZip(archivePath: string): Promise<boolean> {
   try {
-    const stat = fs.statSync(archivePath);
+    const stat = await fs.promises.stat(archivePath);
     return stat.size >= 64 * 1024 * 1024;
   } catch {
     return true;
   }
 }
 
-function computeExtractTimeoutMs(archivePath: string): number {
+async function computeExtractTimeoutMs(archivePath: string): Promise<number> {
   try {
     const relatedFiles = collectArchiveCleanupTargets(archivePath);
     let totalBytes = 0;
     for (const filePath of relatedFiles) {
       try {
-        totalBytes += fs.statSync(filePath).size;
+        totalBytes += (await fs.promises.stat(filePath)).size;
       } catch {
         // ignore missing parts
       }
     }
     if (totalBytes <= 0) {
-      totalBytes = fs.statSync(archivePath).size;
+      totalBytes = (await fs.promises.stat(archivePath)).size;
     }
     const gib = totalBytes / (1024 * 1024 * 1024);
     const dynamicMs = EXTRACT_BASE_TIMEOUT_MS + Math.floor(gib * EXTRACT_PER_GIB_TIMEOUT_MS);
@@ -242,13 +247,15 @@ function extractProgressFilePath(packageDir: string, packageId?: string): string
   return path.join(packageDir, EXTRACT_PROGRESS_FILE);
 }
 
-function readExtractResumeState(packageDir: string, packageId?: string): Set<string> {
+async function readExtractResumeState(packageDir: string, packageId?: string): Promise<Set<string>> {
   const progressPath = extractProgressFilePath(packageDir, packageId);
-  if (!fs.existsSync(progressPath)) {
+  try {
+    await fs.promises.access(progressPath);
+  } catch {
     return new Set<string>();
   }
   try {
-    const payload = JSON.parse(fs.readFileSync(progressPath, "utf8")) as Partial<ExtractResumeState>;
+    const payload = JSON.parse(await fs.promises.readFile(progressPath, "utf8")) as Partial<ExtractResumeState>;
     const names = Array.isArray(payload.completedArchives) ? payload.completedArchives : [];
     return new Set(names.map((value) => archiveNameKey(String(value || "").trim())).filter(Boolean));
   } catch {
@@ -256,24 +263,24 @@ function readExtractResumeState(packageDir: string, packageId?: string): Set<str
   }
 }
 
-function writeExtractResumeState(packageDir: string, completedArchives: Set<string>, packageId?: string): void {
+async function writeExtractResumeState(packageDir: string, completedArchives: Set<string>, packageId?: string): Promise<void> {
   try {
-    fs.mkdirSync(packageDir, { recursive: true });
+    await fs.promises.mkdir(packageDir, { recursive: true });
     const progressPath = extractProgressFilePath(packageDir, packageId);
     const payload: ExtractResumeState = {
       completedArchives: Array.from(completedArchives)
         .map((name) => archiveNameKey(name))
         .sort((a, b) => a.localeCompare(b))
     };
-    fs.writeFileSync(progressPath, JSON.stringify(payload, null, 2), "utf8");
+    await fs.promises.writeFile(progressPath, JSON.stringify(payload, null, 2), "utf8");
   } catch (error) {
     logger.warn(`ExtractResumeState schreiben fehlgeschlagen: ${String(error)}`);
   }
 }
 
-function clearExtractResumeState(packageDir: string, packageId?: string): void {
+async function clearExtractResumeState(packageDir: string, packageId?: string): Promise<void> {
   try {
-    fs.rmSync(extractProgressFilePath(packageDir, packageId), { force: true });
+    await fs.promises.rm(extractProgressFilePath(packageDir, packageId), { force: true });
   } catch {
     // ignore
   }
@@ -670,9 +677,9 @@ async function runExternalExtract(
   const command = await resolveExtractorCommand();
   const passwords = passwordCandidates;
   let lastError = "";
-  const timeoutMs = computeExtractTimeoutMs(archivePath);
+  const timeoutMs = await computeExtractTimeoutMs(archivePath);
 
-  fs.mkdirSync(targetDir, { recursive: true });
+  await fs.promises.mkdir(targetDir, { recursive: true });
 
   let announcedStart = false;
   let bestPercent = 0;
@@ -766,7 +773,7 @@ function shouldFallbackToExternalZip(error: unknown): boolean {
   return true;
 }
 
-function extractZipArchive(archivePath: string, targetDir: string, conflictMode: ConflictMode, signal?: AbortSignal): void {
+async function extractZipArchive(archivePath: string, targetDir: string, conflictMode: ConflictMode, signal?: AbortSignal): Promise<void> {
   const mode = effectiveConflictMode(conflictMode);
   const memoryLimitBytes = zipEntryMemoryLimitBytes();
   const zip = new AdmZip(archivePath);
@@ -785,7 +792,7 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
       continue;
     }
     if (entry.isDirectory) {
-      fs.mkdirSync(baseOutputPath, { recursive: true });
+      await fs.promises.mkdir(baseOutputPath, { recursive: true });
       continue;
     }
 
@@ -825,11 +832,12 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
     let outputPath = baseOutputPath;
     let outputKey = pathSetKey(outputPath);
 
-    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    // TOCTOU note: There is a small race between existsSync and writeFileSync below.
+    await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+    // TOCTOU note: There is a small race between access and writeFile below.
     // This is acceptable here because zip extraction is single-threaded and we need
     // the exists check to implement skip/rename conflict resolution semantics.
-    if (usedOutputs.has(outputKey) || fs.existsSync(outputPath)) {
+    const outputExists = usedOutputs.has(outputKey) || await fs.promises.access(outputPath).then(() => true, () => false);
+    if (outputExists) {
       if (mode === "skip") {
         continue;
       }
@@ -842,7 +850,7 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
         while (n <= 10000) {
           candidate = path.join(parsed.dir, `${parsed.name} (${n})${parsed.ext}`);
           candidateKey = pathSetKey(candidate);
-          if (!usedOutputs.has(candidateKey) && !fs.existsSync(candidate)) {
+          if (!usedOutputs.has(candidateKey) && !(await fs.promises.access(candidate).then(() => true, () => false))) {
             break;
           }
           n += 1;
@@ -871,7 +879,7 @@ function extractZipArchive(archivePath: string, targetDir: string, conflictMode:
     if (data.length > Math.max(uncompressedSize, compressedSize) * 20) {
       throw new Error(`ZIP-Eintrag verdächtig groß nach Entpacken (${entry.entryName})`);
     }
-    fs.writeFileSync(outputPath, data);
+    await fs.promises.writeFile(outputPath, data);
     usedOutputs.add(outputKey);
   }
 }
@@ -951,7 +959,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   return Array.from(targets);
 }
 
-function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): number {
+async function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): Promise<number> {
   if (cleanupMode === "none") {
     return 0;
   }
@@ -963,7 +971,7 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
     let filesInDir = dirFilesCache.get(dir);
     if (!filesInDir) {
       try {
-        filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+        filesInDir = (await fs.promises.readdir(dir, { withFileTypes: true }))
           .filter((entry) => entry.isFile())
           .map((entry) => entry.name);
       } catch {
@@ -979,17 +987,18 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
 
   let removed = 0;
 
-  const moveToTrashLike = (filePath: string): boolean => {
+  const moveToTrashLike = async (filePath: string): Promise<boolean> => {
     try {
       const parsed = path.parse(filePath);
       const trashDir = path.join(parsed.dir, ".rd-trash");
-      fs.mkdirSync(trashDir, { recursive: true });
+      await fs.promises.mkdir(trashDir, { recursive: true });
       let index = 0;
       while (index <= 10000) {
         const suffix = index === 0 ? "" : `-${index}`;
         const candidate = path.join(trashDir, `${parsed.base}.${Date.now()}${suffix}`);
-        if (!fs.existsSync(candidate)) {
-          fs.renameSync(filePath, candidate);
+        const candidateExists = await fs.promises.access(candidate).then(() => true, () => false);
+        if (!candidateExists) {
+          await fs.promises.rename(filePath, candidate);
           return true;
         }
         index += 1;
@@ -1002,16 +1011,17 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
 
   for (const filePath of targets) {
     try {
-      if (!fs.existsSync(filePath)) {
+      const fileExists = await fs.promises.access(filePath).then(() => true, () => false);
+      if (!fileExists) {
         continue;
       }
       if (cleanupMode === "trash") {
-        if (moveToTrashLike(filePath)) {
+        if (await moveToTrashLike(filePath)) {
           removed += 1;
         }
         continue;
       }
-      fs.rmSync(filePath, { force: true });
+      await fs.promises.rm(filePath, { force: true });
       removed += 1;
     } catch {
       // ignore
@@ -1020,8 +1030,9 @@ function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): numbe
   return removed;
 }
 
-function hasAnyFilesRecursive(rootDir: string): boolean {
-  if (!fs.existsSync(rootDir)) {
+async function hasAnyFilesRecursive(rootDir: string): Promise<boolean> {
+  const rootExists = await fs.promises.access(rootDir).then(() => true, () => false);
+  if (!rootExists) {
     return false;
   }
   const deadline = Date.now() + 220;
@@ -1035,7 +1046,7 @@ function hasAnyFilesRecursive(rootDir: string): boolean {
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
     try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -1052,19 +1063,24 @@ function hasAnyFilesRecursive(rootDir: string): boolean {
   return false;
 }
 
-function hasAnyEntries(rootDir: string): boolean {
-  if (!rootDir || !fs.existsSync(rootDir)) {
+async function hasAnyEntries(rootDir: string): Promise<boolean> {
+  if (!rootDir) {
+    return false;
+  }
+  const rootExists = await fs.promises.access(rootDir).then(() => true, () => false);
+  if (!rootExists) {
     return false;
   }
   try {
-    return fs.readdirSync(rootDir).length > 0;
+    return (await fs.promises.readdir(rootDir)).length > 0;
   } catch {
     return false;
   }
 }
 
-function removeEmptyDirectoryTree(rootDir: string): number {
-  if (!fs.existsSync(rootDir)) {
+async function removeEmptyDirectoryTree(rootDir: string): Promise<number> {
+  const rootExists = await fs.promises.access(rootDir).then(() => true, () => false);
+  if (!rootExists) {
     return 0;
   }
 
@@ -1074,7 +1090,7 @@ function removeEmptyDirectoryTree(rootDir: string): number {
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
     try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -1091,9 +1107,9 @@ function removeEmptyDirectoryTree(rootDir: string): number {
   let removed = 0;
   for (const dirPath of dirs) {
     try {
-      const entries = fs.readdirSync(dirPath);
+      const entries = await fs.promises.readdir(dirPath);
       if (entries.length === 0) {
-        fs.rmdirSync(dirPath);
+        await fs.promises.rmdir(dirPath);
         removed += 1;
       }
     } catch {
@@ -1108,7 +1124,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     throw new Error("aborted:extract");
   }
 
-  const allCandidates = findArchiveCandidates(options.packageDir);
+  const allCandidates = await findArchiveCandidates(options.packageDir);
   const candidates = options.onlyArchives
     ? allCandidates.filter((archivePath) => {
       const key = process.platform === "win32" ? path.resolve(archivePath).toLowerCase() : path.resolve(archivePath);
@@ -1118,9 +1134,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   if (candidates.length === 0) {
     if (!options.onlyArchives) {
-      const existingResume = readExtractResumeState(options.packageDir, options.packageId);
-      if (existingResume.size > 0 && hasAnyEntries(options.targetDir)) {
-        clearExtractResumeState(options.packageDir, options.packageId);
+      const existingResume = await readExtractResumeState(options.packageDir, options.packageId);
+      if (existingResume.size > 0 && await hasAnyEntries(options.targetDir)) {
+        await clearExtractResumeState(options.packageDir, options.packageId);
         logger.info(`Entpacken übersprungen (Archive bereinigt, Ziel hat Dateien): ${options.packageDir}`);
         options.onProgress?.({
           current: existingResume.size,
@@ -1131,7 +1147,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         });
         return { extracted: existingResume.size, failed: 0, lastError: "" };
       }
-      clearExtractResumeState(options.packageDir, options.packageId);
+      await clearExtractResumeState(options.packageDir, options.packageId);
     }
     logger.info(`Entpacken übersprungen (keine Archive gefunden): ${options.packageDir}`);
     return { extracted: 0, failed: 0, lastError: "" };
@@ -1142,7 +1158,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     logger.warn("Extract-ConflictMode 'ask' wird ohne Prompt als 'skip' behandelt");
   }
   let passwordCandidates = archivePasswords(options.passwordList || "");
-  const resumeCompleted = readExtractResumeState(options.packageDir, options.packageId);
+  const resumeCompleted = await readExtractResumeState(options.packageDir, options.packageId);
   const resumeCompletedAtStart = resumeCompleted.size;
   const allCandidateNames = new Set(allCandidates.map((archivePath) => archiveNameKey(path.basename(archivePath))));
   for (const archiveName of Array.from(resumeCompleted.values())) {
@@ -1151,9 +1167,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
   }
   if (resumeCompleted.size > 0) {
-    writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
+    await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
   } else {
-    clearExtractResumeState(options.packageDir, options.packageId);
+    await clearExtractResumeState(options.packageDir, options.packageId);
   }
 
   const pendingCandidates = candidates.filter((archivePath) => !resumeCompleted.has(archiveNameKey(path.basename(archivePath))));
@@ -1217,7 +1233,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
-        const preferExternal = shouldPreferExternalZip(archivePath);
+        const preferExternal = await shouldPreferExternalZip(archivePath);
         if (preferExternal) {
           try {
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
@@ -1227,14 +1243,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
-              extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
+              await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
             } else {
               throw error;
             }
           }
         } else {
           try {
-            extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
+            await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
             archivePercent = 100;
           } catch (error) {
             if (!shouldFallbackToExternalZip(error)) {
@@ -1264,7 +1280,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       extracted += 1;
       extractedArchives.add(archivePath);
       resumeCompleted.add(archiveResumeKey);
-      writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
+      await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
       archivePercent = 100;
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
@@ -1291,7 +1307,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   if (extracted > 0) {
-    const hasOutputAfter = hasAnyEntries(options.targetDir);
+    const hasOutputAfter = await hasAnyEntries(options.targetDir);
     const hadResumeProgress = resumeCompletedAtStart > 0;
     if (!hasOutputAfter && conflictMode !== "skip" && !hadResumeProgress) {
       lastError = "Keine entpackten Dateien erkannt";
@@ -1304,7 +1320,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         const sourceAndTargetEqual = pathSetKey(path.resolve(options.packageDir)) === pathSetKey(path.resolve(options.targetDir));
         const removedArchives = sourceAndTargetEqual
           ? 0
-          : cleanupArchives(cleanupSources, options.cleanupMode);
+          : await cleanupArchives(cleanupSources, options.cleanupMode);
         if (sourceAndTargetEqual && options.cleanupMode !== "none") {
           logger.warn(`Archive-Cleanup übersprungen (Quelle=Ziel): ${options.packageDir}`);
         }
@@ -1312,21 +1328,21 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
         }
         if (options.removeLinks) {
-          const removedLinks = removeDownloadLinkArtifacts(options.targetDir);
+          const removedLinks = await removeDownloadLinkArtifacts(options.targetDir);
           logger.info(`Link-Artefakt-Cleanup: ${removedLinks} Datei(en) entfernt`);
         }
         if (options.removeSamples) {
-          const removedSamples = removeSampleArtifacts(options.targetDir);
+          const removedSamples = await removeSampleArtifacts(options.targetDir);
           logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
         }
       }
 
       if (failed === 0 && resumeCompleted.size >= allCandidates.length && !options.skipPostCleanup) {
-        clearExtractResumeState(options.packageDir, options.packageId);
+        await clearExtractResumeState(options.packageDir, options.packageId);
       }
 
-      if (!options.skipPostCleanup && options.cleanupMode === "delete" && !hasAnyFilesRecursive(options.packageDir)) {
-        const removedDirs = removeEmptyDirectoryTree(options.packageDir);
+      if (!options.skipPostCleanup && options.cleanupMode === "delete" && !(await hasAnyFilesRecursive(options.packageDir))) {
+        const removedDirs = await removeEmptyDirectoryTree(options.packageDir);
         if (removedDirs > 0) {
           logger.info(`Leere Download-Ordner entfernt: ${removedDirs} (root=${options.packageDir})`);
         }
@@ -1334,8 +1350,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
   } else if (!options.skipPostCleanup) {
     try {
-      if (fs.existsSync(options.targetDir) && fs.readdirSync(options.targetDir).length === 0) {
-        fs.rmSync(options.targetDir, { recursive: true, force: true });
+      const targetExists = await fs.promises.access(options.targetDir).then(() => true, () => false);
+      if (targetExists && (await fs.promises.readdir(options.targetDir)).length === 0) {
+        await fs.promises.rm(options.targetDir, { recursive: true, force: true });
       }
     } catch {
       // ignore
@@ -1344,9 +1361,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   if (failed > 0) {
     if (resumeCompleted.size > 0) {
-      writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
+      await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
     } else {
-      clearExtractResumeState(options.packageDir, options.packageId);
+      await clearExtractResumeState(options.packageDir, options.packageId);
     }
   }
 
