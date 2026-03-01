@@ -365,6 +365,34 @@ function sessionTempPath(sessionFile: string, kind: "sync" | "async"): string {
   return `${sessionFile}.${kind}.tmp`;
 }
 
+function sessionBackupPath(sessionFile: string): string {
+  return `${sessionFile}.bak`;
+}
+
+function normalizeLoadedSessionTransientFields(session: SessionState): SessionState {
+  // Reset transient fields that may be stale from a previous crash
+  const ACTIVE_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
+  for (const item of Object.values(session.items)) {
+    if (ACTIVE_STATUSES.has(item.status)) {
+      item.status = "queued";
+      item.lastError = "";
+    }
+    // Always clear stale speed values
+    item.speedBps = 0;
+  }
+
+  return session;
+}
+
+function readSessionFile(filePath: string): SessionState | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    return normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
+  } catch {
+    return null;
+  }
+}
+
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   ensureBaseDir(paths.baseDir);
   // Create a backup of the existing config before overwriting
@@ -404,30 +432,40 @@ export function loadSession(paths: StoragePaths): SessionState {
   if (!fs.existsSync(paths.sessionFile)) {
     return emptySession();
   }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as unknown;
-    const session = normalizeLoadedSession(parsed);
 
-    // Reset transient fields that may be stale from a previous crash
-    const ACTIVE_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
-    for (const item of Object.values(session.items)) {
-      if (ACTIVE_STATUSES.has(item.status)) {
-        item.status = "queued";
-        item.lastError = "";
-      }
-      // Always clear stale speed values
-      item.speedBps = 0;
-    }
-
-    return session;
-  } catch (error) {
-    logger.error(`Session konnte nicht geladen werden: ${String(error)}`);
-    return emptySession();
+  const primary = readSessionFile(paths.sessionFile);
+  if (primary) {
+    return primary;
   }
+
+  const backupFile = sessionBackupPath(paths.sessionFile);
+  const backup = fs.existsSync(backupFile) ? readSessionFile(backupFile) : null;
+  if (backup) {
+    logger.warn("Session defekt, Backup-Datei wird verwendet");
+    try {
+      const payload = JSON.stringify({ ...backup, updatedAt: Date.now() });
+      const tempPath = sessionTempPath(paths.sessionFile, "sync");
+      fs.writeFileSync(tempPath, payload, "utf8");
+      syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+    } catch {
+      // ignore restore write failure
+    }
+    return backup;
+  }
+
+  logger.error("Session konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  return emptySession();
 }
 
 export function saveSession(paths: StoragePaths, session: SessionState): void {
   ensureBaseDir(paths.baseDir);
+  if (fs.existsSync(paths.sessionFile)) {
+    try {
+      fs.copyFileSync(paths.sessionFile, sessionBackupPath(paths.sessionFile));
+    } catch {
+      // Best-effort backup; proceed even if it fails
+    }
+  }
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
   const tempPath = sessionTempPath(paths.sessionFile, "sync");
   fs.writeFileSync(tempPath, payload, "utf8");
@@ -439,6 +477,9 @@ let asyncSaveQueued: { paths: StoragePaths; payload: string } | null = null;
 
 async function writeSessionPayload(paths: StoragePaths, payload: string): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
+  if (fs.existsSync(paths.sessionFile)) {
+    await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
+  }
   const tempPath = sessionTempPath(paths.sessionFile, "async");
   await fsp.writeFile(tempPath, payload, "utf8");
   try {

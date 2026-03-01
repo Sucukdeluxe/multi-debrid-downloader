@@ -2,6 +2,27 @@
 
 Alle nennenswerten Aenderungen werden in dieser Datei dokumentiert.
 
+## 1.4.68 - 2026-03-01
+
+Stabilitaets-Hotfix fuer Session-Verlust nach Update/Neustart: Session-Dateien haben jetzt ein robustes Backup-/Restore-Fallback.
+
+### Fixes
+
+- Session-Backup fuer Queue-Zustand eingefuehrt:
+  - Vor jedem Session-Save wird die vorherige Session als `.bak` gesichert (sync + async Pfad).
+  - Schuetzt gegen defekte/trunkierte Session-Datei beim Start.
+- Session-Autorestore beim Laden:
+  - Wenn `rd_session_state.json` defekt ist, wird automatisch `rd_session_state.json.bak` geladen.
+  - Das Backup wird danach best-effort wieder als primäre Session-Datei hergestellt.
+- Klarere Fehlersignale im Log:
+  - Eindeutige Meldung, ob primäre Session defekt war und Backup verwendet wurde.
+
+### Tests
+
+- Neue Tests in `tests/storage.test.ts`:
+  - Laden aus Session-Backup bei defekter primärer Session.
+  - Backup-Erstellung vor sync- und async-Session-Overwrite.
+
 ## 1.4.67 - 2026-03-01
 
 Hotfix fuer einen kritischen Start-Konflikt-Datenverlust und zusaetzliche Renamer-Haertung fuer reale Scene-Muster.
