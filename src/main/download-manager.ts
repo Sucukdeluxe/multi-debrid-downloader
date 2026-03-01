@@ -258,6 +258,16 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   return file.startsWith(withSep);
 }
 
+const EMPTY_DIR_IGNORED_FILE_NAMES = new Set([
+  "thumbs.db",
+  "desktop.ini",
+  ".ds_store"
+]);
+
+function isIgnorableEmptyDirFileName(fileName: string): boolean {
+  return EMPTY_DIR_IGNORED_FILE_NAMES.has(String(fileName || "").trim().toLowerCase());
+}
+
 function toWindowsLongPathIfNeeded(filePath: string): string {
   const absolute = path.resolve(String(filePath || ""));
   if (process.platform !== "win32") {
@@ -1510,7 +1520,19 @@ export class DownloadManager extends EventEmitter {
     let removed = 0;
     for (const dirPath of dirs) {
       try {
-        const entries = fs.readdirSync(dirPath);
+        let entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isFile() || !isIgnorableEmptyDirFileName(entry.name)) {
+            continue;
+          }
+          try {
+            fs.rmSync(path.join(dirPath, entry.name), { force: true });
+          } catch {
+            // ignore and keep directory untouched
+          }
+        }
+
+        entries = fs.readdirSync(dirPath, { withFileTypes: true });
         if (entries.length === 0) {
           fs.rmdirSync(dirPath);
           removed += 1;
@@ -3753,7 +3775,8 @@ export class DownloadManager extends EventEmitter {
   private recoverRetryableItems(trigger: "startup" | "start"): number {
     let recovered = 0;
     const touchedPackages = new Set<string>();
-    const maxAutoRetryFailures = Math.max(2, REQUEST_RETRIES);
+    const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
+    const maxAutoRetryFailures = retryLimitToMaxRetries(configuredRetryLimit);
 
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
@@ -3788,7 +3811,7 @@ export class DownloadManager extends EventEmitter {
         }
 
         if (item.status === "completed" && hasZeroByteArchive) {
-          const maxCompletedZeroByteAutoRetries = Math.max(2, REQUEST_RETRIES);
+          const maxCompletedZeroByteAutoRetries = retryLimitToMaxRetries(configuredRetryLimit);
           if (item.retries >= maxCompletedZeroByteAutoRetries) {
             continue;
           }

@@ -4070,6 +4070,88 @@ describe("download manager", () => {
     expect(fs.existsSync(suffixedPath)).toBe(true);
   });
 
+  it("removes empty package folders after MKV flattening even with desktop.ini or thumbs.db", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Gotham.S03.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const nestedFolder = "Gotham.S03E11.Ein.Ungeheuer.namens.Eifersucht.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR";
+    const sourceFileName = `${nestedFolder}/tvr-gotham-s03e11-720p.mkv`;
+    const zip = new AdmZip();
+    zip.addFile(sourceFileName, Buffer.from("video"));
+    zip.addFile(`${nestedFolder}/Thumbs.db`, Buffer.from("thumbs"));
+    zip.addFile("desktop.ini", Buffer.from("system"));
+    const archivePath = path.join(outputDir, "episode.zip");
+    zip.writeZip(archivePath);
+    const archiveSize = fs.statSync(archivePath).size;
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const itemId = `${packageName}-item`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/gotham",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const flattenedPath = path.join(mkvLibraryDir, "tvr-gotham-s03e11-720p.mkv");
+    await waitFor(() => fs.existsSync(flattenedPath), 12000);
+
+    expect(fs.existsSync(flattenedPath)).toBe(true);
+    expect(fs.existsSync(extractDir)).toBe(false);
+  });
+
   it("throws a controlled error for invalid queue import JSON", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
