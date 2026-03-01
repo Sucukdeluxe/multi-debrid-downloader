@@ -136,6 +136,28 @@ async function readJsonWithTimeout(response: Response, timeoutMs: number): Promi
   }
 }
 
+async function readTextWithTimeout(response: Response, timeoutMs: number): Promise<string> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void response.body?.cancel().catch(() => undefined);
+      reject(new Error(`timeout:${timeoutMs}`));
+    }, timeoutMs);
+  });
+
+  try {
+    const payload = await Promise.race([
+      response.text(),
+      timeoutPromise
+    ]);
+    return String(payload || "");
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function getDownloadBodyIdleTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS ?? NaN);
   if (Number.isFinite(fromEnv) && fromEnv >= 1000 && fromEnv <= 30 * 60 * 1000) {
@@ -197,6 +219,88 @@ function pickSetupAsset(assets: ReleaseAsset[]): ReleaseAsset | null {
   return installable.find((asset) => /setup/i.test(asset.name))
     || installable.find((asset) => !/portable/i.test(asset.name))
     || installable[0];
+}
+
+function pickLatestYmlAsset(assets: ReleaseAsset[]): ReleaseAsset | null {
+  return assets.find((asset) => /^latest\.ya?ml$/i.test(asset.name))
+    || assets.find((asset) => /latest/i.test(asset.name) && /\.ya?ml$/i.test(asset.name))
+    || null;
+}
+
+function normalizeAssetNameForDigestMatch(value: string): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  const fileName = trimmed.split(/[\\/]/g).filter(Boolean).pop() || trimmed;
+  return fileName.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function stripYamlScalar(raw: string): string {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  const unquoted = trimmed.replace(/^['"]+|['"]+$/g, "");
+  return unquoted.trim();
+}
+
+function parseSha512FromLatestYml(content: string, setupAssetName: string): string {
+  const lines = String(content || "").split(/\r?\n/g);
+  const targetNormalized = normalizeAssetNameForDigestMatch(setupAssetName);
+  let topLevelPath = "";
+  let topLevelSha = "";
+  let currentFileUrl = "";
+  let firstFileSha = "";
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    const fileUrlItem = line.match(/^\s*-\s*url\s*:\s*(.+)\s*$/i);
+    if (fileUrlItem?.[1]) {
+      currentFileUrl = stripYamlScalar(fileUrlItem[1]);
+      continue;
+    }
+    const fileUrl = line.match(/^\s*url\s*:\s*(.+)\s*$/i);
+    if (fileUrl?.[1]) {
+      currentFileUrl = stripYamlScalar(fileUrl[1]);
+      continue;
+    }
+    const pathMatch = line.match(/^\s*path\s*:\s*(.+)\s*$/i);
+    if (pathMatch?.[1]) {
+      topLevelPath = stripYamlScalar(pathMatch[1]);
+      continue;
+    }
+    const shaMatch = line.match(/^\s*sha512\s*:\s*([A-Za-z0-9+/=]{40,})\s*$/);
+    if (!shaMatch?.[1]) {
+      continue;
+    }
+    const sha = shaMatch[1].trim();
+    if (currentFileUrl) {
+      if (!firstFileSha) {
+        firstFileSha = sha;
+      }
+      if (targetNormalized) {
+        const fileUrlNormalized = normalizeAssetNameForDigestMatch(currentFileUrl);
+        if (fileUrlNormalized && fileUrlNormalized === targetNormalized) {
+          return sha;
+        }
+      }
+      currentFileUrl = "";
+      continue;
+    }
+    if (!topLevelSha) {
+      topLevelSha = sha;
+    }
+  }
+
+  if (targetNormalized && topLevelPath && topLevelSha) {
+    const topLevelPathNormalized = normalizeAssetNameForDigestMatch(topLevelPath);
+    if (topLevelPathNormalized && topLevelPathNormalized === targetNormalized) {
+      return topLevelSha;
+    }
+  }
+
+  return topLevelSha || firstFileSha || "";
 }
 
 function parseReleasePayload(payload: Record<string, unknown>, fallback: UpdateCheckResult): UpdateCheckResult {
@@ -328,18 +432,34 @@ function deriveUpdateFileName(check: UpdateCheckResult, url: string): string {
   }
 }
 
-function normalizeSha256Digest(raw: string): string {
+type ExpectedDigest = {
+  algorithm: "sha256" | "sha512";
+  digest: string;
+};
+
+function parseExpectedDigest(raw: string): ExpectedDigest | null {
   const text = String(raw || "").trim();
-  const prefixed = text.match(/^sha256:([a-fA-F0-9]{64})$/i);
-  if (prefixed) {
-    return prefixed[1].toLowerCase();
+  const prefixed256 = text.match(/^sha256:([a-fA-F0-9]{64})$/i);
+  if (prefixed256) {
+    return { algorithm: "sha256", digest: prefixed256[1].toLowerCase() };
   }
-  const plain = text.match(/^([a-fA-F0-9]{64})$/);
-  return plain ? plain[1].toLowerCase() : "";
+  const prefixed512 = text.match(/^sha512:([a-fA-F0-9]{128})$/i);
+  if (prefixed512) {
+    return { algorithm: "sha512", digest: prefixed512[1].toLowerCase() };
+  }
+  const plain256 = text.match(/^([a-fA-F0-9]{64})$/);
+  if (plain256) {
+    return { algorithm: "sha256", digest: plain256[1].toLowerCase() };
+  }
+  const plain512 = text.match(/^([a-fA-F0-9]{128})$/);
+  if (plain512) {
+    return { algorithm: "sha512", digest: plain512[1].toLowerCase() };
+  }
+  return null;
 }
 
-async function sha256File(filePath: string): Promise<string> {
-  const hash = crypto.createHash("sha256");
+async function hashFile(filePath: string, algorithm: "sha256" | "sha512"): Promise<string> {
+  const hash = crypto.createHash(algorithm);
   const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
   return await new Promise<string>((resolve, reject) => {
     stream.on("data", (chunk: string | Buffer) => {
@@ -350,15 +470,35 @@ async function sha256File(filePath: string): Promise<string> {
   });
 }
 
+async function verifyInstallerBinaryShape(targetPath: string): Promise<void> {
+  const stats = await fs.promises.stat(targetPath);
+  if (!Number.isFinite(stats.size) || stats.size < 128 * 1024) {
+    throw new Error("Update-Installer ungültig (Datei zu klein)");
+  }
+
+  const handle = await fs.promises.open(targetPath, "r");
+  try {
+    const header = Buffer.alloc(2);
+    const result = await handle.read(header, 0, 2, 0);
+    if (result.bytesRead < 2 || header[0] !== 0x4d || header[1] !== 0x5a) {
+      throw new Error("Update-Installer ungültig (keine EXE-Datei)");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
 async function verifyDownloadedInstaller(targetPath: string, expectedDigestRaw: string): Promise<void> {
-  const expectedDigest = normalizeSha256Digest(expectedDigestRaw);
-  if (!expectedDigest) {
-    logger.warn("Update-Asset ohne SHA256-Digest aus API; Integritätsprüfung übersprungen");
+  await verifyInstallerBinaryShape(targetPath);
+
+  const expected = parseExpectedDigest(expectedDigestRaw);
+  if (!expected) {
+    logger.warn("Update-Asset ohne SHA-Digest; nur EXE-Basisprüfung durchgeführt");
     return;
   }
-  const actualDigest = await sha256File(targetPath);
-  if (actualDigest !== expectedDigest) {
-    throw new Error("Update-Integritätsprüfung fehlgeschlagen (SHA256 mismatch)");
+  const actualDigest = await hashFile(targetPath, expected.algorithm);
+  if (actualDigest !== expected.digest) {
+    throw new Error(`Update-Integritätsprüfung fehlgeschlagen (${expected.algorithm.toUpperCase()} mismatch)`);
   }
 }
 
@@ -392,6 +532,57 @@ async function resolveSetupAssetFromApi(safeRepo: string, tagHint: string): Prom
   }
 
   return null;
+}
+
+async function resolveSetupDigestFromLatestYml(safeRepo: string, tagHint: string, setupAssetName: string): Promise<string> {
+  const endpointCandidates = uniqueStrings([
+    tagHint ? `releases/tags/${encodeURIComponent(tagHint)}` : "",
+    "releases/latest"
+  ]);
+
+  for (const endpoint of endpointCandidates) {
+    try {
+      const release = await fetchReleasePayload(safeRepo, endpoint);
+      if (!release.ok || !release.payload) {
+        continue;
+      }
+      if (isDraftOrPrereleaseRelease(release.payload)) {
+        continue;
+      }
+
+      const assets = readReleaseAssets(release.payload);
+      const ymlAsset = pickLatestYmlAsset(assets);
+      if (!ymlAsset) {
+        continue;
+      }
+
+      const timeout = timeoutController(RELEASE_FETCH_TIMEOUT_MS);
+      let response: Response;
+      try {
+        response = await fetch(ymlAsset.browser_download_url, {
+          headers: {
+            "User-Agent": UPDATE_USER_AGENT
+          },
+          signal: timeout.signal
+        });
+      } finally {
+        timeout.clear();
+      }
+      if (!response.ok) {
+        continue;
+      }
+
+      const yamlText = await readTextWithTimeout(response, RELEASE_FETCH_TIMEOUT_MS);
+      const sha512 = parseSha512FromLatestYml(yamlText, setupAssetName);
+      if (sha512) {
+        return `sha512:${sha512}`;
+      }
+    } catch {
+      // ignore and continue with next endpoint candidate
+    }
+  }
+
+  return "";
 }
 
 export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult> {
@@ -681,6 +872,17 @@ export async function installLatestUpdate(
         setupAssetName: refreshed.setupAssetName,
         setupAssetDigest: refreshed.setupAssetDigest
       };
+    }
+  }
+
+  if (!effectiveCheck.setupAssetDigest && effectiveCheck.setupAssetUrl) {
+    const digestFromYml = await resolveSetupDigestFromLatestYml(safeRepo, effectiveCheck.latestTag, effectiveCheck.setupAssetName || "");
+    if (digestFromYml) {
+      effectiveCheck = {
+        ...effectiveCheck,
+        setupAssetDigest: digestFromYml
+      };
+      logger.info("Update-Integritätsdigest aus latest.yml übernommen");
     }
   }
 
