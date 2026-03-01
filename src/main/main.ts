@@ -65,6 +65,7 @@ function createWindow(): BrowserWindow {
     minHeight: 760,
     backgroundColor: "#070b14",
     title: `${APP_NAME} - v${controller.getVersion()}`,
+    icon: path.join(app.getAppPath(), "assets", "app_icon.ico"),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
