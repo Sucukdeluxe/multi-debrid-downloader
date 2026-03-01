@@ -49,6 +49,12 @@ const DEFAULT_POST_EXTRACT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
 const EXTRACT_PROGRESS_EMIT_INTERVAL_MS = 260;
 
+const DEFAULT_UNRESTRICT_TIMEOUT_MS = 120000;
+
+const DEFAULT_LOW_THROUGHPUT_TIMEOUT_MS = 120000;
+
+const DEFAULT_LOW_THROUGHPUT_MIN_BYTES = 64 * 1024;
+
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
   if (Number.isFinite(fromEnv) && fromEnv >= 2000 && fromEnv <= 600000) {
@@ -84,6 +90,30 @@ function getPostExtractTimeoutMs(): number {
     return Math.floor(fromEnv);
   }
   return DEFAULT_POST_EXTRACT_TIMEOUT_MS;
+}
+
+function getUnrestrictTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_UNRESTRICT_TIMEOUT_MS ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 5000 && fromEnv <= 15 * 60 * 1000) {
+    return Math.floor(fromEnv);
+  }
+  return DEFAULT_UNRESTRICT_TIMEOUT_MS;
+}
+
+function getLowThroughputTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_LOW_THROUGHPUT_TIMEOUT_MS ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 30000 && fromEnv <= 20 * 60 * 1000) {
+    return Math.floor(fromEnv);
+  }
+  return DEFAULT_LOW_THROUGHPUT_TIMEOUT_MS;
+}
+
+function getLowThroughputMinBytes(): number {
+  const fromEnv = Number(process.env.RD_LOW_THROUGHPUT_MIN_BYTES ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 1024 && fromEnv <= 32 * 1024 * 1024) {
+    return Math.floor(fromEnv);
+  }
+  return DEFAULT_LOW_THROUGHPUT_MIN_BYTES;
 }
 
 type DownloadManagerOptions = {
@@ -2949,7 +2979,17 @@ export class DownloadManager extends EventEmitter {
     const maxUnrestrictRetries = Math.max(3, REQUEST_RETRIES);
     while (true) {
       try {
-        const unrestricted = await this.debridService.unrestrictLink(item.url, active.abortController.signal);
+        const unrestrictTimeoutSignal = AbortSignal.timeout(getUnrestrictTimeoutMs());
+        const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
+        let unrestricted;
+        try {
+          unrestricted = await this.debridService.unrestrictLink(item.url, unrestrictedSignal);
+        } catch (unrestrictError) {
+          if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
+            throw new Error(`Unrestrict Timeout nach ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s`);
+          }
+          throw unrestrictError;
+        }
         if (active.abortController.signal.aborted) {
           throw new Error(`aborted:${active.abortReason}`);
         }
@@ -3127,10 +3167,15 @@ export class DownloadManager extends EventEmitter {
           item.speedBps = 0;
           item.fullStatus = "Paket gestoppt";
         } else if (reason === "stall") {
+          const stallErrorText = compactErrorText(error);
+          const isSlowThroughput = stallErrorText.includes("slow_throughput");
           active.stallRetries += 1;
           if (active.stallRetries <= 2) {
             item.retries += 1;
-            this.queueRetry(item, active, 350 * active.stallRetries, `Keine Daten empfangen, Retry ${active.stallRetries}/2`);
+            const retryText = isSlowThroughput
+              ? `Zu wenig Datenfluss, Retry ${active.stallRetries}/2`
+              : `Keine Daten empfangen, Retry ${active.stallRetries}/2`;
+            this.queueRetry(item, active, 350 * active.stallRetries, retryText);
             item.lastError = "";
             this.persistSoon();
             this.emitState();
@@ -3478,6 +3523,10 @@ export class DownloadManager extends EventEmitter {
           const reader = body.getReader();
           let lastDataAt = nowMs();
           let lastIdleEmitAt = 0;
+          const lowThroughputTimeoutMs = getLowThroughputTimeoutMs();
+          const lowThroughputMinBytes = getLowThroughputMinBytes();
+          let throughputWindowStartedAt = nowMs();
+          let throughputWindowBytes = 0;
           const idlePulseMs = Math.max(1500, Math.min(3500, Math.floor(stallTimeoutMs / 4) || 2000));
           const idleTimer = setInterval(() => {
             if (active.abortController.signal.aborted) {
@@ -3550,6 +3599,10 @@ export class DownloadManager extends EventEmitter {
                 this.emitState();
                 await sleep(120);
               }
+              if (!this.session.paused) {
+                throughputWindowStartedAt = nowMs();
+                throughputWindowBytes = 0;
+              }
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
               }
@@ -3572,6 +3625,18 @@ export class DownloadManager extends EventEmitter {
               this.session.totalDownloadedBytes += buffer.length;
               this.itemContributedBytes.set(active.itemId, (this.itemContributedBytes.get(active.itemId) || 0) + buffer.length);
               this.recordSpeed(buffer.length);
+              throughputWindowBytes += buffer.length;
+
+              const throughputNow = nowMs();
+              if (lowThroughputTimeoutMs > 0 && throughputNow - throughputWindowStartedAt >= lowThroughputTimeoutMs) {
+                if (throughputWindowBytes < lowThroughputMinBytes) {
+                  active.abortReason = "stall";
+                  active.abortController.abort("stall");
+                  throw new Error(`slow_throughput:${throughputWindowBytes}/${lowThroughputMinBytes}`);
+                }
+                throughputWindowStartedAt = throughputNow;
+                throughputWindowBytes = 0;
+              }
 
               const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.5);
               const speed = windowBytes / elapsed;
