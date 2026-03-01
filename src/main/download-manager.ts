@@ -2389,7 +2389,33 @@ export class DownloadManager extends EventEmitter {
     if (!this.session.running) {
       return false;
     }
+    const wasPaused = this.session.paused;
     this.session.paused = !this.session.paused;
+
+    // When unpausing: clear all retry delays so stuck queued items restart immediately,
+    // and abort long-stuck validating/downloading tasks so they get retried fresh.
+    if (wasPaused && !this.session.paused) {
+      this.retryAfterByItem.clear();
+
+      const now = nowMs();
+      for (const active of this.activeTasks.values()) {
+        if (active.abortController.signal.aborted) {
+          continue;
+        }
+        const item = this.session.items[active.itemId];
+        if (!item) {
+          continue;
+        }
+        const stuckSeconds = item.updatedAt > 0 ? (now - item.updatedAt) / 1000 : 0;
+        const isStuckValidating = item.status === "validating" && stuckSeconds > 30;
+        const isStuckDownloading = item.status === "downloading" && item.speedBps === 0 && stuckSeconds > 30;
+        if (isStuckValidating || isStuckDownloading) {
+          active.abortReason = "stall";
+          active.abortController.abort("stall");
+        }
+      }
+    }
+
     this.persistSoon();
     this.emitState(true);
     return this.session.paused;
@@ -2529,11 +2555,7 @@ export class DownloadManager extends EventEmitter {
 
   private persistNow(): void {
     this.lastPersistAt = nowMs();
-    if (this.session.running) {
-      void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
-    } else {
-      saveSession(this.storagePaths, this.session);
-    }
+    void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
   }
 
   private emitState(force = false): void {
@@ -3329,9 +3351,15 @@ export class DownloadManager extends EventEmitter {
           }
 
           const finalTargetPath = String(item.targetPath || "").trim();
-          const fileSizeOnDisk = finalTargetPath && fs.existsSync(finalTargetPath)
-            ? fs.statSync(finalTargetPath).size
-            : item.downloadedBytes;
+          let fileSizeOnDisk = item.downloadedBytes;
+          if (finalTargetPath) {
+            try {
+              const stat = await fs.promises.stat(finalTargetPath);
+              fileSizeOnDisk = stat.size;
+            } catch {
+              // file does not exist
+            }
+          }
           const expectsNonEmptyFile = (item.totalBytes || 0) > 0 || isArchiveLikePath(finalTargetPath || item.fileName);
           if (expectsNonEmptyFile && fileSizeOnDisk <= 0) {
             try {
@@ -3491,7 +3519,7 @@ export class DownloadManager extends EventEmitter {
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
-            this.queueRetry(item, active, Math.min(8000, 2000 * active.unrestrictRetries), `Unrestrict-Fehler, Retry ${active.unrestrictRetries}/${maxUnrestrictRetries}`);
+            this.queueRetry(item, active, Math.min(8000, 2000 * active.unrestrictRetries), `Unrestrict-Fehler, Retry ${active.unrestrictRetries}/${retryDisplayLimit}`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
@@ -3501,7 +3529,7 @@ export class DownloadManager extends EventEmitter {
           if (active.genericErrorRetries < maxGenericErrorRetries) {
             active.genericErrorRetries += 1;
             item.retries += 1;
-            this.queueRetry(item, active, Math.min(1200, 300 * active.genericErrorRetries), `Fehler erkannt, Auto-Retry ${active.genericErrorRetries}/${maxGenericErrorRetries}`);
+            this.queueRetry(item, active, Math.min(1200, 300 * active.genericErrorRetries), `Fehler erkannt, Auto-Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
@@ -4387,6 +4415,7 @@ export class DownloadManager extends EventEmitter {
 
     // Build set of item targetPaths belonging to ready archives
     const hybridItemPaths = new Set<string>();
+    const archiveToItems = new Map<string, DownloadItem[]>();
     let dirFiles: string[] | undefined;
     try {
       dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
@@ -4395,15 +4424,23 @@ export class DownloadManager extends EventEmitter {
     } catch { /* ignore */ }
     for (const archiveKey of readyArchives) {
       const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
+      const partKeys = new Set<string>();
       for (const part of parts) {
         hybridItemPaths.add(pathKey(part));
+        partKeys.add(pathKey(part));
       }
       hybridItemPaths.add(pathKey(archiveKey));
+      partKeys.add(pathKey(archiveKey));
+      const matched = completedItems.filter((item) => item.targetPath && partKeys.has(pathKey(item.targetPath)));
+      if (matched.length > 0) {
+        archiveToItems.set(path.basename(archiveKey).toLowerCase(), matched);
+      }
     }
     const hybridItems = completedItems.filter((item) =>
       item.targetPath && hybridItemPaths.has(pathKey(item.targetPath))
     );
 
+    let currentArchiveItems: DownloadItem[] = hybridItems;
     const updateExtractingStatus = (text: string): void => {
       const normalized = String(text || "");
       if (hybridLastStatusText === normalized) {
@@ -4411,7 +4448,7 @@ export class DownloadManager extends EventEmitter {
       }
       hybridLastStatusText = normalized;
       const updatedAt = nowMs();
-      for (const entry of hybridItems) {
+      for (const entry of currentArchiveItems) {
         if (isExtractedLabel(entry.fullStatus)) {
           continue;
         }
@@ -4453,6 +4490,10 @@ export class DownloadManager extends EventEmitter {
         onProgress: (progress) => {
           if (progress.phase === "done") {
             return;
+          }
+          // Narrow status updates to only items belonging to the current archive
+          if (progress.archiveName) {
+            currentArchiveItems = archiveToItems.get(progress.archiveName.toLowerCase()) || hybridItems;
           }
           const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
           const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
@@ -4536,6 +4577,26 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "extracting";
       this.emitState();
 
+      // Build map: archive basename -> items belonging to that archive set
+      const archiveToItems = new Map<string, DownloadItem[]>();
+      let dirFiles: string[] | undefined;
+      try {
+        dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map((entry) => entry.name);
+      } catch { /* ignore */ }
+      const candidates = findArchiveCandidates(pkg.outputDir);
+      for (const candidate of candidates) {
+        const parts = collectArchiveCleanupTargets(candidate, dirFiles);
+        const partKeys = new Set(parts.map((p) => pathKey(p)));
+        partKeys.add(pathKey(candidate));
+        const matched = completedItems.filter((item) => item.targetPath && partKeys.has(pathKey(item.targetPath)));
+        if (matched.length > 0) {
+          archiveToItems.set(path.basename(candidate).toLowerCase(), matched);
+        }
+      }
+
+      let currentArchiveItems: DownloadItem[] = completedItems;
       const updateExtractingStatus = (text: string): void => {
         const normalized = String(text || "");
         if (lastExtractStatusText === normalized) {
@@ -4543,7 +4604,7 @@ export class DownloadManager extends EventEmitter {
         }
         lastExtractStatusText = normalized;
         const updatedAt = nowMs();
-        for (const entry of completedItems) {
+        for (const entry of currentArchiveItems) {
           if (isExtractedLabel(entry.fullStatus)) {
             continue;
           }
@@ -4607,6 +4668,10 @@ export class DownloadManager extends EventEmitter {
           signal: extractAbortController.signal,
           packageId,
           onProgress: (progress) => {
+            // Narrow status updates to only items belonging to the current archive
+            if (progress.archiveName) {
+              currentArchiveItems = archiveToItems.get(progress.archiveName.toLowerCase()) || completedItems;
+            }
             const label = progress.phase === "done"
               ? "Entpacken 100%"
               : (() => {
