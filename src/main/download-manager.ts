@@ -681,6 +681,8 @@ export class DownloadManager extends EventEmitter {
       return this.statsCache;
     }
 
+    this.resetSessionTotalsIfQueueEmpty();
+
     let totalDownloaded = 0;
     let totalFiles = 0;
     for (const item of Object.values(this.session.items)) {
@@ -712,6 +714,25 @@ export class DownloadManager extends EventEmitter {
     this.statsCache = stats;
     this.statsCacheAt = now;
     return stats;
+  }
+
+  private resetSessionTotalsIfQueueEmpty(): void {
+    if (this.itemCount > 0 || this.session.packageOrder.length > 0) {
+      return;
+    }
+    if (Object.keys(this.session.items).length > 0 || Object.keys(this.session.packages).length > 0) {
+      return;
+    }
+
+    this.session.totalDownloadedBytes = 0;
+    this.session.runStartedAt = 0;
+    this.lastGlobalProgressBytes = 0;
+    this.lastGlobalProgressAt = nowMs();
+    this.speedEvents = [];
+    this.speedEventsHead = 0;
+    this.speedBytesLastWindow = 0;
+    this.statsCache = null;
+    this.statsCacheAt = 0;
   }
 
   public renamePackage(packageId: string, newName: string): void {
@@ -922,6 +943,7 @@ export class DownloadManager extends EventEmitter {
     this.nonResumableActive = 0;
     this.retryAfterByItem.clear();
     this.retryStateByItem.clear();
+    this.resetSessionTotalsIfQueueEmpty();
     this.persistNow();
     this.emitState(true);
   }
@@ -1966,6 +1988,7 @@ export class DownloadManager extends EventEmitter {
         pkg.status = "completed";
       }
     }
+    this.resetSessionTotalsIfQueueEmpty();
     this.persistSoon();
   }
 
@@ -2371,6 +2394,7 @@ export class DownloadManager extends EventEmitter {
     this.runPackageIds.delete(packageId);
     this.runCompletedPackages.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
+    this.resetSessionTotalsIfQueueEmpty();
   }
 
   private async ensureScheduler(): Promise<void> {

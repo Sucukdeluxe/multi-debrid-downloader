@@ -2399,6 +2399,103 @@ describe("download manager", () => {
     expect(summary).toBeNull();
   });
 
+  it("shows zero total when queue is empty despite stale persisted bytes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    session.totalDownloadedBytes = 19.99 * 1024 * 1024 * 1024;
+    session.runStartedAt = Date.now() - 5 * 60 * 1000;
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.stats.totalPackages).toBe(0);
+    expect(snapshot.stats.totalFiles).toBe(0);
+    expect(snapshot.stats.totalDownloaded).toBe(0);
+    expect(snapshot.session.totalDownloadedBytes).toBe(0);
+    expect(snapshot.session.runStartedAt).toBe(0);
+  });
+
+  it("clearAll resets total bytes and stats", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "pkg-clear";
+    const itemId = "item-clear";
+    const now = Date.now() - 1000;
+    const outputDir = path.join(root, "downloads", "pkg-clear");
+    const extractDir = path.join(root, "extract", "pkg-clear");
+    const targetPath = path.join(outputDir, "episode.mkv");
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "pkg-clear",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/item-clear",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1024,
+      totalBytes: 1024,
+      progressPercent: 100,
+      fileName: "episode.mkv",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (1 KB)",
+      createdAt: now,
+      updatedAt: now
+    };
+    session.totalDownloadedBytes = 1024;
+    session.runStartedAt = now;
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.clearAll();
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.stats.totalPackages).toBe(0);
+    expect(snapshot.stats.totalFiles).toBe(0);
+    expect(snapshot.stats.totalDownloaded).toBe(0);
+    expect(snapshot.session.totalDownloadedBytes).toBe(0);
+    expect(snapshot.session.runStartedAt).toBe(0);
+  });
+
   it("does not start a run when queue is empty", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

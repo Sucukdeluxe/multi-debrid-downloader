@@ -703,7 +703,11 @@ export function App(): ReactElement {
       if (files.length === 0) { return; }
       await persistDraftSettings();
       const result = await window.rd.addContainers(files);
-      showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+      if (result.addedLinks > 0) {
+        showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+      } else {
+        showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
+      }
     }, (error) => {
       showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
     });
@@ -721,7 +725,11 @@ export function App(): ReactElement {
       await performQuickAction(async () => {
         await persistDraftSettings();
         const result = await window.rd.addContainers(dlc);
-        showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+        if (result.addedLinks > 0) {
+          showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+        } else {
+          showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
+        }
       }, (error) => {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
       });

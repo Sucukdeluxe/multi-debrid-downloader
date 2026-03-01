@@ -2,6 +2,36 @@
 
 Alle nennenswerten Aenderungen werden in dieser Datei dokumentiert.
 
+## 1.4.33 - 2026-03-02
+
+Hotfix-Release fuer zwei reale Produktionsprobleme: falsche Gesamt-Statistik bei leerer Queue und stilles DLC-Import-Failure bei Drag-and-Drop.
+
+### Fixes
+
+- **Stats-Anzeige korrigiert ("Gesamt" bei leerer Queue):**
+  - Wenn keine Pakete/Items mehr vorhanden sind, werden persistierte Run-Bytes und Run-Timestamps jetzt sauber auf 0 zurueckgesetzt.
+  - Dadurch verschwindet die Ghost-Anzeige wie z. B. `Gesamt: 19.99 GB` bei `Pakete: 0 / Dateien: 0`.
+  - Reset greift in den relevanten Pfaden (`getStats`, `clearAll`, Paket-Entfernung, Startup-Normalisierung).
+
+- **DLC Drag-and-Drop Import gehaertet:**
+  - Lokale DLC-Fehler wie `Ungültiges DLC-Padding` blockieren den Fallback zu dcrypt nicht mehr.
+  - Oversize/invalid-size DLCs werden weiterhin defensiv behandelt, aber valide Dateien im gleichen Batch werden nicht mehr still geschluckt.
+  - Wenn alle DLC-Imports fehlschlagen, wird jetzt ein klarer Fehler mit Ursache geworfen statt still `0 Paket(e), 0 Link(s)` zu melden.
+
+- **UI-Rueckmeldung verbessert:**
+  - Bei DLC-Import mit `0` Treffern zeigt die UI jetzt eine klare Meldung (`Keine gültigen Links in den DLC-Dateien gefunden`) statt eines irrefuehrenden Erfolgs-Toast.
+
+### Tests
+
+- Neue/erweiterte Tests fuer:
+  - Reset von `totalDownloadedBytes`/Stats bei leerer Queue.
+  - DLC-Fallback-Pfad bei lokalen Decrypt-Exceptions.
+  - Fehlerausgabe bei vollstaendig fehlgeschlagenem DLC-Import.
+- Validierung:
+  - `npx tsc --noEmit` erfolgreich
+  - `npm test` erfolgreich (`283/283`)
+  - `npm run self-check` erfolgreich
+
 ## 1.4.32 - 2026-03-01
 
 Diese Version erweitert den Auto-Renamer stark fuer reale Scene-/TV-Release-Strukturen (nested und flat) und fuehrt eine intensive Renamer-Regression mit zusaetzlichen Edge-Case- und Stress-Checks ein.

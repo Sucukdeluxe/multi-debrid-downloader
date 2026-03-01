@@ -7,6 +7,11 @@ import { ParsedPackageInput } from "../shared/types";
 
 const MAX_DLC_FILE_BYTES = 8 * 1024 * 1024;
 
+function isContainerSizeValidationError(error: unknown): boolean {
+  const text = compactErrorText(error);
+  return /zu groß/i.test(text) || /DLC-Datei ungültig oder zu groß/i.test(text);
+}
+
 function decodeDcryptPayload(responseText: string): unknown {
   let text = String(responseText || "").trim();
   const m = text.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/i);
@@ -187,30 +192,51 @@ async function decryptDlcViaDcrypt(filePath: string): Promise<ParsedPackageInput
 
 export async function importDlcContainers(filePaths: string[]): Promise<ParsedPackageInput[]> {
   const out: ParsedPackageInput[] = [];
+  const failures: string[] = [];
+  let sawDlc = false;
   for (const filePath of filePaths) {
     if (path.extname(filePath).toLowerCase() !== ".dlc") {
       continue;
     }
+    sawDlc = true;
     let packages: ParsedPackageInput[] = [];
+    let fileFailed = false;
+    let fileFailureReasons: string[] = [];
     try {
       packages = await decryptDlcLocal(filePath);
     } catch (error) {
-      if (/zu groß|ungültig/i.test(compactErrorText(error))) {
+      if (isContainerSizeValidationError(error)) {
+        failures.push(`${path.basename(filePath)}: ${compactErrorText(error)}`);
         continue;
       }
+      fileFailed = true;
+      fileFailureReasons.push(`lokal: ${compactErrorText(error)}`);
       packages = [];
     }
     if (packages.length === 0) {
       try {
         packages = await decryptDlcViaDcrypt(filePath);
       } catch (error) {
-        if (/zu groß|ungültig/i.test(compactErrorText(error))) {
+        if (isContainerSizeValidationError(error)) {
+          failures.push(`${path.basename(filePath)}: ${compactErrorText(error)}`);
           continue;
         }
+        fileFailed = true;
+        fileFailureReasons.push(`dcrypt: ${compactErrorText(error)}`);
         packages = [];
       }
     }
+    if (packages.length === 0 && fileFailed) {
+      failures.push(`${path.basename(filePath)}: ${fileFailureReasons.join("; ")}`);
+    }
     out.push(...packages);
   }
+
+  if (out.length === 0 && sawDlc && failures.length > 0) {
+    const details = failures.slice(0, 2).join(" | ");
+    const suffix = failures.length > 2 ? ` (+${failures.length - 2} weitere)` : "";
+    throw new Error(`DLC konnte nicht importiert werden: ${details}${suffix}`);
+  }
+
   return out;
 }
