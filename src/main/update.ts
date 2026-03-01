@@ -361,17 +361,65 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
+function deriveTagFromReleaseUrl(releaseUrl: string): string {
+  const raw = String(releaseUrl || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    const match = parsed.pathname.match(/\/releases\/tag\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : "";
+  } catch {
+    return "";
+  }
+}
+
+function extractFileNameFromUrl(url: string): string {
+  const raw = String(url || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    const fileName = path.basename(parsed.pathname || "");
+    return fileName ? decodeURIComponent(fileName) : "";
+  } catch {
+    return "";
+  }
+}
+
+function deriveSetupNameVariants(setupAssetName: string, setupAssetUrl: string): string[] {
+  const directName = String(setupAssetName || "").trim();
+  const fromUrlName = extractFileNameFromUrl(setupAssetUrl);
+  const source = directName || fromUrlName;
+  if (!source) {
+    return [];
+  }
+
+  const ext = path.extname(source);
+  const stem = ext ? source.slice(0, -ext.length) : source;
+  const dashed = `${stem.replace(/\s+/g, "-")}${ext}`;
+  return uniqueStrings([source, fromUrlName, dashed]);
+}
+
 function buildDownloadCandidates(safeRepo: string, check: UpdateCheckResult): string[] {
   const setupAssetName = String(check.setupAssetName || "").trim();
   const setupAssetUrl = String(check.setupAssetUrl || "").trim();
-  const latestTag = String(check.latestTag || "").trim();
+  const latestTag = String(check.latestTag || "").trim() || deriveTagFromReleaseUrl(String(check.releaseUrl || ""));
 
   const candidates = [setupAssetUrl];
-  if (setupAssetName) {
-    const encodedName = encodeURIComponent(setupAssetName);
-    candidates.push(`${UPDATE_WEB_BASE}/${safeRepo}/releases/latest/download/${encodedName}`);
-    if (latestTag) {
+  const nameVariants = deriveSetupNameVariants(setupAssetName, setupAssetUrl);
+  if (latestTag && nameVariants.length > 0) {
+    for (const name of nameVariants) {
+      const encodedName = encodeURIComponent(name);
       candidates.push(`${UPDATE_WEB_BASE}/${safeRepo}/releases/download/${encodeURIComponent(latestTag)}/${encodedName}`);
+    }
+  }
+  if (!latestTag && nameVariants.length > 0) {
+    for (const name of nameVariants) {
+      const encodedName = encodeURIComponent(name);
+      candidates.push(`${UPDATE_WEB_BASE}/${safeRepo}/releases/latest/download/${encodedName}`);
     }
   }
 
@@ -922,7 +970,7 @@ export async function installLatestUpdate(
     }
   }
 
-  const candidates = buildDownloadCandidates(safeRepo, effectiveCheck);
+  let candidates = buildDownloadCandidates(safeRepo, effectiveCheck);
   if (candidates.length === 0) {
     return { started: false, message: "Setup-Asset nicht gefunden" };
   }
@@ -943,38 +991,87 @@ export async function installLatestUpdate(
     }
     let verified = false;
     let lastVerifyError: unknown = null;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index];
-      try {
-        await downloadWithRetries(candidate, targetPath, onProgress);
-        if (updateAbortController.signal.aborted) {
-          throw new Error("aborted:update_shutdown");
-        }
-        safeEmitProgress(onProgress, {
-          stage: "verifying",
-          percent: 100,
-          downloadedBytes: 0,
-          totalBytes: null,
-          message: `Prüfe Installer-Integrität (${index + 1}/${candidates.length})`
-        });
-        await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
-        verified = true;
-        break;
-      } catch (error) {
-        lastVerifyError = error;
+    let integrityError: unknown = null;
+    for (let pass = 0; pass < 2 && !verified; pass += 1) {
+      logger.info(`Update-Download Kandidaten (${pass + 1}/2): ${candidates.join(" | ")}`);
+      lastVerifyError = null;
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
         try {
-          await fs.promises.rm(targetPath, { force: true });
-        } catch {
-          // ignore
+          await downloadWithRetries(candidate, targetPath, onProgress);
+          if (updateAbortController.signal.aborted) {
+            throw new Error("aborted:update_shutdown");
+          }
+          safeEmitProgress(onProgress, {
+            stage: "verifying",
+            percent: 100,
+            downloadedBytes: 0,
+            totalBytes: null,
+            message: `Prüfe Installer-Integrität (${index + 1}/${candidates.length})`
+          });
+          await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
+          verified = true;
+          break;
+        } catch (error) {
+          lastVerifyError = error;
+          const errorText = compactErrorText(error).toLowerCase();
+          if (!integrityError && (errorText.includes("integrit") || errorText.includes("mismatch"))) {
+            integrityError = error;
+          }
+          try {
+            await fs.promises.rm(targetPath, { force: true });
+          } catch {
+            // ignore
+          }
+          if (index < candidates.length - 1) {
+            logger.warn(`Update-Kandidat ${index + 1}/${candidates.length} verworfen: ${compactErrorText(error)}`);
+          }
         }
-        if (index >= candidates.length - 1) {
-          throw error;
+      }
+
+      if (verified) {
+        break;
+      }
+
+      const status = readHttpStatusFromError(lastVerifyError);
+      let shouldRetryAfterRefresh = false;
+      if (pass === 0 && status === 404) {
+        const refreshed = await resolveSetupAssetFromApi(safeRepo, effectiveCheck.latestTag);
+        if (refreshed) {
+          effectiveCheck = {
+            ...effectiveCheck,
+            setupAssetUrl: refreshed.setupAssetUrl || effectiveCheck.setupAssetUrl,
+            setupAssetName: refreshed.setupAssetName || effectiveCheck.setupAssetName,
+            setupAssetDigest: refreshed.setupAssetDigest || effectiveCheck.setupAssetDigest
+          };
         }
-        logger.warn(`Update-Kandidat ${index + 1}/${candidates.length} verworfen: ${compactErrorText(error)}`);
+        if (!effectiveCheck.setupAssetDigest && effectiveCheck.setupAssetUrl) {
+          const digestFromYml = await resolveSetupDigestFromLatestYml(safeRepo, effectiveCheck.latestTag, effectiveCheck.setupAssetName || "");
+          if (digestFromYml) {
+            effectiveCheck = {
+              ...effectiveCheck,
+              setupAssetDigest: digestFromYml
+            };
+            logger.info("Update-Integritätsdigest aus latest.yml übernommen");
+          }
+        }
+
+        const refreshedCandidates = buildDownloadCandidates(safeRepo, effectiveCheck);
+        const changed = refreshedCandidates.length > 0
+          && (refreshedCandidates.length !== candidates.length
+            || refreshedCandidates.some((value, idx) => value !== candidates[idx]));
+        if (changed) {
+          logger.warn("Update-404 erkannt, Kandidatenliste aus API neu geladen");
+          candidates = refreshedCandidates;
+          shouldRetryAfterRefresh = true;
+        }
+      }
+      if (!shouldRetryAfterRefresh) {
+        break;
       }
     }
     if (!verified) {
-      throw lastVerifyError || new Error("Update-Download fehlgeschlagen");
+      throw integrityError || lastVerifyError || new Error("Update-Download fehlgeschlagen");
     }
     safeEmitProgress(onProgress, {
       stage: "launching",

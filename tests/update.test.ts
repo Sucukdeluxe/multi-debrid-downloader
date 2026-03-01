@@ -95,7 +95,7 @@ describe("update", () => {
       if (url.includes("stale-setup.exe")) {
         return new Response("missing", { status: 404 });
       }
-      if (url.includes("/releases/latest/download/")) {
+      if (url.includes("/releases/download/v9.9.9/")) {
         return new Response(executablePayload, {
           status: 200,
           headers: { "Content-Type": "application/octet-stream" }
@@ -117,7 +117,7 @@ describe("update", () => {
 
     const result = await installLatestUpdate("owner/repo", prechecked);
     expect(result.started).toBe(true);
-    expect(requestedUrls.some((url) => url.includes("/releases/latest/download/"))).toBe(true);
+    expect(requestedUrls.some((url) => url.includes("/releases/download/v9.9.9/"))).toBe(true);
     expect(requestedUrls.filter((url) => url.includes("stale-setup.exe"))).toHaveLength(1);
   });
 
