@@ -43,13 +43,13 @@ const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 30000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
-const DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS = 90000;
+const DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS = 60000;
 
 const DEFAULT_POST_EXTRACT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
 const EXTRACT_PROGRESS_EMIT_INTERVAL_MS = 260;
 
-const DEFAULT_UNRESTRICT_TIMEOUT_MS = 120000;
+const DEFAULT_UNRESTRICT_TIMEOUT_MS = 60000;
 
 const DEFAULT_LOW_THROUGHPUT_TIMEOUT_MS = 120000;
 
@@ -2847,7 +2847,7 @@ export class DownloadManager extends EventEmitter {
           pkg.updatedAt = nowMs();
           for (const item of items) {
             if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
-              item.fullStatus = "Entpacken ausstehend";
+              item.fullStatus = "Entpacken - Ausstehend";
               item.updatedAt = nowMs();
             }
           }
@@ -2911,7 +2911,7 @@ export class DownloadManager extends EventEmitter {
       pkg.updatedAt = nowMs();
       for (const item of items) {
         if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
-          item.fullStatus = "Entpacken ausstehend";
+          item.fullStatus = "Entpacken - Ausstehend";
           item.updatedAt = nowMs();
         }
       }
@@ -3026,6 +3026,24 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    // Per-item validating watchdog: abort items stuck in "validating" for >45s
+    const VALIDATING_STUCK_MS = 45000;
+    for (const active of this.activeTasks.values()) {
+      if (active.abortController.signal.aborted) {
+        continue;
+      }
+      const item = this.session.items[active.itemId];
+      if (!item || item.status !== "validating") {
+        continue;
+      }
+      const ageMs = item.updatedAt > 0 ? now - item.updatedAt : 0;
+      if (ageMs > VALIDATING_STUCK_MS) {
+        logger.warn(`Validating-Stuck erkannt: item=${item.fileName || active.itemId}, ${Math.floor(ageMs / 1000)}s ohne Fortschritt`);
+        active.abortReason = "stall";
+        active.abortController.abort("stall");
+      }
+    }
+
     if (this.session.totalDownloadedBytes !== this.lastGlobalProgressBytes) {
       this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
       this.lastGlobalProgressAt = now;
@@ -3042,7 +3060,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       const item = this.session.items[active.itemId];
-      if (item && item.status === "downloading") {
+      if (item && (item.status === "downloading" || item.status === "validating")) {
         stalledCount += 1;
       }
     }
@@ -3057,7 +3075,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       const item = this.session.items[active.itemId];
-      if (item && item.status === "downloading") {
+      if (item && (item.status === "downloading" || item.status === "validating")) {
         active.abortReason = "stall";
         active.abortController.abort("stall");
       }
@@ -3250,6 +3268,11 @@ export class DownloadManager extends EventEmitter {
 
     item.status = "validating";
     item.fullStatus = "Link wird umgewandelt";
+    item.speedBps = 0;
+    // Reset stale progress so UI doesn't show old % while re-validating
+    if (item.downloadedBytes === 0) {
+      item.progressPercent = 0;
+    }
     item.updatedAt = nowMs();
     pkg.status = "downloading";
     pkg.updatedAt = nowMs();
@@ -3433,7 +3456,9 @@ export class DownloadManager extends EventEmitter {
         }
 
         item.status = "completed";
-        item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
+        item.fullStatus = this.settings.autoExtract
+          ? "Entpacken - Ausstehend"
+          : `Fertig (${humanSize(item.downloadedBytes)})`;
         item.progressPercent = 100;
         item.speedBps = 0;
         item.updatedAt = nowMs();
@@ -3503,20 +3528,37 @@ export class DownloadManager extends EventEmitter {
         } else if (reason === "stall") {
           const stallErrorText = compactErrorText(error);
           const isSlowThroughput = stallErrorText.includes("slow_throughput");
+          const wasValidating = item.status === "validating";
           active.stallRetries += 1;
+          const stallDelayMs = retryDelayWithJitter(active.stallRetries, 500);
+          logger.warn(`Stall erkannt: item=${item.fileName || item.id}, phase=${wasValidating ? "validating" : "downloading"}, retry=${active.stallRetries}/${retryDisplayLimit}, bytes=${item.downloadedBytes}, error=${stallErrorText || "none"}, provider=${item.provider || "?"}`);
           if (active.stallRetries <= maxStallRetries) {
             item.retries += 1;
-            const retryText = isSlowThroughput
-              ? `Zu wenig Datenfluss, Retry ${active.stallRetries}/${retryDisplayLimit}`
-              : `Keine Daten empfangen, Retry ${active.stallRetries}/${retryDisplayLimit}`;
-            this.queueRetry(item, active, 350 * active.stallRetries, retryText);
+            // Reset partial download so next attempt uses a fresh link
+            if (item.downloadedBytes > 0) {
+              const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
+              if (targetFile) {
+                try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
+              }
+              this.releaseTargetPath(item.id);
+              item.downloadedBytes = 0;
+              item.progressPercent = 0;
+              item.totalBytes = null;
+              this.dropItemContribution(item.id);
+            }
+            const retryText = wasValidating
+              ? `Link-Umwandlung hing, Retry ${active.stallRetries}/${retryDisplayLimit}`
+              : isSlowThroughput
+                ? `Zu wenig Datenfluss, Retry ${active.stallRetries}/${retryDisplayLimit}`
+                : `Keine Daten empfangen, Retry ${active.stallRetries}/${retryDisplayLimit}`;
+            this.queueRetry(item, active, stallDelayMs, retryText);
             item.lastError = "";
             this.persistSoon();
             this.emitState();
             return;
           }
           item.status = "failed";
-          item.lastError = "Download hing wiederholt";
+          item.lastError = wasValidating ? "Link-Umwandlung hing wiederholt" : "Download hing wiederholt";
           item.fullStatus = `Fehler: ${item.lastError}`;
           this.recordRunOutcome(item.id, "failed");
           this.retryStateByItem.delete(item.id);
@@ -3549,6 +3591,7 @@ export class DownloadManager extends EventEmitter {
           if (shouldFreshRetry) {
             active.freshRetryUsed = true;
             item.retries += 1;
+            logger.warn(`Netzwerkfehler: item=${item.fileName || item.id}, fresh retry, error=${errorText}, provider=${item.provider || "?"}`);
             try {
               fs.rmSync(item.targetPath, { force: true });
             } catch {
@@ -3568,7 +3611,22 @@ export class DownloadManager extends EventEmitter {
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
-            this.queueRetry(item, active, Math.min(8000, 2000 * active.unrestrictRetries), `Unrestrict-Fehler, Retry ${active.unrestrictRetries}/${retryDisplayLimit}`);
+            // Longer backoff for unrestrict: 5s, 10s, 15s (capped at 15s) to let API cache expire
+            const unrestrictDelayMs = Math.min(15000, 5000 * active.unrestrictRetries);
+            logger.warn(`Unrestrict-Fehler: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${unrestrictDelayMs}ms, error=${errorText}, link=${item.url.slice(0, 80)}`);
+            // Reset partial download so next attempt starts fresh
+            if (item.downloadedBytes > 0) {
+              const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
+              if (targetFile) {
+                try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
+              }
+              this.releaseTargetPath(item.id);
+              item.downloadedBytes = 0;
+              item.progressPercent = 0;
+              item.totalBytes = null;
+              this.dropItemContribution(item.id);
+            }
+            this.queueRetry(item, active, unrestrictDelayMs, `Unrestrict-Fehler, Retry ${active.unrestrictRetries}/${retryDisplayLimit} (${Math.ceil(unrestrictDelayMs / 1000)}s)`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
@@ -3578,7 +3636,9 @@ export class DownloadManager extends EventEmitter {
           if (active.genericErrorRetries < maxGenericErrorRetries) {
             active.genericErrorRetries += 1;
             item.retries += 1;
-            this.queueRetry(item, active, Math.min(1200, 300 * active.genericErrorRetries), `Fehler erkannt, Auto-Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
+            const genericDelayMs = retryDelayWithJitter(active.genericErrorRetries, 400);
+            logger.warn(`Generic-Fehler: item=${item.fileName || item.id}, retry=${active.genericErrorRetries}/${retryDisplayLimit}, error=${errorText}, provider=${item.provider || "?"}`);
+            this.queueRetry(item, active, genericDelayMs, `Fehler erkannt, Auto-Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
@@ -3589,6 +3649,7 @@ export class DownloadManager extends EventEmitter {
           this.recordRunOutcome(item.id, "failed");
           item.lastError = errorText;
           item.fullStatus = `Fehler: ${item.lastError}`;
+          logger.error(`Item endgültig fehlgeschlagen: item=${item.fileName || item.id}, error=${errorText}, provider=${item.provider || "?"}, stallRetries=${active.stallRetries}, unrestrictRetries=${active.unrestrictRetries}, genericRetries=${active.genericErrorRetries}`);
           this.retryStateByItem.delete(item.id);
         }
         item.speedBps = 0;
@@ -4490,7 +4551,8 @@ export class DownloadManager extends EventEmitter {
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, hybridItems);
 
-    let currentArchiveItems: DownloadItem[] = hybridItems;
+    // Only update the items currently being extracted, not all hybrid items at once
+    let currentArchiveItems: DownloadItem[] = [];
     const updateExtractingStatus = (text: string): void => {
       const normalized = String(text || "");
       if (hybridLastStatusText === normalized) {
@@ -4523,7 +4585,14 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
     };
 
-    emitHybridStatus("Entpacken (hybrid) 0%", true);
+    // Mark items not yet being extracted as pending
+    for (const entry of hybridItems) {
+      if (!isExtractedLabel(entry.fullStatus)) {
+        entry.fullStatus = "Entpacken - Ausstehend";
+        entry.updatedAt = nowMs();
+      }
+    }
+    this.emitState();
 
     try {
       const result = await extractPackageArchives({
@@ -4542,20 +4611,20 @@ export class DownloadManager extends EventEmitter {
           if (progress.phase === "done") {
             return;
           }
-          // When a new archive starts, mark the previous archive's items as "Entpackt"
+          // When a new archive starts, mark the previous archive's items as done
           if (progress.archiveName && progress.archiveName !== lastHybridArchiveName) {
-            if (lastHybridArchiveName && currentArchiveItems !== hybridItems) {
+            if (lastHybridArchiveName && currentArchiveItems.length > 0) {
               const doneAt = nowMs();
               for (const entry of currentArchiveItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
-                  entry.fullStatus = "Entpackt";
+                  entry.fullStatus = "Entpackt - Done";
                   entry.updatedAt = doneAt;
                 }
               }
             }
             lastHybridArchiveName = progress.archiveName;
             const resolved = resolveArchiveItems(progress.archiveName);
-            currentArchiveItems = resolved.length > 0 ? resolved : hybridItems;
+            currentArchiveItems = resolved;
           }
           const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
           const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
@@ -4563,7 +4632,7 @@ export class DownloadManager extends EventEmitter {
             : "";
           const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
           const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-          const label = `Entpacken (hybrid) ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+          const label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
           emitHybridStatus(label);
         }
       });
@@ -4576,18 +4645,17 @@ export class DownloadManager extends EventEmitter {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
       }
 
-      // Mark all hybrid items with final status.
-      // Use completedItems (not just hybridItems) so that items not matched to any archive
-      // also get marked — this prevents the final full extraction from re-running.
+      // Mark hybrid items with final status
       const updatedAt = nowMs();
       const targetItems = result.extracted > 0 && result.failed === 0 ? completedItems : hybridItems;
       for (const entry of targetItems) {
         if (isExtractedLabel(entry.fullStatus)) {
           continue;
         }
-        if (/^Entpacken \(hybrid\)/i.test(entry.fullStatus || "") || /^Fertig\b/i.test(entry.fullStatus || "")) {
+        const status = entry.fullStatus || "";
+        if (/^Entpacken\b/i.test(status) || /^Fertig\b/i.test(status)) {
           if (result.extracted > 0 && result.failed === 0) {
-            entry.fullStatus = "Entpackt";
+            entry.fullStatus = "Entpackt - Done";
           } else {
             entry.fullStatus = `Fertig (${humanSize(entry.downloadedBytes)})`;
           }
@@ -4649,7 +4717,8 @@ export class DownloadManager extends EventEmitter {
       const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
         resolveArchiveItemsFromList(archiveName, completedItems);
 
-      let currentArchiveItems: DownloadItem[] = completedItems;
+      // Only update items of the currently extracting archive, not all items
+      let currentArchiveItems: DownloadItem[] = [];
       const updateExtractingStatus = (text: string): void => {
         const normalized = String(text || "");
         if (lastExtractStatusText === normalized) {
@@ -4682,7 +4751,14 @@ export class DownloadManager extends EventEmitter {
         this.emitState();
       };
 
-      emitExtractStatus("Entpacken 0%", true);
+      // Mark all items as pending before extraction starts
+      for (const entry of completedItems) {
+        if (!isExtractedLabel(entry.fullStatus)) {
+          entry.fullStatus = "Entpacken - Ausstehend";
+          entry.updatedAt = nowMs();
+        }
+      }
+      this.emitState();
 
       const extractTimeoutMs = getPostExtractTimeoutMs();
       const extractAbortController = new AbortController();
@@ -4722,20 +4798,19 @@ export class DownloadManager extends EventEmitter {
           signal: extractAbortController.signal,
           packageId,
           onProgress: (progress) => {
-            // When a new archive starts, mark the previous archive's items as "Entpackt"
+            // When a new archive starts, mark the previous archive's items as done
             if (progress.archiveName && progress.archiveName !== lastExtractArchiveName) {
-              if (lastExtractArchiveName && currentArchiveItems !== completedItems) {
+              if (lastExtractArchiveName && currentArchiveItems.length > 0) {
                 const doneAt = nowMs();
                 for (const entry of currentArchiveItems) {
                   if (!isExtractedLabel(entry.fullStatus)) {
-                    entry.fullStatus = "Entpackt";
+                    entry.fullStatus = "Entpackt - Done";
                     entry.updatedAt = doneAt;
                   }
                 }
               }
               lastExtractArchiveName = progress.archiveName;
-              const resolved = resolveArchiveItems(progress.archiveName);
-              currentArchiveItems = resolved.length > 0 ? resolved : completedItems;
+              currentArchiveItems = resolveArchiveItems(progress.archiveName);
             }
             const label = progress.phase === "done"
               ? "Entpacken 100%"
@@ -4768,7 +4843,7 @@ export class DownloadManager extends EventEmitter {
           let finalStatusText = "";
 
           if (result.extracted > 0 || hasExtractedOutput) {
-            finalStatusText = "Entpackt";
+            finalStatusText = "Entpackt - Done";
           } else if (!sourceExists) {
             finalStatusText = "Entpackt (Quelle fehlt)";
             logger.warn(`Post-Processing ohne Quellordner: pkg=${pkg.name}, outputDir fehlt`);
