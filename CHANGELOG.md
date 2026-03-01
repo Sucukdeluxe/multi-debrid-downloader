@@ -2,6 +2,30 @@
 
 Alle nennenswerten Aenderungen werden in dieser Datei dokumentiert.
 
+## 1.4.67 - 2026-03-01
+
+Hotfix fuer einen kritischen Start-Konflikt-Datenverlust und zusaetzliche Renamer-Haertung fuer reale Scene-Muster.
+
+### Fixes
+
+- Start-Konflikt `Überspringen` loescht keine Pakete/Items mehr:
+  - Bereits entpackte Dateien bleiben erhalten.
+  - Offene Downloads bleiben in der Queue und koennen normal fortgesetzt werden.
+  - Laufende Tasks werden dabei als Paket-Stop statt als Cancel behandelt.
+- Start-Konflikt-Dialogtext in der UI praezisiert:
+  - `Entpacktes überspringen` statt missverstaendlichem `Überspringen`.
+  - Klare Info, dass nur erneutes Entpacken uebersprungen wird.
+- Auto-Renamer verbessert:
+  - Erkennt jetzt auch Episode-only Tokens wie `e01`/`e02` mit Staffel-Hinweis aus dem Ordner.
+  - Akzeptiert lowercase Group-Suffixe wie `-tmsf`.
+  - Robuster bei Source-Formaten wie `4sf-bs-720p-s01e05`.
+
+### Tests
+
+- Neue/angepasste Tests in:
+  - `tests/download-manager.test.ts` (Start-Konflikt-Skip behaelt Paket + Partial-Queue)
+  - `tests/auto-rename.test.ts` (e01/e02, lowercase suffix, odd source order)
+
 ## 1.4.66 - 2026-03-01
 
 Hotfix fuer haengende "Link wird umgewandelt"-Faelle (insbesondere Mega-Web-Pfad), bei denen nur ein App-Neustart geholfen hat.

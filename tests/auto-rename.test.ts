@@ -512,4 +512,48 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBe("Lethal.Weapon.S02E11.German.DD51.Dubbed.DL.720p.AmazonHD.x264-TVS");
   });
+
+  it("maps episode-only token e01 via season folder hint and keeps REPACK", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Cheat.der.Betrug.S01.GERMAN.720p.WEB.h264-TMSF"
+      ],
+      "tmsf-cheatderbetrug-e01-720p-repack",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Cheat.der.Betrug.S01E01.GERMAN.REPACK.720p.WEB.h264-TMSF");
+  });
+
+  it("maps episode-only token e02 via season folder hint", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Cheat.der.Betrug.S01.GERMAN.720p.WEB.h264-TMSF"
+      ],
+      "tmsf-cheatderbetrug-e02-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Cheat.der.Betrug.S01E02.GERMAN.720p.WEB.h264-TMSF");
+  });
+
+  it("keeps renaming for odd source order like 4sf-bs-720p-s01e05", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Cheat.der.Betrug.S01.GERMAN.720p.WEB.h264-TMSF"
+      ],
+      "4sf-bs-720p-s01e05",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Cheat.der.Betrug.S01E05.GERMAN.720p.WEB.h264-TMSF");
+  });
+
+  it("accepts lowercase scene group suffixes", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Cheat.der.Betrug.S01.GERMAN.720p.WEB.h264-tmsf"
+      ],
+      "tmsf-cheatderbetrug-e01-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Cheat.der.Betrug.S01E01.GERMAN.720p.WEB.h264-tmsf");
+  });
 });
