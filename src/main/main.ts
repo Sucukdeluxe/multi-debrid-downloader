@@ -64,7 +64,7 @@ function createWindow(): BrowserWindow {
     minWidth: 1120,
     minHeight: 760,
     backgroundColor: "#070b14",
-    title: `${APP_NAME} v${controller.getVersion()}`,
+    title: `${APP_NAME} - v${controller.getVersion()}`,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

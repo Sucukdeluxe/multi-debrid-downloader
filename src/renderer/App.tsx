@@ -259,6 +259,10 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
+    document.title = `Multi Debrid Downloader${appVersion ? ` - v${appVersion}` : ""}`;
+  }, [appVersion]);
+
+  useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
     void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
