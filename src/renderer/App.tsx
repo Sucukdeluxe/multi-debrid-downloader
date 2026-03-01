@@ -53,7 +53,7 @@ const emptySnapshot = (): UiSnapshot => ({
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, retryLimit: 3, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    maxParallel: 4, retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", bandwidthSchedules: []
   },
