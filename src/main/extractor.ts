@@ -19,6 +19,7 @@ let resolveExtractorCommandInFlight: Promise<string> | null = null;
 const EXTRACTOR_RETRY_AFTER_MS = 30_000;
 const DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB = 256;
 const EXTRACTOR_PROBE_TIMEOUT_MS = 8_000;
+const DEFAULT_EXTRACT_CPU_BUDGET_PERCENT = 80;
 
 export interface ExtractOptions {
   packageDir: string;
@@ -365,14 +366,39 @@ function shouldUseExtractorPerformanceFlags(): boolean {
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
+function extractCpuBudgetPercent(): number {
+  const envValue = Number(process.env.RD_EXTRACT_CPU_BUDGET_PERCENT ?? NaN);
+  if (Number.isFinite(envValue) && envValue >= 40 && envValue <= 95) {
+    return Math.floor(envValue);
+  }
+  return DEFAULT_EXTRACT_CPU_BUDGET_PERCENT;
+}
+
 function extractorThreadSwitch(): string {
   const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
   if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
     return `-mt${Math.floor(envValue)}`;
   }
   const cpuCount = Math.max(1, os.cpus().length || 1);
-  const threadCount = Math.max(1, Math.min(16, cpuCount));
+  const budgetPercent = extractCpuBudgetPercent();
+  const budgetedThreads = Math.floor((cpuCount * budgetPercent) / 100);
+  const threadCount = Math.max(1, Math.min(16, Math.max(1, budgetedThreads)));
   return `-mt${threadCount}`;
+}
+
+function lowerExtractProcessPriority(childPid: number | undefined): void {
+  if (process.platform !== "win32") {
+    return;
+  }
+  const pid = Number(childPid || 0);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return;
+  }
+  try {
+    os.setPriority(pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+  } catch {
+    // ignore: priority lowering is best-effort
+  }
 }
 
 type ExtractSpawnResult = {
@@ -439,6 +465,7 @@ function runExtractCommand(
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
+    lowerExtractProcessPriority(child.pid);
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
