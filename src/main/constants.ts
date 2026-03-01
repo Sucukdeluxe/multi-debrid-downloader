@@ -3,7 +3,7 @@ import os from "node:os";
 import { AppSettings } from "../shared/types";
 import packageJson from "../../package.json";
 
-export const APP_NAME = "Debrid Download Manager";
+export const APP_NAME = "Multi Debrid Downloader";
 export const APP_VERSION: string = packageJson.version;
 export const API_BASE_URL = "https://api.real-debrid.com/rest/1.0";
 
