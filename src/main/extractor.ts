@@ -1321,7 +1321,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         }
       }
 
-      if (failed === 0 && resumeCompleted.size >= allCandidates.length) {
+      if (failed === 0 && resumeCompleted.size >= allCandidates.length && !options.skipPostCleanup) {
         clearExtractResumeState(options.packageDir, options.packageId);
       }
 

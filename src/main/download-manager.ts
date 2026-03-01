@@ -4538,9 +4538,16 @@ export class DownloadManager extends EventEmitter {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
       }
 
+      // Mark all hybrid items with final status.
+      // Use completedItems (not just hybridItems) so that items not matched to any archive
+      // also get marked — this prevents the final full extraction from re-running.
       const updatedAt = nowMs();
-      for (const entry of hybridItems) {
-        if (/^Entpacken \(hybrid\)/i.test(entry.fullStatus || "")) {
+      const targetItems = result.extracted > 0 && result.failed === 0 ? completedItems : hybridItems;
+      for (const entry of targetItems) {
+        if (isExtractedLabel(entry.fullStatus)) {
+          continue;
+        }
+        if (/^Entpacken \(hybrid\)/i.test(entry.fullStatus || "") || /^Fertig\b/i.test(entry.fullStatus || "")) {
           if (result.extracted > 0 && result.failed === 0) {
             entry.fullStatus = "Entpackt";
           } else {
