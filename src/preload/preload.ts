@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AddLinksPayload, AppSettings, DuplicatePolicy, StartConflictEntry, StartConflictResolutionResult, UiSnapshot, UpdateCheckResult } from "../shared/types";
+import {
+  AddLinksPayload,
+  AppSettings,
+  DuplicatePolicy,
+  StartConflictEntry,
+  StartConflictResolutionResult,
+  UiSnapshot,
+  UpdateCheckResult,
+  UpdateInstallProgress
+} from "../shared/types";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
@@ -43,6 +52,13 @@ const api: ElectronApi = {
     ipcRenderer.on(IPC_CHANNELS.CLIPBOARD_DETECTED, listener);
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.CLIPBOARD_DETECTED, listener);
+    };
+  },
+  onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void): (() => void) => {
+    const listener = (_event: unknown, progress: UpdateInstallProgress): void => callback(progress);
+    ipcRenderer.on(IPC_CHANNELS.UPDATE_INSTALL_PROGRESS, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_INSTALL_PROGRESS, listener);
     };
   }
 };

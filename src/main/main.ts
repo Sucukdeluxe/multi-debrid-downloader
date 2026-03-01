@@ -1,6 +1,6 @@
 import path from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, shell, Tray } from "electron";
-import { AddLinksPayload, AppSettings } from "../shared/types";
+import { AddLinksPayload, AppSettings, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { logger } from "./logger";
@@ -224,7 +224,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.GET_VERSION, () => controller.getVersion());
   ipcMain.handle(IPC_CHANNELS.CHECK_UPDATES, async () => controller.checkUpdates());
   ipcMain.handle(IPC_CHANNELS.INSTALL_UPDATE, async () => {
-    const result = await controller.installUpdate();
+    const result = await controller.installUpdate((progress: UpdateInstallProgress) => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        return;
+      }
+      mainWindow.webContents.send(IPC_CHANNELS.UPDATE_INSTALL_PROGRESS, progress);
+    });
     if (result.started) {
       setTimeout(() => {
         app.quit();

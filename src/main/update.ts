@@ -7,8 +7,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { APP_VERSION, DEFAULT_UPDATE_REPO } from "./constants";
-import { UpdateCheckResult, UpdateInstallResult } from "../shared/types";
-import { compactErrorText } from "./utils";
+import { UpdateCheckResult, UpdateInstallProgress, UpdateInstallResult } from "../shared/types";
+import { compactErrorText, humanSize } from "./utils";
 import { logger } from "./logger";
 
 const RELEASE_FETCH_TIMEOUT_MS = 12000;
@@ -27,6 +27,19 @@ type ReleaseAsset = {
   browser_download_url: string;
   digest: string;
 };
+
+type UpdateProgressCallback = (progress: UpdateInstallProgress) => void;
+
+function safeEmitProgress(onProgress: UpdateProgressCallback | undefined, progress: UpdateInstallProgress): void {
+  if (!onProgress) {
+    return;
+  }
+  try {
+    onProgress(progress);
+  } catch {
+    // ignore renderer callback errors
+  }
+}
 
 export function normalizeUpdateRepo(repo: string): string {
   const raw = String(repo || "").trim();
@@ -401,7 +414,7 @@ export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult
   }
 }
 
-async function downloadFile(url: string, targetPath: string): Promise<void> {
+async function downloadFile(url: string, targetPath: string, onProgress?: UpdateProgressCallback): Promise<void> {
   const shutdownSignal = activeUpdateAbortController?.signal;
   if (shutdownSignal?.aborted) {
     throw new Error("aborted:update_shutdown");
@@ -423,6 +436,34 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
   if (!response.ok || !response.body) {
     throw new Error(`Update Download fehlgeschlagen (HTTP ${response.status})`);
   }
+
+  const totalBytesRaw = Number(response.headers.get("content-length") || NaN);
+  const totalBytes = Number.isFinite(totalBytesRaw) && totalBytesRaw > 0
+    ? Math.max(0, Math.floor(totalBytesRaw))
+    : null;
+  let downloadedBytes = 0;
+  let lastProgressAt = 0;
+  const emitDownloadProgress = (force: boolean): void => {
+    const now = Date.now();
+    if (!force && now - lastProgressAt < 160) {
+      return;
+    }
+    lastProgressAt = now;
+    const percent = totalBytes && totalBytes > 0
+      ? Math.max(0, Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)))
+      : null;
+    const message = totalBytes && percent !== null
+      ? `Update wird heruntergeladen: ${percent}% (${humanSize(downloadedBytes)} / ${humanSize(totalBytes)})`
+      : `Update wird heruntergeladen (${humanSize(downloadedBytes)})`;
+    safeEmitProgress(onProgress, {
+      stage: "downloading",
+      percent,
+      downloadedBytes,
+      totalBytes,
+      message
+    });
+  };
+  emitDownloadProgress(true);
 
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   const source = Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>);
@@ -448,8 +489,10 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
     idleTimer = setTimeout(onIdleTimeout, idleTimeoutMs);
   };
 
-  const onSourceData = (): void => {
+  const onSourceData = (chunk: string | Buffer): void => {
+    downloadedBytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
     resetIdleTimer();
+    emitDownloadProgress(false);
   };
   const onSourceDone = (): void => {
     clearIdleTimer();
@@ -488,6 +531,7 @@ async function downloadFile(url: string, targetPath: string): Promise<void> {
     target.off("close", onSourceDone);
     target.off("error", onSourceDone);
   }
+  emitDownloadProgress(true);
   logger.info(`Update-Download abgeschlossen: ${targetPath}`);
 }
 
@@ -516,7 +560,7 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-async function downloadWithRetries(url: string, targetPath: string): Promise<void> {
+async function downloadWithRetries(url: string, targetPath: string, onProgress?: UpdateProgressCallback): Promise<void> {
   const shutdownSignal = activeUpdateAbortController?.signal;
   let lastError: unknown;
   for (let attempt = 1; attempt <= RETRIES_PER_CANDIDATE; attempt += 1) {
@@ -524,7 +568,7 @@ async function downloadWithRetries(url: string, targetPath: string): Promise<voi
       throw new Error("aborted:update_shutdown");
     }
     try {
-      await downloadFile(url, targetPath);
+      await downloadFile(url, targetPath, onProgress);
       return;
     } catch (error) {
       lastError = error;
@@ -544,7 +588,7 @@ async function downloadWithRetries(url: string, targetPath: string): Promise<voi
   throw lastError;
 }
 
-async function downloadFromCandidates(candidates: string[], targetPath: string): Promise<void> {
+async function downloadFromCandidates(candidates: string[], targetPath: string, onProgress?: UpdateProgressCallback): Promise<void> {
   const shutdownSignal = activeUpdateAbortController?.signal;
   let lastError: unknown = new Error("Update Download fehlgeschlagen");
 
@@ -554,8 +598,15 @@ async function downloadFromCandidates(candidates: string[], targetPath: string):
       throw new Error("aborted:update_shutdown");
     }
     const candidate = candidates[index];
+    safeEmitProgress(onProgress, {
+      stage: "downloading",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: `Update-Download: Quelle ${index + 1}/${candidates.length}`
+    });
     try {
-      await downloadWithRetries(candidate, targetPath);
+      await downloadWithRetries(candidate, targetPath, onProgress);
       return;
     } catch (error) {
       lastError = error;
@@ -570,8 +621,19 @@ async function downloadFromCandidates(candidates: string[], targetPath: string):
   throw lastError;
 }
 
-export async function installLatestUpdate(repo: string, prechecked?: UpdateCheckResult): Promise<UpdateInstallResult> {
+export async function installLatestUpdate(
+  repo: string,
+  prechecked?: UpdateCheckResult,
+  onProgress?: UpdateProgressCallback
+): Promise<UpdateInstallResult> {
   if (activeUpdateAbortController && !activeUpdateAbortController.signal.aborted) {
+    safeEmitProgress(onProgress, {
+      stage: "error",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Update-Download läuft bereits"
+    });
     return { started: false, message: "Update-Download läuft bereits" };
   }
   const updateAbortController = new AbortController();
@@ -583,9 +645,23 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
     : await checkGitHubUpdate(safeRepo);
 
   if (check.error) {
+    safeEmitProgress(onProgress, {
+      stage: "error",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: check.error
+    });
     return { started: false, message: check.error };
   }
   if (!check.updateAvailable) {
+    safeEmitProgress(onProgress, {
+      stage: "error",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Kein neues Update verfügbar"
+    });
     return { started: false, message: "Kein neues Update verfügbar" };
   }
 
@@ -617,14 +693,35 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
   const targetPath = path.join(os.tmpdir(), "rd-update", `${Date.now()}-${process.pid}-${crypto.randomUUID()}-${fileName}`);
 
   try {
+    safeEmitProgress(onProgress, {
+      stage: "starting",
+      percent: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Update wird vorbereitet"
+    });
     if (updateAbortController.signal.aborted) {
       throw new Error("aborted:update_shutdown");
     }
-    await downloadFromCandidates(candidates, targetPath);
+    await downloadFromCandidates(candidates, targetPath, onProgress);
     if (updateAbortController.signal.aborted) {
       throw new Error("aborted:update_shutdown");
     }
+    safeEmitProgress(onProgress, {
+      stage: "verifying",
+      percent: 100,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Prüfe Installer-Integrität"
+    });
     await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
+    safeEmitProgress(onProgress, {
+      stage: "launching",
+      percent: 100,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Starte Update-Installer"
+    });
     const child = spawn(targetPath, [], {
       detached: true,
       stdio: "ignore"
@@ -633,6 +730,13 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
       logger.error(`Update-Installer Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
     });
     child.unref();
+    safeEmitProgress(onProgress, {
+      stage: "done",
+      percent: 100,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Update-Installer gestartet"
+    });
     return { started: true, message: "Update-Installer gestartet" };
   } catch (error) {
     try {
@@ -642,7 +746,15 @@ export async function installLatestUpdate(repo: string, prechecked?: UpdateCheck
     }
     const releaseUrl = String(effectiveCheck.releaseUrl || "").trim();
     const hint = releaseUrl ? ` – Manuell: ${releaseUrl}` : "";
-    return { started: false, message: `${compactErrorText(error)}${hint}` };
+    const message = `${compactErrorText(error)}${hint}`;
+    safeEmitProgress(onProgress, {
+      stage: "error",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message
+    });
+    return { started: false, message };
   } finally {
     if (activeUpdateAbortController === updateAbortController) {
       activeUpdateAbortController = null;

@@ -9,6 +9,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot,
   UpdateCheckResult,
+  UpdateInstallProgress,
   UpdateInstallResult
 } from "../shared/types";
 import { importDlcContainers } from "./container";
@@ -139,12 +140,12 @@ export class AppController {
     return result;
   }
 
-  public async installUpdate(): Promise<UpdateInstallResult> {
+  public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
     const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
     const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000
       ? this.lastUpdateCheck
       : undefined;
-    const result = await installLatestUpdate(this.settings.updateRepo, cached);
+    const result = await installLatestUpdate(this.settings.updateRepo, cached, onProgress);
     if (result.started) {
       this.lastUpdateCheck = null;
       this.lastUpdateCheckAt = 0;

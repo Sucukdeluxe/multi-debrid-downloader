@@ -11,7 +11,8 @@ import type {
   PackageEntry,
   StartConflictEntry,
   UiSnapshot,
-  UpdateCheckResult
+  UpdateCheckResult,
+  UpdateInstallProgress
 } from "../shared/types";
 
 type Tab = "collector" | "downloads" | "settings";
@@ -149,11 +150,34 @@ function parseMbpsInput(value: string): number | null {
   return parsed;
 }
 
+function formatUpdateInstallProgress(progress: UpdateInstallProgress): string {
+  if (progress.stage === "downloading") {
+    if (progress.totalBytes && progress.totalBytes > 0 && progress.percent !== null) {
+      return `Update-Download: ${progress.percent}% (${humanSize(progress.downloadedBytes)} / ${humanSize(progress.totalBytes)})`;
+    }
+    return `Update-Download: ${humanSize(progress.downloadedBytes)}`;
+  }
+  if (progress.stage === "starting") {
+    return "Update wird vorbereitet...";
+  }
+  if (progress.stage === "verifying") {
+    return "Download fertig | Prüfe Integrität...";
+  }
+  if (progress.stage === "launching") {
+    return "Starte Installer...";
+  }
+  if (progress.stage === "done") {
+    return "Installer gestartet";
+  }
+  return `Update-Fehler: ${progress.message}`;
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [appVersion, setAppVersion] = useState("");
   const [tab, setTab] = useState<Tab>("collector");
   const [statusToast, setStatusToast] = useState("");
+  const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
@@ -266,6 +290,7 @@ export function App(): ReactElement {
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
+    let unsubUpdateInstallProgress: (() => void) | null = null;
     void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
     void window.rd.getSnapshot().then((state) => {
       if (!mountedRef.current) {
@@ -327,6 +352,12 @@ export function App(): ReactElement {
         return prev.map((t) => t.id === active.id ? { ...t, text: newText } : t);
       });
     });
+    unsubUpdateInstallProgress = window.rd.onUpdateInstallProgress((progress) => {
+      if (!mountedRef.current) {
+        return;
+      }
+      setUpdateInstallProgress(progress);
+    });
     return () => {
       mountedRef.current = false;
       if (stateFlushTimerRef.current) { clearTimeout(stateFlushTimerRef.current); }
@@ -349,6 +380,7 @@ export function App(): ReactElement {
       }
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
+      if (unsubUpdateInstallProgress) { unsubUpdateInstallProgress(); }
     };
   }, [clearImportQueueFocusListener]);
 
@@ -535,6 +567,7 @@ export function App(): ReactElement {
       return;
     }
     if (!result.updateAvailable) {
+      setUpdateInstallProgress(null);
       if (source === "manual") { showToast(`Kein Update verfügbar (v${result.currentVersion})`, 2000); }
       return;
     }
@@ -547,11 +580,25 @@ export function App(): ReactElement {
       return;
     }
     if (!approved) { showToast(`Update verfügbar: ${result.latestTag}`, 2600); return; }
+    setUpdateInstallProgress({
+      stage: "starting",
+      percent: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Update wird vorbereitet"
+    });
     const install = await window.rd.installUpdate();
     if (!mountedRef.current) {
       return;
     }
     if (install.started) { showToast("Updater gestartet - App wird geschlossen", 2600); return; }
+    setUpdateInstallProgress({
+      stage: "error",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: install.message
+    });
     showToast(`Auto-Update fehlgeschlagen: ${install.message}`, 3200);
   };
 
@@ -567,6 +614,7 @@ export function App(): ReactElement {
 
   const onCheckUpdates = async (): Promise<void> => {
     await performQuickAction(async () => {
+      setUpdateInstallProgress(null);
       const result = await window.rd.checkUpdates();
       await handleUpdateResult(result, "manual");
     }, (error) => {
@@ -1153,13 +1201,11 @@ export function App(): ReactElement {
         <div className="title-block">
           <h1>Multi Debrid Downloader{appVersion ? ` - v${appVersion}` : ""}</h1>
         </div>
-        <div className="metrics">
-          <div>{snapshot.speedText}</div>
-          <div>{snapshot.etaText}</div>
-          {snapshot.reconnectSeconds > 0 && (
+        {snapshot.reconnectSeconds > 0 && (
+          <div className="metrics">
             <div className="reconnect-badge">Reconnect: {snapshot.reconnectSeconds}s</div>
-          )}
-        </div>
+          </div>
+        )}
       </header>
 
       <section className="control-strip">
@@ -1219,6 +1265,7 @@ export function App(): ReactElement {
                   <button className="btn accent" disabled={actionBusy} onClick={onAddLinks}>Zur Queue hinzufügen</button>
                 </div>
               </div>
+              <div className="collector-metrics">{snapshot.speedText} | {snapshot.etaText}</div>
               <div className="collector-tabs">
                 {collectorTabs.map((ct) => (
                   <div key={ct.id} className={`collector-tab${ct.id === activeCollectorTab ? " active" : ""}`}>
@@ -1342,19 +1389,26 @@ export function App(): ReactElement {
                 <h3>Einstellungen</h3>
                 <span>Kompakt, schnell auffindbar und direkt speicherbar.</span>
               </div>
-              <div className="settings-toolbar-actions">
-                <button className="btn" disabled={actionBusy} onClick={onCheckUpdates}>Updates prüfen</button>
-                <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
-                  const next = settingsDraft.theme === "dark" ? "light" : "dark";
-                  settingsDraftRevisionRef.current += 1;
-                  settingsDirtyRef.current = true;
-                  setSettingsDirty(true);
-                  setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
-                  applyTheme(next as AppTheme);
-                }}>
-                  {settingsDraft.theme === "dark" ? "Light Mode" : "Dark Mode"}
-                </button>
-                <button className="btn accent" disabled={actionBusy} onClick={onSaveSettings}>Einstellungen speichern</button>
+              <div className="settings-toolbar-actions-wrap">
+                <div className="settings-toolbar-actions">
+                  <button className="btn" disabled={actionBusy} onClick={onCheckUpdates}>Updates prüfen</button>
+                  <button className={`btn${settingsDraft.theme === "light" ? " btn-active" : ""}`} onClick={() => {
+                    const next = settingsDraft.theme === "dark" ? "light" : "dark";
+                    settingsDraftRevisionRef.current += 1;
+                    settingsDirtyRef.current = true;
+                    setSettingsDirty(true);
+                    setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
+                    applyTheme(next as AppTheme);
+                  }}>
+                    {settingsDraft.theme === "dark" ? "Light Mode" : "Dark Mode"}
+                  </button>
+                  <button className="btn accent" disabled={actionBusy} onClick={onSaveSettings}>Einstellungen speichern</button>
+                </div>
+                {updateInstallProgress && (
+                  <div className={`update-install-progress update-install-progress-${updateInstallProgress.stage}`}>
+                    {formatUpdateInstallProgress(updateInstallProgress)}
+                  </div>
+                )}
               </div>
             </article>
 

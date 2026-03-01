@@ -6,6 +6,7 @@ import type {
   StartConflictResolutionResult,
   UiSnapshot,
   UpdateCheckResult,
+  UpdateInstallProgress,
   UpdateInstallResult
 } from "./types";
 
@@ -36,4 +37,5 @@ export interface ElectronApi {
   pickContainers: () => Promise<string[]>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
+  onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;
 }

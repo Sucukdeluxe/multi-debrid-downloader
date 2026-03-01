@@ -212,6 +212,14 @@ export interface UpdateInstallResult {
   message: string;
 }
 
+export interface UpdateInstallProgress {
+  stage: "starting" | "downloading" | "verifying" | "launching" | "done" | "error";
+  percent: number | null;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  message: string;
+}
+
 export interface ParsedHashEntry {
   fileName: string;
   algorithm: "crc32" | "md5" | "sha1";
