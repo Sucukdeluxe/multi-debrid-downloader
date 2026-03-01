@@ -290,11 +290,61 @@ const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z
 const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:[._\-\s]|$)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
+const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
 const SCENE_PART_TOKEN_RE = /(?:^|[._\-\s])(?:teil|part)\s*0*(\d{1,3})(?=[._\-\s]|$)/i;
 const SCENE_COMPACT_EPISODE_CODE_RE = /(?:^|[._\-\s])(\d{3,4})(?=$|[._\-\s])/;
 const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
+const SCENE_GROUP_SUFFIX_FALLBACK_RE = /-([A-Za-z0-9]{2,})$/;
+const SCENE_NON_GROUP_SUFFIXES = new Set([
+  "x264",
+  "x265",
+  "h264",
+  "h265",
+  "avc",
+  "hevc",
+  "web",
+  "webrip",
+  "webdl",
+  "bluray",
+  "bdrip",
+  "hdtv",
+  "dvdrip",
+  "remux"
+]);
+
+function hasSceneGroupSuffix(fileName: string): boolean {
+  const text = String(fileName || "").trim();
+  if (!text) {
+    return false;
+  }
+
+  if (SCENE_GROUP_SUFFIX_RE.test(text)) {
+    return true;
+  }
+
+  const fallbackMatch = text.match(SCENE_GROUP_SUFFIX_FALLBACK_RE);
+  const suffix = String(fallbackMatch?.[1] || "").trim();
+  if (!suffix) {
+    return false;
+  }
+
+  const lower = suffix.toLowerCase();
+  if (SCENE_NON_GROUP_SUFFIXES.has(lower)) {
+    return false;
+  }
+  if (/^\d+p$/.test(lower) || /^\d+$/.test(lower)) {
+    return false;
+  }
+  if (/^\d/.test(suffix)) {
+    return false;
+  }
+  if (/4s(?:f|j)/i.test(suffix) && !/^(?:4sf|4sj)$/i.test(suffix)) {
+    return false;
+  }
+  return /[a-z]/i.test(suffix);
+}
 
 export function extractEpisodeToken(fileName: string): string | null {
   const match = String(fileName || "").match(SCENE_EPISODE_RE);
@@ -338,6 +388,18 @@ function extractPartEpisodeNumber(fileName: string): number | null {
   }
   const episode = Number(match[1]);
   if (!Number.isFinite(episode) || episode <= 0) {
+    return null;
+  }
+  return episode;
+}
+
+function extractEpisodeOnlyNumber(fileName: string): number | null {
+  const match = String(fileName || "").match(SCENE_EPISODE_ONLY_RE);
+  if (!match?.[1]) {
+    return null;
+  }
+  const episode = Number(match[1]);
+  if (!Number.isFinite(episode) || episode <= 0 || episode > 999) {
     return null;
   }
   return episode;
@@ -407,6 +469,15 @@ function resolveEpisodeTokenForAutoRename(sourceFileName: string, folderNames: s
   const seasonTokenHint = extractSeasonToken(sourceFileName)
     ?? folderNames.map((folderName) => extractSeasonToken(folderName)).find(Boolean)
     ?? null;
+  const episodeOnly = extractEpisodeOnlyNumber(sourceFileName)
+    ?? folderNames.map((folderName) => extractEpisodeOnlyNumber(folderName)).find((value) => Number.isFinite(value) && (value as number) > 0)
+    ?? null;
+  if (seasonTokenHint && episodeOnly) {
+    return {
+      token: `${seasonTokenHint}E${String(episodeOnly).padStart(2, "0")}`,
+      fromPart: false
+    };
+  }
   const seasonHint = seasonTokenHint ? Number(seasonTokenHint.slice(1)) : null;
   const compactEpisode = extractCompactEpisodeToken(sourceFileName, seasonHint);
   if (compactEpisode) {
@@ -493,7 +564,7 @@ export function buildAutoRenameBaseName(folderName: string, sourceFileName: stri
   }
 
   const isLegacy4sf4sjFolder = SCENE_RELEASE_FOLDER_RE.test(normalizedFolderName);
-  const isSceneGroupFolder = SCENE_GROUP_SUFFIX_RE.test(normalizedFolderName);
+  const isSceneGroupFolder = hasSceneGroupSuffix(normalizedFolderName);
   if (!isLegacy4sf4sjFolder && !isSceneGroupFolder) {
     return null;
   }
@@ -551,7 +622,7 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
     }
 
     let target = buildAutoRenameBaseName(folderName, normalizedSourceFileName);
-    if (!target && resolvedEpisode && SCENE_GROUP_SUFFIX_RE.test(folderName) && (folderHasSeason || folderHasEpisode)) {
+    if (!target && resolvedEpisode && hasSceneGroupSuffix(folderName) && (folderHasSeason || folderHasEpisode)) {
       target = applyEpisodeTokenToFolderName(folderName, resolvedEpisode.token);
     }
     if (!target) {
@@ -560,14 +631,14 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
 
     if (resolvedEpisode
       && forceEpisodeForSeasonFolder
-      && SCENE_GROUP_SUFFIX_RE.test(target)
+      && hasSceneGroupSuffix(target)
       && !extractEpisodeToken(target)
       && SCENE_SEASON_ONLY_RE.test(target)) {
       target = applyEpisodeTokenToFolderName(target, resolvedEpisode.token);
     }
 
     if (resolvedEpisode?.fromPart
-      && SCENE_GROUP_SUFFIX_RE.test(target)
+      && hasSceneGroupSuffix(target)
       && !extractEpisodeToken(target)
       && SCENE_SEASON_ONLY_RE.test(target)) {
       target = applyEpisodeTokenToFolderName(target, resolvedEpisode.token);
@@ -1153,31 +1224,61 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "skip") {
+      let hadPendingItems = false;
       for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          hadPendingItems = true;
+        }
+
         const active = this.activeTasks.get(itemId);
         if (active) {
-          active.abortReason = "cancel";
-          active.abortController.abort("cancel");
+          active.abortReason = "package_toggle";
+          active.abortController.abort("package_toggle");
         }
-        this.releaseTargetPath(itemId);
-        this.runItemIds.delete(itemId);
-        this.runOutcomes.delete(itemId);
-        this.itemContributedBytes.delete(itemId);
+
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.lastError = "";
+          item.fullStatus = "Wartet";
+          item.updatedAt = nowMs();
+        }
+
+        if (!this.session.running) {
+          this.runItemIds.delete(itemId);
+          this.runOutcomes.delete(itemId);
+        }
+
         this.retryAfterByItem.delete(itemId);
-        delete this.session.items[itemId];
-        this.itemCount = Math.max(0, this.itemCount - 1);
+        this.retryStateByItem.delete(itemId);
       }
+
       const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
       if (postProcessController && !postProcessController.signal.aborted) {
-        postProcessController.abort("cancel");
+        postProcessController.abort("skip");
       }
       this.packagePostProcessAbortControllers.delete(packageId);
       this.packagePostProcessTasks.delete(packageId);
-      delete this.session.packages[packageId];
-      this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
-      this.runPackageIds.delete(packageId);
-      this.runCompletedPackages.delete(packageId);
       this.hybridExtractRequeue.delete(packageId);
+
+      if (!this.session.running) {
+        this.runPackageIds.delete(packageId);
+      }
+      this.runCompletedPackages.delete(packageId);
+
+      const items = pkg.itemIds
+        .map((itemId) => this.session.items[itemId])
+        .filter(Boolean) as DownloadItem[];
+      const hasPendingNow = items.some((item) => item.status === "queued" || item.status === "reconnect_wait");
+      if (hadPendingItems || hasPendingNow) {
+        pkg.status = pkg.enabled ? "queued" : "paused";
+      }
+      pkg.updatedAt = nowMs();
+
       this.persistSoon();
       this.emitState(true);
       return { skipped: true, overwritten: false };
@@ -1661,7 +1762,7 @@ export class DownloadManager extends EventEmitter {
       .map((value) => String(value || "").trim())
       .filter((value) => value.length > 0);
     const fallbackTemplate = [...normalizedCandidates].reverse().find((folderName) => {
-      return SCENE_GROUP_SUFFIX_RE.test(folderName) && Boolean(extractSeasonToken(folderName));
+      return hasSceneGroupSuffix(folderName) && Boolean(extractSeasonToken(folderName));
     }) || "";
     if (!fallbackTemplate) {
       return null;

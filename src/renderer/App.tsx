@@ -1897,6 +1897,7 @@ export function App(): ReactElement {
             <p>
               <strong>{startConflictPrompt.entry.packageName}</strong> ist im Ziel bereits vorhanden.
             </p>
+            <p>Bei "Überspringen" wird nur das erneute Entpacken übersprungen - offene Downloads bleiben in der Queue.</p>
             <p className="modal-path" title={startConflictPrompt.entry.extractDir}>{startConflictPrompt.entry.extractDir}</p>
             <label className="toggle-line">
               <input
@@ -1915,7 +1916,7 @@ export function App(): ReactElement {
                 className="btn"
                 onClick={() => closeStartConflictPrompt({ policy: "skip", applyToAll: startConflictPrompt.applyToAll })}
               >
-                Überspringen
+                Entpacktes überspringen
               </button>
               <button
                 className="btn danger"

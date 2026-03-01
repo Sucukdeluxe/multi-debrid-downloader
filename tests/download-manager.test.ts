@@ -1910,8 +1910,104 @@ describe("download manager", () => {
 
     const result = await manager.resolveStartConflict(packageId, "skip");
     expect(result.skipped).toBe(true);
-    expect(manager.getSnapshot().session.packages[packageId]).toBeUndefined();
-    expect(manager.getSnapshot().session.items[itemId]).toBeUndefined();
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]).toBeDefined();
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+    expect(snapshot.session.items[itemId]).toBeDefined();
+    expect(snapshot.session.items[itemId]?.status).toBe("queued");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Wartet");
+  });
+
+  it("keeps already completed items when skipping start conflict", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageId = "skip-partial-pkg";
+    const completedItemId = "skip-partial-completed";
+    const pendingItemId = "skip-partial-pending";
+    const now = Date.now() - 5000;
+    const outputDir = path.join(root, "downloads", "skip-partial");
+    const extractDir = path.join(root, "extract", "skip-partial");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "existing.mkv"), "x", "utf8");
+    const completedTarget = path.join(outputDir, "skip-partial.part01.rar");
+    fs.writeFileSync(completedTarget, "part", "utf8");
+
+    const session = emptySession();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "skip-partial",
+      outputDir,
+      extractDir,
+      status: "queued",
+      itemIds: [completedItemId, pendingItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[completedItemId] = {
+      id: completedItemId,
+      packageId,
+      url: "https://dummy/skip-partial/completed",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: "skip-partial.part01.rar",
+      targetPath: completedTarget,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt",
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[pendingItemId] = {
+      id: pendingItemId,
+      packageId,
+      url: "https://dummy/skip-partial/pending",
+      provider: null,
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "skip-partial.part02.rar",
+      targetPath: path.join(outputDir, "skip-partial.part02.rar"),
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const result = await manager.resolveStartConflict(packageId, "skip");
+    expect(result.skipped).toBe(true);
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]).toBeDefined();
+    expect(snapshot.session.items[completedItemId]?.status).toBe("completed");
+    expect(snapshot.session.items[completedItemId]?.fullStatus).toBe("Entpackt");
+    expect(snapshot.session.items[pendingItemId]?.status).toBe("queued");
+    expect(snapshot.session.items[pendingItemId]?.fullStatus).toBe("Wartet");
   });
 
   it("resolves start conflict by overwriting and resetting queued package", async () => {
