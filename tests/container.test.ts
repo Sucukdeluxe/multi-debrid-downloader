@@ -78,4 +78,43 @@ describe("container", () => {
     // Should have tried both!
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
+
+  it("falls back to dcrypt when local decryption throws invalid padding", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "invalid-local.dlc");
+    fs.writeFileSync(filePath, "X".repeat(120));
+
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes("service.jdownloader.org")) {
+        return new Response(`<rc>${Buffer.alloc(16).toString("base64")}</rc>`, { status: 200 });
+      }
+      return new Response("http://example.com/fallback1", { status: 200 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const result = await importDlcContainers([filePath]);
+    expect(result).toHaveLength(1);
+    expect(result[0].links).toEqual(["http://example.com/fallback1"]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws clear error when all dlc imports fail", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "broken.dlc");
+    fs.writeFileSync(filePath, Buffer.from("not a valid dlc payload at all"));
+
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes("service.jdownloader.org")) {
+        return new Response("", { status: 404 });
+      }
+      return new Response("upstream failure", { status: 500 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await expect(importDlcContainers([filePath])).rejects.toThrow(/DLC konnte nicht importiert werden/i);
+  });
 });
