@@ -94,24 +94,60 @@ function parsePackagesFromDlcXml(xml: string): ParsedPackageInput[] {
     }
 
     const links: string[] = [];
-    const urlRegex = /<url>(.*?)<\/url>/gi;
-    for (let um = urlRegex.exec(packageBody); um; um = urlRegex.exec(packageBody)) {
+    const fileNames: string[] = [];
+    const fileRegex = /<file>([\s\S]*?)<\/file>/gi;
+    for (let fm = fileRegex.exec(packageBody); fm; fm = fileRegex.exec(packageBody)) {
+      const fileBody = fm[1] || "";
+      const urlMatch = fileBody.match(/<url>(.*?)<\/url>/i);
+      if (!urlMatch) {
+        continue;
+      }
       try {
-        const url = Buffer.from((um[1] || "").trim(), "base64").toString("utf8").trim();
-        if (isHttpLink(url)) {
-          links.push(url);
+        const url = Buffer.from((urlMatch[1] || "").trim(), "base64").toString("utf8").trim();
+        if (!isHttpLink(url)) {
+          continue;
         }
+        let fileName = "";
+        const fnMatch = fileBody.match(/<filename>(.*?)<\/filename>/i);
+        if (fnMatch?.[1]) {
+          try {
+            fileName = Buffer.from(fnMatch[1].trim(), "base64").toString("utf8").trim();
+          } catch {
+            // ignore
+          }
+        }
+        links.push(url);
+        fileNames.push(sanitizeFilename(fileName));
       } catch {
         // skip broken entries
       }
     }
 
+    if (links.length === 0) {
+      const urlRegex = /<url>(.*?)<\/url>/gi;
+      for (let um = urlRegex.exec(packageBody); um; um = urlRegex.exec(packageBody)) {
+        try {
+          const url = Buffer.from((um[1] || "").trim(), "base64").toString("utf8").trim();
+          if (isHttpLink(url)) {
+            links.push(url);
+          }
+        } catch {
+          // skip broken entries
+        }
+      }
+    }
+
     const uniqueLinks = uniquePreserveOrder(links);
+    const hasFileNames = fileNames.some((fn) => fn.length > 0);
     if (uniqueLinks.length > 0) {
-      packages.push({
+      const pkg: ParsedPackageInput = {
         name: sanitizeFilename(packageName || inferPackageNameFromLinks(uniqueLinks) || `Paket-${packages.length + 1}`),
         links: uniqueLinks
-      });
+      };
+      if (hasFileNames) {
+        pkg.fileNames = fileNames;
+      }
+      packages.push(pkg);
     }
   }
 

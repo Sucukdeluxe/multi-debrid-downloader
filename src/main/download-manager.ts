@@ -974,9 +974,11 @@ export class DownloadManager extends EventEmitter {
         updatedAt: nowMs()
       };
 
-      for (const link of links) {
+      for (let linkIdx = 0; linkIdx < links.length; linkIdx += 1) {
+        const link = links[linkIdx];
         const itemId = uuidv4();
-        const fileName = filenameFromUrl(link);
+        const hintName = pkg.fileNames?.[linkIdx];
+        const fileName = (hintName && !looksLikeOpaqueFilename(hintName)) ? sanitizeFilename(hintName) : filenameFromUrl(link);
         const item: DownloadItem = {
           id: itemId,
           packageId,

@@ -150,6 +150,7 @@ function parseMbpsInput(value: string): number | null {
 
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
+  const [appVersion, setAppVersion] = useState("");
   const [tab, setTab] = useState<Tab>("collector");
   const [statusToast, setStatusToast] = useState("");
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
@@ -260,6 +261,7 @@ export function App(): ReactElement {
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
+    void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
     void window.rd.getSnapshot().then((state) => {
       if (!mountedRef.current) {
         return;
@@ -974,6 +976,27 @@ export function App(): ReactElement {
   }, []);
 
   const onPackageCancel = useCallback((packageId: string): void => {
+    setSnapshot((prev) => {
+      if (!prev) { return prev; }
+      const nextPackages = { ...prev.session.packages };
+      const nextItems = { ...prev.session.items };
+      const pkg = nextPackages[packageId];
+      if (pkg) {
+        for (const itemId of pkg.itemIds) {
+          delete nextItems[itemId];
+        }
+        delete nextPackages[packageId];
+      }
+      return {
+        ...prev,
+        session: {
+          ...prev.session,
+          packages: nextPackages,
+          items: nextItems,
+          packageOrder: prev.session.packageOrder.filter((id) => id !== packageId)
+        }
+      };
+    });
     void window.rd.cancelPackage(packageId).catch((error) => {
       showToast(`Paket-Löschung fehlgeschlagen: ${String(error)}`, 2400);
     });
@@ -994,6 +1017,32 @@ export function App(): ReactElement {
   }, [showToast]);
 
   const onPackageRemoveItem = useCallback((itemId: string): void => {
+    setSnapshot((prev) => {
+      if (!prev) { return prev; }
+      const item = prev.session.items[itemId];
+      if (!item) { return prev; }
+      const nextItems = { ...prev.session.items };
+      delete nextItems[itemId];
+      const nextPackages = { ...prev.session.packages };
+      const pkg = nextPackages[item.packageId];
+      if (pkg) {
+        const nextItemIds = pkg.itemIds.filter((id) => id !== itemId);
+        if (nextItemIds.length === 0) {
+          delete nextPackages[item.packageId];
+          return {
+            ...prev,
+            session: {
+              ...prev.session,
+              packages: nextPackages,
+              items: nextItems,
+              packageOrder: prev.session.packageOrder.filter((id) => id !== item.packageId)
+            }
+          };
+        }
+        nextPackages[item.packageId] = { ...pkg, itemIds: nextItemIds };
+      }
+      return { ...prev, session: { ...prev.session, packages: nextPackages, items: nextItems } };
+    });
     void window.rd.removeItem(itemId).catch((error) => {
       showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 2400);
     });
@@ -1097,7 +1146,7 @@ export function App(): ReactElement {
       <header className="top-header">
         <div className="header-spacer" />
         <div className="title-block">
-          <h1>Multi Debrid Downloader</h1>
+          <h1>Multi Debrid Downloader{appVersion ? ` v${appVersion}` : ""}</h1>
         </div>
         <div className="metrics">
           <div>{snapshot.speedText}</div>
