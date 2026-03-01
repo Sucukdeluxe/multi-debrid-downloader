@@ -80,6 +80,7 @@ describe("settings storage", () => {
       completedCleanupPolicy: "broken" as unknown as AppSettings["completedCleanupPolicy"],
       speedLimitMode: "broken" as unknown as AppSettings["speedLimitMode"],
       maxParallel: 0,
+      retryLimit: 999,
       reconnectWaitSeconds: 9999,
       speedLimitKbps: -1,
       outputDir: "   ",
@@ -96,6 +97,7 @@ describe("settings storage", () => {
     expect(normalized.completedCleanupPolicy).toBe("never");
     expect(normalized.speedLimitMode).toBe("global");
     expect(normalized.maxParallel).toBe(1);
+    expect(normalized.retryLimit).toBe(99);
     expect(normalized.reconnectWaitSeconds).toBe(600);
     expect(normalized.speedLimitKbps).toBe(0);
     expect(normalized.outputDir).toBe(defaultSettings().outputDir);
@@ -115,6 +117,7 @@ describe("settings storage", () => {
         providerPrimary: "not-valid",
         completedCleanupPolicy: "not-valid",
         maxParallel: "999",
+        retryLimit: "-3",
         reconnectWaitSeconds: "1",
         speedLimitMode: "not-valid",
         updateRepo: ""
@@ -126,6 +129,7 @@ describe("settings storage", () => {
     expect(loaded.providerPrimary).toBe("realdebrid");
     expect(loaded.completedCleanupPolicy).toBe("never");
     expect(loaded.maxParallel).toBe(50);
+    expect(loaded.retryLimit).toBe(0);
     expect(loaded.reconnectWaitSeconds).toBe(10);
     expect(loaded.speedLimitMode).toBe("global");
     expect(loaded.updateRepo).toBe(defaultSettings().updateRepo);
@@ -312,6 +316,7 @@ describe("settings storage", () => {
     const defaults = defaultSettings();
     expect(loaded.providerPrimary).toBe(defaults.providerPrimary);
     expect(loaded.maxParallel).toBe(defaults.maxParallel);
+    expect(loaded.retryLimit).toBe(defaults.retryLimit);
     expect(loaded.outputDir).toBe(defaults.outputDir);
     expect(loaded.cleanupMode).toBe(defaults.cleanupMode);
   });
@@ -420,6 +425,7 @@ describe("settings storage", () => {
     expect(loaded.speedLimitMode).toBe(defaults.speedLimitMode);
     expect(loaded.clipboardWatch).toBe(defaults.clipboardWatch);
     expect(loaded.minimizeToTray).toBe(defaults.minimizeToTray);
+    expect(loaded.retryLimit).toBe(defaults.retryLimit);
     expect(loaded.collectMkvToLibrary).toBe(defaults.collectMkvToLibrary);
     expect(loaded.mkvLibraryDir).toBe(defaults.mkvLibraryDir);
     expect(loaded.theme).toBe(defaults.theme);
