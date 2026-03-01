@@ -1832,6 +1832,115 @@ export class DownloadManager extends EventEmitter {
     this.renamePathWithExdevFallback(sourcePath, targetPath);
   }
 
+  private cleanupNonMkvResidualFiles(rootDir: string, targetDir: string): number {
+    if (!rootDir || !this.existsSyncSafe(rootDir)) {
+      return 0;
+    }
+
+    let removed = 0;
+    const stack = [rootDir];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          if (isPathInsideDir(fullPath, targetDir)) {
+            continue;
+          }
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+        const extension = path.extname(entry.name).toLowerCase();
+        if (extension === ".mkv") {
+          continue;
+        }
+        try {
+          fs.rmSync(toWindowsLongPathIfNeeded(fullPath), { force: true });
+          removed += 1;
+        } catch {
+          // ignore and keep file
+        }
+      }
+    }
+
+    return removed;
+  }
+
+  private cleanupRemainingArchiveArtifacts(packageDir: string): number {
+    if (this.settings.cleanupMode === "none") {
+      return 0;
+    }
+    const candidates = findArchiveCandidates(packageDir);
+    if (candidates.length === 0) {
+      return 0;
+    }
+
+    let removed = 0;
+    const dirFilesCache = new Map<string, string[]>();
+    const targets = new Set<string>();
+    for (const sourceFile of candidates) {
+      const dir = path.dirname(sourceFile);
+      let filesInDir = dirFilesCache.get(dir);
+      if (!filesInDir) {
+        try {
+          filesInDir = fs.readdirSync(dir, { withFileTypes: true })
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name);
+        } catch {
+          filesInDir = [];
+        }
+        dirFilesCache.set(dir, filesInDir);
+      }
+      for (const target of collectArchiveCleanupTargets(sourceFile, filesInDir)) {
+        targets.add(target);
+      }
+    }
+
+    for (const targetPath of targets) {
+      try {
+        if (!this.existsSyncSafe(targetPath)) {
+          continue;
+        }
+        if (this.settings.cleanupMode === "trash") {
+          const parsed = path.parse(targetPath);
+          const trashDir = path.join(parsed.dir, ".rd-trash");
+          fs.mkdirSync(trashDir, { recursive: true });
+          let moved = false;
+          for (let index = 0; index <= 1000; index += 1) {
+            const suffix = index === 0 ? "" : `-${index}`;
+            const candidate = path.join(trashDir, `${parsed.base}.${Date.now()}${suffix}`);
+            if (this.existsSyncSafe(candidate)) {
+              continue;
+            }
+            this.renamePathWithExdevFallback(targetPath, candidate);
+            moved = true;
+            break;
+          }
+          if (moved) {
+            removed += 1;
+          }
+          continue;
+        }
+        fs.rmSync(toWindowsLongPathIfNeeded(targetPath), { force: true });
+        removed += 1;
+      } catch {
+        // ignore
+      }
+    }
+
+    return removed;
+  }
+
   private buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): string {
     const parsed = path.parse(path.basename(sourcePath));
     const extension = parsed.ext || ".mkv";
@@ -1912,6 +2021,10 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (moved > 0 && fs.existsSync(sourceDir)) {
+      const removedResidual = this.cleanupNonMkvResidualFiles(sourceDir, targetDir);
+      if (removedResidual > 0) {
+        logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, entfernt=${removedResidual}`);
+      }
       const removedDirs = this.removeEmptyDirectoryTree(sourceDir);
       if (removedDirs > 0) {
         logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, entfernt=${removedDirs}`);
@@ -4488,7 +4601,15 @@ export class DownloadManager extends EventEmitter {
     } else {
       pkg.status = "completed";
     }
-    if (pkg.status === "completed") {
+
+    if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
+      const removedArchives = this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
+      if (removedArchives > 0) {
+        logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
+      }
+    }
+
+    if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
       this.collectMkvFilesToLibrary(packageId, pkg);
     }
     if (this.runPackageIds.has(packageId)) {
