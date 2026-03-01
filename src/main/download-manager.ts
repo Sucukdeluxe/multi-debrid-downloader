@@ -4737,4 +4737,79 @@ export class DownloadManager extends EventEmitter {
     this.persistNow();
     this.emitState();
   }
+
+  public getSessionStats(): import("../shared/types").SessionStats {
+    const now = nowMs();
+    this.pruneSpeedEvents(now);
+
+    const bandwidthSamples: import("../shared/types").BandwidthSample[] = [];
+    for (let i = this.speedEventsHead; i < this.speedEvents.length; i += 1) {
+      const event = this.speedEvents[i];
+      if (event) {
+        bandwidthSamples.push({
+          timestamp: event.at,
+          speedBps: event.bytes * 3
+        });
+      }
+    }
+
+    const paused = this.session.running && this.session.paused;
+    const currentSpeedBps = paused ? 0 : this.speedBytesLastWindow / 3;
+
+    let totalBytes = 0;
+    let maxSpeed = 0;
+    for (let i = this.speedEventsHead; i < this.speedEvents.length; i += 1) {
+      const event = this.speedEvents[i];
+      if (event) {
+        totalBytes += event.bytes;
+        const speed = event.bytes * 3;
+        if (speed > maxSpeed) {
+          maxSpeed = speed;
+        }
+      }
+    }
+
+    const sessionDurationSeconds = this.session.runStartedAt > 0
+      ? Math.max(0, Math.floor((now - this.session.runStartedAt) / 1000))
+      : 0;
+
+    const averageSpeedBps = sessionDurationSeconds > 0
+      ? Math.floor(this.session.totalDownloadedBytes / sessionDurationSeconds)
+      : 0;
+
+    let totalDownloads = 0;
+    let completedDownloads = 0;
+    let failedDownloads = 0;
+    let activeDownloads = 0;
+    let queuedDownloads = 0;
+
+    for (const item of Object.values(this.session.items)) {
+      totalDownloads += 1;
+      if (item.status === "completed") {
+        completedDownloads += 1;
+      } else if (item.status === "failed") {
+        failedDownloads += 1;
+      } else if (item.status === "downloading" || item.status === "validating") {
+        activeDownloads += 1;
+      } else if (item.status === "queued" || item.status === "reconnect_wait") {
+        queuedDownloads += 1;
+      }
+    }
+
+    return {
+      bandwidth: {
+        samples: bandwidthSamples.slice(-120),
+        currentSpeedBps: Math.floor(currentSpeedBps),
+        averageSpeedBps,
+        maxSpeedBps: Math.floor(maxSpeed),
+        totalBytesSession: this.session.totalDownloadedBytes,
+        sessionDurationSeconds
+      },
+      totalDownloads,
+      completedDownloads,
+      failedDownloads,
+      activeDownloads,
+      queuedDownloads
+    };
+  }
 }

@@ -362,6 +362,73 @@ describe("update", () => {
     expect(requestedUrls.some((url) => url.includes("latest.yml"))).toBe(true);
   });
 
+  it("rejects installer when latest.yml SHA512 digest does not match", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    const wrongDigestBase64 = Buffer.alloc(64, 0x13).toString("base64");
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url.endsWith("/releases/tags/v9.9.9")) {
+        return new Response(JSON.stringify({
+          tag_name: "v9.9.9",
+          draft: false,
+          prerelease: false,
+          assets: [
+            {
+              name: "Real-Debrid-Downloader Setup 9.9.9.exe",
+              browser_download_url: "https://example.invalid/setup-no-digest.exe"
+            },
+            {
+              name: "latest.yml",
+              browser_download_url: "https://example.invalid/latest.yml"
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (url.includes("latest.yml")) {
+        return new Response(
+          `version: 9.9.9\npath: Real-Debrid-Downloader Setup 9.9.9.exe\nsha512: ${wrongDigestBase64}\n`,
+          {
+            status: 200,
+            headers: { "Content-Type": "text/yaml" }
+          }
+        );
+      }
+
+      if (url.includes("setup-no-digest.exe")) {
+        return new Response(executablePayload, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(executablePayload.length)
+          }
+        });
+      }
+
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const prechecked: UpdateCheckResult = {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "v9.9.9",
+      releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "https://example.invalid/setup-no-digest.exe",
+      setupAssetName: "Real-Debrid-Downloader Setup 9.9.9.exe",
+      setupAssetDigest: ""
+    };
+
+    const result = await installLatestUpdate("owner/repo", prechecked);
+    expect(result.started).toBe(false);
+    expect(result.message).toMatch(/sha512|integrit|mismatch/i);
+  });
+
   it("emits install progress events while downloading and launching update", async () => {
     const executablePayload = fs.readFileSync(process.execPath);
     const digest = sha256Hex(executablePayload);

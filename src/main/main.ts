@@ -343,6 +343,7 @@ function registerIpcHandlers(): void {
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
   });
+  ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
 
   controller.onState = (snapshot) => {
     if (!mainWindow || mainWindow.isDestroyed()) {

@@ -15,7 +15,7 @@ import type {
   UpdateInstallProgress
 } from "../shared/types";
 
-type Tab = "collector" | "downloads" | "settings";
+type Tab = "collector" | "downloads" | "statistics" | "settings";
 
 interface CollectorTab {
   id: string;
@@ -90,6 +90,186 @@ function humanSize(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
+
+interface BandwidthChartProps {
+  items: Record<string, DownloadItem>;
+  running: boolean;
+  paused: boolean;
+}
+
+const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: BandwidthChartProps): ReactElement {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const speedHistoryRef = useRef<{ time: number; speed: number }[]>([]);
+  const lastUpdateRef = useRef<number>(0);
+  const [, forceUpdate] = useState(0);
+  const animationFrameRef = useRef<number>(0);
+
+  const drawChart = useCallback(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = `${rect.width}px`;
+    canvas.style.height = `${rect.height}px`;
+    ctx.scale(dpr, dpr);
+
+    const width = rect.width;
+    const height = rect.height;
+    const padding = { top: 20, right: 20, bottom: 30, left: 60 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+
+    ctx.clearRect(0, 0, width, height);
+
+    const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+    const gridColor = isDark ? "rgba(35, 57, 84, 0.5)" : "rgba(199, 213, 234, 0.5)";
+    const textColor = isDark ? "#90a4bf" : "#4e6482";
+    const accentColor = isDark ? "#38bdf8" : "#1168d9";
+    const fillColor = isDark ? "rgba(56, 189, 248, 0.15)" : "rgba(17, 104, 217, 0.15)";
+
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 5; i += 1) {
+      const y = padding.top + (chartHeight / 5) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+    }
+
+    const history = speedHistoryRef.current;
+    const now = Date.now();
+    const maxTime = now;
+    const minTime = now - 60000;
+
+    let maxSpeed = 0;
+    for (const point of history) {
+      if (point.speed > maxSpeed) maxSpeed = point.speed;
+    }
+    maxSpeed = Math.max(maxSpeed, 1024 * 1024);
+    const niceMax = Math.pow(2, Math.ceil(Math.log2(maxSpeed)));
+
+    ctx.fillStyle = textColor;
+    ctx.font = "11px 'Manrope', sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+
+    for (let i = 0; i <= 5; i += 1) {
+      const y = padding.top + (chartHeight / 5) * i;
+      const speedVal = niceMax * (1 - i / 5);
+      ctx.fillText(formatSpeedMbps(speedVal), padding.left - 8, y);
+    }
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText("0s", padding.left, height - padding.bottom + 8);
+    ctx.fillText("30s", padding.left + chartWidth / 2, height - padding.bottom + 8);
+    ctx.fillText("60s", width - padding.right, height - padding.bottom + 8);
+
+    if (history.length < 2) {
+      ctx.fillStyle = textColor;
+      ctx.font = "13px 'Manrope', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(running ? (paused ? "Pausiert" : "Sammle Daten...") : "Download starten fur Statistiken", width / 2, height / 2);
+      return;
+    }
+
+    const points: { x: number; y: number }[] = [];
+    for (const point of history) {
+      const x = padding.left + ((point.time - minTime) / 60000) * chartWidth;
+      const y = padding.top + chartHeight - (point.speed / niceMax) * chartHeight;
+      points.push({ x, y });
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.lineTo(points[points.length - 1].x, padding.top + chartHeight);
+    ctx.lineTo(points[0].x, padding.top + chartHeight);
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.strokeStyle = accentColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const lastPoint = points[points.length - 1];
+    ctx.beginPath();
+    ctx.arc(lastPoint.x, lastPoint.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = accentColor;
+    ctx.fill();
+  }, [running, paused]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      if (now - lastUpdateRef.current >= 250) {
+        forceUpdate((n) => n + 1);
+      }
+    }, 250);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const now = Date.now();
+    const totalSpeed = Object.values(items)
+      .filter((item) => item.status === "downloading")
+      .reduce((sum, item) => sum + (item.speedBps || 0), 0);
+
+    const history = speedHistoryRef.current;
+    history.push({ time: now, speed: paused ? 0 : totalSpeed });
+
+    const cutoff = now - 60000;
+    while (history.length > 0 && history[0].time < cutoff) {
+      history.shift();
+    }
+
+    lastUpdateRef.current = now;
+  }, [items, paused]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      animationFrameRef.current = requestAnimationFrame(drawChart);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [drawChart]);
+
+  useEffect(() => {
+    drawChart();
+  }, [drawChart]);
+
+  return (
+    <div ref={containerRef} className="bandwidth-chart-container">
+      <canvas ref={canvasRef} />
+    </div>
+  );
+});
 
 let nextCollectorId = 1;
 
@@ -1249,6 +1429,7 @@ export function App(): ReactElement {
       <nav className="tabs">
         <button className={tab === "collector" ? "tab active" : "tab"} onClick={() => setTab("collector")}>Linksammler</button>
         <button className={tab === "downloads" ? "tab active" : "tab"} onClick={() => setTab("downloads")}>Downloads</button>
+        <button className={tab === "statistics" ? "tab active" : "tab"} onClick={() => setTab("statistics")}>Statistiken</button>
         <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>Einstellungen</button>
       </nav>
 
@@ -1379,6 +1560,88 @@ export function App(): ReactElement {
                 onDragEnd={onPackageDragEnd}
               />
             ))}
+          </section>
+        )}
+
+        {tab === "statistics" && (
+          <section className="statistics-view">
+            <article className="card stats-overview">
+              <h3>Session-Ubersicht</h3>
+              <div className="stats-grid">
+                <div className="stat-item">
+                  <span className="stat-label">Aktuelle Geschwindigkeit</span>
+                  <span className="stat-value">{snapshot.speedText.replace("Geschwindigkeit: ", "")}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Gesamt heruntergeladen</span>
+                  <span className="stat-value">{humanSize(snapshot.stats.totalDownloaded)}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Fertige Dateien</span>
+                  <span className="stat-value">{snapshot.stats.totalFiles}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Pakete</span>
+                  <span className="stat-value">{snapshot.stats.totalPackages}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Aktive Downloads</span>
+                  <span className="stat-value">{Object.values(snapshot.session.items).filter((item) => item.status === "downloading").length}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">In Warteschlange</span>
+                  <span className="stat-value">{Object.values(snapshot.session.items).filter((item) => item.status === "queued" || item.status === "reconnect_wait").length}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Fehlerhaft</span>
+                  <span className="stat-value danger">{Object.values(snapshot.session.items).filter((item) => item.status === "failed").length}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">{snapshot.etaText.split(": ")[0]}</span>
+                  <span className="stat-value">{snapshot.etaText.split(": ")[1] || "--"}</span>
+                </div>
+              </div>
+            </article>
+
+            <article className="card stats-chart-card">
+              <h3>Bandbreitenverlauf</h3>
+              <BandwidthChart items={snapshot.session.items} running={snapshot.session.running} paused={snapshot.session.paused} />
+            </article>
+
+            <article className="card stats-provider-card">
+              <h3>Provider-Statistik</h3>
+              <div className="provider-stats">
+                {Object.entries(
+                  Object.values(snapshot.session.items).reduce((acc, item) => {
+                    const provider = item.provider || "unknown";
+                    if (!acc[provider]) {
+                      acc[provider] = { total: 0, completed: 0, failed: 0, bytes: 0 };
+                    }
+                    acc[provider].total += 1;
+                    if (item.status === "completed") acc[provider].completed += 1;
+                    if (item.status === "failed") acc[provider].failed += 1;
+                    acc[provider].bytes += item.downloadedBytes;
+                    return acc;
+                  }, {} as Record<string, { total: number; completed: number; failed: number; bytes: number }>)
+                ).map(([provider, stats]) => (
+                  <div key={provider} className="provider-stat-item">
+                    <span className="provider-name">{provider === "unknown" ? "Unbekannt" : providerLabels[provider as DebridProvider] || provider}</span>
+                    <div className="provider-bars">
+                      <div className="provider-bar">
+                        <div className="bar-fill completed" style={{ width: `${stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}%` }} />
+                      </div>
+                    </div>
+                    <span className="provider-detail">
+                      {stats.completed}/{stats.total} fertig | {humanSize(stats.bytes)}
+                      {stats.failed > 0 && <span className="danger"> | {stats.failed} Fehler</span>}
+                    </span>
+                  </div>
+                ))}
+                {Object.keys(snapshot.session.items).length === 0 && (
+                  <div className="empty-provider">Noch keine Downloads vorhanden.</div>
+                )}
+              </div>
+            </article>
           </section>
         )}
 

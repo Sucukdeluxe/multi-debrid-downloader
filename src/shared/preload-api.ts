@@ -2,6 +2,7 @@ import type {
   AddLinksPayload,
   AppSettings,
   DuplicatePolicy,
+  SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
   UiSnapshot,
@@ -35,6 +36,7 @@ export interface ElectronApi {
   toggleClipboard: () => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
+  getSessionStats: () => Promise<SessionStats>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;
