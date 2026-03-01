@@ -16,7 +16,8 @@
     "start": "cross-env NODE_ENV=production electron .",
     "test": "vitest run",
     "self-check": "tsx tests/self-check.ts",
-    "release:win": "npm run build && electron-builder --publish never --win nsis portable"
+    "release:win": "npm run build && electron-builder --publish never --win nsis portable",
+    "release:codeberg": "node scripts/release_codeberg.mjs"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
