@@ -116,6 +116,22 @@ function getLowThroughputMinBytes(): number {
   return DEFAULT_LOW_THROUGHPUT_MIN_BYTES;
 }
 
+function normalizeRetryLimit(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return REQUEST_RETRIES;
+  }
+  return Math.max(0, Math.min(99, Math.floor(num)));
+}
+
+function retryLimitLabel(retryLimit: number): string {
+  return retryLimit <= 0 ? "inf" : String(retryLimit);
+}
+
+function retryLimitToMaxRetries(retryLimit: number): number {
+  return retryLimit <= 0 ? Number.MAX_SAFE_INTEGER : retryLimit;
+}
+
 type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
 };
@@ -2975,8 +2991,13 @@ export class DownloadManager extends EventEmitter {
     active.stallRetries = retryState.stallRetries;
     active.genericErrorRetries = retryState.genericErrorRetries;
     active.unrestrictRetries = retryState.unrestrictRetries;
-    const maxGenericErrorRetries = Math.max(2, REQUEST_RETRIES);
-    const maxUnrestrictRetries = Math.max(3, REQUEST_RETRIES);
+    const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
+    const retryDisplayLimit = retryLimitLabel(configuredRetryLimit);
+    const maxItemRetries = retryLimitToMaxRetries(configuredRetryLimit);
+    const maxItemAttempts = configuredRetryLimit <= 0 ? Number.MAX_SAFE_INTEGER : maxItemRetries + 1;
+    const maxGenericErrorRetries = maxItemRetries;
+    const maxUnrestrictRetries = maxItemRetries;
+    const maxStallRetries = maxItemRetries;
     while (true) {
       try {
         const unrestrictTimeoutSignal = AbortSignal.timeout(getUnrestrictTimeoutMs());
@@ -3015,7 +3036,7 @@ export class DownloadManager extends EventEmitter {
         item.updatedAt = nowMs();
         this.emitState();
 
-        const maxAttempts = REQUEST_RETRIES;
+        const maxAttempts = maxItemAttempts;
         let done = false;
         while (!done && item.attempts < maxAttempts) {
           item.attempts += 1;
@@ -3170,11 +3191,11 @@ export class DownloadManager extends EventEmitter {
           const stallErrorText = compactErrorText(error);
           const isSlowThroughput = stallErrorText.includes("slow_throughput");
           active.stallRetries += 1;
-          if (active.stallRetries <= 2) {
+          if (active.stallRetries <= maxStallRetries) {
             item.retries += 1;
             const retryText = isSlowThroughput
-              ? `Zu wenig Datenfluss, Retry ${active.stallRetries}/2`
-              : `Keine Daten empfangen, Retry ${active.stallRetries}/2`;
+              ? `Zu wenig Datenfluss, Retry ${active.stallRetries}/${retryDisplayLimit}`
+              : `Keine Daten empfangen, Retry ${active.stallRetries}/${retryDisplayLimit}`;
             this.queueRetry(item, active, 350 * active.stallRetries, retryText);
             item.lastError = "";
             this.persistSoon();
@@ -3277,9 +3298,13 @@ export class DownloadManager extends EventEmitter {
       throw new Error("Download-Item fehlt");
     }
 
+    const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
+    const retryDisplayLimit = retryLimitLabel(configuredRetryLimit);
+    const maxAttempts = configuredRetryLimit <= 0 ? Number.MAX_SAFE_INTEGER : configuredRetryLimit + 1;
+
     let lastError = "";
     let effectiveTargetPath = targetPath;
-    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let existingBytes = 0;
       try {
         const stat = await fs.promises.stat(effectiveTargetPath);
@@ -3322,9 +3347,9 @@ export class DownloadManager extends EventEmitter {
           throw error;
         }
         lastError = compactErrorText(error);
-        if (attempt < REQUEST_RETRIES) {
+        if (attempt < maxAttempts) {
           item.retries += 1;
-          item.fullStatus = `Verbindungsfehler, retry ${attempt + 1}/${REQUEST_RETRIES}`;
+          item.fullStatus = `Verbindungsfehler, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
           await sleep(300 * attempt);
           continue;
@@ -3360,10 +3385,10 @@ export class DownloadManager extends EventEmitter {
           item.totalBytes = knownTotal && knownTotal > 0 ? knownTotal : null;
           item.progressPercent = 0;
           item.speedBps = 0;
-          item.fullStatus = `Range-Konflikt (HTTP 416), starte neu ${Math.min(REQUEST_RETRIES, attempt + 1)}/${REQUEST_RETRIES}`;
+          item.fullStatus = `Range-Konflikt (HTTP 416), starte neu ${attempt}/${retryDisplayLimit}`;
           item.updatedAt = nowMs();
           this.emitState();
-          if (attempt < REQUEST_RETRIES) {
+          if (attempt < maxAttempts) {
             item.retries += 1;
             await sleep(280 * attempt);
             continue;
@@ -3380,9 +3405,9 @@ export class DownloadManager extends EventEmitter {
         if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
           this.requestReconnect(`HTTP ${response.status}`);
         }
-        if (attempt < REQUEST_RETRIES) {
+        if (attempt < maxAttempts) {
           item.retries += 1;
-          item.fullStatus = `Serverfehler ${response.status}, retry ${attempt + 1}/${REQUEST_RETRIES}`;
+          item.fullStatus = `Serverfehler ${response.status}, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
           await sleep(350 * attempt);
           continue;
@@ -3593,13 +3618,15 @@ export class DownloadManager extends EventEmitter {
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
               }
+              let pausedDuringWait = false;
               while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
+                pausedDuringWait = true;
                 item.status = "paused";
                 item.fullStatus = "Pausiert";
                 this.emitState();
                 await sleep(120);
               }
-              if (!this.session.paused) {
+              if (pausedDuringWait) {
                 throughputWindowStartedAt = nowMs();
                 throughputWindowBytes = 0;
               }
@@ -3709,9 +3736,9 @@ export class DownloadManager extends EventEmitter {
           throw error;
         }
         lastError = compactErrorText(error);
-        if (attempt < REQUEST_RETRIES) {
+        if (attempt < maxAttempts) {
           item.retries += 1;
-          item.fullStatus = `Downloadfehler, retry ${attempt + 1}/${REQUEST_RETRIES}`;
+          item.fullStatus = `Downloadfehler, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
           await sleep(350 * attempt);
           continue;

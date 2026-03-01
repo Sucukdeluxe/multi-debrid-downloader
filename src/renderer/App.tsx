@@ -53,7 +53,7 @@ const emptySnapshot = (): UiSnapshot => ({
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    maxParallel: 4, retryLimit: 3, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", bandwidthSchedules: []
   },
@@ -1497,6 +1497,7 @@ export function App(): ReactElement {
                 <h3>Queue, Limits & Reconnect</h3>
                 <div className="field-grid two">
                   <div><label>Max. Downloads</label><input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(e) => setNum("maxParallel", Number(e.target.value) || 1)} /></div>
+                  <div><label>Auto-Retry Limit (0 = inf)</label><input type="number" min={0} max={99} value={settingsDraft.retryLimit} onChange={(e) => setNum("retryLimit", Math.max(0, Math.min(99, Number(e.target.value) || 0)))} /></div>
                   <div><label>Reconnect-Wartezeit (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Number(e.target.value) || 45)} /></div>
                 </div>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(e) => setBool("speedLimitEnabled", e.target.checked)} /> Speed-Limit aktivieren</label>
