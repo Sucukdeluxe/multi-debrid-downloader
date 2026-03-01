@@ -4415,7 +4415,6 @@ export class DownloadManager extends EventEmitter {
 
     // Build set of item targetPaths belonging to ready archives
     const hybridItemPaths = new Set<string>();
-    const archiveToItems = new Map<string, DownloadItem[]>();
     let dirFiles: string[] | undefined;
     try {
       dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
@@ -4424,21 +4423,34 @@ export class DownloadManager extends EventEmitter {
     } catch { /* ignore */ }
     for (const archiveKey of readyArchives) {
       const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
-      const partKeys = new Set<string>();
       for (const part of parts) {
         hybridItemPaths.add(pathKey(part));
-        partKeys.add(pathKey(part));
       }
       hybridItemPaths.add(pathKey(archiveKey));
-      partKeys.add(pathKey(archiveKey));
-      const matched = completedItems.filter((item) => item.targetPath && partKeys.has(pathKey(item.targetPath)));
-      if (matched.length > 0) {
-        archiveToItems.set(path.basename(archiveKey).toLowerCase(), matched);
-      }
     }
     const hybridItems = completedItems.filter((item) =>
       item.targetPath && hybridItemPaths.has(pathKey(item.targetPath))
     );
+
+    // Resolve items belonging to a specific archive entry point by filename pattern matching.
+    // This avoids pathKey mismatches by comparing basenames directly.
+    const resolveArchiveItems = (archiveName: string): DownloadItem[] => {
+      const entryLower = archiveName.toLowerCase();
+      const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
+      if (multipartMatch) {
+        const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
+        return hybridItems.filter((item) => {
+          const name = path.basename(item.targetPath || item.fileName || "");
+          return pattern.test(name);
+        });
+      }
+      // Single-file archive: match only that exact file
+      return hybridItems.filter((item) => {
+        const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
+        return name === entryLower;
+      });
+    };
 
     let currentArchiveItems: DownloadItem[] = hybridItems;
     const updateExtractingStatus = (text: string): void => {
@@ -4462,6 +4474,7 @@ export class DownloadManager extends EventEmitter {
 
     let hybridLastStatusText = "";
     let hybridLastEmitAt = 0;
+    let lastHybridArchiveName = "";
     const emitHybridStatus = (text: string, force = false): void => {
       updateExtractingStatus(text);
       const now = nowMs();
@@ -4491,9 +4504,20 @@ export class DownloadManager extends EventEmitter {
           if (progress.phase === "done") {
             return;
           }
-          // Narrow status updates to only items belonging to the current archive
-          if (progress.archiveName) {
-            currentArchiveItems = archiveToItems.get(progress.archiveName.toLowerCase()) || hybridItems;
+          // When a new archive starts, mark the previous archive's items as "Entpackt"
+          if (progress.archiveName && progress.archiveName !== lastHybridArchiveName) {
+            if (lastHybridArchiveName && currentArchiveItems !== hybridItems) {
+              const doneAt = nowMs();
+              for (const entry of currentArchiveItems) {
+                if (!isExtractedLabel(entry.fullStatus)) {
+                  entry.fullStatus = "Entpackt";
+                  entry.updatedAt = doneAt;
+                }
+              }
+            }
+            lastHybridArchiveName = progress.archiveName;
+            const resolved = resolveArchiveItems(progress.archiveName);
+            currentArchiveItems = resolved.length > 0 ? resolved : hybridItems;
           }
           const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
           const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
@@ -4577,24 +4601,33 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "extracting";
       this.emitState();
 
-      // Build map: archive basename -> items belonging to that archive set
-      const archiveToItems = new Map<string, DownloadItem[]>();
-      let dirFiles: string[] | undefined;
-      try {
-        dirFiles = fs.readdirSync(pkg.outputDir, { withFileTypes: true })
-          .filter((entry) => entry.isFile())
-          .map((entry) => entry.name);
-      } catch { /* ignore */ }
-      const candidates = findArchiveCandidates(pkg.outputDir);
-      for (const candidate of candidates) {
-        const parts = collectArchiveCleanupTargets(candidate, dirFiles);
-        const partKeys = new Set(parts.map((p) => pathKey(p)));
-        partKeys.add(pathKey(candidate));
-        const matched = completedItems.filter((item) => item.targetPath && partKeys.has(pathKey(item.targetPath)));
-        if (matched.length > 0) {
-          archiveToItems.set(path.basename(candidate).toLowerCase(), matched);
+      // Resolve items belonging to a specific archive entry point by filename pattern matching
+      const resolveArchiveItems = (archiveName: string): DownloadItem[] => {
+        const entryLower = archiveName.toLowerCase();
+        const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
+        if (multipartMatch) {
+          const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
+          return completedItems.filter((item) => {
+            const name = path.basename(item.targetPath || item.fileName || "");
+            return pattern.test(name);
+          });
         }
-      }
+        // Single-file archive or non-multipart RAR: match based on archive stem
+        const rarMatch = entryLower.match(/^(.*)\.rar$/);
+        if (rarMatch) {
+          const stem = rarMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
+          return completedItems.filter((item) => {
+            const name = path.basename(item.targetPath || item.fileName || "");
+            return pattern.test(name);
+          });
+        }
+        return completedItems.filter((item) => {
+          const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
+          return name === entryLower;
+        });
+      };
 
       let currentArchiveItems: DownloadItem[] = completedItems;
       const updateExtractingStatus = (text: string): void => {
@@ -4618,6 +4651,7 @@ export class DownloadManager extends EventEmitter {
 
       let lastExtractStatusText = "";
       let lastExtractEmitAt = 0;
+      let lastExtractArchiveName = "";
       const emitExtractStatus = (text: string, force = false): void => {
         updateExtractingStatus(text);
         const now = nowMs();
@@ -4668,9 +4702,20 @@ export class DownloadManager extends EventEmitter {
           signal: extractAbortController.signal,
           packageId,
           onProgress: (progress) => {
-            // Narrow status updates to only items belonging to the current archive
-            if (progress.archiveName) {
-              currentArchiveItems = archiveToItems.get(progress.archiveName.toLowerCase()) || completedItems;
+            // When a new archive starts, mark the previous archive's items as "Entpackt"
+            if (progress.archiveName && progress.archiveName !== lastExtractArchiveName) {
+              if (lastExtractArchiveName && currentArchiveItems !== completedItems) {
+                const doneAt = nowMs();
+                for (const entry of currentArchiveItems) {
+                  if (!isExtractedLabel(entry.fullStatus)) {
+                    entry.fullStatus = "Entpackt";
+                    entry.updatedAt = doneAt;
+                  }
+                }
+              }
+              lastExtractArchiveName = progress.archiveName;
+              const resolved = resolveArchiveItems(progress.archiveName);
+              currentArchiveItems = resolved.length > 0 ? resolved : completedItems;
             }
             const label = progress.phase === "done"
               ? "Entpacken 100%"
