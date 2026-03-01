@@ -145,18 +145,21 @@ async function decryptDlcLocal(filePath: string): Promise<ParsedPackageInput[]> 
   let decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
 
   if (decrypted.length === 0) {
-    throw new Error("DLC-Entschlüsselung lieferte keine Daten");
+    return [];
   }
   const pad = decrypted[decrypted.length - 1];
-  if (pad <= 0 || pad > 16 || pad > decrypted.length) {
-    throw new Error("Ungültiges DLC-Padding");
-  }
-  for (let index = 1; index <= pad; index += 1) {
-    if (decrypted[decrypted.length - index] !== pad) {
-      throw new Error("Ungültiges DLC-Padding");
+  if (pad > 0 && pad <= 16 && pad <= decrypted.length) {
+    let validPad = true;
+    for (let index = 1; index <= pad; index += 1) {
+      if (decrypted[decrypted.length - index] !== pad) {
+        validPad = false;
+        break;
+      }
+    }
+    if (validPad) {
+      decrypted = decrypted.subarray(0, decrypted.length - pad);
     }
   }
-  decrypted = decrypted.subarray(0, decrypted.length - pad);
 
   const xmlData = Buffer.from(decrypted.toString("utf8"), "base64").toString("utf8");
   return parsePackagesFromDlcXml(xmlData);
