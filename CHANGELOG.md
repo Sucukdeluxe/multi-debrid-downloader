@@ -2,6 +2,33 @@
 
 Alle nennenswerten Aenderungen werden in dieser Datei dokumentiert.
 
+## 1.4.32 - 2026-03-01
+
+Diese Version erweitert den Auto-Renamer stark fuer reale Scene-/TV-Release-Strukturen (nested und flat) und fuehrt eine intensive Renamer-Regression mit zusaetzlichen Edge-Case- und Stress-Checks ein.
+
+### Renamer (Download-Manager)
+
+- Erweiterte Mustererkennung fuer nested und flat Staffel-Ordner mit Group-Suffix (z. B. `-TMSF`, `-TVS`, `-TvR`, `-ZZGtv`, `-SunDry`).
+- Episode-Token kann jetzt auch aus kompakten Codes im Source-Namen abgeleitet werden (z. B. `301` -> `S03E01`, `211` -> `S02E11`, `101` -> `S01E01`), sofern Staffel-Hinweise vorhanden sind.
+- `Teil1/Teil2` bzw. `Part1/Part2` wird auf `SxxExx` gemappt, inklusive Staffel-Ableitung aus der Ordnerstruktur.
+- Repack-Handling ueber Dateiname und Ordnerstruktur vereinheitlicht (`rp`/`repack` -> `REPACK`-Token konsistent im Zielnamen).
+- Flat-Season-Ordner (Dateien direkt im Staffelordner) bekommen jetzt sauberes Episode-Inlining statt unspezifischer Season-Dateinamen.
+- Pfadlaengen-Schutz auf Windows gehaertet: erst normaler Zielname, dann deterministischer Paket-Fallback (z. B. `Show.S08E20`), danach sicherer Skip mit Warnlog statt fehlerhaftem Rename.
+
+### Abgedeckte reale Muster (Beispiele)
+
+- Arrow / Gotham / Britannia / Legion / Lethal.Weapon / Agent.X / Last.Impact
+- Nested Unterordner mit Episodentiteln und flache Staffelordner mit vielen Episoden-Dateien
+- Uneinheitliche Source-Namen wie `tvs-...-301`, `...-211`, `...teil1...`, `...rp...`
+
+### Intensive Bugtests
+
+- Unit-Tests fuer Renamer deutlich ausgebaut (`tests/auto-rename.test.ts`) mit zusaetzlichen realen Pattern- und Compact-Code-Faellen.
+- Zusätzliche intensive Szenario- und Stress-Checks mit temporaeren Testdateien ausgefuehrt (nested/flat, Repack, Teil/Part, Compact-Code, Pfadlaenge, Kollisionsschutz).
+- TypeScript Typecheck erfolgreich.
+- Voller Vitest Lauf erfolgreich (`279/279`).
+- End-to-End Self-Check erfolgreich.
+
 ## 1.4.31 - 2026-03-01
 
 Diese Version schliesst die komplette Bug-Audit-Runde (156 Punkte) ab und fokussiert auf Stabilitaet, Datenintegritaet, sauberes Abbruchverhalten und reproduzierbares Release-Verhalten.

@@ -4,7 +4,9 @@ import {
   applyEpisodeTokenToFolderName,
   sourceHasRpToken,
   ensureRepackToken,
-  buildAutoRenameBaseName
+  buildAutoRenameBaseName,
+  buildAutoRenameBaseNameFromFolders,
+  buildAutoRenameBaseNameFromFoldersWithOptions
 } from "../src/main/download-manager";
 
 describe("extractEpisodeToken", () => {
@@ -171,9 +173,9 @@ describe("buildAutoRenameBaseName", () => {
     expect(result).toBe("Show.S01E03.720p-4sj");
   });
 
-  it("returns null for non-4sf/4sj folder", () => {
+  it("renames generic scene folder with group suffix", () => {
     const result = buildAutoRenameBaseName("Show.S01.720p-GROUP", "show.s01e05.720p.mkv");
-    expect(result).toBeNull();
+    expect(result).toBe("Show.S01.720p-GROUP");
   });
 
   it("returns null when source has no episode token", () => {
@@ -271,6 +273,30 @@ describe("buildAutoRenameBaseName", () => {
     expect(result).toBe("Severance.S02E07.2160p.ATVP.WEB-DL.DDP5.1.DV.H.265-4SF");
   });
 
+  it("real-world: Britannia release keeps folder base name", () => {
+    const result = buildAutoRenameBaseName(
+      "Britannia.S02.GERMAN.720p.WEBRiP.x264-LAW",
+      "law-britannia.s02e01.720p.webrip"
+    );
+    expect(result).toBe("Britannia.S02.GERMAN.720p.WEBRiP.x264-LAW");
+  });
+
+  it("real-world: Britannia repack injects REPACK", () => {
+    const result = buildAutoRenameBaseName(
+      "Britannia.S02.GERMAN.720p.WEBRiP.x264-LAW",
+      "law-britannia.s02e09.720p.webrip.repack"
+    );
+    expect(result).toBe("Britannia.S02.GERMAN.REPACK.720p.WEBRiP.x264-LAW");
+  });
+
+  it("adds REPACK when folder name carries RP hint", () => {
+    const result = buildAutoRenameBaseName(
+      "Banshee.S02E01.German.RP.720p.BluRay.x264-RIPLEY",
+      "r-banshee.s02e01-720p"
+    );
+    expect(result).toBe("Banshee.S02E01.German.REPACK.720p.BluRay.x264-RIPLEY");
+  });
+
   it("real-world: folder already has wrong episode", () => {
     const result = buildAutoRenameBaseName(
       "Cobra.Kai.S06E01.720p.NF.WEB-DL.DDP5.1.x264-4SF",
@@ -325,5 +351,165 @@ describe("buildAutoRenameBaseName", () => {
     // The colon should be sanitized away
     expect(result).not.toBeNull();
     expect(result!).not.toContain(":");
+  });
+});
+
+describe("buildAutoRenameBaseNameFromFolders", () => {
+  it("uses parent folder when current folder is not a scene template", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Episode 01",
+        "Banshee.S02.German.720p.BluRay.x264-RIPLEY"
+      ],
+      "r-banshee.s02e01-720p"
+    );
+    expect(result).toBe("Banshee.S02.German.720p.BluRay.x264-RIPLEY");
+  });
+
+  it("uses nested scene subfolder directly", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Banshee.S02E01.German.720p.BluRay.x264-RIPLEY",
+        "Banshee.S02.German.720p.BluRay.x264-RIPLEY"
+      ],
+      "r-banshee.s02e01-720p"
+    );
+    expect(result).toBe("Banshee.S02E01.German.720p.BluRay.x264-RIPLEY");
+  });
+
+  it("injects REPACK when parent folder carries repack hint", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Banshee.S02E01.German.720p.BluRay.x264-RIPLEY",
+        "Banshee.S02.German.RP.720p.BluRay.x264-RIPLEY"
+      ],
+      "r-banshee.s02e01-720p"
+    );
+    expect(result).toBe("Banshee.S02E01.German.REPACK.720p.BluRay.x264-RIPLEY");
+  });
+
+  it("uses nested Arrow episode folder with title", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Arrow.S04E01.Green.Arrow.German.DL.720p.BluRay.x264-RSG",
+        "Arrow.S04.German.DL.720p.BluRay.x264-RSG"
+      ],
+      "rsg-arrow-s04e01-720p"
+    );
+    expect(result).toBe("Arrow.S04E01.Green.Arrow.German.DL.720p.BluRay.x264-RSG");
+  });
+
+  it("adds REPACK for Arrow when source contains rp token", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Arrow.S04E01.Green.Arrow.German.DL.720p.BluRay.x264-RSG",
+        "Arrow.S04.German.DL.720p.BluRay.x264-RSG"
+      ],
+      "rsg-arrow-s04e01.rp.720p"
+    );
+    expect(result).toBe("Arrow.S04E01.Green.Arrow.German.DL.REPACK.720p.BluRay.x264-RSG");
+  });
+
+  it("converts Teil token to episode using parent season", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Last.Impact.Der.Einschlag.Teil1.GERMAN.DL.720p.WEB.H264-SunDry",
+        "Last.Impact.Der.Einschlag.S01.GERMAN.DL.720p.WEB.H264-SunDry"
+      ],
+      "sundry-last.impact.der.einschlag.teil1.720p.web.h264"
+    );
+    expect(result).toBe("Last.Impact.Der.Einschlag.S01E01.GERMAN.DL.720p.WEB.H264-SunDry");
+  });
+
+  it("converts Teil token to episode with REPACK", () => {
+    const result = buildAutoRenameBaseNameFromFolders(
+      [
+        "Last.Impact.Der.Einschlag.Teil1.GERMAN.DL.720p.WEB.H264-SunDry",
+        "Last.Impact.Der.Einschlag.S01.GERMAN.DL.720p.WEB.H264-SunDry"
+      ],
+      "sundry-last.impact.der.einschlag.teil1.rp.720p.web.h264"
+    );
+    expect(result).toBe("Last.Impact.Der.Einschlag.S01E01.GERMAN.DL.REPACK.720p.WEB.H264-SunDry");
+  });
+
+  it("forces episode insertion for flat season folder when many files share directory", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Arrow.S08.GERMAN.DUBBED.DL.720p.BluRay.x264-TMSF"
+      ],
+      "tmsf-arrow-s08e03-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Arrow.S08E03.GERMAN.DUBBED.DL.720p.BluRay.x264-TMSF");
+  });
+
+  it("forces episode insertion plus REPACK for flat season folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Gotham.S05.GERMAN.DUBBED.720p.BLURAY.x264-ZZGtv"
+      ],
+      "zzgtv-gotham-s05e02.rp",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Gotham.S05E02.GERMAN.DUBBED.REPACK.720p.BLURAY.x264-ZZGtv");
+  });
+
+  it("uses nested episode title folder for Gotham TvR style", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Gotham.S04E01.Pax.Penguina.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR",
+        "Gotham.S04.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR"
+      ],
+      "tvr-gotham-s04e01-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Gotham.S04E01.Pax.Penguina.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR");
+  });
+
+  it("uses nested title folder for Britannia TV4A style", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Britannia.S01E01.Die.Landung.German.DL.720p.BluRay.x264-TV4A",
+        "Britannia.S01.German.DL.720p.BluRay.x264-TV4A"
+      ],
+      "tv4a-britannia.s01e01-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Britannia.S01E01.Die.Landung.German.DL.720p.BluRay.x264-TV4A");
+  });
+
+  it("handles odd source token style 101 by using nested Agent X folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Agent.X.S01E01.Pilot.German.DD51.Dubbed.DL.720p.iTunesHD.x264-TVS",
+        "Agent.X.S01.German.DD51.Dubbed.DL.720p.iTunesHD.x264-TVS"
+      ],
+      "tvs-agent-x-dd51-ded-dl-7p-ithd-x264-101",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Agent.X.S01E01.Pilot.German.DD51.Dubbed.DL.720p.iTunesHD.x264-TVS");
+  });
+
+  it("maps compact code 301 to S03E01 for nested Legion folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Legion.S03E01.Kapitel.20.German.DD51.Dubbed.DL.720p.AmazonHD.AVC-TVS",
+        "Legion.S03.German.DD51.Dubbed.DL.720p.AmazonHD.AVC-TVS"
+      ],
+      "tvs-legion-dd51-ded-dl-7p-azhd-avc-301",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Legion.S03E01.Kapitel.20.German.DD51.Dubbed.DL.720p.AmazonHD.AVC-TVS");
+  });
+
+  it("maps compact code 211 in flat season folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Lethal.Weapon.S02.German.DD51.Dubbed.DL.720p.AmazonHD.x264-TVS"
+      ],
+      "tvs-lethal-weapon-dd51-ded-dl-7p-azhd-x264-211",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Lethal.Weapon.S02E11.German.DD51.Dubbed.DL.720p.AmazonHD.x264-TVS");
   });
 });
