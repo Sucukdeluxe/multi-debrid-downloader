@@ -435,30 +435,54 @@ function deriveUpdateFileName(check: UpdateCheckResult, url: string): string {
 type ExpectedDigest = {
   algorithm: "sha256" | "sha512";
   digest: string;
+  encoding: "hex" | "base64";
 };
+
+function normalizeBase64Digest(raw: string): string {
+  return String(raw || "")
+    .trim()
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+}
 
 function parseExpectedDigest(raw: string): ExpectedDigest | null {
   const text = String(raw || "").trim();
   const prefixed256 = text.match(/^sha256:([a-fA-F0-9]{64})$/i);
   if (prefixed256) {
-    return { algorithm: "sha256", digest: prefixed256[1].toLowerCase() };
+    return { algorithm: "sha256", digest: prefixed256[1].toLowerCase(), encoding: "hex" };
   }
   const prefixed512 = text.match(/^sha512:([a-fA-F0-9]{128})$/i);
   if (prefixed512) {
-    return { algorithm: "sha512", digest: prefixed512[1].toLowerCase() };
+    return { algorithm: "sha512", digest: prefixed512[1].toLowerCase(), encoding: "hex" };
+  }
+  const prefixed512Base64 = text.match(/^sha512:([A-Za-z0-9+/_-]{80,}={0,2})$/i);
+  if (prefixed512Base64) {
+    return { algorithm: "sha512", digest: normalizeBase64Digest(prefixed512Base64[1]), encoding: "base64" };
+  }
+  const prefixed256Base64 = text.match(/^sha256:([A-Za-z0-9+/_-]{40,}={0,2})$/i);
+  if (prefixed256Base64) {
+    return { algorithm: "sha256", digest: normalizeBase64Digest(prefixed256Base64[1]), encoding: "base64" };
   }
   const plain256 = text.match(/^([a-fA-F0-9]{64})$/);
   if (plain256) {
-    return { algorithm: "sha256", digest: plain256[1].toLowerCase() };
+    return { algorithm: "sha256", digest: plain256[1].toLowerCase(), encoding: "hex" };
   }
   const plain512 = text.match(/^([a-fA-F0-9]{128})$/);
   if (plain512) {
-    return { algorithm: "sha512", digest: plain512[1].toLowerCase() };
+    return { algorithm: "sha512", digest: plain512[1].toLowerCase(), encoding: "hex" };
+  }
+  const plain512Base64 = text.match(/^([A-Za-z0-9+/_-]{80,}={0,2})$/i);
+  if (plain512Base64) {
+    return { algorithm: "sha512", digest: normalizeBase64Digest(plain512Base64[1]), encoding: "base64" };
+  }
+  const plain256Base64 = text.match(/^([A-Za-z0-9+/_-]{40,}={0,2})$/i);
+  if (plain256Base64) {
+    return { algorithm: "sha256", digest: normalizeBase64Digest(plain256Base64[1]), encoding: "base64" };
   }
   return null;
 }
 
-async function hashFile(filePath: string, algorithm: "sha256" | "sha512"): Promise<string> {
+async function hashFile(filePath: string, algorithm: "sha256" | "sha512", encoding: "hex" | "base64"): Promise<string> {
   const hash = crypto.createHash(algorithm);
   const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
   return await new Promise<string>((resolve, reject) => {
@@ -466,7 +490,13 @@ async function hashFile(filePath: string, algorithm: "sha256" | "sha512"): Promi
       hash.update(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
     stream.on("error", reject);
-    stream.on("end", () => resolve(hash.digest("hex").toLowerCase()));
+    stream.on("end", () => {
+      if (encoding === "base64") {
+        resolve(hash.digest("base64"));
+        return;
+      }
+      resolve(hash.digest("hex").toLowerCase());
+    });
   });
 }
 
@@ -496,8 +526,14 @@ async function verifyDownloadedInstaller(targetPath: string, expectedDigestRaw: 
     logger.warn("Update-Asset ohne SHA-Digest; nur EXE-Basisprüfung durchgeführt");
     return;
   }
-  const actualDigest = await hashFile(targetPath, expected.algorithm);
-  if (actualDigest !== expected.digest) {
+  const actualDigestRaw = await hashFile(targetPath, expected.algorithm, expected.encoding);
+  const actualDigest = expected.encoding === "base64"
+    ? normalizeBase64Digest(actualDigestRaw).replace(/=+$/g, "")
+    : actualDigestRaw;
+  const expectedDigest = expected.encoding === "base64"
+    ? normalizeBase64Digest(expected.digest).replace(/=+$/g, "")
+    : expected.digest;
+  if (actualDigest !== expectedDigest) {
     throw new Error(`Update-Integritätsprüfung fehlgeschlagen (${expected.algorithm.toUpperCase()} mismatch)`);
   }
 }
