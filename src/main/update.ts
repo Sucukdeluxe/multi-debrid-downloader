@@ -941,18 +941,41 @@ export async function installLatestUpdate(
     if (updateAbortController.signal.aborted) {
       throw new Error("aborted:update_shutdown");
     }
-    await downloadFromCandidates(candidates, targetPath, onProgress);
-    if (updateAbortController.signal.aborted) {
-      throw new Error("aborted:update_shutdown");
+    let verified = false;
+    let lastVerifyError: unknown = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      try {
+        await downloadWithRetries(candidate, targetPath, onProgress);
+        if (updateAbortController.signal.aborted) {
+          throw new Error("aborted:update_shutdown");
+        }
+        safeEmitProgress(onProgress, {
+          stage: "verifying",
+          percent: 100,
+          downloadedBytes: 0,
+          totalBytes: null,
+          message: `Prüfe Installer-Integrität (${index + 1}/${candidates.length})`
+        });
+        await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
+        verified = true;
+        break;
+      } catch (error) {
+        lastVerifyError = error;
+        try {
+          await fs.promises.rm(targetPath, { force: true });
+        } catch {
+          // ignore
+        }
+        if (index >= candidates.length - 1) {
+          throw error;
+        }
+        logger.warn(`Update-Kandidat ${index + 1}/${candidates.length} verworfen: ${compactErrorText(error)}`);
+      }
     }
-    safeEmitProgress(onProgress, {
-      stage: "verifying",
-      percent: 100,
-      downloadedBytes: 0,
-      totalBytes: null,
-      message: "Prüfe Installer-Integrität"
-    });
-    await verifyDownloadedInstaller(targetPath, String(effectiveCheck.setupAssetDigest || ""));
+    if (!verified) {
+      throw lastVerifyError || new Error("Update-Download fehlgeschlagen");
+    }
     safeEmitProgress(onProgress, {
       stage: "launching",
       percent: 100,
