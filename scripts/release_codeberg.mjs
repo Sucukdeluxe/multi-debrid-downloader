@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+const NPM_EXECUTABLE = process.platform === "win32" ? "npm.cmd" : "npm";
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
@@ -241,7 +243,7 @@ async function main() {
   updatePackageVersion(rootDir, version);
 
   process.stdout.write(`Building release artifacts for ${tag}...\n`);
-  run("npm", ["run", "release:win"]);
+  run(NPM_EXECUTABLE, ["run", "release:win"]);
   const assets = ensureAssetsExist(rootDir, version);
 
   if (args.dryRun) {
