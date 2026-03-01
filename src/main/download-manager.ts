@@ -211,8 +211,12 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
 }
 
 const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
+const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]+$/;
 const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:[._\-\s]|$)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
+const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
+const SCENE_PART_TOKEN_RE = /(?:^|[._\-\s])(?:teil|part)\s*0*(\d{1,3})(?=[._\-\s]|$)/i;
+const SCENE_COMPACT_EPISODE_CODE_RE = /(?:^|[._\-\s])(\d{3,4})(?=$|[._\-\s])/;
 const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
@@ -230,6 +234,123 @@ export function extractEpisodeToken(fileName: string): string | null {
   }
 
   return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+}
+
+function extractSeasonToken(fileName: string): string | null {
+  const text = String(fileName || "");
+  const episodeMatch = text.match(SCENE_EPISODE_RE);
+  if (episodeMatch?.[1]) {
+    const season = Number(episodeMatch[1]);
+    if (Number.isFinite(season) && season >= 0) {
+      return `S${String(season).padStart(2, "0")}`;
+    }
+  }
+  const seasonMatch = text.match(SCENE_SEASON_CAPTURE_RE);
+  if (!seasonMatch?.[1]) {
+    return null;
+  }
+  const season = Number(seasonMatch[1]);
+  if (!Number.isFinite(season) || season < 0) {
+    return null;
+  }
+  return `S${String(season).padStart(2, "0")}`;
+}
+
+function extractPartEpisodeNumber(fileName: string): number | null {
+  const match = String(fileName || "").match(SCENE_PART_TOKEN_RE);
+  if (!match?.[1]) {
+    return null;
+  }
+  const episode = Number(match[1]);
+  if (!Number.isFinite(episode) || episode <= 0) {
+    return null;
+  }
+  return episode;
+}
+
+function extractCompactEpisodeToken(fileName: string, seasonHint: number | null): string | null {
+  const trimmed = String(fileName || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+  const match = trimmed.match(SCENE_COMPACT_EPISODE_CODE_RE);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const code = match[1];
+  if (code === "2160" || code === "1080" || code === "0720" || code === "720" || code === "0576" || code === "576") {
+    return null;
+  }
+
+  const toToken = (season: number, episode: number): string | null => {
+    if (!Number.isFinite(season) || !Number.isFinite(episode) || season < 0 || season > 99 || episode <= 0 || episode > 999) {
+      return null;
+    }
+    return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+  };
+
+  if (seasonHint !== null && Number.isFinite(seasonHint) && seasonHint >= 0 && seasonHint <= 99) {
+    const seasonRaw = String(Math.trunc(seasonHint));
+    const seasonPadded = String(Math.trunc(seasonHint)).padStart(2, "0");
+    const seasonPrefixes = [seasonPadded, seasonRaw].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
+      .sort((a, b) => b.length - a.length);
+    for (const prefix of seasonPrefixes) {
+      if (!code.startsWith(prefix) || code.length <= prefix.length) {
+        continue;
+      }
+      const episode = Number(code.slice(prefix.length));
+      const token = toToken(Number(seasonRaw), episode);
+      if (token) {
+        return token;
+      }
+    }
+  }
+
+  if (code.length === 3) {
+    return toToken(Number(code[0]), Number(code.slice(1)));
+  }
+  if (code.length === 4) {
+    return toToken(Number(code.slice(0, 2)), Number(code.slice(2)));
+  }
+  return null;
+}
+
+function resolveEpisodeTokenForAutoRename(sourceFileName: string, folderNames: string[]): { token: string; fromPart: boolean } | null {
+  const directFromSource = extractEpisodeToken(sourceFileName);
+  if (directFromSource) {
+    return { token: directFromSource, fromPart: false };
+  }
+
+  for (const folderName of folderNames) {
+    const directFromFolder = extractEpisodeToken(folderName);
+    if (directFromFolder) {
+      return { token: directFromFolder, fromPart: false };
+    }
+  }
+
+  const seasonTokenHint = extractSeasonToken(sourceFileName)
+    ?? folderNames.map((folderName) => extractSeasonToken(folderName)).find(Boolean)
+    ?? null;
+  const seasonHint = seasonTokenHint ? Number(seasonTokenHint.slice(1)) : null;
+  const compactEpisode = extractCompactEpisodeToken(sourceFileName, seasonHint);
+  if (compactEpisode) {
+    return { token: compactEpisode, fromPart: false };
+  }
+
+  const partEpisode = extractPartEpisodeNumber(sourceFileName)
+    ?? folderNames.map((folderName) => extractPartEpisodeNumber(folderName)).find((value) => Number.isFinite(value) && (value as number) > 0)
+    ?? null;
+  if (!partEpisode) {
+    return null;
+  }
+
+  const seasonToken = seasonTokenHint || "S01";
+
+  return {
+    token: `${seasonToken}E${String(partEpisode).padStart(2, "0")}`,
+    fromPart: true
+  };
 }
 
 export function applyEpisodeTokenToFolderName(folderName: string, episodeToken: string): string {
@@ -260,6 +381,17 @@ export function sourceHasRpToken(fileName: string): boolean {
   return SCENE_RP_TOKEN_RE.test(String(fileName || ""));
 }
 
+function removeRpTokens(baseName: string): string {
+  const normalized = String(baseName || "")
+    .replace(/(^|[._\-\s])rp(?=([._\-\s]|$))/ig, "$1")
+    .replace(/\.{2,}/g, ".")
+    .replace(/-{2,}/g, "-")
+    .replace(/_{2,}/g, "_")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[._\-\s]+|[._\-\s]+$/g, "");
+  return normalized || String(baseName || "");
+}
+
 export function ensureRepackToken(baseName: string): string {
   if (SCENE_REPACK_TOKEN_RE.test(baseName)) {
     return baseName;
@@ -279,21 +411,100 @@ export function ensureRepackToken(baseName: string): string {
 }
 
 export function buildAutoRenameBaseName(folderName: string, sourceFileName: string): string | null {
-  if (!SCENE_RELEASE_FOLDER_RE.test(folderName)) {
+  const normalizedFolderName = String(folderName || "").trim();
+  const normalizedSourceFileName = String(sourceFileName || "").trim();
+  if (!normalizedFolderName || !normalizedSourceFileName) {
     return null;
   }
 
-  const episodeToken = extractEpisodeToken(sourceFileName);
+  const isLegacy4sf4sjFolder = SCENE_RELEASE_FOLDER_RE.test(normalizedFolderName);
+  const isSceneGroupFolder = SCENE_GROUP_SUFFIX_RE.test(normalizedFolderName);
+  if (!isLegacy4sf4sjFolder && !isSceneGroupFolder) {
+    return null;
+  }
+
+  const episodeToken = extractEpisodeToken(normalizedSourceFileName);
   if (!episodeToken) {
     return null;
   }
 
-  let next = applyEpisodeTokenToFolderName(folderName, episodeToken);
-  if (sourceHasRpToken(sourceFileName)) {
+  let next = isLegacy4sf4sjFolder
+    ? applyEpisodeTokenToFolderName(normalizedFolderName, episodeToken)
+    : normalizedFolderName;
+
+  const hasRepackHint = sourceHasRpToken(normalizedSourceFileName)
+    || SCENE_REPACK_TOKEN_RE.test(normalizedSourceFileName)
+    || sourceHasRpToken(normalizedFolderName)
+    || SCENE_REPACK_TOKEN_RE.test(normalizedFolderName);
+  if (hasRepackHint) {
+    next = removeRpTokens(next);
     next = ensureRepackToken(next);
   }
 
   return sanitizeFilename(next);
+}
+
+export function buildAutoRenameBaseNameFromFolders(folderNames: string[], sourceFileName: string): string | null {
+  return buildAutoRenameBaseNameFromFoldersWithOptions(folderNames, sourceFileName, { forceEpisodeForSeasonFolder: false });
+}
+
+export function buildAutoRenameBaseNameFromFoldersWithOptions(
+  folderNames: string[],
+  sourceFileName: string,
+  options: { forceEpisodeForSeasonFolder?: boolean }
+): string | null {
+  const ordered = folderNames
+    .map((value) => String(value || "").trim())
+    .filter((value) => value.length > 0);
+  if (ordered.length === 0) {
+    return null;
+  }
+
+  const normalizedSourceFileName = String(sourceFileName || "").trim();
+  const resolvedEpisode = resolveEpisodeTokenForAutoRename(normalizedSourceFileName, ordered);
+  const forceEpisodeForSeasonFolder = Boolean(options.forceEpisodeForSeasonFolder);
+  const globalRepackHint = sourceHasRpToken(normalizedSourceFileName)
+    || SCENE_REPACK_TOKEN_RE.test(normalizedSourceFileName)
+    || ordered.some((folderName) => sourceHasRpToken(folderName) || SCENE_REPACK_TOKEN_RE.test(folderName));
+
+  for (const folderName of ordered) {
+    const folderHasEpisode = Boolean(extractEpisodeToken(folderName));
+    const folderHasSeason = Boolean(extractSeasonToken(folderName));
+    const folderHasPart = extractPartEpisodeNumber(folderName) !== null;
+    if (folderHasPart && !folderHasEpisode && !folderHasSeason) {
+      continue;
+    }
+
+    let target = buildAutoRenameBaseName(folderName, normalizedSourceFileName);
+    if (!target && resolvedEpisode && SCENE_GROUP_SUFFIX_RE.test(folderName) && (folderHasSeason || folderHasEpisode)) {
+      target = applyEpisodeTokenToFolderName(folderName, resolvedEpisode.token);
+    }
+    if (!target) {
+      continue;
+    }
+
+    if (resolvedEpisode
+      && forceEpisodeForSeasonFolder
+      && SCENE_GROUP_SUFFIX_RE.test(target)
+      && !extractEpisodeToken(target)
+      && SCENE_SEASON_ONLY_RE.test(target)) {
+      target = applyEpisodeTokenToFolderName(target, resolvedEpisode.token);
+    }
+
+    if (resolvedEpisode?.fromPart
+      && SCENE_GROUP_SUFFIX_RE.test(target)
+      && !extractEpisodeToken(target)
+      && SCENE_SEASON_ONLY_RE.test(target)) {
+      target = applyEpisodeTokenToFolderName(target, resolvedEpisode.token);
+    }
+
+    if (globalRepackHint) {
+      target = ensureRepackToken(removeRpTokens(target));
+    }
+    return sanitizeFilename(target);
+  }
+
+  return null;
 }
 
 export class DownloadManager extends EventEmitter {
@@ -1258,6 +1469,101 @@ export class DownloadManager extends EventEmitter {
     return files;
   }
 
+  private buildSafeAutoRenameTargetPath(sourcePath: string, targetBaseName: string, sourceExt: string): string | null {
+    const dirPath = path.dirname(sourcePath);
+    const safeBaseName = sanitizeFilename(String(targetBaseName || "").trim());
+    if (!safeBaseName) {
+      return null;
+    }
+    const safeExt = String(sourceExt || "").trim();
+
+    const candidatePath = path.join(dirPath, `${safeBaseName}${safeExt}`);
+    if (process.platform !== "win32") {
+      return candidatePath;
+    }
+
+    const fileName = path.basename(candidatePath);
+    if (fileName.length > 255) {
+      return null;
+    }
+
+    const maxWindowsPathLength = 259;
+    if (candidatePath.length <= maxWindowsPathLength) {
+      return candidatePath;
+    }
+    return null;
+  }
+
+  private buildShortPackageFallbackBaseName(folderCandidates: string[], sourceBaseName: string, targetBaseName: string): string | null {
+    const normalizedCandidates = folderCandidates
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.length > 0);
+    const fallbackTemplate = [...normalizedCandidates].reverse().find((folderName) => {
+      return SCENE_GROUP_SUFFIX_RE.test(folderName) && Boolean(extractSeasonToken(folderName));
+    }) || "";
+    if (!fallbackTemplate) {
+      return null;
+    }
+
+    const seasonMatch = fallbackTemplate.match(/^(.*?)(?:[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i);
+    if (!seasonMatch?.[1] || !seasonMatch?.[2]) {
+      return null;
+    }
+
+    const seasonNumber = Number(seasonMatch[2]);
+    if (!Number.isFinite(seasonNumber) || seasonNumber < 0) {
+      return null;
+    }
+
+    const shortRootName = String(seasonMatch[1]).replace(/[._\-\s]+$/g, "").trim();
+    if (!shortRootName) {
+      return null;
+    }
+
+    let fallback = `${shortRootName}.S${String(seasonNumber).padStart(2, "0")}`;
+    const resolvedEpisode = resolveEpisodeTokenForAutoRename(sourceBaseName, normalizedCandidates);
+    if (resolvedEpisode && new RegExp(`^S${String(seasonNumber).padStart(2, "0")}E\\d{2,3}$`, "i").test(resolvedEpisode.token)) {
+      fallback = `${shortRootName}.${resolvedEpisode.token}`;
+    }
+    const hasRepackHint = sourceHasRpToken(sourceBaseName)
+      || SCENE_REPACK_TOKEN_RE.test(sourceBaseName)
+      || sourceHasRpToken(targetBaseName)
+      || SCENE_REPACK_TOKEN_RE.test(targetBaseName)
+      || folderCandidates.some((folderName) => sourceHasRpToken(folderName) || SCENE_REPACK_TOKEN_RE.test(folderName));
+    if (hasRepackHint) {
+      fallback = ensureRepackToken(removeRpTokens(fallback));
+    }
+
+    const normalized = sanitizeFilename(fallback);
+    if (!normalized || normalized.toLowerCase() === String(targetBaseName || "").trim().toLowerCase()) {
+      return null;
+    }
+    return normalized;
+  }
+
+  private buildVeryShortPackageFallbackBaseName(folderCandidates: string[], sourceBaseName: string, targetBaseName: string): string | null {
+    const base = this.buildShortPackageFallbackBaseName(folderCandidates, sourceBaseName, targetBaseName);
+    if (!base) {
+      return null;
+    }
+    const match = base.match(/^(.+?)[._\-\s](S\d{2})(?:\b|[._\-\s])/i) || base.match(/^(.+?)\.(S\d{2})$/i);
+    if (!match?.[1] || !match?.[2]) {
+      return null;
+    }
+    const firstToken = match[1].split(/[._\-\s]+/).filter(Boolean)[0] || "";
+    if (!firstToken) {
+      return null;
+    }
+    const next = sanitizeFilename(`${firstToken}.${match[2].toUpperCase()}`);
+    if (!next || next.toLowerCase() === String(targetBaseName || "").trim().toLowerCase()) {
+      return null;
+    }
+    if (SCENE_REPACK_TOKEN_RE.test(base)) {
+      return ensureRepackToken(next);
+    }
+    return next;
+  }
+
   private autoRenameExtractedVideoFiles(extractDir: string): number {
     if (!this.settings.autoRename4sf4sj) {
       return 0;
@@ -1270,13 +1576,46 @@ export class DownloadManager extends EventEmitter {
       const sourceName = path.basename(sourcePath);
       const sourceExt = path.extname(sourceName);
       const sourceBaseName = path.basename(sourceName, sourceExt);
-      const folderName = path.basename(path.dirname(sourcePath));
-      const targetBaseName = buildAutoRenameBaseName(folderName, sourceBaseName);
+      const folderCandidates: string[] = [];
+      let currentDir = path.dirname(sourcePath);
+      while (currentDir && isPathInsideDir(currentDir, extractDir)) {
+        folderCandidates.push(path.basename(currentDir));
+        const parent = path.dirname(currentDir);
+        if (!parent || parent === currentDir) {
+          break;
+        }
+        currentDir = parent;
+      }
+      const targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
+        forceEpisodeForSeasonFolder: true
+      });
       if (!targetBaseName) {
         continue;
       }
 
-      const targetPath = path.join(path.dirname(sourcePath), `${targetBaseName}${sourceExt}`);
+      let targetPath = this.buildSafeAutoRenameTargetPath(sourcePath, targetBaseName, sourceExt);
+      if (!targetPath) {
+        const fallbackBaseName = this.buildShortPackageFallbackBaseName(folderCandidates, sourceBaseName, targetBaseName);
+        if (fallbackBaseName) {
+          targetPath = this.buildSafeAutoRenameTargetPath(sourcePath, fallbackBaseName, sourceExt);
+          if (targetPath) {
+            logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(targetPath)}`);
+          }
+        }
+        if (!targetPath) {
+          const veryShortFallback = this.buildVeryShortPackageFallbackBaseName(folderCandidates, sourceBaseName, targetBaseName);
+          if (veryShortFallback) {
+            targetPath = this.buildSafeAutoRenameTargetPath(sourcePath, veryShortFallback, sourceExt);
+            if (targetPath) {
+              logger.warn(`Auto-Rename Kurz-Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(targetPath)}`);
+            }
+          }
+        }
+      }
+      if (!targetPath) {
+        logger.warn(`Auto-Rename übersprungen (Zielpfad zu lang/ungültig): ${sourcePath}`);
+        continue;
+      }
       if (pathKey(targetPath) === pathKey(sourcePath)) {
         continue;
       }
@@ -1294,7 +1633,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (renamed > 0) {
-      logger.info(`Auto-Rename (4SF/4SJ): ${renamed} Datei(en) umbenannt`);
+      logger.info(`Auto-Rename (Scene): ${renamed} Datei(en) umbenannt`);
     }
     return renamed;
   }
