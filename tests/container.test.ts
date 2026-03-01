@@ -139,7 +139,31 @@ describe("container", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
-  it("throws when both dcrypt endpoints fail", async () => {
+  it("throws when both dcrypt endpoints return 413", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "huge.dlc");
+    fs.writeFileSync(filePath, Buffer.alloc(100, 1).toString("base64"));
+
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes("service.jdownloader.org")) {
+        return new Response("", { status: 404 });
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/upload")) {
+        return new Response("Request Entity Too Large", { status: 413 });
+      }
+      if (urlStr.includes("dcrypt.it/decrypt/paste")) {
+        return new Response("Request Entity Too Large", { status: 413 });
+      }
+      return new Response("", { status: 500 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await expect(importDlcContainers([filePath])).rejects.toThrow(/zu groß für dcrypt/i);
+  });
+
+  it("throws when upload returns 413 and paste returns 500", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dlc-"));
     tempDirs.push(dir);
     const filePath = path.join(dir, "doomed.dlc");

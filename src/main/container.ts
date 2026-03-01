@@ -190,7 +190,7 @@ async function tryDcryptUpload(fileContent: Buffer, fileName: string): Promise<s
   return extractLinksFromResponse(text);
 }
 
-async function tryDcryptPaste(fileContent: Buffer): Promise<string[]> {
+async function tryDcryptPaste(fileContent: Buffer): Promise<string[] | null> {
   const form = new FormData();
   form.set("content", fileContent.toString("ascii"));
 
@@ -198,6 +198,9 @@ async function tryDcryptPaste(fileContent: Buffer): Promise<string[]> {
     method: "POST",
     body: form
   });
+  if (response.status === 413) {
+    return null;
+  }
   const text = await response.text();
   if (!response.ok) {
     throw new Error(compactErrorText(text));
@@ -213,6 +216,9 @@ async function decryptDlcViaDcrypt(filePath: string): Promise<ParsedPackageInput
   let links = await tryDcryptUpload(fileContent, fileName);
   if (links === null) {
     links = await tryDcryptPaste(fileContent);
+  }
+  if (links === null) {
+    throw new Error("DLC-Datei zu groß für dcrypt.it");
   }
   if (links.length === 0) {
     return [];
