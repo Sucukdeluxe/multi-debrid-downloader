@@ -1,6 +1,6 @@
 # Multi Debrid Downloader
 
-Desktop-Downloader fuer **Real-Debrid, Mega-Debrid, BestDebrid und AllDebrid** mit schneller Queue-Verwaltung, automatischem Entpacken und robuster Fehlerbehandlung.
+Desktop downloader for **Real-Debrid, Mega-Debrid, BestDebrid, and AllDebrid** with fast queue management, automatic extraction, and robust error handling.
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
 ![Electron](https://img.shields.io/badge/Electron-31.x-47848F)
@@ -8,97 +8,97 @@ Desktop-Downloader fuer **Real-Debrid, Mega-Debrid, BestDebrid und AllDebrid** m
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-## Warum dieses Tool?
+## Why this tool?
 
-- Ein Workflow wie bei klassischen Download-Managern: sammeln, starten, pausieren, fortsetzen, sauber abschliessen.
-- Mehrere Debrid-Provider in einer App, inklusive automatischem Provider-Fallback.
-- Fokus auf Stabilitaet bei grossen Queues: Session-Persistenz, Reconnect-Handling, Resume und Integritaetspruefung.
+- Familiar download-manager workflow: collect links, start, pause, resume, and finish cleanly.
+- Multiple debrid providers in one app, including automatic fallback.
+- Built for stability with large queues: session persistence, reconnect handling, resume support, and integrity verification.
 
-## Kernfunktionen
+## Core features
 
-### Queue und Download-Engine
+### Queue and download engine
 
-- Paketbasierte Queue mit Datei-Status, Fortschritt, ETA, Speed und Retry-Zaehlern.
-- Start, Pause, Stop und Einzel-/Paket-Abbruch waehrend laufender Downloads.
-- Duplicate-Strategien beim Hinzufuegen: behalten, ueberspringen oder ueberschreiben.
-- Session-Wiederherstellung beim Neustart inkl. optionalem Auto-Resume.
+- Package-based queue with file status, progress, ETA, speed, and retry counters.
+- Start, pause, stop, and cancel for both single items and full packages.
+- Duplicate handling when adding links: keep, skip, or overwrite.
+- Session recovery after restart, including optional auto-resume.
 
-### Debrid und Link-Handling
+### Debrid and link handling
 
-- Unterstuetzte Provider: `realdebrid`, `megadebrid`, `bestdebrid`, `alldebrid`.
-- Konfigurierbare Reihenfolge: Primary + Secondary + Tertiary.
-- Optionaler automatischer Fallback auf alternative Provider bei Fehlern.
-- `.dlc`-Import per Datei-Dialog und Drag-and-Drop.
+- Supported providers: `realdebrid`, `megadebrid`, `bestdebrid`, `alldebrid`.
+- Configurable provider order: primary + secondary + tertiary.
+- Optional automatic fallback to alternative providers on failures.
+- `.dlc` import via file picker and drag-and-drop.
 
-### Entpacken, Cleanup und Qualitaet
+### Extraction, cleanup, and quality
 
-- Auto-Extract mit separatem Zielordner und Konflikt-Strategien.
-- Hybrid-Extract, optionale Bereinigung von Link-Dateien und Sample-Dateien.
-- Integritaetspruefung nach Download (`CRC32`, `MD5`, `SHA1`) mit Auto-Retry bei Fehlern.
-- Cleanup-Policy fuer fertige Downloads: `never`, `immediate`, `on_start`, `package_done`.
+- Auto-extract with separate target directory and conflict strategies.
+- Hybrid extraction, optional removal of link artifacts and sample files.
+- Post-download integrity checks (`CRC32`, `MD5`, `SHA1`) with auto-retry on failures.
+- Completed-item cleanup policy: `never`, `immediate`, `on_start`, `package_done`.
 
-### Komfort und Automatisierung
+### Convenience and automation
 
-- Clipboard-Watcher zum automatischen Erkennen neuer Links.
-- Minimize-to-Tray mit Tray-Menue.
-- Geschwindigkeitslimit global oder pro Download.
-- Bandwidth-Schedules fuer zeitgesteuerte Geschwindigkeitsprofile.
-- Integrierte Update-Pruefung ueber GitHub Releases.
+- Clipboard watcher for automatic link detection.
+- Minimize-to-tray with tray menu controls.
+- Speed limits globally or per download.
+- Bandwidth schedules for time-based speed profiles.
+- Built-in update checks via GitHub Releases.
 
 ## Installation
 
-### Option A: Fertige Releases (empfohlen)
+### Option A: prebuilt releases (recommended)
 
-1. Release von der GitHub-Release-Seite herunterladen.
-2. Setup oder Portable-Version starten.
-3. Debrid-Tokens in den Settings eintragen.
+1. Download a release from the GitHub Releases page.
+2. Run the installer or portable build.
+3. Add your debrid tokens in Settings.
 
 Releases: `https://github.com/Sucukdeluxe/real-debrid-downloader/releases`
 
-### Option B: Aus dem Source bauen
+### Option B: build from source
 
-Voraussetzungen:
+Requirements:
 
-- Node.js `20+` (empfohlen `22+`)
+- Node.js `20+` (recommended `22+`)
 - npm
-- Windows `10/11` (fuer Packaging und regulaeren Desktop-Betrieb)
-- Optional: 7-Zip/UnRAR fuer bestimmte Archive
+- Windows `10/11` (for packaging and regular desktop use)
+- Optional: 7-Zip/UnRAR for specific archive formats
 
 ```bash
 npm install
 npm run dev
 ```
 
-## NPM-Skripte
+## NPM scripts
 
-| Befehl | Beschreibung |
+| Command | Description |
 | --- | --- |
-| `npm run dev` | Startet Main, Renderer und Electron im Dev-Modus |
-| `npm run build` | Baut Main- und Renderer-Bundles |
-| `npm run start` | Startet die App lokal im Production-Modus |
-| `npm test` | Fuehrt Vitest-Unit-Tests aus |
-| `npm run self-check` | Fuehrt integrierten End-to-End-Self-Check aus |
-| `npm run release:win` | Erstellt Windows-Installer + Portable-Build |
+| `npm run dev` | Starts main process, renderer, and Electron in dev mode |
+| `npm run build` | Builds main and renderer bundles |
+| `npm run start` | Starts the app locally in production mode |
+| `npm test` | Runs Vitest unit tests |
+| `npm run self-check` | Runs integrated end-to-end self-checks |
+| `npm run release:win` | Creates Windows installer and portable build |
 
-## Typischer Workflow
+## Typical workflow
 
-1. Provider-Tokens in den Settings hinterlegen.
-2. Links oder `.dlc` einfuegen/importieren.
-3. Optional Paketnamen, Zielordner, Entpack- und Cleanup-Regeln setzen.
-4. Queue starten und Fortschritt in der Downloads-Ansicht ueberwachen.
-5. Nach Abschluss Integritaetsstatus und Zusammenfassung pruefen.
+1. Add provider tokens in Settings.
+2. Paste/import links or `.dlc` containers.
+3. Optionally set package names, target folders, extraction, and cleanup rules.
+4. Start the queue and monitor progress in the Downloads tab.
+5. Review integrity results and summary after completion.
 
-## Projektstruktur
+## Project structure
 
-- `src/main` - Electron Main Process, Queue/Download/Provider-Logik
-- `src/preload` - sichere IPC-Bridge zwischen Main und Renderer
-- `src/renderer` - React-Oberflaeche
-- `src/shared` - gemeinsame Typen und IPC-Vertraege
-- `tests` - Unit- und Self-Check-Tests
+- `src/main` - Electron main process, queue/download/provider logic
+- `src/preload` - secure IPC bridge between main and renderer
+- `src/renderer` - React UI
+- `src/shared` - shared types and IPC contracts
+- `tests` - unit tests and self-check tests
 
-## Daten und Logs
+## Data and logs
 
-Die App speichert Runtime-Daten im Electron-`userData`-Verzeichnis, u.a.:
+The app stores runtime files in Electron's `userData` directory, including:
 
 - `rd_downloader_config.json`
 - `rd_session_state.json`
@@ -106,15 +106,15 @@ Die App speichert Runtime-Daten im Electron-`userData`-Verzeichnis, u.a.:
 
 ## Troubleshooting
 
-- Download startet nicht: Token/Provider in den Settings pruefen.
-- Entpacken schlaegt fehl: Archive-Passwoerter und Entpack-Tool-Verfuegbarkeit pruefen.
-- Sehr langsame Downloads: Speed-Limit und aktive Bandwidth-Schedules kontrollieren.
-- Unerwartete Unterbrechungen: Reconnect-Option und Fallback-Provider aktivieren.
+- Download does not start: verify token and selected provider in Settings.
+- Extraction fails: check archive passwords and extraction tool availability.
+- Very slow downloads: check active speed limit and bandwidth schedules.
+- Unexpected interruptions: enable reconnect and fallback providers.
 
 ## Changelog
 
-Die Release-Historie findest du in `CHANGELOG.md` und unter GitHub Releases.
+Release history is available in `CHANGELOG.md` and on GitHub Releases.
 
-## Lizenz
+## License
 
-MIT - siehe `LICENSE`.
+MIT - see `LICENSE`.
