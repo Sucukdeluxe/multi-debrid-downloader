@@ -123,5 +123,56 @@ describe("mega-web-fallback", () => {
       // Generation fails -> resets cookie -> tries again -> fails again -> returns null
       expect(result).toBeNull();
     });
+
+    it("aborts pending Mega-Web polling when signal is cancelled", async () => {
+      globalThis.fetch = vi.fn((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const urlStr = String(url);
+
+        if (urlStr.includes("form=login")) {
+          const headers = new Headers();
+          headers.append("set-cookie", "session=goodcookie; path=/");
+          return Promise.resolve(new Response("", { headers, status: 200 }));
+        }
+
+        if (urlStr.includes("page=debrideur")) {
+          return Promise.resolve(new Response('<form id="debridForm"></form>', { status: 200 }));
+        }
+
+        if (urlStr.includes("form=debrid")) {
+          return Promise.resolve(new Response(`
+            <div class="acp-box">
+              <h3>Link: https://mega.debrid/link2</h3>
+              <a href="javascript:processDebrid(1,'secretcode456',0)">Download</a>
+            </div>
+          `, { status: 200 }));
+        }
+
+        if (urlStr.includes("ajax=debrid")) {
+          return new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            const onAbort = (): void => reject(new Error("aborted:ajax"));
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+
+        return Promise.resolve(new Response("Not found", { status: 404 }));
+      }) as unknown as typeof fetch;
+
+      const fallback = new MegaWebFallback(() => ({ login: "user", password: "pwd" }));
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort("test");
+      }, 30);
+
+      try {
+        await expect(fallback.unrestrict("https://mega.debrid/link2", controller.signal)).rejects.toThrow(/aborted/i);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
   });
 });
