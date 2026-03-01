@@ -84,6 +84,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     autoExtract: Boolean(settings.autoExtract),
     autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),
     extractDir: normalizeAbsoluteDir(settings.extractDir, defaults.extractDir),
+    collectMkvToLibrary: Boolean(settings.collectMkvToLibrary),
+    mkvLibraryDir: normalizeAbsoluteDir(settings.mkvLibraryDir, defaults.mkvLibraryDir),
     createExtractSubfolder: Boolean(settings.createExtractSubfolder),
     hybridExtract: Boolean(settings.hybridExtract),
     cleanupMode: settings.cleanupMode,

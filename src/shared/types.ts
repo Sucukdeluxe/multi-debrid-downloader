@@ -50,6 +50,8 @@ export interface AppSettings {
   autoExtract: boolean;
   autoRename4sf4sj: boolean;
   extractDir: string;
+  collectMkvToLibrary: boolean;
+  mkvLibraryDir: string;
   createExtractSubfolder: boolean;
   hybridExtract: boolean;
   cleanupMode: CleanupMode;

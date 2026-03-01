@@ -50,6 +50,8 @@ export function defaultSettings(): AppSettings {
     autoExtract: true,
     autoRename4sf4sj: false,
     extractDir: path.join(baseDir, "_entpackt"),
+    collectMkvToLibrary: false,
+    mkvLibraryDir: path.join(baseDir, "_mkv"),
     createExtractSubfolder: true,
     hybridExtract: true,
     cleanupMode: "none",

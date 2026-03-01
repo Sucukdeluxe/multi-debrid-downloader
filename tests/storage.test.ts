@@ -84,6 +84,7 @@ describe("settings storage", () => {
       speedLimitKbps: -1,
       outputDir: "   ",
       extractDir: "   ",
+      mkvLibraryDir: "   ",
       updateRepo: "   "
     });
 
@@ -99,6 +100,7 @@ describe("settings storage", () => {
     expect(normalized.speedLimitKbps).toBe(0);
     expect(normalized.outputDir).toBe(defaultSettings().outputDir);
     expect(normalized.extractDir).toBe(defaultSettings().extractDir);
+    expect(normalized.mkvLibraryDir).toBe(defaultSettings().mkvLibraryDir);
     expect(normalized.updateRepo).toBe(defaultSettings().updateRepo);
   });
 
@@ -418,6 +420,8 @@ describe("settings storage", () => {
     expect(loaded.speedLimitMode).toBe(defaults.speedLimitMode);
     expect(loaded.clipboardWatch).toBe(defaults.clipboardWatch);
     expect(loaded.minimizeToTray).toBe(defaults.minimizeToTray);
+    expect(loaded.collectMkvToLibrary).toBe(defaults.collectMkvToLibrary);
+    expect(loaded.mkvLibraryDir).toBe(defaults.mkvLibraryDir);
     expect(loaded.theme).toBe(defaults.theme);
     expect(loaded.bandwidthSchedules).toEqual(defaults.bandwidthSchedules);
     expect(loaded.updateRepo).toBe(defaults.updateRepo);

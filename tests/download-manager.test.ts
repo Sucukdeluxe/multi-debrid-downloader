@@ -3998,6 +3998,78 @@ describe("download manager", () => {
     expect(fs.existsSync(path.join(extractDir, unexpectedName))).toBe(false);
   });
 
+  it("moves extracted MKV files into a flat library folder per completed package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Flat-Pack";
+    const sourceFileName = "Season 1/Episode01.mkv";
+    const { session, packageId, itemId, originalExtractedPath } = createCompletedArchiveSession(root, packageName, sourceFileName);
+    const mkvLibraryDir = path.join(root, "mkv-library");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const flattenedPath = path.join(mkvLibraryDir, "Episode01.mkv");
+    await waitFor(() => fs.existsSync(flattenedPath), 12000);
+
+    expect(manager.getSnapshot().session.packages[packageId]?.status).toBe("completed");
+    expect(manager.getSnapshot().session.items[itemId]?.fullStatus).toBe("Entpackt");
+    expect(fs.existsSync(flattenedPath)).toBe(true);
+    expect(fs.existsSync(originalExtractedPath)).toBe(false);
+  });
+
+  it("keeps existing MKV names and appends a suffix while flattening", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Flat-Collision";
+    const sourceFileName = "Season 1/Episode01.mkv";
+    const { session } = createCompletedArchiveSession(root, packageName, sourceFileName);
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    fs.mkdirSync(mkvLibraryDir, { recursive: true });
+    const existingPath = path.join(mkvLibraryDir, "Episode01.mkv");
+    fs.writeFileSync(existingPath, "already-here", "utf8");
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const suffixedPath = path.join(mkvLibraryDir, "Episode01 (2).mkv");
+    await waitFor(() => fs.existsSync(suffixedPath), 12000);
+
+    expect(fs.existsSync(existingPath)).toBe(true);
+    expect(fs.readFileSync(existingPath, "utf8")).toBe("already-here");
+    expect(fs.existsSync(suffixedPath)).toBe(true);
+  });
+
   it("throws a controlled error for invalid queue import JSON", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
