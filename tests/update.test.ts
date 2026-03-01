@@ -20,21 +20,21 @@ describe("update", () => {
   it("normalizes update repo input", () => {
     expect(normalizeUpdateRepo("")).toBe("Sucukdeluxe/real-debrid-downloader");
     expect(normalizeUpdateRepo("owner/repo")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("https://github.com/owner/repo")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("https://www.github.com/owner/repo")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("https://github.com/owner/repo/releases/tag/v1.2.3")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("github.com/owner/repo.git")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("git@github.com:owner/repo.git")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("https://codeberg.org/owner/repo")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("https://www.codeberg.org/owner/repo")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("https://codeberg.org/owner/repo/releases/tag/v1.2.3")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("codeberg.org/owner/repo.git")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("git@codeberg.org:owner/repo.git")).toBe("owner/repo");
   });
 
-  it("uses normalized repo slug for GitHub API requests", async () => {
+  it("uses normalized repo slug for Codeberg API requests", async () => {
     let requestedUrl = "";
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       requestedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       return new Response(
         JSON.stringify({
           tag_name: `v${APP_VERSION}`,
-          html_url: "https://github.com/owner/repo/releases/tag/v1.0.0",
+          html_url: "https://codeberg.org/owner/repo/releases/tag/v1.0.0",
           assets: []
         }),
         {
@@ -44,8 +44,8 @@ describe("update", () => {
       );
     }) as typeof fetch;
 
-    const result = await checkGitHubUpdate("https://github.com/owner/repo/releases");
-    expect(requestedUrl).toBe("https://api.github.com/repos/owner/repo/releases/latest");
+    const result = await checkGitHubUpdate("https://codeberg.org/owner/repo/releases");
+    expect(requestedUrl).toBe("https://codeberg.org/api/v1/repos/owner/repo/releases/latest");
     expect(result.currentVersion).toBe(APP_VERSION);
     expect(result.latestVersion).toBe(APP_VERSION);
     expect(result.updateAvailable).toBe(false);
@@ -55,7 +55,7 @@ describe("update", () => {
     globalThis.fetch = (async (): Promise<Response> => new Response(
       JSON.stringify({
         tag_name: "v9.9.9",
-        html_url: "https://github.com/owner/repo/releases/tag/v9.9.9",
+        html_url: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
         assets: [
           {
             name: "Real-Debrid-Downloader 9.9.9.exe",
@@ -105,7 +105,7 @@ describe("update", () => {
       currentVersion: APP_VERSION,
       latestVersion: "9.9.9",
       latestTag: "v9.9.9",
-      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "https://example.invalid/stale-setup.exe",
       setupAssetName: "Real-Debrid-Downloader Setup 9.9.9.exe",
       setupAssetDigest: `sha256:${executableDigest}`
@@ -176,7 +176,7 @@ describe("update", () => {
       currentVersion: APP_VERSION,
       latestVersion: "9.9.9",
       latestTag: "v9.9.9",
-      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "",
       setupAssetName: ""
     };
@@ -240,7 +240,7 @@ describe("update", () => {
         currentVersion: APP_VERSION,
         latestVersion: "9.9.9",
         latestTag: "v9.9.9",
-        releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+        releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
         setupAssetUrl: "https://example.invalid/hang-setup.exe",
         setupAssetName: "",
         setupAssetDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -276,7 +276,7 @@ describe("update", () => {
       currentVersion: APP_VERSION,
       latestVersion: "9.9.9",
       latestTag: "v9.9.9",
-      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "https://example.invalid/mismatch-setup.exe",
       setupAssetName: "setup.exe",
       setupAssetDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -292,11 +292,11 @@ describe("normalizeUpdateRepo extended", () => {
   it("handles trailing slashes and extra path segments", () => {
     expect(normalizeUpdateRepo("owner/repo/")).toBe("owner/repo");
     expect(normalizeUpdateRepo("/owner/repo/")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("https://github.com/owner/repo/tree/main/src")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("https://codeberg.org/owner/repo/tree/main/src")).toBe("owner/repo");
   });
 
   it("handles ssh-style git URLs", () => {
-    expect(normalizeUpdateRepo("git@github.com:user/project.git")).toBe("user/project");
+    expect(normalizeUpdateRepo("git@codeberg.org:user/project.git")).toBe("user/project");
   });
 
   it("returns default for malformed inputs", () => {
@@ -307,12 +307,12 @@ describe("normalizeUpdateRepo extended", () => {
   it("rejects traversal-like owner or repo segments", () => {
     expect(normalizeUpdateRepo("../owner/repo")).toBe("Sucukdeluxe/real-debrid-downloader");
     expect(normalizeUpdateRepo("owner/../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
-    expect(normalizeUpdateRepo("https://github.com/owner/../../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("https://codeberg.org/owner/../../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
   });
 
   it("handles www prefix", () => {
-    expect(normalizeUpdateRepo("https://www.github.com/owner/repo")).toBe("owner/repo");
-    expect(normalizeUpdateRepo("www.github.com/owner/repo")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("https://www.codeberg.org/owner/repo")).toBe("owner/repo");
+    expect(normalizeUpdateRepo("www.codeberg.org/owner/repo")).toBe("owner/repo");
   });
 });
 

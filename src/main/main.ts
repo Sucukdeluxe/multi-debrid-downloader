@@ -78,7 +78,7 @@ function createWindow(): BrowserWindow {
         responseHeaders: {
           ...details.responseHeaders,
           "Content-Security-Policy": [
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://api.github.com https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://codeberg.org https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu"
           ]
         }
       });

@@ -43,17 +43,17 @@ Desktop downloader for **Real-Debrid, Mega-Debrid, BestDebrid, and AllDebrid** w
 - Minimize-to-tray with tray menu controls.
 - Speed limits globally or per download.
 - Bandwidth schedules for time-based speed profiles.
-- Built-in update checks via GitHub Releases.
+- Built-in update checks via Codeberg Releases.
 
 ## Installation
 
 ### Option A: prebuilt releases (recommended)
 
-1. Download a release from the GitHub Releases page.
+1. Download a release from the Codeberg Releases page.
 2. Run the installer or portable build.
 3. Add your debrid tokens in Settings.
 
-Releases: `https://github.com/Sucukdeluxe/real-debrid-downloader/releases`
+Releases: `https://codeberg.org/Sucukdeluxe/real-debrid-downloader/releases`
 
 ### Option B: build from source
 
@@ -113,7 +113,7 @@ The app stores runtime files in Electron's `userData` directory, including:
 
 ## Changelog
 
-Release history is available in `CHANGELOG.md` and on GitHub Releases.
+Release history is available in `CHANGELOG.md` and on Codeberg Releases.
 
 ## License
 

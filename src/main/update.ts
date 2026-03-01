@@ -17,6 +17,8 @@ const DOWNLOAD_BODY_IDLE_TIMEOUT_MS = 45000;
 const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1500;
 const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
+const UPDATE_WEB_BASE = "https://codeberg.org";
+const UPDATE_API_BASE = "https://codeberg.org/api/v1";
 
 let activeUpdateAbortController: AbortController | null = null;
 
@@ -45,9 +47,9 @@ export function normalizeUpdateRepo(repo: string): string {
 
   const normalizeParts = (input: string): string => {
     const cleaned = input
-      .replace(/^https?:\/\/(?:www\.)?github\.com\//i, "")
-      .replace(/^(?:www\.)?github\.com\//i, "")
-      .replace(/^git@github\.com:/i, "")
+      .replace(/^https?:\/\/(?:www\.)?(?:codeberg\.org|github\.com)\//i, "")
+      .replace(/^(?:www\.)?(?:codeberg\.org|github\.com)\//i, "")
+      .replace(/^git@(?:codeberg\.org|github\.com):/i, "")
       .replace(/\.git$/i, "")
       .replace(/^\/+|\/+$/g, "");
     const parts = cleaned.split("/").filter(Boolean);
@@ -64,7 +66,7 @@ export function normalizeUpdateRepo(repo: string): string {
   try {
     const url = new URL(raw);
     const host = url.hostname.toLowerCase();
-    if (host === "github.com" || host === "www.github.com") {
+    if (host === "codeberg.org" || host === "www.codeberg.org" || host === "github.com" || host === "www.github.com") {
       const normalized = normalizeParts(url.pathname);
       if (normalized) {
         return normalized;
@@ -158,7 +160,7 @@ function createFallbackResult(repo: string): UpdateCheckResult {
     currentVersion: APP_VERSION,
     latestVersion: APP_VERSION,
     latestTag: `v${APP_VERSION}`,
-    releaseUrl: `https://github.com/${safeRepo}/releases/latest`
+    releaseUrl: `${UPDATE_WEB_BASE}/${safeRepo}/releases/latest`
   };
 }
 
@@ -210,7 +212,7 @@ async function fetchReleasePayload(safeRepo: string, endpoint: string): Promise<
   const timeout = timeoutController(RELEASE_FETCH_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`https://api.github.com/repos/${safeRepo}/${endpoint}`, {
+    response = await fetch(`${UPDATE_API_BASE}/repos/${safeRepo}/${endpoint}`, {
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": UPDATE_USER_AGENT
@@ -250,9 +252,9 @@ function buildDownloadCandidates(safeRepo: string, check: UpdateCheckResult): st
   const candidates = [setupAssetUrl];
   if (setupAssetName) {
     const encodedName = encodeURIComponent(setupAssetName);
-    candidates.push(`https://github.com/${safeRepo}/releases/latest/download/${encodedName}`);
+    candidates.push(`${UPDATE_WEB_BASE}/${safeRepo}/releases/latest/download/${encodedName}`);
     if (latestTag) {
-      candidates.push(`https://github.com/${safeRepo}/releases/download/${encodeURIComponent(latestTag)}/${encodedName}`);
+      candidates.push(`${UPDATE_WEB_BASE}/${safeRepo}/releases/download/${encodeURIComponent(latestTag)}/${encodedName}`);
     }
   }
 

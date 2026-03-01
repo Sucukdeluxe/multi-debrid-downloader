@@ -1527,7 +1527,7 @@ export function App(): ReactElement {
                     <option value="ask">nachfragen</option>
                   </select></div>
                 </div>
-                <label>GitHub Repo</label>
+                <label>Codeberg Repo</label>
                 <input value={settingsDraft.updateRepo} onChange={(e) => setText("updateRepo", e.target.value)} />
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(e) => setBool("autoUpdateCheck", e.target.checked)} /> Beim Start auf Updates prüfen</label>
               </article>
