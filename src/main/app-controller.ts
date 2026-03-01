@@ -21,6 +21,7 @@ import { configureLogger, getLogFilePath, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
+import { startDebugServer, stopDebugServer } from "./debug-server";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -64,6 +65,7 @@ export class AppController {
     });
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
+    startDebugServer(this.manager, this.storagePaths.baseDir);
 
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();
@@ -235,6 +237,7 @@ export class AppController {
   }
 
   public shutdown(): void {
+    stopDebugServer();
     abortActiveUpdateDownload();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
