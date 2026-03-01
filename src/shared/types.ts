@@ -226,3 +226,26 @@ export interface ParsedHashEntry {
   algorithm: "crc32" | "md5" | "sha1";
   digest: string;
 }
+
+export interface BandwidthSample {
+  timestamp: number;
+  speedBps: number;
+}
+
+export interface BandwidthStats {
+  samples: BandwidthSample[];
+  currentSpeedBps: number;
+  averageSpeedBps: number;
+  maxSpeedBps: number;
+  totalBytesSession: number;
+  sessionDurationSeconds: number;
+}
+
+export interface SessionStats {
+  bandwidth: BandwidthStats;
+  totalDownloads: number;
+  completedDownloads: number;
+  failedDownloads: number;
+  activeDownloads: number;
+  queuedDownloads: number;
+}

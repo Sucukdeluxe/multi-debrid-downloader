@@ -25,5 +25,6 @@ export const IPC_CHANNELS = {
   PICK_CONTAINERS: "dialog:pick-containers",
   STATE_UPDATE: "state:update",
   CLIPBOARD_DETECTED: "clipboard:detected",
-  TOGGLE_CLIPBOARD: "clipboard:toggle"
+  TOGGLE_CLIPBOARD: "clipboard:toggle",
+  GET_SESSION_STATS: "stats:get-session-stats"
 } as const;

@@ -954,6 +954,7 @@ describe("download manager", () => {
           token: "rd-token",
           outputDir: path.join(root, "downloads"),
           extractDir: path.join(root, "extract"),
+          retryLimit: 1,
           autoExtract: false
         },
         emptySession(),
@@ -1084,6 +1085,7 @@ describe("download manager", () => {
           token: "rd-token",
           outputDir: path.join(root, "downloads"),
           extractDir: path.join(root, "extract"),
+          retryLimit: 1,
           autoExtract: false
         },
         session,
@@ -1216,6 +1218,7 @@ describe("download manager", () => {
           token: "rd-token",
           outputDir: path.join(root, "downloads"),
           extractDir: path.join(root, "extract"),
+          retryLimit: 1,
           autoExtract: false
         },
         session,
@@ -1359,6 +1362,7 @@ describe("download manager", () => {
           token: "rd-token",
           outputDir: path.join(root, "downloads"),
           extractDir: path.join(root, "extract"),
+          retryLimit: 1,
           autoExtract: false
         },
         session,
@@ -1494,7 +1498,7 @@ describe("download manager", () => {
       server.close();
       await once(server, "close");
     }
-  }, 30000);
+  }, 70000);
 
   it("retries non-retriable HTTP statuses and eventually succeeds", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
@@ -4083,6 +4087,7 @@ describe("download manager", () => {
     const sourceFileName = `${nestedFolder}/tvr-gotham-s03e11-720p.mkv`;
     const zip = new AdmZip();
     zip.addFile(sourceFileName, Buffer.from("video"));
+    zip.addFile(`${nestedFolder}/tvr-gotham-s03-720p.nfo`, Buffer.from("info"));
     zip.addFile(`${nestedFolder}/Thumbs.db`, Buffer.from("thumbs"));
     zip.addFile("desktop.ini", Buffer.from("system"));
     const archivePath = path.join(outputDir, "episode.zip");

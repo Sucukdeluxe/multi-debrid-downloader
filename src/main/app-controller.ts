@@ -5,6 +5,7 @@ import {
   AppSettings,
   DuplicatePolicy,
   ParsedPackageInput,
+  SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
   UiSnapshot,
@@ -223,6 +224,10 @@ export class AppController {
 
   public importQueue(json: string): { addedPackages: number; addedLinks: number } {
     return this.manager.importQueue(json);
+  }
+
+  public getSessionStats(): SessionStats {
+    return this.manager.getSessionStats();
   }
 
   public shutdown(): void {
