@@ -1457,8 +1457,19 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private collectVideoFiles(rootDir: string): string[] {
-    if (!rootDir || !fs.existsSync(rootDir)) {
+  private collectFilesByExtensions(rootDir: string, extensions: Set<string>): string[] {
+    if (!rootDir || !fs.existsSync(rootDir) || extensions.size === 0) {
+      return [];
+    }
+
+    const normalizedExtensions = new Set<string>();
+    for (const extension of extensions) {
+      const normalized = String(extension || "").trim().toLowerCase();
+      if (normalized) {
+        normalizedExtensions.add(normalized);
+      }
+    }
+    if (normalizedExtensions.size === 0) {
       return [];
     }
 
@@ -1483,7 +1494,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         const extension = path.extname(entry.name).toLowerCase();
-        if (!SAMPLE_VIDEO_EXTENSIONS.has(extension)) {
+        if (!normalizedExtensions.has(extension)) {
           continue;
         }
         files.push(fullPath);
@@ -1491,6 +1502,10 @@ export class DownloadManager extends EventEmitter {
     }
 
     return files;
+  }
+
+  private collectVideoFiles(rootDir: string): string[] {
+    return this.collectFilesByExtensions(rootDir, SAMPLE_VIDEO_EXTENSIONS);
   }
 
   private buildSafeAutoRenameTargetPath(sourcePath: string, targetBaseName: string, sourceExt: string): string | null {
@@ -1660,6 +1675,112 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Auto-Rename (Scene): ${renamed} Datei(en) umbenannt`);
     }
     return renamed;
+  }
+
+  private moveFileWithExdevFallback(sourcePath: string, targetPath: string): void {
+    try {
+      fs.renameSync(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as NodeJS.ErrnoException).code || "")
+        : "";
+      if (code !== "EXDEV") {
+        throw error;
+      }
+    }
+
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.rmSync(sourcePath, { force: true });
+  }
+
+  private buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): string {
+    const parsed = path.parse(path.basename(sourcePath));
+    const extension = parsed.ext || ".mkv";
+    const baseName = sanitizeFilename(parsed.name || "video");
+
+    let index = 1;
+    while (true) {
+      const candidateName = index <= 1
+        ? `${baseName}${extension}`
+        : `${baseName} (${index})${extension}`;
+      const candidatePath = path.join(targetDir, candidateName);
+      const candidateKey = pathKey(candidatePath);
+      if (reserved.has(candidateKey)) {
+        index += 1;
+        continue;
+      }
+      if (!fs.existsSync(candidatePath)) {
+        reserved.add(candidateKey);
+        return candidatePath;
+      }
+      index += 1;
+    }
+  }
+
+  private collectMkvFilesToLibrary(packageId: string, pkg: PackageEntry): void {
+    if (!this.settings.collectMkvToLibrary) {
+      return;
+    }
+
+    const sourceDir = this.settings.autoExtract ? pkg.extractDir : pkg.outputDir;
+    const targetDirRaw = String(this.settings.mkvLibraryDir || "").trim();
+    if (!sourceDir || !targetDirRaw) {
+      logger.warn(`MKV-Sammelordner übersprungen: pkg=${pkg.name}, ungültiger Pfad`);
+      return;
+    }
+    const targetDir = path.resolve(targetDirRaw);
+    if (!fs.existsSync(sourceDir)) {
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, Quelle fehlt (${sourceDir})`);
+      return;
+    }
+
+    try {
+      fs.mkdirSync(targetDir, { recursive: true });
+    } catch (error) {
+      logger.warn(`MKV-Sammelordner konnte nicht erstellt werden: pkg=${pkg.name}, dir=${targetDir}, reason=${compactErrorText(error)}`);
+      return;
+    }
+
+    const mkvFiles = this.collectFilesByExtensions(sourceDir, new Set([".mkv"]));
+    if (mkvFiles.length === 0) {
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV gefunden`);
+      return;
+    }
+
+    const reservedTargets = new Set<string>();
+    let moved = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const sourcePath of mkvFiles) {
+      if (isPathInsideDir(sourcePath, targetDir)) {
+        skipped += 1;
+        continue;
+      }
+      const targetPath = this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets);
+      if (pathKey(sourcePath) === pathKey(targetPath)) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        this.moveFileWithExdevFallback(sourcePath, targetPath);
+        moved += 1;
+      } catch (error) {
+        failed += 1;
+        logger.warn(`MKV verschieben fehlgeschlagen: ${sourcePath} -> ${targetPath} (${compactErrorText(error)})`);
+      }
+    }
+
+    if (moved > 0 && fs.existsSync(sourceDir)) {
+      const removedDirs = this.removeEmptyDirectoryTree(sourceDir);
+      if (removedDirs > 0) {
+        logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, entfernt=${removedDirs}`);
+      }
+    }
+
+    logger.info(`MKV-Sammelordner: pkg=${pkg.name}, packageId=${packageId}, moved=${moved}, skipped=${skipped}, failed=${failed}, target=${targetDir}`);
   }
 
   public cancelPackage(packageId: string): void {
@@ -4151,6 +4272,9 @@ export class DownloadManager extends EventEmitter {
       pkg.status = success > 0 ? "failed" : "cancelled";
     } else {
       pkg.status = "completed";
+    }
+    if (pkg.status === "completed") {
+      this.collectMkvFilesToLibrary(packageId, pkg);
     }
     if (this.runPackageIds.has(packageId)) {
       if (pkg.status === "completed") {

@@ -48,6 +48,7 @@ const emptySnapshot = (): UiSnapshot => ({
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
     autoExtract: true, autoRename4sf4sj: false, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
+    collectMkvToLibrary: false, mkvLibraryDir: "",
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
@@ -1412,6 +1413,23 @@ export function App(): ReactElement {
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (4SF/4SJ)</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                 <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
+                <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> MKV nach Paketabschluss in Sammelordner verschieben (flach)</label>
+                <label>MKV-Sammelordner</label>
+                <div className="input-row">
+                  <input value={settingsDraft.mkvLibraryDir} onChange={(e) => setText("mkvLibraryDir", e.target.value)} disabled={!settingsDraft.collectMkvToLibrary} />
+                  <button
+                    className="btn"
+                    disabled={!settingsDraft.collectMkvToLibrary}
+                    onClick={() => {
+                      void performQuickAction(async () => {
+                        const s = await window.rd.pickFolder();
+                        if (s) { setText("mkvLibraryDir", s); }
+                      });
+                    }}
+                  >
+                    Wählen
+                  </button>
+                </div>
                 <label>Passwortliste (eine Zeile pro Passwort)</label>
                 <textarea
                   className="password-list"
