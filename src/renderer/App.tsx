@@ -1146,7 +1146,7 @@ export function App(): ReactElement {
       <header className="top-header">
         <div className="header-spacer" />
         <div className="title-block">
-          <h1>Multi Debrid Downloader{appVersion ? ` v${appVersion}` : ""}</h1>
+          <h1>Multi Debrid Downloader{appVersion ? ` - v${appVersion}` : ""}</h1>
         </div>
         <div className="metrics">
           <div>{snapshot.speedText}</div>
