@@ -47,6 +47,8 @@ const DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS = 90000;
 
 const DEFAULT_POST_EXTRACT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
+const EXTRACT_PROGRESS_EMIT_INTERVAL_MS = 260;
+
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
   if (Number.isFinite(fromEnv) && fromEnv >= 2000 && fromEnv <= 600000) {
@@ -208,6 +210,23 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   }
   const withSep = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
   return file.startsWith(withSep);
+}
+
+function toWindowsLongPathIfNeeded(filePath: string): string {
+  const absolute = path.resolve(String(filePath || ""));
+  if (process.platform !== "win32") {
+    return absolute;
+  }
+  if (!absolute || absolute.startsWith("\\\\?\\")) {
+    return absolute;
+  }
+  if (absolute.length < 248) {
+    return absolute;
+  }
+  if (absolute.startsWith("\\\\")) {
+    return `\\\\?\\UNC\\${absolute.slice(2)}`;
+  }
+  return `\\\\?\\${absolute}`;
 }
 
 const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
@@ -1508,6 +1527,46 @@ export class DownloadManager extends EventEmitter {
     return this.collectFilesByExtensions(rootDir, SAMPLE_VIDEO_EXTENSIONS);
   }
 
+  private existsSyncSafe(filePath: string): boolean {
+    try {
+      return fs.existsSync(toWindowsLongPathIfNeeded(filePath));
+    } catch {
+      return false;
+    }
+  }
+
+  private renamePathWithExdevFallback(sourcePath: string, targetPath: string): void {
+    const sourceFsPath = toWindowsLongPathIfNeeded(sourcePath);
+    const targetFsPath = toWindowsLongPathIfNeeded(targetPath);
+    try {
+      fs.renameSync(sourceFsPath, targetFsPath);
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as NodeJS.ErrnoException).code || "")
+        : "";
+      if (code !== "EXDEV") {
+        throw error;
+      }
+    }
+
+    fs.copyFileSync(sourceFsPath, targetFsPath);
+    fs.rmSync(sourceFsPath, { force: true });
+  }
+
+  private isPathLengthRenameError(error: unknown): boolean {
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as NodeJS.ErrnoException).code || "")
+      : "";
+    if (code === "ENAMETOOLONG") {
+      return true;
+    }
+    const text = String(error || "").toLowerCase();
+    return text.includes("path too long")
+      || text.includes("name too long")
+      || text.includes("filename or extension is too long");
+  }
+
   private buildSafeAutoRenameTargetPath(sourcePath: string, targetBaseName: string, sourceExt: string): string | null {
     const dirPath = path.dirname(sourcePath);
     const safeBaseName = sanitizeFilename(String(targetBaseName || "").trim());
@@ -1526,11 +1585,7 @@ export class DownloadManager extends EventEmitter {
       return null;
     }
 
-    const maxWindowsPathLength = 259;
-    if (candidatePath.length <= maxWindowsPathLength) {
-      return candidatePath;
-    }
-    return null;
+    return candidatePath;
   }
 
   private buildShortPackageFallbackBaseName(folderCandidates: string[], sourceBaseName: string, targetBaseName: string): string | null {
@@ -1658,15 +1713,43 @@ export class DownloadManager extends EventEmitter {
       if (pathKey(targetPath) === pathKey(sourcePath)) {
         continue;
       }
-      if (fs.existsSync(targetPath)) {
+      if (this.existsSyncSafe(targetPath)) {
         logger.warn(`Auto-Rename übersprungen (Ziel existiert): ${targetPath}`);
         continue;
       }
 
       try {
-        fs.renameSync(sourcePath, targetPath);
+        this.renamePathWithExdevFallback(sourcePath, targetPath);
         renamed += 1;
       } catch (error) {
+        if (this.isPathLengthRenameError(error)) {
+          const fallbackCandidates = [
+            this.buildShortPackageFallbackBaseName(folderCandidates, sourceBaseName, targetBaseName),
+            this.buildVeryShortPackageFallbackBaseName(folderCandidates, sourceBaseName, targetBaseName)
+          ].filter((value): value is string => Boolean(value));
+          let fallbackRenamed = false;
+          for (const fallbackBaseName of fallbackCandidates) {
+            const fallbackPath = this.buildSafeAutoRenameTargetPath(sourcePath, fallbackBaseName, sourceExt);
+            if (!fallbackPath || pathKey(fallbackPath) === pathKey(sourcePath)) {
+              continue;
+            }
+            if (this.existsSyncSafe(fallbackPath)) {
+              continue;
+            }
+            try {
+              this.renamePathWithExdevFallback(sourcePath, fallbackPath);
+              logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(fallbackPath)}`);
+              renamed += 1;
+              fallbackRenamed = true;
+              break;
+            } catch {
+              // try next fallback candidate
+            }
+          }
+          if (fallbackRenamed) {
+            continue;
+          }
+        }
         logger.warn(`Auto-Rename fehlgeschlagen (${sourceName}): ${compactErrorText(error)}`);
       }
     }
@@ -1678,20 +1761,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private moveFileWithExdevFallback(sourcePath: string, targetPath: string): void {
-    try {
-      fs.renameSync(sourcePath, targetPath);
-      return;
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error
-        ? String((error as NodeJS.ErrnoException).code || "")
-        : "";
-      if (code !== "EXDEV") {
-        throw error;
-      }
-    }
-
-    fs.copyFileSync(sourcePath, targetPath);
-    fs.rmSync(sourcePath, { force: true });
+    this.renamePathWithExdevFallback(sourcePath, targetPath);
   }
 
   private buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): string {
@@ -4006,21 +4076,37 @@ export class DownloadManager extends EventEmitter {
     );
 
     const updateExtractingStatus = (text: string): void => {
+      const normalized = String(text || "");
+      if (hybridLastStatusText === normalized) {
+        return;
+      }
+      hybridLastStatusText = normalized;
       const updatedAt = nowMs();
       for (const entry of hybridItems) {
         if (isExtractedLabel(entry.fullStatus)) {
           continue;
         }
-        if (entry.fullStatus === text) {
+        if (entry.fullStatus === normalized) {
           continue;
         }
-        entry.fullStatus = text;
+        entry.fullStatus = normalized;
         entry.updatedAt = updatedAt;
       }
     };
 
-    updateExtractingStatus("Entpacken (hybrid) 0%");
-    this.emitState();
+    let hybridLastStatusText = "";
+    let hybridLastEmitAt = 0;
+    const emitHybridStatus = (text: string, force = false): void => {
+      updateExtractingStatus(text);
+      const now = nowMs();
+      if (!force && now - hybridLastEmitAt < EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
+        return;
+      }
+      hybridLastEmitAt = now;
+      this.emitState();
+    };
+
+    emitHybridStatus("Entpacken (hybrid) 0%", true);
 
     try {
       const result = await extractPackageArchives({
@@ -4046,8 +4132,7 @@ export class DownloadManager extends EventEmitter {
           const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
           const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
           const label = `Entpacken (hybrid) ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
-          updateExtractingStatus(label);
-          this.emitState();
+          emitHybridStatus(label);
         }
       });
 
@@ -4123,21 +4208,37 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
 
       const updateExtractingStatus = (text: string): void => {
+        const normalized = String(text || "");
+        if (lastExtractStatusText === normalized) {
+          return;
+        }
+        lastExtractStatusText = normalized;
         const updatedAt = nowMs();
         for (const entry of completedItems) {
           if (isExtractedLabel(entry.fullStatus)) {
             continue;
           }
-          if (entry.fullStatus === text) {
+          if (entry.fullStatus === normalized) {
             continue;
           }
-          entry.fullStatus = text;
+          entry.fullStatus = normalized;
           entry.updatedAt = updatedAt;
         }
       };
 
-      updateExtractingStatus("Entpacken 0%");
-      this.emitState();
+      let lastExtractStatusText = "";
+      let lastExtractEmitAt = 0;
+      const emitExtractStatus = (text: string, force = false): void => {
+        updateExtractingStatus(text);
+        const now = nowMs();
+        if (!force && now - lastExtractEmitAt < EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
+          return;
+        }
+        lastExtractEmitAt = now;
+        this.emitState();
+      };
+
+      emitExtractStatus("Entpacken 0%", true);
 
       const extractTimeoutMs = getPostExtractTimeoutMs();
       const extractAbortController = new AbortController();
@@ -4188,8 +4289,7 @@ export class DownloadManager extends EventEmitter {
                 const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
                 return `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
               })();
-            updateExtractingStatus(label);
-            this.emitState();
+            emitExtractStatus(label);
           }
         });
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
