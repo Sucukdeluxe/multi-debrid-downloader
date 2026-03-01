@@ -3026,8 +3026,8 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Per-item validating watchdog: abort items stuck in "validating" for >45s
-    const VALIDATING_STUCK_MS = 45000;
+    // Per-item validating watchdog: abort items stuck longer than the unrestrict timeout + buffer
+    const VALIDATING_STUCK_MS = getUnrestrictTimeoutMs() + 15000;
     for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
         continue;
