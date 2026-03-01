@@ -148,6 +148,18 @@ function updatePackageVersion(rootDir, version) {
   fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
 }
 
+function patchLatestYml(releaseDir, version) {
+  const ymlPath = path.join(releaseDir, "latest.yml");
+  let content = fs.readFileSync(ymlPath, "utf8");
+  const setupName = `Real-Debrid-Downloader Setup ${version}.exe`;
+  const dashedName = `Real-Debrid-Downloader-Setup-${version}.exe`;
+  if (content.includes(dashedName)) {
+    content = content.split(dashedName).join(setupName);
+    fs.writeFileSync(ymlPath, content, "utf8");
+    process.stdout.write(`Patched latest.yml: replaced "${dashedName}" with "${setupName}"\n`);
+  }
+}
+
 function ensureAssetsExist(rootDir, version) {
   const releaseDir = path.join(rootDir, "release");
   const files = [
@@ -162,6 +174,7 @@ function ensureAssetsExist(rootDir, version) {
       throw new Error(`Missing release artifact: ${fullPath}`);
     }
   }
+  patchLatestYml(releaseDir, version);
   return { releaseDir, files };
 }
 

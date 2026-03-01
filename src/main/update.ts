@@ -689,7 +689,7 @@ export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult
   }
 }
 
-async function downloadFile(url: string, targetPath: string, onProgress?: UpdateProgressCallback): Promise<void> {
+async function downloadFile(url: string, targetPath: string, onProgress?: UpdateProgressCallback): Promise<{ expectedBytes: number | null }> {
   const shutdownSignal = activeUpdateAbortController?.signal;
   if (shutdownSignal?.aborted) {
     throw new Error("aborted:update_shutdown");
@@ -808,6 +808,15 @@ async function downloadFile(url: string, targetPath: string, onProgress?: Update
   }
   emitDownloadProgress(true);
   logger.info(`Update-Download abgeschlossen: ${targetPath}`);
+
+  if (totalBytes) {
+    const actualSize = (await fs.promises.stat(targetPath)).size;
+    if (actualSize !== totalBytes) {
+      throw new Error(`Update Download unvollständig (${actualSize} / ${totalBytes} Bytes)`);
+    }
+  }
+
+  return { expectedBytes: totalBytes };
 }
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -992,8 +1001,8 @@ export async function installLatestUpdate(
     let verified = false;
     let lastVerifyError: unknown = null;
     let integrityError: unknown = null;
-    for (let pass = 0; pass < 2 && !verified; pass += 1) {
-      logger.info(`Update-Download Kandidaten (${pass + 1}/2): ${candidates.join(" | ")}`);
+    for (let pass = 0; pass < 3 && !verified; pass += 1) {
+      logger.info(`Update-Download Kandidaten (${pass + 1}/3): ${candidates.join(" | ")}`);
       lastVerifyError = null;
       for (let index = 0; index < candidates.length; index += 1) {
         const candidate = candidates[index];
@@ -1034,8 +1043,10 @@ export async function installLatestUpdate(
       }
 
       const status = readHttpStatusFromError(lastVerifyError);
+      const wasIntegrityError = integrityError !== null;
       let shouldRetryAfterRefresh = false;
-      if (pass === 0 && status === 404) {
+
+      if (pass < 2 && (status === 404 || wasIntegrityError)) {
         const refreshed = await resolveSetupAssetFromApi(safeRepo, effectiveCheck.latestTag);
         if (refreshed) {
           effectiveCheck = {
@@ -1045,15 +1056,14 @@ export async function installLatestUpdate(
             setupAssetDigest: refreshed.setupAssetDigest || effectiveCheck.setupAssetDigest
           };
         }
-        if (!effectiveCheck.setupAssetDigest && effectiveCheck.setupAssetUrl) {
-          const digestFromYml = await resolveSetupDigestFromLatestYml(safeRepo, effectiveCheck.latestTag, effectiveCheck.setupAssetName || "");
-          if (digestFromYml) {
-            effectiveCheck = {
-              ...effectiveCheck,
-              setupAssetDigest: digestFromYml
-            };
-            logger.info("Update-Integritätsdigest aus latest.yml übernommen");
-          }
+
+        const digestFromYml = await resolveSetupDigestFromLatestYml(safeRepo, effectiveCheck.latestTag, effectiveCheck.setupAssetName || "");
+        if (digestFromYml) {
+          effectiveCheck = {
+            ...effectiveCheck,
+            setupAssetDigest: digestFromYml
+          };
+          logger.info("Update-Integritätsdigest aus latest.yml übernommen");
         }
 
         const refreshedCandidates = buildDownloadCandidates(safeRepo, effectiveCheck);
@@ -1061,9 +1071,13 @@ export async function installLatestUpdate(
           && (refreshedCandidates.length !== candidates.length
             || refreshedCandidates.some((value, idx) => value !== candidates[idx]));
         if (changed) {
-          logger.warn("Update-404 erkannt, Kandidatenliste aus API neu geladen");
+          logger.warn(`Update-Fehler erkannt (${wasIntegrityError ? "integrity" : "404"}), Kandidatenliste aus API neu geladen`);
           candidates = refreshedCandidates;
-          shouldRetryAfterRefresh = true;
+        }
+        shouldRetryAfterRefresh = true;
+        if (wasIntegrityError) {
+          integrityError = null;
+          logger.warn("SHA512-Mismatch erkannt, erneuter Download-Versuch");
         }
       }
       if (!shouldRetryAfterRefresh) {
