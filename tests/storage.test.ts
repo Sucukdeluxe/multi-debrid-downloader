@@ -304,6 +304,58 @@ describe("settings storage", () => {
     expect(loaded.packageOrder).toEqual(empty.packageOrder);
   });
 
+  it("loads backup session when primary session is corrupted", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const backupSession = emptySession();
+    backupSession.packageOrder = ["pkg-backup"];
+    backupSession.packages["pkg-backup"] = {
+      id: "pkg-backup",
+      name: "Backup Package",
+      outputDir: path.join(dir, "out"),
+      extractDir: path.join(dir, "extract"),
+      status: "queued",
+      itemIds: ["item-backup"],
+      cancelled: false,
+      enabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    backupSession.items["item-backup"] = {
+      id: "item-backup",
+      packageId: "pkg-backup",
+      url: "https://example.com/backup-file",
+      provider: null,
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "backup-file.rar",
+      targetPath: path.join(dir, "out", "backup-file.rar"),
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    fs.writeFileSync(`${paths.sessionFile}.bak`, JSON.stringify(backupSession), "utf8");
+    fs.writeFileSync(paths.sessionFile, "{broken-session-json", "utf8");
+
+    const loaded = loadSession(paths);
+    expect(loaded.packageOrder).toEqual(["pkg-backup"]);
+    expect(loaded.packages["pkg-backup"]?.name).toBe("Backup Package");
+    expect(loaded.items["item-backup"]?.fileName).toBe("backup-file.rar");
+
+    const restoredPrimary = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as { packages?: Record<string, unknown> };
+    expect(restoredPrimary.packages && "pkg-backup" in restoredPrimary.packages).toBe(true);
+  });
+
   it("returns defaults when config file contains invalid JSON", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);
@@ -393,6 +445,32 @@ describe("settings storage", () => {
 
     const persisted = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as { summaryText: string };
     expect(persisted.summaryText).toBe("before-mutation");
+  });
+
+  it("creates session backup before sync and async session overwrites", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const first = emptySession();
+    first.summaryText = "first";
+    saveSession(paths, first);
+
+    const second = emptySession();
+    second.summaryText = "second";
+    saveSession(paths, second);
+
+    const backupAfterSync = JSON.parse(fs.readFileSync(`${paths.sessionFile}.bak`, "utf8")) as { summaryText?: string };
+    expect(backupAfterSync.summaryText).toBe("first");
+
+    const third = emptySession();
+    third.summaryText = "third";
+    await saveSessionAsync(paths, third);
+
+    const backupAfterAsync = JSON.parse(fs.readFileSync(`${paths.sessionFile}.bak`, "utf8")) as { summaryText?: string };
+    const primaryAfterAsync = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as { summaryText?: string };
+    expect(backupAfterAsync.summaryText).toBe("second");
+    expect(primaryAfterAsync.summaryText).toBe("third");
   });
 
   it("applies defaults for missing fields when loading old config", () => {
