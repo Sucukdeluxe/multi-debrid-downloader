@@ -311,6 +311,12 @@ body,
   flex-wrap: wrap;
 }
 
+.collector-metrics {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
 .collector-tabs {
   display: flex;
   align-items: center;
@@ -410,6 +416,34 @@ body,
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.settings-toolbar-actions-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.update-install-progress {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.update-install-progress-downloading,
+.update-install-progress-verifying,
+.update-install-progress-launching,
+.update-install-progress-starting {
+  color: color-mix(in srgb, var(--accent) 75%, var(--text));
+}
+
+.update-install-progress-done {
+  color: color-mix(in srgb, var(--accent) 65%, var(--text));
+}
+
+.update-install-progress-error {
+  color: color-mix(in srgb, var(--danger) 65%, var(--text));
 }
 
 .settings-grid {
@@ -746,6 +780,11 @@ td {
 
   .settings-toolbar-actions {
     width: 100%;
+  }
+
+  .settings-toolbar-actions-wrap {
+    width: 100%;
+    align-items: flex-start;
   }
 
   .grid-two,

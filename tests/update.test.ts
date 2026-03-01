@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
-import { UpdateCheckResult } from "../src/shared/types";
+import { UpdateCheckResult, UpdateInstallProgress } from "../src/shared/types";
 
 const originalFetch = globalThis.fetch;
 
@@ -285,6 +285,48 @@ describe("update", () => {
     const result = await installLatestUpdate("owner/repo", prechecked);
     expect(result.started).toBe(false);
     expect(result.message).toMatch(/integrit|sha256|mismatch/i);
+  });
+
+  it("emits install progress events while downloading and launching update", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    const digest = sha256Hex(executablePayload);
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("progress-setup.exe")) {
+        return new Response(executablePayload, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(executablePayload.length)
+          }
+        });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const prechecked: UpdateCheckResult = {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "v9.9.9",
+      releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "https://example.invalid/progress-setup.exe",
+      setupAssetName: "setup.exe",
+      setupAssetDigest: `sha256:${digest}`
+    };
+
+    const progressEvents: UpdateInstallProgress[] = [];
+    const result = await installLatestUpdate("owner/repo", prechecked, (progress) => {
+      progressEvents.push(progress);
+    });
+
+    expect(result.started).toBe(true);
+    expect(progressEvents.some((entry) => entry.stage === "starting")).toBe(true);
+    expect(progressEvents.some((entry) => entry.stage === "downloading")).toBe(true);
+    expect(progressEvents.some((entry) => entry.stage === "verifying")).toBe(true);
+    expect(progressEvents.some((entry) => entry.stage === "launching")).toBe(true);
+    expect(progressEvents.some((entry) => entry.stage === "done")).toBe(true);
   });
 });
 

@@ -3,6 +3,7 @@ export const IPC_CHANNELS = {
   GET_VERSION: "app:get-version",
   CHECK_UPDATES: "app:check-updates",
   INSTALL_UPDATE: "app:install-update",
+  UPDATE_INSTALL_PROGRESS: "app:update-install-progress",
   OPEN_EXTERNAL: "app:open-external",
   UPDATE_SETTINGS: "app:update-settings",
   ADD_LINKS: "queue:add-links",
