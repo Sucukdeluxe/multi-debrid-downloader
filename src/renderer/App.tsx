@@ -2718,7 +2718,12 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <h4 onClick={(e) => { e.stopPropagation(); onStartEdit(pkg.id, pkg.name); }} title="Klicken zum Umbenennen">{pkg.name}</h4>
             )}
           </div>
-          <span className="pkg-col pkg-col-progress">{dlProgress}%</span>
+          <span className="pkg-col pkg-col-progress">
+            <span className="progress-inline">
+              <span className="progress-inline-bar" style={{ width: `${dlProgress}%` }} />
+              <span className="progress-inline-text">{dlProgress}%</span>
+            </span>
+          </span>
           <span className="pkg-col pkg-col-size">{humanSize(items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0))}</span>
           <span className="pkg-col pkg-col-downloaded">{humanSize(items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0))}</span>
           <span className="pkg-col pkg-col-hoster" title={(() => {
@@ -2742,7 +2747,14 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       {!collapsed && items.map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           <span className="pkg-col pkg-col-name item-indent" title={item.fileName}>{item.fileName}</span>
-          <span className="pkg-col pkg-col-progress">{item.totalBytes > 0 ? `${item.progressPercent}%` : "-"}</span>
+          <span className="pkg-col pkg-col-progress">
+            {item.totalBytes > 0 ? (
+              <span className="progress-inline progress-inline-small">
+                <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
+                <span className="progress-inline-text">{item.progressPercent}%</span>
+              </span>
+            ) : "-"}
+          </span>
           <span className="pkg-col pkg-col-size">{(item.totalBytes || item.downloadedBytes) ? humanSize(item.totalBytes || item.downloadedBytes || 0) : "-"}</span>
           <span className="pkg-col pkg-col-downloaded">{item.downloadedBytes > 0 ? humanSize(item.downloadedBytes) : "-"}</span>
           <span className="pkg-col pkg-col-hoster" title={formatHoster(item)}>{formatHoster(item)}</span>
