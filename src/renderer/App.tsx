@@ -2077,11 +2077,10 @@ export function App(): ReactElement {
             </div>
             <div className="pkg-column-header">
               {(["name", "size", "hoster"] as PkgSortColumn[]).flatMap((col) => {
-                const labels: Record<PkgSortColumn, string> = { name: "Name", size: "Größe", hoster: "Hoster" };
+                const labels: Record<PkgSortColumn, string> = { name: "Name", size: "Geladen / Größe", hoster: "Hoster" };
                 const isActive = downloadsSortColumn === col;
                 const before: React.ReactNode[] = [];
                 if (col === "size") before.push(<span key="progress" className="pkg-col pkg-col-progress">Fortschritt</span>);
-                if (col === "hoster") before.push(<span key="downloaded" className="pkg-col pkg-col-downloaded">Geladen</span>);
                 return [
                   ...before,
                   <span
@@ -2179,8 +2178,15 @@ export function App(): ReactElement {
                         <h4>{entry.name}</h4>
                       </div>
                       <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
-                      <span className="pkg-col pkg-col-size">{humanSize(entry.totalBytes)}</span>
-                      <span className="pkg-col pkg-col-downloaded">{humanSize(entry.downloadedBytes)}</span>
+                      <span className="pkg-col pkg-col-size">{(() => {
+                        const pct = entry.totalBytes > 0 ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100)) : 0;
+                        return entry.totalBytes > 0 ? (
+                          <span className="progress-size">
+                            <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                            <span className="progress-size-text">{humanSize(entry.downloadedBytes)} / {humanSize(entry.totalBytes)}</span>
+                          </span>
+                        ) : "-";
+                      })()}</span>
                       <span className="pkg-col pkg-col-hoster">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
                       <span className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
                       <span className="pkg-col pkg-col-speed">-</span>
@@ -2806,8 +2812,17 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <span className="progress-inline-text">{dlProgress}%</span>
             </span>
           </span>
-          <span className="pkg-col pkg-col-size">{humanSize(items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0))}</span>
-          <span className="pkg-col pkg-col-downloaded">{humanSize(items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0))}</span>
+          <span className="pkg-col pkg-col-size">{(() => {
+            const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
+            const dlBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+            const pct = totalBytes > 0 ? Math.min(100, Math.round((dlBytes / totalBytes) * 100)) : 0;
+            return totalBytes > 0 ? (
+              <span className="progress-size">
+                <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                <span className="progress-size-text">{humanSize(dlBytes)} / {humanSize(totalBytes)}</span>
+              </span>
+            ) : "-";
+          })()}</span>
           <span className="pkg-col pkg-col-hoster" title={(() => {
             const hosters = [...new Set(items.map((item) => formatHoster(item)).filter((h) => h !== "-"))];
             return hosters.join(", ");
@@ -2837,8 +2852,17 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               </span>
             ) : "-"}
           </span>
-          <span className="pkg-col pkg-col-size">{(item.totalBytes || item.downloadedBytes) ? humanSize(item.totalBytes || item.downloadedBytes || 0) : "-"}</span>
-          <span className="pkg-col pkg-col-downloaded">{item.downloadedBytes > 0 ? humanSize(item.downloadedBytes) : "-"}</span>
+          <span className="pkg-col pkg-col-size">{(() => {
+            const total = item.totalBytes || item.downloadedBytes || 0;
+            const dl = item.downloadedBytes || 0;
+            const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
+            return total > 0 ? (
+              <span className="progress-size progress-size-small">
+                <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                <span className="progress-size-text">{humanSize(dl)} / {humanSize(total)}</span>
+              </span>
+            ) : "-";
+          })()}</span>
           <span className="pkg-col pkg-col-hoster" title={formatHoster(item)}>{formatHoster(item)}</span>
           <span className="pkg-col pkg-col-status" title={item.fullStatus}>
             {item.fullStatus}
