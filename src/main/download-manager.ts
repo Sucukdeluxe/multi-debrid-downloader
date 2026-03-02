@@ -3346,7 +3346,14 @@ export class DownloadManager extends EventEmitter {
         }
         item.provider = unrestricted.provider;
         item.retries += unrestricted.retriesUsed;
-        item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        const resolvedName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        // Only overwrite fileName if the resolved name is better (not "download.bin" / opaque)
+        if (resolvedName && !looksLikeOpaqueFilename(resolvedName) && resolvedName.toLowerCase() !== "download.bin") {
+          item.fileName = resolvedName;
+        } else if (looksLikeOpaqueFilename(item.fileName)) {
+          // Current name is also opaque, use whatever we got
+          item.fileName = resolvedName;
+        }
         try {
           fs.mkdirSync(pkg.outputDir, { recursive: true });
         } catch (mkdirError) {
