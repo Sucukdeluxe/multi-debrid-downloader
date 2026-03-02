@@ -445,7 +445,9 @@ function lowerExtractProcessPriority(childPid: number | undefined): void {
     return;
   }
   try {
-    os.setPriority(pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+    // PRIORITY_LOW = IDLE_PRIORITY_CLASS on Windows, which also lowers I/O priority
+    // so extraction doesn't starve downloads or UI from disk bandwidth
+    os.setPriority(pid, os.constants.priority.PRIORITY_LOW);
   } catch {
     // ignore: priority lowering is best-effort
   }
