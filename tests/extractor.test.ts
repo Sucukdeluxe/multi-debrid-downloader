@@ -20,15 +20,14 @@ describe("extractor", () => {
     expect(overwriteArgs).toContain("-idc");
     expect(overwriteArgs.some((value) => /^-mt\d+$/i.test(value))).toBe(true);
     expect(overwriteArgs[overwriteArgs.length - 2]).toBe("archive.rar");
-    const winrarTarget = process.platform === "win32" ? "\\\\?\\C:\\target\\" : "C:\\target\\";
-    expect(overwriteArgs[overwriteArgs.length - 1]).toBe(winrarTarget);
+    expect(overwriteArgs[overwriteArgs.length - 1]).toBe("C:\\target\\");
 
     const askArgs = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "ask", "serienfans.org");
     expect(askArgs.slice(0, 4)).toEqual(["x", "-o-", "-pserienfans.org", "-y"]);
     expect(askArgs).toContain("-idc");
     expect(askArgs.some((value) => /^-mt\d+$/i.test(value))).toBe(true);
     expect(askArgs[askArgs.length - 2]).toBe("archive.rar");
-    expect(askArgs[askArgs.length - 1]).toBe(winrarTarget);
+    expect(askArgs[askArgs.length - 1]).toBe("C:\\target\\");
 
     const compatibilityArgs = buildExternalExtractArgs("WinRAR.exe", "archive.rar", "C:\\target", "overwrite", "", false);
     expect(compatibilityArgs).not.toContain("-idc");
@@ -456,8 +455,7 @@ describe("extractor", () => {
     expect(args7z).toContain("-aoa");
     expect(args7z).toContain("-p");
     expect(args7z).toContain("archive.7z");
-    const sevenZTarget = process.platform === "win32" ? "-o\\\\?\\C:\\target" : "-oC:\\target";
-    expect(args7z).toContain(sevenZTarget);
+    expect(args7z).toContain("-oC:\\target");
   });
 
   it("builds 7z args with skip conflict mode", () => {

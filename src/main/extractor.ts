@@ -1,29 +1,55 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 
 const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
-
-/**
- * On Windows, prefix an absolute path with \\?\ to bypass the 260-char MAX_PATH limit.
- * WinRAR 5.x+ and 7-Zip support this prefix for long output paths.
- */
-function longPathForWindows(p: string): string {
-  if (process.platform !== "win32") return p;
-  const resolved = path.resolve(p);
-  if (resolved.startsWith("\\\\?\\")) return resolved;
-  if (resolved.startsWith("\\\\")) {
-    // UNC path \\server\share -> \\?\UNC\server\share
-    return "\\\\?\\UNC\\" + resolved.slice(2);
-  }
-  return "\\\\?\\" + resolved;
-}
 const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installieren.";
+
+// ── subst drive mapping for long paths on Windows ──
+const SUBST_THRESHOLD = 100;
+const activeSubstDrives = new Set<string>();
+
+function findFreeSubstDrive(): string | null {
+  if (process.platform !== "win32") return null;
+  for (let code = 90; code >= 71; code--) { // Z to G
+    const letter = String.fromCharCode(code);
+    if (activeSubstDrives.has(letter)) continue;
+    try {
+      fs.accessSync(`${letter}:\\`);
+      // Drive exists, skip
+    } catch {
+      return letter;
+    }
+  }
+  return null;
+}
+
+interface SubstMapping { drive: string; original: string; }
+
+function createSubstMapping(targetDir: string): SubstMapping | null {
+  if (process.platform !== "win32" || targetDir.length < SUBST_THRESHOLD) return null;
+  const drive = findFreeSubstDrive();
+  if (!drive) return null;
+  const result = spawnSync("subst", [`${drive}:`, targetDir], { stdio: "pipe", timeout: 5000 });
+  if (result.status !== 0) {
+    logger.warn(`subst ${drive}: fehlgeschlagen: ${String(result.stderr || "").trim()}`);
+    return null;
+  }
+  activeSubstDrives.add(drive);
+  logger.info(`subst ${drive}: -> ${targetDir}`);
+  return { drive, original: targetDir };
+}
+
+function removeSubstMapping(mapping: SubstMapping): void {
+  spawnSync("subst", [`${mapping.drive}:`, "/d"], { stdio: "pipe", timeout: 5000 });
+  activeSubstDrives.delete(mapping.drive);
+  logger.info(`subst ${mapping.drive}: entfernt`);
+}
 
 let resolvedExtractorCommand: string | null = null;
 let resolveFailureReason = "";
@@ -621,14 +647,13 @@ export function buildExternalExtractArgs(
     const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
       ? ["-idc", extractorThreadSwitch()]
       : [];
-    const longTarget = longPathForWindows(targetDir);
-    return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${longTarget}${path.sep}`];
+    return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
   // NOTE: Same password-in-args limitation as above applies to 7z as well.
   const pass = password ? `-p${password}` : "-p";
-  return ["x", "-y", overwrite, pass, archivePath, `-o${longPathForWindows(targetDir)}`];
+  return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
 }
 
 async function resolveExtractorCommandInternal(): Promise<string> {
@@ -698,6 +723,31 @@ async function runExternalExtract(
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
 
   await fs.promises.mkdir(targetDir, { recursive: true });
+
+  // On Windows, long targetDir + archive internal paths can exceed MAX_PATH (260 chars).
+  // Use "subst" to map the targetDir to a short drive letter for the extraction process.
+  const subst = createSubstMapping(targetDir);
+  const effectiveTargetDir = subst ? `${subst.drive}:` : targetDir;
+
+  try {
+    return await runExternalExtractInner(command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
+  } finally {
+    if (subst) removeSubstMapping(subst);
+  }
+}
+
+async function runExternalExtractInner(
+  command: string,
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  passwordCandidates: string[],
+  onArchiveProgress: ((percent: number) => void) | undefined,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<string> {
+  const passwords = passwordCandidates;
+  let lastError = "";
 
   let announcedStart = false;
   let bestPercent = 0;
