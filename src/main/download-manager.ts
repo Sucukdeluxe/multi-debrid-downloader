@@ -23,7 +23,7 @@ import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
-import { StoragePaths, saveSession, saveSessionAsync, saveSettings } from "./storage";
+import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 
 type ActiveTask = {
@@ -725,6 +725,7 @@ export class DownloadManager extends EventEmitter {
   private nonResumableActive = 0;
 
   private stateEmitTimer: NodeJS.Timeout | null = null;
+  private lastStateEmitAt = 0;
 
   private speedBytesLastWindow = 0;
 
@@ -2632,17 +2633,32 @@ export class DownloadManager extends EventEmitter {
     void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
     if (now - this.lastSettingsPersistAt >= 30000) {
       this.lastSettingsPersistAt = now;
-      try { saveSettings(this.storagePaths, this.settings); } catch (err) { logger.warn(`saveSettings Fehler: ${compactErrorText(err as Error)}`); }
+      void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler: ${compactErrorText(err as Error)}`));
     }
   }
 
   private emitState(force = false): void {
+    const now = nowMs();
+    const MIN_FORCE_GAP_MS = 120;
     if (force) {
-      if (this.stateEmitTimer) {
-        clearTimeout(this.stateEmitTimer);
-        this.stateEmitTimer = null;
+      const sinceLastEmit = now - this.lastStateEmitAt;
+      if (sinceLastEmit >= MIN_FORCE_GAP_MS) {
+        if (this.stateEmitTimer) {
+          clearTimeout(this.stateEmitTimer);
+          this.stateEmitTimer = null;
+        }
+        this.lastStateEmitAt = now;
+        this.emit("state", this.getSnapshot());
+        return;
       }
-      this.emit("state", this.getSnapshot());
+      // Too soon — schedule deferred forced emit
+      if (!this.stateEmitTimer) {
+        this.stateEmitTimer = setTimeout(() => {
+          this.stateEmitTimer = null;
+          this.lastStateEmitAt = nowMs();
+          this.emit("state", this.getSnapshot());
+        }, MIN_FORCE_GAP_MS - sinceLastEmit);
+      }
       return;
     }
     if (this.stateEmitTimer) {
@@ -2660,6 +2676,7 @@ export class DownloadManager extends EventEmitter {
       : 260;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
+      this.lastStateEmitAt = nowMs();
       this.emit("state", this.getSnapshot());
     }, emitDelay);
   }
@@ -3023,11 +3040,15 @@ export class DownloadManager extends EventEmitter {
   private recordProviderFailure(provider: string): void {
     const now = nowMs();
     const entry = this.providerFailures.get(provider) || { count: 0, lastFailAt: 0, cooldownUntil: 0 };
+    // Decay: if last failure was >120s ago, reset count (transient burst is over)
+    if (entry.lastFailAt > 0 && now - entry.lastFailAt > 120000) {
+      entry.count = 0;
+    }
     entry.count += 1;
     entry.lastFailAt = now;
-    // Escalating cooldown: 5 failures→30s, 10→60s, 15→120s, 20+→300s
-    if (entry.count >= 5) {
-      const tier = Math.min(Math.floor((entry.count - 5) / 5), 3);
+    // Escalating cooldown: 8 failures→30s, 15→60s, 25→120s, 40+→300s
+    if (entry.count >= 8) {
+      const tier = entry.count >= 40 ? 3 : entry.count >= 25 ? 2 : entry.count >= 15 ? 1 : 0;
       const cooldownMs = [30000, 60000, 120000, 300000][tier];
       entry.cooldownUntil = now + cooldownMs;
       logger.warn(`Provider Circuit-Breaker: ${provider} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
@@ -3053,7 +3074,13 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
     const remaining = entry.cooldownUntil - nowMs();
-    return remaining > 0 ? remaining : 0;
+    if (remaining <= 0) {
+      // Cooldown expired — reset count so a single new failure doesn't re-trigger
+      entry.count = 0;
+      entry.cooldownUntil = 0;
+      return 0;
+    }
+    return remaining;
   }
 
   private resetStaleRetryState(): void {
@@ -3485,16 +3512,10 @@ export class DownloadManager extends EventEmitter {
       try {
         // Check provider cooldown before attempting unrestrict
         const lastProvider = item.provider || "";
-        const cooldownProviders = lastProvider ? [lastProvider] : ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "unknown"];
-        let maxCooldownMs = 0;
-        for (const prov of cooldownProviders) {
-          const cd = this.getProviderCooldownRemaining(prov);
-          if (cd > maxCooldownMs) {
-            maxCooldownMs = cd;
-          }
-        }
-        if (maxCooldownMs > 0) {
-          const delayMs = Math.min(maxCooldownMs + 1000, 310000);
+        const cooldownProvider = lastProvider || this.settings.providerPrimary || "unknown";
+        const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
+        if (cooldownMs > 0) {
+          const delayMs = Math.min(cooldownMs + 1000, 310000);
           this.queueRetry(item, active, delayMs, `Provider-Cooldown (${Math.ceil(delayMs / 1000)}s)`);
           this.persistSoon();
           this.emitState();
@@ -3729,10 +3750,6 @@ export class DownloadManager extends EventEmitter {
           const isSlowThroughput = stallErrorText.includes("slow_throughput");
           const wasValidating = item.status === "validating";
           active.stallRetries += 1;
-          // Record provider failure if stall during validation
-          if (wasValidating && item.provider) {
-            this.recordProviderFailure(item.provider);
-          }
           logger.warn(`Stall erkannt: item=${item.fileName || item.id}, phase=${wasValidating ? "validating" : "downloading"}, retry=${active.stallRetries}/${retryDisplayLimit}, bytes=${item.downloadedBytes}, error=${stallErrorText || "none"}, provider=${item.provider || "?"}`);
           // Shelve check: too many consecutive failures → long pause
           const totalFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
