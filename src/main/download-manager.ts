@@ -39,7 +39,7 @@ type ActiveTask = {
   unrestrictRetries?: number;
 };
 
-const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 15000;
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
