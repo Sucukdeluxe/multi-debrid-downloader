@@ -76,6 +76,7 @@ export function defaultSettings(): AppSettings {
     collapseNewPackages: true,
     autoSkipExtracted: false,
     confirmDeleteSelection: true,
+    totalDownloadedAllTime: 0,
     bandwidthSchedules: []
   };
 }
