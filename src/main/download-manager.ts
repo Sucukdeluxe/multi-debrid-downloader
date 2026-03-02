@@ -891,30 +891,15 @@ export class DownloadManager extends EventEmitter {
 
     this.resetSessionTotalsIfQueueEmpty();
 
-    let totalDownloaded = 0;
     let totalFiles = 0;
     for (const item of Object.values(this.session.items)) {
       if (item.status === "completed") {
-        totalDownloaded += item.downloadedBytes;
         totalFiles += 1;
       }
     }
 
-    if (this.session.running) {
-      let visibleRunBytes = 0;
-      for (const itemId of this.runItemIds) {
-        const item = this.session.items[itemId];
-        if (item) {
-          visibleRunBytes += item.downloadedBytes;
-        }
-      }
-      totalDownloaded += Math.max(0, this.session.totalDownloadedBytes - visibleRunBytes);
-    } else {
-      totalDownloaded = Math.max(totalDownloaded, this.session.totalDownloadedBytes);
-    }
-
     const stats = {
-      totalDownloaded,
+      totalDownloaded: this.sessionDownloadedBytes,
       totalDownloadedAllTime: this.settings.totalDownloadedAllTime,
       totalFiles,
       totalPackages: this.session.packageOrder.length,
