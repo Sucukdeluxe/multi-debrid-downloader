@@ -33,5 +33,8 @@ export const IPC_CHANNELS = {
   IMPORT_BACKUP: "app:import-backup",
   OPEN_LOG: "app:open-log",
   RETRY_EXTRACTION: "queue:retry-extraction",
-  EXTRACT_NOW: "queue:extract-now"
+  EXTRACT_NOW: "queue:extract-now",
+  GET_HISTORY: "history:get",
+  CLEAR_HISTORY: "history:clear",
+  REMOVE_HISTORY_ENTRY: "history:remove-entry"
 } as const;

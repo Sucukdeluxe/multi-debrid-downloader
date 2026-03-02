@@ -322,6 +322,12 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.extractNow(packageId);
   });
+  ipcMain.handle(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
+  ipcMain.handle(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
+  ipcMain.handle(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
+    validateString(entryId, "entryId");
+    return controller.removeHistoryEntry(entryId);
+  });
   ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, () => controller.exportQueue());
   ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
     validateString(json, "json");
