@@ -577,7 +577,7 @@ body,
 
 .pkg-column-header {
   display: grid;
-  grid-template-columns: 1fr 70px 90px 90px 220px 180px 100px;
+  grid-template-columns: 1fr 70px 160px 220px 180px 100px;
   gap: 8px;
   padding: 5px 12px;
   background: var(--card);
@@ -603,7 +603,7 @@ body,
 
 .pkg-columns {
   display: grid;
-  grid-template-columns: 1fr 70px 90px 90px 220px 180px 100px;
+  grid-template-columns: 1fr 70px 160px 220px 180px 100px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -624,7 +624,6 @@ body,
 }
 
 .pkg-columns .pkg-col-progress,
-.pkg-columns .pkg-col-downloaded,
 .pkg-columns .pkg-col-size,
 .pkg-columns .pkg-col-hoster,
 .pkg-columns .pkg-col-status,
@@ -636,9 +635,53 @@ body,
   white-space: nowrap;
 }
 
-.pkg-col-progress,
-.pkg-col-downloaded {
+.pkg-col-progress {
   font-variant-numeric: tabular-nums;
+}
+
+.progress-size {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 18px;
+  background: var(--progress-track);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-size-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #3bc9ff, #22d3ee);
+  border-radius: 4px;
+  transition: width 0.15s ease;
+}
+
+.progress-size-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+
+.progress-size-small {
+  height: 14px;
+}
+
+.progress-size-small .progress-size-text {
+  font-size: 9px;
 }
 
 .progress-inline {
@@ -1189,7 +1232,7 @@ td {
 
 .item-row {
   display: grid;
-  grid-template-columns: 1fr 70px 90px 90px 220px 180px 100px;
+  grid-template-columns: 1fr 70px 160px 220px 180px 100px;
   gap: 8px;
   align-items: center;
   margin: 0 -12px;
@@ -1649,7 +1692,6 @@ td {
   }
 
   .pkg-column-header .pkg-col-progress,
-  .pkg-column-header .pkg-col-downloaded,
   .pkg-column-header .pkg-col-size,
   .pkg-column-header .pkg-col-hoster,
   .pkg-column-header .pkg-col-status,
@@ -1658,7 +1700,6 @@ td {
   }
 
   .pkg-columns .pkg-col-progress,
-  .pkg-columns .pkg-col-downloaded,
   .pkg-columns .pkg-col-size,
   .pkg-columns .pkg-col-hoster,
   .pkg-columns .pkg-col-status,
