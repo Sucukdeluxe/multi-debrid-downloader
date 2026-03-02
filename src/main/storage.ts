@@ -414,6 +414,48 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   syncRenameWithExdevFallback(tempPath, paths.configFile);
 }
 
+let asyncSettingsSaveRunning = false;
+let asyncSettingsSaveQueued: { paths: StoragePaths; payload: string } | null = null;
+
+async function writeSettingsPayload(paths: StoragePaths, payload: string): Promise<void> {
+  await fs.promises.mkdir(paths.baseDir, { recursive: true });
+  await fsp.copyFile(paths.configFile, `${paths.configFile}.bak`).catch(() => {});
+  const tempPath = `${paths.configFile}.settings.tmp`;
+  await fsp.writeFile(tempPath, payload, "utf8");
+  try {
+    await fsp.rename(tempPath, paths.configFile);
+  } catch (renameError: unknown) {
+    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      await fsp.copyFile(tempPath, paths.configFile);
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+    } else {
+      throw renameError;
+    }
+  }
+}
+
+export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
+  const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
+  const payload = JSON.stringify(persisted, null, 2);
+  if (asyncSettingsSaveRunning) {
+    asyncSettingsSaveQueued = { paths, payload };
+    return;
+  }
+  asyncSettingsSaveRunning = true;
+  try {
+    await writeSettingsPayload(paths, payload);
+  } catch (error) {
+    logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
+  } finally {
+    asyncSettingsSaveRunning = false;
+    if (asyncSettingsSaveQueued) {
+      const queued = asyncSettingsSaveQueued;
+      asyncSettingsSaveQueued = null;
+      void writeSettingsPayload(queued.paths, queued.payload).catch((err) => logger.error(`Async Settings-Save (queued) fehlgeschlagen: ${String(err)}`));
+    }
+  }
+}
+
 export function emptySession(): SessionState {
   return {
     version: 2,
