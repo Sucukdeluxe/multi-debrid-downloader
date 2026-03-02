@@ -1584,12 +1584,15 @@ export function App(): ReactElement {
   }, [contextMenu]);
 
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
-    for (const id of ids) {
-      if (snapshot.session.items[id]) void window.rd.removeItem(id);
-      else if (snapshot.session.packages[id]) onPackageCancel(id);
-    }
+    setSnapshot((prev) => {
+      for (const id of ids) {
+        if (prev.session.items[id]) void window.rd.removeItem(id);
+        else if (prev.session.packages[id]) void window.rd.cancelPackage(id);
+      }
+      return prev;
+    });
     setSelectedIds(new Set());
-  }, [snapshot.session.items, snapshot.session.packages, onPackageCancel]);
+  }, []);
 
   const requestDeleteSelection = useCallback((): void => {
     if (selectedIds.size === 0) return;

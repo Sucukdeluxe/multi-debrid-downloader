@@ -2484,6 +2484,9 @@ export class DownloadManager extends EventEmitter {
           active.abortController.abort("stall");
         }
       }
+
+      // Retry failed extractions after unpause
+      this.triggerPendingExtractions();
     }
 
     this.persistSoon();
