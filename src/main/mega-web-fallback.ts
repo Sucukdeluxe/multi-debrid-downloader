@@ -196,7 +196,7 @@ export class MegaWebFallback {
         return null;
       }
 
-      if (!this.cookie || Date.now() - this.cookieSetAt > 10 * 60 * 1000) {
+      if (!this.cookie || Date.now() - this.cookieSetAt > 20 * 60 * 1000) {
         await this.login(creds.login, creds.password, signal);
       }
 
@@ -225,9 +225,20 @@ export class MegaWebFallback {
     }, signal);
   }
 
+  public invalidateSession(): void {
+    this.cookie = "";
+    this.cookieSetAt = 0;
+  }
+
   private async runExclusive<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const queuedAt = Date.now();
+    const QUEUE_WAIT_TIMEOUT_MS = 90000;
     const guardedJob = async (): Promise<T> => {
       throwIfAborted(signal);
+      const waited = Date.now() - queuedAt;
+      if (waited > QUEUE_WAIT_TIMEOUT_MS) {
+        throw new Error(`Mega-Web Queue-Timeout (${Math.floor(waited / 1000)}s gewartet)`);
+      }
       return job();
     };
     const run = this.queue.then(guardedJob, guardedJob);
@@ -278,8 +289,6 @@ export class MegaWebFallback {
 
   private async generate(link: string, signal?: AbortSignal): Promise<{ directUrl: string; fileName: string } | null> {
     throwIfAborted(signal);
-    // Overall timeout for the entire generate operation (45s)
-    const generateSignal = withTimeoutSignal(signal, 45000);
     const page = await fetch(DEBRID_URL, {
       method: "POST",
       headers: {
@@ -293,7 +302,7 @@ export class MegaWebFallback {
         password: "",
         showLinks: "1"
       }),
-      signal: withTimeoutSignal(generateSignal, 20000)
+      signal: withTimeoutSignal(signal, 30000)
     });
 
     const html = await page.text();
@@ -302,10 +311,8 @@ export class MegaWebFallback {
       return null;
     }
 
-    let reloadCount = 0;
-    let hosterRetryCount = 0;
-    for (let attempt = 1; attempt <= 30; attempt += 1) {
-      throwIfAborted(generateSignal);
+    for (let attempt = 1; attempt <= 60; attempt += 1) {
+      throwIfAborted(signal);
       const res = await fetch(DEBRID_AJAX_URL, {
         method: "POST",
         headers: {
@@ -318,14 +325,12 @@ export class MegaWebFallback {
           code,
           autodl: "0"
         }),
-        signal: withTimeoutSignal(generateSignal, 12000)
+        signal: withTimeoutSignal(signal, 15000)
       });
 
       const text = (await res.text()).trim();
       if (text === "reload") {
-        reloadCount += 1;
-        // Back off progressively: 500ms, 700ms, 900ms...
-        await sleepWithSignal(Math.min(2000, 500 + reloadCount * 200), generateSignal);
+        await sleepWithSignal(650, signal);
         continue;
       }
       if (text === "false") {
@@ -339,11 +344,7 @@ export class MegaWebFallback {
 
       if (!parsed.link) {
         if (/hoster does not respond correctly|could not be done for this moment/i.test(parsed.text || "")) {
-          hosterRetryCount += 1;
-          if (hosterRetryCount > 5) {
-            return null;
-          }
-          await sleepWithSignal(Math.min(3000, 800 + hosterRetryCount * 400), generateSignal);
+          await sleepWithSignal(1200, signal);
           continue;
         }
         return null;

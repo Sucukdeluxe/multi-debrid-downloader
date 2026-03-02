@@ -58,7 +58,8 @@ export class AppController {
       password: this.settings.megaPassword
     }));
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
-      megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal)
+      megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal),
+      invalidateMegaSession: () => this.megaWebFallback.invalidateSession()
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
       this.onStateHandler?.(snapshot);
