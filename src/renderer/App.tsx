@@ -688,6 +688,19 @@ export function App(): ReactElement {
     if (active.length === 0 || active.length === packages.length) {
       return packages;
     }
+    // Sort active packages: most progress first (completed items, then downloaded bytes)
+    active.sort((a, b) => {
+      const aItems = a.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean);
+      const bItems = b.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean);
+      const aCompleted = aItems.filter((i) => i.status === "completed").length;
+      const bCompleted = bItems.filter((i) => i.status === "completed").length;
+      if (aCompleted !== bCompleted) {
+        return bCompleted - aCompleted;
+      }
+      const aBytes = aItems.reduce((s, i) => s + (i.downloadedBytes || 0), 0);
+      const bBytes = bItems.reduce((s, i) => s + (i.downloadedBytes || 0), 0);
+      return bBytes - aBytes;
+    });
     return [...active, ...rest];
   }, [packages, snapshot.session.running, snapshot.session.items]);
 
