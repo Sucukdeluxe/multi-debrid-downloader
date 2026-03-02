@@ -1103,6 +1103,11 @@ body,
   font-size: 13px;
 }
 
+.package-card header .progress-inline-text-filled,
+.package-card header .progress-size-text-filled {
+  color: #0a0f1a;
+}
+
 
 .pkg-toggle {
   display: inline-flex;
