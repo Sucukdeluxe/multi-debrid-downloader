@@ -880,7 +880,14 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "drain-stall", links: ["https://dummy/drain-stall"] }]);
+      const queuedSnapshot = manager.getSnapshot();
+      const packageId = queuedSnapshot.session.packageOrder[0] || "";
+      const itemId = queuedSnapshot.session.packages[packageId]?.itemIds[0] || "";
       manager.start();
+      await waitFor(() => {
+        const status = manager.getSnapshot().session.items[itemId]?.fullStatus || "";
+        return status.includes("Warte auf Festplatte");
+      }, 12000);
       await waitFor(() => !manager.getSnapshot().session.running, 40000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -4327,6 +4334,63 @@ describe("download manager", () => {
     expect(internal.speedEventsHead).toBe(0);
     expect(internal.speedEvents.length).toBe(0);
     expect(internal.speedBytesLastWindow).toBe(0);
+  });
+
+  it("does not trigger global stall abort while write-buffer is disk-blocked", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const previousGlobalWatchdog = process.env.RD_GLOBAL_STALL_TIMEOUT_MS;
+    process.env.RD_GLOBAL_STALL_TIMEOUT_MS = "2500";
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract")
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "disk-block-guard", links: ["https://dummy/disk-block-guard"] }]);
+      const snapshot = manager.getSnapshot();
+      const packageId = snapshot.session.packageOrder[0] || "";
+      const itemId = snapshot.session.packages[packageId]?.itemIds[0] || "";
+
+      const internal = manager as unknown as any;
+      internal.session.running = true;
+      internal.session.paused = false;
+      internal.session.reconnectUntil = 0;
+      internal.session.totalDownloadedBytes = 0;
+      internal.session.items[itemId].status = "downloading";
+      internal.lastGlobalProgressBytes = 0;
+      internal.lastGlobalProgressAt = Date.now() - 10000;
+
+      const abortController = new AbortController();
+      internal.activeTasks.set(itemId, {
+        itemId,
+        packageId,
+        abortController,
+        abortReason: "none",
+        resumable: true,
+        nonResumableCounted: false,
+        blockedOnDiskWrite: true,
+        blockedOnDiskSince: Date.now() - 5000
+      });
+
+      internal.runGlobalStallWatchdog(Date.now());
+
+      expect(abortController.signal.aborted).toBe(false);
+      expect(internal.lastGlobalProgressAt).toBeGreaterThan(Date.now() - 2000);
+    } finally {
+      if (previousGlobalWatchdog === undefined) {
+        delete process.env.RD_GLOBAL_STALL_TIMEOUT_MS;
+      } else {
+        process.env.RD_GLOBAL_STALL_TIMEOUT_MS = previousGlobalWatchdog;
+      }
+    }
   });
 
   it("cleans run tracking when start conflict is skipped", async () => {

@@ -38,6 +38,8 @@ type ActiveTask = {
   stallRetries?: number;
   genericErrorRetries?: number;
   unrestrictRetries?: number;
+  blockedOnDiskWrite?: boolean;
+  blockedOnDiskSince?: number;
 };
 
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
@@ -324,7 +326,7 @@ function toWindowsLongPathIfNeeded(filePath: string): string {
 
 const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
 const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]+$/;
-const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:[._\-\s]|$)/i;
+const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?:[._\-\s]|$)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
@@ -395,7 +397,14 @@ export function extractEpisodeToken(fileName: string): string | null {
     return null;
   }
 
-  return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+  let token = `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+  if (match[3]) {
+    const episode2 = Number(match[3]);
+    if (Number.isFinite(episode2) && episode2 > 0) {
+      token += `E${String(episode2).padStart(2, "0")}`;
+    }
+  }
+  return token;
 }
 
 function extractSeasonToken(fileName: string): string | null {
@@ -542,7 +551,7 @@ export function applyEpisodeTokenToFolderName(folderName: string, episodeToken: 
     return episodeToken;
   }
 
-  const episodeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}(?=[._\-\s]|$)/i;
+  const episodeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}(?:e\d{1,3})?(?=[._\-\s]|$)/i;
   if (episodeRe.test(trimmed)) {
     return trimmed.replace(episodeRe, `$1${episodeToken}`);
   }
@@ -3316,8 +3325,13 @@ export class DownloadManager extends EventEmitter {
     }
 
     let stalledCount = 0;
+    let diskBlockedCount = 0;
     for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
+        continue;
+      }
+      if (active.blockedOnDiskWrite) {
+        diskBlockedCount += 1;
         continue;
       }
       const item = this.session.items[active.itemId];
@@ -3330,9 +3344,12 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalledCount} Task(s) neu starten`);
+    logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalledCount} Task(s) neu starten, diskBlocked=${diskBlockedCount}`);
     for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
+        continue;
+      }
+      if (active.blockedOnDiskWrite) {
         continue;
       }
       const item = this.session.items[active.itemId];
@@ -3552,7 +3569,9 @@ export class DownloadManager extends EventEmitter {
       abortController: new AbortController(),
       abortReason: "none",
       resumable: true,
-      nonResumableCounted: false
+      nonResumableCounted: false,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0
     };
     this.activeTasks.set(itemId, active);
     this.emitState();
@@ -4253,12 +4272,27 @@ export class DownloadManager extends EventEmitter {
               : 170;
         let lastUiEmitAt = 0;
         const stallTimeoutMs = getDownloadStallTimeoutMs();
-        const drainTimeoutMs = Math.max(4000, Math.min(45000, stallTimeoutMs > 0 ? stallTimeoutMs : 15000));
+        const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));
+        let lastDiskBusyEmitAt = 0;
 
         const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
           if (active.abortController.signal.aborted) {
             reject(new Error(`aborted:${active.abortReason}`));
             return;
+          }
+
+          active.blockedOnDiskWrite = true;
+          active.blockedOnDiskSince = nowMs();
+          if (item.status !== "paused" && !this.session.paused) {
+            const nowTick = nowMs();
+            if (nowTick - lastDiskBusyEmitAt >= 1200) {
+              item.status = "downloading";
+              item.speedBps = 0;
+              item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+              item.updatedAt = nowTick;
+              this.emitState();
+              lastDiskBusyEmitAt = nowTick;
+            }
           }
 
           let settled = false;
@@ -4267,9 +4301,7 @@ export class DownloadManager extends EventEmitter {
               return;
             }
             settled = true;
-            stream.off("drain", onDrain);
-            stream.off("error", onError);
-            active.abortController.signal.removeEventListener("abort", onAbort);
+            cleanup();
             // Do NOT abort the controller here – drain timeout means disk is slow,
             // not network stall.  Rejecting without abort lets the inner retry loop
             // handle it (resume download) instead of escalating to processItem's
@@ -4282,6 +4314,8 @@ export class DownloadManager extends EventEmitter {
               clearTimeout(timeoutId);
               timeoutId = null;
             }
+            active.blockedOnDiskWrite = false;
+            active.blockedOnDiskSince = 0;
             stream.off("drain", onDrain);
             stream.off("error", onError);
             active.abortController.signal.removeEventListener("abort", onAbort);
@@ -4336,6 +4370,21 @@ export class DownloadManager extends EventEmitter {
               return;
             }
             const nowTick = nowMs();
+            if (active.blockedOnDiskWrite) {
+              if (item.status === "paused" || this.session.paused) {
+                return;
+              }
+              if (nowTick - lastIdleEmitAt >= idlePulseMs) {
+                item.status = "downloading";
+                item.speedBps = 0;
+                item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+                item.updatedAt = nowTick;
+                this.emitState();
+                lastIdleEmitAt = nowTick;
+                lastDiskBusyEmitAt = nowTick;
+              }
+              return;
+            }
             if (nowTick - lastDataAt < idlePulseMs) {
               return;
             }
