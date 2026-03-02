@@ -5128,6 +5128,7 @@ export class DownloadManager extends EventEmitter {
         onlyArchives: readyArchives,
         skipPostCleanup: true,
         packageId,
+        hybridMode: true,
         onProgress: (progress) => {
           if (progress.phase === "done") {
             return;

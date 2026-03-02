@@ -75,6 +75,7 @@ export interface ExtractOptions {
   onlyArchives?: Set<string>;
   skipPostCleanup?: boolean;
   packageId?: string;
+  hybridMode?: boolean;
 }
 
 export interface ExtractProgressUpdate {
@@ -93,6 +94,50 @@ const EXTRACT_BASE_TIMEOUT_MS = 6 * 60 * 1000;
 const EXTRACT_PER_GIB_TIMEOUT_MS = 4 * 60 * 1000;
 const EXTRACT_MAX_TIMEOUT_MS = 120 * 60 * 1000;
 const ARCHIVE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const DISK_SPACE_SAFETY_FACTOR = 1.1;
+const NESTED_EXTRACT_BLACKLIST_RE = /\.(iso|img|bin|dmg)$/i;
+
+async function estimateArchivesTotalBytes(candidates: string[]): Promise<number> {
+  let total = 0;
+  for (const archivePath of candidates) {
+    const parts = collectArchiveCleanupTargets(archivePath);
+    for (const part of parts) {
+      try {
+        total += (await fs.promises.stat(part)).size;
+      } catch { /* missing part, ignore */ }
+    }
+  }
+  return total;
+}
+
+function humanSizeGB(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+}
+
+async function checkDiskSpaceForExtraction(targetDir: string, candidates: string[]): Promise<void> {
+  if (candidates.length === 0) return;
+  const archiveBytes = await estimateArchivesTotalBytes(candidates);
+  if (archiveBytes <= 0) return;
+  const requiredBytes = Math.ceil(archiveBytes * DISK_SPACE_SAFETY_FACTOR);
+
+  let freeBytes: number;
+  try {
+    const stats = await fs.promises.statfs(targetDir);
+    freeBytes = stats.bfree * stats.bsize;
+  } catch {
+    return;
+  }
+
+  if (freeBytes < requiredBytes) {
+    const msg = `Nicht genug Speicherplatz: ${humanSizeGB(requiredBytes)} benötigt, ${humanSizeGB(freeBytes)} frei`;
+    logger.error(`Disk-Space-Check: ${msg} (target=${targetDir})`);
+    throw new Error(msg);
+  }
+  logger.info(`Disk-Space-Check OK: ${humanSizeGB(freeBytes)} frei, ${humanSizeGB(requiredBytes)} benötigt (target=${targetDir})`);
+}
 
 function zipEntryMemoryLimitBytes(): number {
   const fromEnvMb = Number(process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB ?? NaN);
@@ -424,7 +469,10 @@ function extractCpuBudgetPercent(): number {
   return DEFAULT_EXTRACT_CPU_BUDGET_PERCENT;
 }
 
-function extractorThreadSwitch(): string {
+function extractorThreadSwitch(hybridMode = false): string {
+  if (hybridMode) {
+    return "-mt1";
+  }
   const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
   if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
     return `-mt${Math.floor(envValue)}`;
@@ -436,6 +484,24 @@ function extractorThreadSwitch(): string {
   return `-mt${threadCount}`;
 }
 
+function setWindowsBackgroundIO(pid: number): void {
+  if (process.platform !== "win32") {
+    return;
+  }
+  // NtSetInformationProcess: set I/O priority to Very Low (0) and Page priority to Very Low (1).
+  // IDLE_PRIORITY_CLASS (set by os.setPriority) only lowers CPU scheduling priority;
+  // it does NOT lower I/O priority on modern Windows (Vista+). This call does.
+  const script = `$c=@'\nusing System;using System.Runtime.InteropServices;\npublic class P{[DllImport("ntdll.dll")]static extern int NtSetInformationProcess(IntPtr h,int c,ref int d,int s);[DllImport("kernel32.dll")]static extern IntPtr OpenProcess(int a,bool i,int p);[DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr h);public static void S(int pid){IntPtr h=OpenProcess(0x0600,false,pid);if(h==IntPtr.Zero)return;int v=0;NtSetInformationProcess(h,0x21,ref v,4);v=1;NtSetInformationProcess(h,0x27,ref v,4);CloseHandle(h);}}\n'@\nAdd-Type -TypeDefinition $c;[P]::S(${pid})`;
+  try {
+    spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+      windowsHide: true,
+      stdio: "ignore"
+    }).unref();
+  } catch {
+    // best-effort: powershell may not be available
+  }
+}
+
 function lowerExtractProcessPriority(childPid: number | undefined): void {
   if (process.platform !== "win32") {
     return;
@@ -445,12 +511,13 @@ function lowerExtractProcessPriority(childPid: number | undefined): void {
     return;
   }
   try {
-    // PRIORITY_LOW = IDLE_PRIORITY_CLASS on Windows, which also lowers I/O priority
-    // so extraction doesn't starve downloads or UI from disk bandwidth
+    // IDLE_PRIORITY_CLASS: lowers CPU scheduling priority only
     os.setPriority(pid, os.constants.priority.PRIORITY_LOW);
   } catch {
     // ignore: priority lowering is best-effort
   }
+  // Also lower I/O + page priority via Windows API (fire-and-forget)
+  setWindowsBackgroundIO(pid);
 }
 
 type ExtractSpawnResult = {
@@ -635,7 +702,8 @@ export function buildExternalExtractArgs(
   targetDir: string,
   conflictMode: ConflictMode,
   password = "",
-  usePerformanceFlags = true
+  usePerformanceFlags = true,
+  hybridMode = false
 ): string[] {
   const mode = effectiveConflictMode(conflictMode);
   const lower = command.toLowerCase();
@@ -647,7 +715,7 @@ export function buildExternalExtractArgs(
     // On Windows (the target platform) this is less of a concern than on shared Unix systems.
     const pass = password ? `-p${password}` : "-p-";
     const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
-      ? ["-idc", extractorThreadSwitch()]
+      ? ["-idc", extractorThreadSwitch(hybridMode)]
       : [];
     return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
   }
@@ -717,7 +785,8 @@ async function runExternalExtract(
   conflictMode: ConflictMode,
   passwordCandidates: string[],
   onArchiveProgress?: (percent: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  hybridMode = false
 ): Promise<string> {
   const command = await resolveExtractorCommand();
   const passwords = passwordCandidates;
@@ -732,7 +801,7 @@ async function runExternalExtract(
   const effectiveTargetDir = subst ? `${subst.drive}:` : targetDir;
 
   try {
-    return await runExternalExtractInner(command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
+    return await runExternalExtractInner(command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, hybridMode);
   } finally {
     if (subst) removeSubstMapping(subst);
   }
@@ -746,7 +815,8 @@ async function runExternalExtractInner(
   passwordCandidates: string[],
   onArchiveProgress: ((percent: number) => void) | undefined,
   signal: AbortSignal | undefined,
-  timeoutMs: number
+  timeoutMs: number,
+  hybridMode = false
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
@@ -763,7 +833,7 @@ async function runExternalExtractInner(
       announcedStart = true;
       onArchiveProgress?.(0);
     }
-    let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags);
+    let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
     let result = await runExtractCommand(command, args, (chunk) => {
       const parsed = parseProgressPercent(chunk);
       if (parsed === null || parsed <= bestPercent) {
@@ -777,7 +847,7 @@ async function runExternalExtractInner(
       usePerformanceFlags = false;
       externalExtractorSupportsPerfFlags = false;
       logger.warn(`Entpacker ohne Performance-Flags fortgesetzt: ${path.basename(archivePath)}`);
-      args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, false);
+      args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, false, hybridMode);
       result = await runExtractCommand(command, args, (chunk) => {
         const parsed = parseProgressPercent(chunk);
         if (parsed === null || parsed <= bestPercent) {
@@ -1202,6 +1272,15 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     })
     : allCandidates;
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
+
+  // Disk space pre-check
+  if (candidates.length > 0) {
+    try {
+      await fs.promises.mkdir(options.targetDir, { recursive: true });
+    } catch { /* ignore */ }
+    await checkDiskSpaceForExtraction(options.targetDir, candidates);
+  }
+
   if (candidates.length === 0) {
     if (!options.onlyArchives) {
       const existingResume = await readExtractResumeState(options.packageDir, options.packageId);
@@ -1299,7 +1378,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     const pulseTimer = setInterval(() => {
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
     }, 1100);
-    logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}`);
+    const hybrid = Boolean(options.hybridMode);
+    logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, -mt1, low I/O)" : ""}`);
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
@@ -1309,7 +1389,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-            }, options.signal);
+            }, options.signal, hybrid);
             passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
@@ -1330,7 +1410,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
                 archivePercent = Math.max(archivePercent, value);
                 emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-              }, options.signal);
+              }, options.signal, hybrid);
               passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
             } catch (externalError) {
               if (isNoExtractorError(String(externalError)) || isUnsupportedArchiveFormatError(String(externalError))) {
@@ -1344,7 +1424,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
           archivePercent = Math.max(archivePercent, value);
           emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-        }, options.signal);
+        }, options.signal, hybrid);
         passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
       }
       extracted += 1;
@@ -1373,6 +1453,82 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
     } finally {
       clearInterval(pulseTimer);
+    }
+  }
+
+  // ── Nested extraction: extract archives found inside the output (1 level) ──
+  if (extracted > 0 && failed === 0 && !options.skipPostCleanup && !options.onlyArchives) {
+    try {
+      const nestedCandidates = (await findArchiveCandidates(options.targetDir))
+        .filter((p) => !NESTED_EXTRACT_BLACKLIST_RE.test(p));
+      if (nestedCandidates.length > 0) {
+        logger.info(`Nested-Extraction: ${nestedCandidates.length} Archive im Output gefunden`);
+        try {
+          await checkDiskSpaceForExtraction(options.targetDir, nestedCandidates);
+        } catch (spaceError) {
+          logger.warn(`Nested-Extraction Disk-Space-Check fehlgeschlagen: ${String(spaceError)}`);
+          nestedCandidates.length = 0;
+        }
+        for (const nestedArchive of nestedCandidates) {
+          if (options.signal?.aborted) throw new Error("aborted:extract");
+          const nestedName = path.basename(nestedArchive);
+          const nestedKey = archiveNameKey(nestedName);
+          if (resumeCompleted.has(nestedKey)) {
+            logger.info(`Nested-Extraction übersprungen (bereits entpackt): ${nestedName}`);
+            continue;
+          }
+          const nestedStartedAt = Date.now();
+          let nestedPercent = 0;
+          emitProgress(extracted + failed, `nested: ${nestedName}`, "extracting", nestedPercent, 0);
+          const nestedPulse = setInterval(() => {
+            emitProgress(extracted + failed, `nested: ${nestedName}`, "extracting", nestedPercent, Date.now() - nestedStartedAt);
+          }, 1100);
+          const hybrid = Boolean(options.hybridMode);
+          logger.info(`Nested-Entpacke: ${nestedName} -> ${options.targetDir}${hybrid ? " (hybrid)" : ""}`);
+          try {
+            const ext = path.extname(nestedArchive).toLowerCase();
+            if (ext === ".zip") {
+              try {
+                await extractZipArchive(nestedArchive, options.targetDir, options.conflictMode, options.signal);
+                nestedPercent = 100;
+              } catch (zipErr) {
+                if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;
+                const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid);
+                passwordCandidates = prioritizePassword(passwordCandidates, usedPw);
+              }
+            } else {
+              const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid);
+              passwordCandidates = prioritizePassword(passwordCandidates, usedPw);
+            }
+            extracted += 1;
+            extractedArchives.add(nestedArchive);
+            resumeCompleted.add(nestedKey);
+            await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
+            logger.info(`Nested-Entpacken erfolgreich: ${nestedName}`);
+            if (options.cleanupMode === "delete") {
+              for (const part of collectArchiveCleanupTargets(nestedArchive)) {
+                try { await fs.promises.unlink(part); } catch { /* ignore */ }
+              }
+            }
+          } catch (nestedErr) {
+            const errText = String(nestedErr);
+            if (isExtractAbortError(errText)) throw new Error("aborted:extract");
+            if (isNoExtractorError(errText)) {
+              logger.warn(`Nested-Extraction: Kein Extractor, überspringe restliche`);
+              break;
+            }
+            failed += 1;
+            lastError = errText;
+            logger.error(`Nested-Entpack-Fehler ${nestedName}: ${errText}`);
+          } finally {
+            clearInterval(nestedPulse);
+          }
+        }
+      }
+    } catch (nestedError) {
+      const errText = String(nestedError);
+      if (isExtractAbortError(errText)) throw new Error("aborted:extract");
+      logger.warn(`Nested-Extraction Fehler: ${cleanErrorText(errText)}`);
     }
   }
 
