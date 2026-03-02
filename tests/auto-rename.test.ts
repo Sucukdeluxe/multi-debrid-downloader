@@ -62,6 +62,22 @@ describe("extractEpisodeToken", () => {
   it("extracts from episode token at end of string", () => {
     expect(extractEpisodeToken("show.s02e03")).toBe("S02E03");
   });
+
+  it("extracts double episode token s01e01e02", () => {
+    expect(extractEpisodeToken("tvr-mammon-s01e01e02-720p")).toBe("S01E01E02");
+  });
+
+  it("extracts double episode with dot separators", () => {
+    expect(extractEpisodeToken("Show.S01E03E04.720p")).toBe("S01E03E04");
+  });
+
+  it("extracts double episode at end of string", () => {
+    expect(extractEpisodeToken("show.s02e05e06")).toBe("S02E05E06");
+  });
+
+  it("extracts double episode with single-digit numbers", () => {
+    expect(extractEpisodeToken("show-s1e1e2-720p")).toBe("S01E01E02");
+  });
 });
 
 describe("applyEpisodeTokenToFolderName", () => {
@@ -95,6 +111,21 @@ describe("applyEpisodeTokenToFolderName", () => {
 
   it("is case-insensitive for -4SF/-4SJ suffix", () => {
     expect(applyEpisodeTokenToFolderName("Show.720p-4SF", "S01E01")).toBe("Show.720p.S01E01-4SF");
+  });
+
+  it("applies double episode token to season-only folder", () => {
+    expect(applyEpisodeTokenToFolderName("Mammon.S01.German.1080P.Bluray.x264-SMAHD", "S01E01E02"))
+      .toBe("Mammon.S01E01E02.German.1080P.Bluray.x264-SMAHD");
+  });
+
+  it("replaces existing double episode in folder with new token", () => {
+    expect(applyEpisodeTokenToFolderName("Show.S01E01E02.720p-4sf", "S01E03E04"))
+      .toBe("Show.S01E03E04.720p-4sf");
+  });
+
+  it("replaces existing single episode in folder with double episode token", () => {
+    expect(applyEpisodeTokenToFolderName("Show.S01E01.720p-4sf", "S01E01E02"))
+      .toBe("Show.S01E01E02.720p-4sf");
   });
 });
 
@@ -555,5 +586,38 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
       { forceEpisodeForSeasonFolder: true }
     );
     expect(result).toBe("Cheat.der.Betrug.S01E01.GERMAN.720p.WEB.h264-tmsf");
+  });
+
+  it("renames double episode file into season folder (Mammon style)", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Mammon.S01.German.1080P.Bluray.x264-SMAHD"
+      ],
+      "tvr-mammon-s01e01e02-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Mammon.S01E01E02.German.1080P.Bluray.x264-SMAHD");
+  });
+
+  it("renames second double episode file correctly", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Mammon.S01.German.1080P.Bluray.x264-SMAHD"
+      ],
+      "tvr-mammon-s01e03e04-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Mammon.S01E03E04.German.1080P.Bluray.x264-SMAHD");
+  });
+
+  it("renames third double episode file correctly", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Mammon.S01.German.1080P.Bluray.x264-SMAHD"
+      ],
+      "tvr-mammon-s01e05e06-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Mammon.S01E05E06.German.1080P.Bluray.x264-SMAHD");
   });
 });
