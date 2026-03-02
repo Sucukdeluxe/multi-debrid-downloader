@@ -8,6 +8,7 @@ import type {
   DownloadItem,
   DownloadStats,
   DuplicatePolicy,
+  HistoryEntry,
   PackageEntry,
   StartConflictEntry,
   UiSnapshot,
@@ -15,7 +16,7 @@ import type {
   UpdateInstallProgress
 } from "../shared/types";
 
-type Tab = "collector" | "downloads" | "statistics" | "settings";
+type Tab = "collector" | "downloads" | "history" | "statistics" | "settings";
 type SettingsSubTab = "allgemein" | "accounts" | "entpacken" | "geschwindigkeit" | "bereinigung" | "updates";
 
 interface CollectorTab {
@@ -480,6 +481,25 @@ export function App(): ReactElement {
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyCollapsed, setHistoryCollapsed] = useState<Record<string, boolean>>({});
+
+  // Load history when tab changes to history
+  useEffect(() => {
+    if (tab !== "history") return;
+    const loadHistory = async (): Promise<void> => {
+      try {
+        const entries = await window.rd.getHistory();
+        console.log("History loaded:", entries);
+        if (mountedRef.current && entries) {
+          setHistoryEntries(entries);
+        }
+      } catch (err) {
+        console.error("Failed to load history:", err);
+      }
+    };
+    void loadHistory();
+  }, [tab]);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -1960,6 +1980,7 @@ export function App(): ReactElement {
         <button className={tab === "downloads" ? "tab active" : "tab"} onClick={() => setTab("downloads")}>Downloads</button>
         <button className={tab === "collector" ? "tab active" : "tab"} onClick={() => setTab("collector")}>Linksammler</button>
         <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>Einstellungen</button>
+        <button className={tab === "history" ? "tab active" : "tab"} onClick={() => setTab("history")}>Verlauf</button>
         <button className={tab === "statistics" ? "tab active" : "tab"} onClick={() => setTab("statistics")}>Statistiken</button>
         <div className="tab-actions">
           {tab === "downloads" && (
@@ -2135,6 +2156,67 @@ export function App(): ReactElement {
                 onDragEnd={onPackageDragEnd}
               />
             ))}
+          </section>
+        )}
+
+        {tab === "history" && (
+          <section className="history-view">
+            <div className="history-toolbar">
+              <span className="history-count">{historyEntries.length} Paket{historyEntries.length !== 1 ? "e" : ""} im Verlauf</span>
+              {historyEntries.length > 0 && (
+                <button className="btn btn-danger" onClick={() => { void window.rd.clearHistory().then(() => setHistoryEntries([])); }}>Verlauf leeren</button>
+              )}
+            </div>
+            {historyEntries.length === 0 && <div className="empty">Noch keine abgeschlossenen Pakete im Verlauf.</div>}
+            {historyEntries.map((entry) => {
+              const collapsed = historyCollapsed[entry.id] ?? true;
+              return (
+                <article key={entry.id} className="package-card history-card">
+                  <header onClick={() => setHistoryCollapsed((prev) => ({ ...prev, [entry.id]: !collapsed }))} style={{ cursor: "pointer" }}>
+                    <div className="pkg-columns">
+                      <div className="pkg-col pkg-col-name">
+                        <button className="pkg-toggle" title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
+                        <h4>{entry.name}</h4>
+                      </div>
+                      <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
+                      <span className="pkg-col pkg-col-size">{humanSize(entry.totalBytes)}</span>
+                      <span className="pkg-col pkg-col-downloaded">{humanSize(entry.downloadedBytes)}</span>
+                      <span className="pkg-col pkg-col-hoster">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
+                      <span className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
+                      <span className="pkg-col pkg-col-speed">-</span>
+                    </div>
+                  </header>
+                  <div className="progress"><div className="progress-dl" style={{ width: entry.status === "completed" ? "100%" : "0%" }} /></div>
+                  {!collapsed && (
+                    <div className="history-details">
+                      <div className="history-detail-grid">
+                        <span className="history-label">Abgeschlossen am</span>
+                        <span>{new Date(entry.completedAt).toLocaleString("de-DE")}</span>
+                        <span className="history-label">Dateien</span>
+                        <span>{entry.fileCount} Datei{entry.fileCount !== 1 ? "en" : ""}</span>
+                        <span className="history-label">Gesamtgröße</span>
+                        <span>{humanSize(entry.totalBytes)}</span>
+                        <span className="history-label">Heruntergeladen</span>
+                        <span>{humanSize(entry.downloadedBytes)}</span>
+                        <span className="history-label">Dauer</span>
+                        <span>{entry.durationSeconds >= 3600 ? `${Math.floor(entry.durationSeconds / 3600)}h ${Math.floor((entry.durationSeconds % 3600) / 60)}min` : entry.durationSeconds >= 60 ? `${Math.floor(entry.durationSeconds / 60)}min ${entry.durationSeconds % 60}s` : `${entry.durationSeconds}s`}</span>
+                        <span className="history-label">Durchschnitt</span>
+                        <span>{entry.durationSeconds > 0 ? formatSpeedMbps(Math.round(entry.downloadedBytes / entry.durationSeconds)) : "-"}</span>
+                        <span className="history-label">Provider</span>
+                        <span>{entry.provider ? providerLabels[entry.provider] : "-"}</span>
+                        <span className="history-label">Zielordner</span>
+                        <span className="history-path" title={entry.outputDir}>{entry.outputDir || "-"}</span>
+                        <span className="history-label">Status</span>
+                        <span>{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
+                      </div>
+                      <div className="history-actions">
+                        <button className="btn" onClick={() => { void window.rd.removeHistoryEntry(entry.id).then(() => setHistoryEntries((prev) => prev.filter((e) => e.id !== entry.id))); }}>Eintrag entfernen</button>
+                      </div>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </section>
         )}
 
