@@ -438,6 +438,10 @@ body,
   padding: 5px 10px;
 }
 
+.tab-action-btn:hover:not(:disabled) {
+  transform: none;
+}
+
 .downloads-action-bar {
   display: flex;
   align-items: center;
