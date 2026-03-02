@@ -2004,8 +2004,11 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
+  const extracted = items.filter((item) => item.fullStatus?.startsWith("Entpackt")).length;
+  const extracting = items.some((item) => item.fullStatus?.startsWith("Entpack"));
   const total = Math.max(1, items.length);
-  const progress = Math.floor((done / total) * 100);
+  const dlProgress = Math.floor((done / total) * (extracting ? 50 : 100));
+  const exProgress = Math.floor((extracted / total) * 50);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
@@ -2043,7 +2046,10 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
           <button className="btn danger" onClick={() => onCancel(pkg.id)}>Paket löschen</button>
         </div>
       </header>
-      <div className="progress"><div style={{ width: `${progress}%` }} /></div>
+      <div className="progress">
+        <div className="progress-dl" style={{ width: `${dlProgress}%` }} />
+        {extracting && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
+      </div>
       {!collapsed && <table>
         <thead><tr>
           <th className="col-file">Datei</th>

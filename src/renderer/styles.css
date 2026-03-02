@@ -560,11 +560,17 @@ body,
   border-radius: 999px;
   background: var(--progress-track);
   overflow: hidden;
+  display: flex;
 }
 
-.progress > div {
+.progress-dl {
   height: 100%;
   background: linear-gradient(90deg, #3bc9ff, #22d3ee);
+}
+
+.progress-ex {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #4ade80);
 }
 
 table {
