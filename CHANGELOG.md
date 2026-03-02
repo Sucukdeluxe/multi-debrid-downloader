@@ -2,6 +2,18 @@
 
 Alle nennenswerten Aenderungen werden in dieser Datei dokumentiert.
 
+## 1.5.28 - 2026-03-02
+
+UI-Verbesserung: Visuelle Fortschrittsanzeigen in der Download-Liste (JDownloader 2 Style).
+
+### Features
+
+- **Visuelle Fortschrittsbalken:**
+  - Paket-Fortschritt wird jetzt als grafische Progress-Bar in der Spalte "Fortschritt" angezeigt.
+  - Einzelne Items haben ebenfalls eine kleinere Progress-Bar.
+  - Grüner Gradient (#22c55e → #4ade80) für bessere Text-Lesbarkeit.
+  - Prozentanzeige als Overlay-Text auf der Bar.
+
 ## 1.4.68 - 2026-03-01
 
 Stabilitaets-Hotfix fuer Session-Verlust nach Update/Neustart: Session-Dateien haben jetzt ein robustes Backup-/Restore-Fallback.
