@@ -136,12 +136,12 @@ interface BandwidthChartProps {
   items: Record<string, DownloadItem>;
   running: boolean;
   paused: boolean;
+  speedHistoryRef: React.MutableRefObject<{ time: number; speed: number }[]>;
 }
 
-const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: BandwidthChartProps): ReactElement {
+const BandwidthChart = memo(function BandwidthChart({ items, running, paused, speedHistoryRef }: BandwidthChartProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const speedHistoryRef = useRef<{ time: number; speed: number }[]>([]);
   const lastUpdateRef = useRef<number>(0);
   const [, forceUpdate] = useState(0);
   const animationFrameRef = useRef<number>(0);
@@ -162,9 +162,6 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
-    const padding = { top: 20, right: 20, bottom: 30, left: 60 };
-    const chartWidth = width - padding.left - padding.right;
-    const chartHeight = height - padding.top - padding.bottom;
 
     ctx.clearRect(0, 0, width, height);
 
@@ -173,16 +170,6 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: 
     const textColor = isDark ? "#90a4bf" : "#4e6482";
     const accentColor = isDark ? "#38bdf8" : "#1168d9";
     const fillColor = isDark ? "rgba(56, 189, 248, 0.15)" : "rgba(17, 104, 217, 0.15)";
-
-    ctx.strokeStyle = gridColor;
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 5; i += 1) {
-      const y = padding.top + (chartHeight / 5) * i;
-      ctx.beginPath();
-      ctx.moveTo(padding.left, y);
-      ctx.lineTo(width - padding.right, y);
-      ctx.stroke();
-    }
 
     const history = speedHistoryRef.current;
     const now = Date.now();
@@ -195,6 +182,28 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: 
     }
     maxSpeed = Math.max(maxSpeed, 1024 * 1024);
     const niceMax = Math.pow(2, Math.ceil(Math.log2(maxSpeed)));
+
+    // Measure widest label to set dynamic left padding
+    ctx.font = "11px 'Manrope', sans-serif";
+    let maxLabelWidth = 0;
+    for (let i = 0; i <= 5; i += 1) {
+      const speedVal = niceMax * (1 - i / 5);
+      const w = ctx.measureText(formatSpeedMbps(speedVal)).width;
+      if (w > maxLabelWidth) maxLabelWidth = w;
+    }
+    const padding = { top: 20, right: 20, bottom: 30, left: Math.ceil(maxLabelWidth) + 16 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 5; i += 1) {
+      const y = padding.top + (chartHeight / 5) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+    }
 
     ctx.fillStyle = textColor;
     ctx.font = "11px 'Manrope', sans-serif";
@@ -1415,6 +1424,7 @@ export function App(): ReactElement {
     setContextMenu({ x, y, packageId, itemId });
   }, []);
 
+  const speedHistoryRef = useRef<{ time: number; speed: number }[]>([]);
   const dragSelectRef = useRef(false);
   const dragAnchorRef = useRef<string | null>(null);
   const dragDidMoveRef = useRef(false);
@@ -1903,7 +1913,10 @@ export function App(): ReactElement {
             className={`ctrl-icon-btn ctrl-pause${snapshot.session.running && !snapshot.session.paused ? " active" : ""}${snapshot.session.paused ? " paused" : ""}`}
             title={snapshot.session.paused ? "Fortsetzen" : "Pause"}
             disabled={!snapshot.canPause}
-            onClick={() => { void window.rd.togglePause(); }}
+            onClick={() => {
+              setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: !prev.session.paused } }));
+              void window.rd.togglePause();
+            }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18"><rect x="5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /><rect x="14.5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /></svg>
           </button>
@@ -2157,7 +2170,7 @@ export function App(): ReactElement {
 
             <article className="card stats-chart-card">
               <h3>Bandbreitenverlauf</h3>
-              <BandwidthChart items={snapshot.session.items} running={snapshot.session.running} paused={snapshot.session.paused} />
+              <BandwidthChart items={snapshot.session.items} running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />
             </article>
 
             <article className="card stats-provider-card">
