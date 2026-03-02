@@ -3510,6 +3510,17 @@ export class DownloadManager extends EventEmitter {
     const maxStallRetries = maxItemRetries;
     while (true) {
       try {
+        // Wait while paused — don't check cooldown or unrestrict while paused
+        while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
+          item.status = "paused";
+          item.fullStatus = "Pausiert";
+          item.speedBps = 0;
+          this.emitState();
+          await sleep(120);
+        }
+        if (active.abortController.signal.aborted) {
+          throw new Error(`aborted:${active.abortReason}`);
+        }
         // Check provider cooldown before attempting unrestrict
         const lastProvider = item.provider || "";
         const cooldownProvider = lastProvider || this.settings.providerPrimary || "unknown";
