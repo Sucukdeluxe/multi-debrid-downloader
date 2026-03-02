@@ -4720,6 +4720,36 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+
+    // Recover items whose file exists on disk but status was never set to "completed".
+    // Only recover items in idle states (queued/paused), never active ones (downloading/validating).
+    for (const item of items) {
+      if (isFinishedStatus(item.status)) {
+        continue;
+      }
+      if (item.status === "downloading" || item.status === "validating" || item.status === "integrity_check") {
+        continue;
+      }
+      if (!item.targetPath) {
+        continue;
+      }
+      try {
+        const stat = fs.statSync(item.targetPath);
+        if (stat.size > 0) {
+          logger.info(`Item-Recovery: ${item.fileName} war "${item.status}" aber Datei existiert (${humanSize(stat.size)}), setze auf completed`);
+          item.status = "completed";
+          item.fullStatus = this.settings.autoExtract ? "Entpacken - Ausstehend" : `Fertig (${humanSize(stat.size)})`;
+          item.downloadedBytes = stat.size;
+          item.progressPercent = 100;
+          item.speedBps = 0;
+          item.updatedAt = nowMs();
+          this.recordRunOutcome(item.id, "completed");
+        }
+      } catch {
+        // file doesn't exist, nothing to recover
+      }
+    }
+
     const success = items.filter((item) => item.status === "completed").length;
     const failed = items.filter((item) => item.status === "failed").length;
     const cancelled = items.filter((item) => item.status === "cancelled").length;
