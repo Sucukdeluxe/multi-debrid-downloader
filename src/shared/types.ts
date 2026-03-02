@@ -75,6 +75,7 @@ export interface AppSettings {
   theme: AppTheme;
   collapseNewPackages: boolean;
   autoSkipExtracted: boolean;
+  confirmDeleteSelection: boolean;
   bandwidthSchedules: BandwidthScheduleEntry[];
 }
 
