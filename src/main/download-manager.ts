@@ -39,7 +39,7 @@ type ActiveTask = {
   unrestrictRetries?: number;
 };
 
-const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 30000;
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 15000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
@@ -2463,10 +2463,17 @@ export class DownloadManager extends EventEmitter {
     const wasPaused = this.session.paused;
     this.session.paused = !this.session.paused;
 
+    // When pausing: abort active extractions so they don't continue during pause
+    if (!wasPaused && this.session.paused) {
+      this.abortPostProcessing("pause");
+    }
+
     // When unpausing: clear all retry delays so stuck queued items restart immediately,
     // and abort long-stuck validating/downloading tasks so they get retried fresh.
     if (wasPaused && !this.session.paused) {
       this.retryAfterByItem.clear();
+      // Reset provider circuit breaker so items don't sit in cooldown after unpause
+      this.providerFailures.clear();
 
       const now = nowMs();
       for (const active of this.activeTasks.values()) {
@@ -2814,7 +2821,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (pkg.status === "extracting" || pkg.status === "integrity_check") {
-        pkg.status = pkg.enabled ? "queued" : "paused";
+        pkg.status = (pkg.enabled && !this.session.paused) ? "queued" : "paused";
         pkg.updatedAt = nowMs();
       }
 
@@ -3790,7 +3797,7 @@ export class DownloadManager extends EventEmitter {
               item.totalBytes = null;
               this.dropItemContribution(item.id);
             }
-            let stallDelayMs = retryDelayWithJitter(active.stallRetries, 500);
+            let stallDelayMs = retryDelayWithJitter(active.stallRetries, 300);
             // Respect provider cooldown
             if (item.provider) {
               const providerCooldown = this.getProviderCooldownRemaining(item.provider);
@@ -5103,18 +5110,18 @@ export class DownloadManager extends EventEmitter {
     if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
       await this.runHybridExtraction(packageId, pkg, items, signal);
       if (signal?.aborted) {
-        pkg.status = pkg.enabled ? "queued" : "paused";
+        pkg.status = (pkg.enabled && !this.session.paused) ? "queued" : "paused";
         pkg.updatedAt = nowMs();
         return;
       }
-      pkg.status = pkg.enabled ? "downloading" : "paused";
+      pkg.status = (pkg.enabled && !this.session.paused) ? "downloading" : "paused";
       pkg.updatedAt = nowMs();
       this.emitState();
       return;
     }
 
     if (!allDone) {
-      pkg.status = pkg.enabled ? "downloading" : "paused";
+      pkg.status = (pkg.enabled && !this.session.paused) ? "downloading" : "paused";
       logger.info(`Post-Processing verschoben: pkg=${pkg.name}, noch offene items`);
       return;
     }
@@ -5291,7 +5298,7 @@ export class DownloadManager extends EventEmitter {
               }
               entry.updatedAt = nowMs();
             }
-            pkg.status = pkg.enabled ? "queued" : "paused";
+            pkg.status = (pkg.enabled && !this.session.paused) ? "queued" : "paused";
             pkg.updatedAt = nowMs();
             logger.info(`Post-Processing Entpacken abgebrochen: pkg=${pkg.name}`);
             return;
