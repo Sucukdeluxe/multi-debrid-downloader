@@ -213,6 +213,20 @@ function isFetchFailure(errorText: string): boolean {
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
 }
 
+function isPermanentLinkError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("permanent ungültig")
+    || text.includes("hosternotavailable")
+    || /file.?not.?found/.test(text)
+    || /file.?unavailable/.test(text)
+    || /link.?is.?dead/.test(text)
+    || text.includes("file has been removed")
+    || text.includes("file has been deleted")
+    || text.includes("file is no longer available")
+    || text.includes("file was removed")
+    || text.includes("file was deleted");
+}
+
 function isUnrestrictFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("unrestrict") || text.includes("mega-web") || text.includes("mega-debrid")
@@ -3780,6 +3794,21 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
+          // Permanent link errors (dead link, file removed, hoster unavailable) → fail immediately
+          if (isPermanentLinkError(errorText)) {
+            logger.error(`Link permanent ungültig: item=${item.fileName || item.id}, error=${errorText}, link=${item.url.slice(0, 80)}`);
+            item.status = "failed";
+            this.recordRunOutcome(item.id, "failed");
+            item.lastError = errorText;
+            item.fullStatus = `Link ungültig: ${errorText}`;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            this.retryStateByItem.delete(item.id);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
@@ -5252,6 +5281,17 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    // With autoExtract: only remove once ALL items are extracted, not just downloaded
+    if (this.settings.autoExtract) {
+      const allExtracted = pkg.itemIds.every((itemId) => {
+        const item = this.session.items[itemId];
+        return !item || isExtractedLabel(item.fullStatus || "");
+      });
+      if (!allExtracted) {
+        return;
+      }
+    }
+
     this.removePackageFromSession(packageId, [...pkg.itemIds]);
   }
 
@@ -5292,6 +5332,16 @@ export class DownloadManager extends EventEmitter {
         return item != null && item.status !== "completed";
       });
       if (!hasOpen) {
+        // With autoExtract: only remove once ALL items are extracted, not just downloaded
+        if (this.settings.autoExtract) {
+          const allExtracted = pkg.itemIds.every((id) => {
+            const item = this.session.items[id];
+            return !item || isExtractedLabel(item.fullStatus || "");
+          });
+          if (!allExtracted) {
+            return;
+          }
+        }
         this.removePackageFromSession(packageId, [...pkg.itemIds]);
       }
     }

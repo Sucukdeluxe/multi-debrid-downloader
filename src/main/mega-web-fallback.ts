@@ -42,6 +42,45 @@ function parseSetCookieFromHeaders(headers: Headers): string {
     .join("; ");
 }
 
+const PERMANENT_HOSTER_ERRORS = [
+  "hosternotavailable",
+  "filenotfound",
+  "file_unavailable",
+  "file not found",
+  "link is dead",
+  "file has been removed",
+  "file has been deleted",
+  "file was deleted",
+  "file was removed",
+  "not available",
+  "file is no longer available"
+];
+
+function parsePageErrors(html: string): string[] {
+  const errors: string[] = [];
+  const errorRegex = /class=["'][^"']*\berror\b[^"']*["'][^>]*>([^<]+)</gi;
+  let m: RegExpExecArray | null;
+  while ((m = errorRegex.exec(html)) !== null) {
+    const text = m[1].replace(/^Fehler:\s*/i, "").trim();
+    if (text) {
+      errors.push(text);
+    }
+  }
+  return errors;
+}
+
+function isPermanentHosterError(errors: string[]): string | null {
+  for (const err of errors) {
+    const lower = err.toLowerCase();
+    for (const pattern of PERMANENT_HOSTER_ERRORS) {
+      if (lower.includes(pattern)) {
+        return err;
+      }
+    }
+  }
+  return null;
+}
+
 function parseCodes(html: string): CodeEntry[] {
   const entries: CodeEntry[] = [];
   const cardRegex = /<div[^>]*class=['"][^'"]*acp-box[^'"]*['"][^>]*>[\s\S]*?<\/div>/gi;
@@ -306,6 +345,14 @@ export class MegaWebFallback {
     });
 
     const html = await page.text();
+
+    // Check for permanent hoster errors before looking for debrid codes
+    const pageErrors = parsePageErrors(html);
+    const permanentError = isPermanentHosterError(pageErrors);
+    if (permanentError) {
+      throw new Error(`Mega-Web: Link permanent ungültig (${permanentError})`);
+    }
+
     const code = pickCode(parseCodes(html), link);
     if (!code) {
       return null;

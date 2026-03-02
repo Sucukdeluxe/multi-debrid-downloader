@@ -505,6 +505,10 @@ class MegaDebridClient {
       if (!lastError) {
         lastError = web ? "Mega-Web Antwort ohne Download-Link" : "Mega-Web Antwort leer";
       }
+      // Don't retry permanent hoster errors (dead link, file removed, etc.)
+      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError)) {
+        break;
+      }
       if (attempt < REQUEST_RETRIES) {
         await sleepWithSignal(retryDelay(attempt), signal);
       }
