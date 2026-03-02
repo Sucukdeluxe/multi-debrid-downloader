@@ -2415,6 +2415,23 @@ export class DownloadManager extends EventEmitter {
       active.abortReason = "stop";
       active.abortController.abort("stop");
     }
+    // Reset all non-finished items to clean "Wartet" state
+    for (const item of Object.values(this.session.items)) {
+      if (!isFinishedStatus(item.status)) {
+        item.status = "queued";
+        item.speedBps = 0;
+        item.fullStatus = "Wartet";
+        item.updatedAt = nowMs();
+      }
+    }
+    for (const pkg of Object.values(this.session.packages)) {
+      if (pkg.status === "downloading" || pkg.status === "validating"
+        || pkg.status === "extracting" || pkg.status === "integrity_check"
+        || pkg.status === "paused" || pkg.status === "reconnect_wait") {
+        pkg.status = "queued";
+        pkg.updatedAt = nowMs();
+      }
+    }
     this.persistSoon();
     this.emitState(true);
   }
@@ -2564,11 +2581,16 @@ export class DownloadManager extends EventEmitter {
         item.speedBps = 0;
       }
       // Clear stale transient status texts from previous session
-      if (item.status === "queued" && item.fullStatus) {
-        const fs = item.fullStatus.toLowerCase();
-        if (fs.includes("provider-cooldown") || fs.includes("warte auf daten") || fs.includes("keine daten")
-          || fs.includes("link wird umgewandelt") || fs.includes("verbindungsfehler")) {
+      if (item.status === "queued") {
+        const fs = (item.fullStatus || "").trim();
+        if (fs !== "Wartet" && fs !== "Paket gestoppt") {
           item.fullStatus = "Wartet";
+        }
+      }
+      if (item.status === "completed") {
+        const fs = (item.fullStatus || "").trim();
+        if (fs && !isExtractedLabel(fs) && !/^Fertig\b/i.test(fs)) {
+          item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         }
       }
     }
