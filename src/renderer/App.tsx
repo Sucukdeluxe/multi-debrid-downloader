@@ -2742,13 +2742,12 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       {!collapsed && items.map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           <span className="pkg-col pkg-col-name item-indent" title={item.fileName}>{item.fileName}</span>
-          <span className="pkg-col pkg-col-progress">{(item.status === "downloading" || item.status === "completed") ? `${item.progressPercent}%` : "-"}</span>
-          <span className="pkg-col pkg-col-size">{humanSize(item.totalBytes || item.downloadedBytes || 0)}</span>
-          <span className="pkg-col pkg-col-downloaded">{humanSize(item.downloadedBytes || 0)}</span>
+          <span className="pkg-col pkg-col-progress">{item.totalBytes > 0 ? `${item.progressPercent}%` : "-"}</span>
+          <span className="pkg-col pkg-col-size">{(item.totalBytes || item.downloadedBytes) ? humanSize(item.totalBytes || item.downloadedBytes || 0) : "-"}</span>
+          <span className="pkg-col pkg-col-downloaded">{item.downloadedBytes > 0 ? humanSize(item.downloadedBytes) : "-"}</span>
           <span className="pkg-col pkg-col-hoster" title={formatHoster(item)}>{formatHoster(item)}</span>
           <span className="pkg-col pkg-col-status" title={item.fullStatus}>
             {item.fullStatus}
-            {item.status === "downloading" && ` ${item.progressPercent}%`}
             {item.retries > 0 && ` · R${item.retries}`}
           </span>
           <span className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : "-"}</span>
