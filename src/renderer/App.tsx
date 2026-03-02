@@ -667,7 +667,29 @@ export function App(): ReactElement {
   const hiddenPackageCount = shouldLimitPackageRendering
     ? Math.max(0, totalPackageCount - packages.length)
     : 0;
-  const visiblePackages = packages;
+  const visiblePackages = useMemo(() => {
+    if (!snapshot.session.running || packages.length <= 1) {
+      return packages;
+    }
+    const activeStatuses = new Set(["downloading", "validating", "integrity_check", "extracting"]);
+    const active: PackageEntry[] = [];
+    const rest: PackageEntry[] = [];
+    for (const pkg of packages) {
+      const hasActive = pkg.itemIds.some((id) => {
+        const item = snapshot.session.items[id];
+        return item && activeStatuses.has(item.status);
+      });
+      if (hasActive) {
+        active.push(pkg);
+      } else {
+        rest.push(pkg);
+      }
+    }
+    if (active.length === 0 || active.length === packages.length) {
+      return packages;
+    }
+    return [...active, ...rest];
+  }, [packages, snapshot.session.running, snapshot.session.items]);
 
   useEffect(() => {
     if (!snapshot.session.running) {
