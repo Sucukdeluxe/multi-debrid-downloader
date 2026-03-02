@@ -306,7 +306,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused }: 
 
   useEffect(() => {
     drawChart();
-  }, [drawChart]);
+  });
 
   return (
     <div ref={containerRef} className="bandwidth-chart-container">
@@ -1903,10 +1903,10 @@ export function App(): ReactElement {
             <svg viewBox="0 0 24 24" width="18" height="18"><polygon points="6,3 20,12 6,21" fill="currentColor" /></svg>
           </button>
           <button
-            className={`ctrl-icon-btn ctrl-pause${snapshot.session.running && !snapshot.session.paused ? " active" : ""}`}
-            title="Pause"
-            disabled={actionBusy || !snapshot.canPause}
-            onClick={() => { void performQuickAction(() => window.rd.togglePause()); }}
+            className={`ctrl-icon-btn ctrl-pause${snapshot.session.running && !snapshot.session.paused ? " active" : ""}${snapshot.session.paused ? " paused" : ""}`}
+            title={snapshot.session.paused ? "Fortsetzen" : "Pause"}
+            disabled={!snapshot.canPause}
+            onClick={() => { void window.rd.togglePause(); }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18"><rect x="5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /><rect x="14.5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /></svg>
           </button>
