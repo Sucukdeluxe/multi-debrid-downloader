@@ -10,6 +10,7 @@ import {
   DownloadSummary,
   DownloadStatus,
   DuplicatePolicy,
+  HistoryEntry,
   PackageEntry,
   ParsedPackageInput,
   SessionState,
@@ -132,10 +133,17 @@ function retryLimitToMaxRetries(retryLimit: number): number {
   return retryLimit <= 0 ? Number.MAX_SAFE_INTEGER : retryLimit;
 }
 
+type HistoryEntryCallback = (entry: HistoryEntry) => void;
+
 type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
   invalidateMegaSession?: () => void;
+  onHistoryEntry?: HistoryEntryCallback;
 };
+
+function generateHistoryId(): string {
+  return `hist-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function cloneSession(session: SessionState): SessionState {
   const clonedItems: Record<string, DownloadItem> = {};
@@ -787,6 +795,8 @@ export class DownloadManager extends EventEmitter {
 
   private lastStaleResetAt = 0;
 
+  private onHistoryEntryCallback?: HistoryEntryCallback;
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -795,6 +805,7 @@ export class DownloadManager extends EventEmitter {
     this.storagePaths = storagePaths;
     this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
     this.invalidateMegaSessionFn = options.invalidateMegaSession;
+    this.onHistoryEntryCallback = options.onHistoryEntry;
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
@@ -3028,7 +3039,31 @@ export class DownloadManager extends EventEmitter {
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
   }
 
-  private removePackageFromSession(packageId: string, itemIds: string[]): void {
+  private removePackageFromSession(packageId: string, itemIds: string[], reason: "completed" | "deleted" = "deleted"): void {
+    const pkg = this.session.packages[packageId];
+    if (pkg && this.onHistoryEntryCallback) {
+      const completedItems = itemIds.map(id => this.session.items[id]).filter(Boolean) as DownloadItem[];
+      const completedCount = completedItems.filter(item => item.status === "completed").length;
+      if (completedCount > 0 && (reason === "completed" || pkg.status === "completed")) {
+        const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+        const durationSeconds = pkg.createdAt > 0 ? Math.max(1, Math.floor((nowMs() - pkg.createdAt) / 1000)) : 1;
+        const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
+        const provider = providers.size === 1 ? [...providers][0] : null;
+        const entry: HistoryEntry = {
+          id: generateHistoryId(),
+          name: pkg.name,
+          totalBytes,
+          downloadedBytes: totalBytes,
+          fileCount: completedCount,
+          provider,
+          completedAt: nowMs(),
+          durationSeconds,
+          status: reason === "completed" ? "completed" : "deleted",
+          outputDir: pkg.outputDir
+        };
+        this.onHistoryEntryCallback(entry);
+      }
+    }
     const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
     if (postProcessController && !postProcessController.signal.aborted) {
       postProcessController.abort("package_removed");
@@ -4265,7 +4300,7 @@ export class DownloadManager extends EventEmitter {
             if (nowTick - lastDataAt < idlePulseMs) {
               return;
             }
-            if (item.status === "paused") {
+            if (item.status === "paused" || this.session.paused) {
               return;
             }
             item.status = "downloading";
@@ -5403,7 +5438,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    this.removePackageFromSession(packageId, [...pkg.itemIds]);
+    this.removePackageFromSession(packageId, [...pkg.itemIds], "completed");
   }
 
   private applyCompletedCleanupPolicy(packageId: string, itemId: string): void {
