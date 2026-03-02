@@ -28,6 +28,7 @@ export interface BandwidthScheduleEntry {
 
 export interface DownloadStats {
   totalDownloaded: number;
+  totalDownloadedAllTime: number;
   totalFiles: number;
   totalPackages: number;
   sessionStartedAt: number;
@@ -76,6 +77,7 @@ export interface AppSettings {
   collapseNewPackages: boolean;
   autoSkipExtracted: boolean;
   confirmDeleteSelection: boolean;
+  totalDownloadedAllTime: number;
   bandwidthSchedules: BandwidthScheduleEntry[];
 }
 

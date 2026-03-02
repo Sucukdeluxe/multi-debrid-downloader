@@ -728,6 +728,8 @@ export class DownloadManager extends EventEmitter {
 
   private speedBytesLastWindow = 0;
 
+  private sessionDownloadedBytes = 0;
+
   private statsCache: DownloadStats | null = null;
 
   private statsCacheAt = 0;
@@ -911,6 +913,7 @@ export class DownloadManager extends EventEmitter {
 
     const stats = {
       totalDownloaded,
+      totalDownloadedAllTime: this.settings.totalDownloadedAllTime,
       totalFiles,
       totalPackages: this.session.packageOrder.length,
       sessionStartedAt: this.session.runStartedAt
@@ -4264,6 +4267,8 @@ export class DownloadManager extends EventEmitter {
               written += buffer.length;
               windowBytes += buffer.length;
               this.session.totalDownloadedBytes += buffer.length;
+              this.sessionDownloadedBytes += buffer.length;
+              this.settings.totalDownloadedAllTime += buffer.length;
               this.itemContributedBytes.set(active.itemId, (this.itemContributedBytes.get(active.itemId) || 0) + buffer.length);
               this.recordSpeed(buffer.length, item.packageId);
               throughputWindowBytes += buffer.length;

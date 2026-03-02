@@ -51,6 +51,7 @@ interface LinkPopupState {
 
 const emptyStats = (): DownloadStats => ({
   totalDownloaded: 0,
+  totalDownloadedAllTime: 0,
   totalFiles: 0,
   totalPackages: 0,
   sessionStartedAt: 0
@@ -2124,8 +2125,12 @@ export function App(): ReactElement {
                   <span className="stat-value">{snapshot.speedText.replace("Geschwindigkeit: ", "")}</span>
                 </div>
                 <div className="stat-item">
-                  <span className="stat-label">Gesamt heruntergeladen</span>
+                  <span className="stat-label">Heruntergeladen (Session)</span>
                   <span className="stat-value">{humanSize(snapshot.stats.totalDownloaded)}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Heruntergeladen (Gesamt)</span>
+                  <span className="stat-value">{humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">Fertige Dateien</span>
@@ -2476,7 +2481,8 @@ export function App(): ReactElement {
       <footer className="status-bar">
         <span>Pakete: {snapshot.stats.totalPackages}</span>
         <span>Links: {Object.keys(snapshot.session.items).length}</span>
-        <span>Gesamt geladen: {humanSize(snapshot.stats.totalDownloaded)}</span>
+        <span>Session: {humanSize(snapshot.stats.totalDownloaded)}</span>
+        <span>Gesamt: {humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
         <span>Hoster: {configuredProviders.length}</span>
         <span>{snapshot.speedText}</span>
         <span>{snapshot.etaText}</span>
