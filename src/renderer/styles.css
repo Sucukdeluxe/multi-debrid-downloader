@@ -676,25 +676,21 @@ body,
   z-index: 1;
 }
 
-.progress-size-text-clip {
+.progress-size-text-filled {
   position: absolute;
   top: 0;
   left: 0;
+  width: 100%;
   height: 100%;
-  overflow: hidden;
-  z-index: 2;
-}
-
-.progress-size-text-clip .progress-size-text-filled {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
   font-size: 10px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #0a0f1a;
   white-space: nowrap;
+  z-index: 2;
 }
 
 .progress-size-small {
@@ -702,7 +698,7 @@ body,
 }
 
 .progress-size-small .progress-size-text,
-.progress-size-small .progress-size-text-clip .progress-size-text-filled {
+.progress-size-small .progress-size-text-filled {
   font-size: 9px;
 }
 
@@ -741,24 +737,20 @@ body,
   z-index: 1;
 }
 
-.progress-inline-text-clip {
+.progress-inline-text-filled {
   position: absolute;
   top: 0;
   left: 0;
+  width: 100%;
   height: 100%;
-  overflow: hidden;
-  z-index: 2;
-}
-
-.progress-inline-text-clip .progress-inline-text-filled {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
   font-size: 11px;
   font-weight: 700;
   color: #0a0f1a;
   white-space: nowrap;
+  z-index: 2;
 }
 
 .progress-inline-small {
@@ -766,7 +758,7 @@ body,
 }
 
 .progress-inline-small .progress-inline-text,
-.progress-inline-small .progress-inline-text-clip .progress-inline-text-filled {
+.progress-inline-small .progress-inline-text-filled {
   font-size: 10px;
 }
 
