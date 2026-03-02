@@ -1530,6 +1530,9 @@ export function App(): ReactElement {
               <span>Pakete: {snapshot.stats.totalPackages}</span>
               <span>Dateien: {snapshot.stats.totalFiles} fertig</span>
               <span>Gesamt: {humanSize(snapshot.stats.totalDownloaded)}</span>
+              {snapshot.session.running && !snapshot.session.paused && (
+                <span>{snapshot.speedText.replace("Geschwindigkeit: ", "Speed: ")}</span>
+              )}
             </div>
             {totalPackageCount === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
             {totalPackageCount > 0 && packages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
