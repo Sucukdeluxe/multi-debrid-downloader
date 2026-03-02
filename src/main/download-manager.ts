@@ -134,6 +134,7 @@ function retryLimitToMaxRetries(retryLimit: number): number {
 
 type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
+  invalidateMegaSession?: () => void;
 };
 
 function cloneSession(session: SessionState): SessionState {
@@ -680,8 +681,8 @@ function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[])
 }
 
 function retryDelayWithJitter(attempt: number, baseMs: number): number {
-  const exponential = baseMs * Math.pow(1.5, Math.min(attempt - 1, 8));
-  const capped = Math.min(exponential, 30000);
+  const exponential = baseMs * Math.pow(1.5, Math.min(attempt - 1, 14));
+  const capped = Math.min(exponential, 120000);
   const jitter = capped * (0.5 + Math.random() * 0.5);
   return Math.floor(jitter);
 }
@@ -694,6 +695,8 @@ export class DownloadManager extends EventEmitter {
   private storagePaths: StoragePaths;
 
   private debridService: DebridService;
+
+  private invalidateMegaSessionFn?: () => void;
 
   private activeTasks = new Map<string, ActiveTask>();
 
@@ -762,6 +765,10 @@ export class DownloadManager extends EventEmitter {
     unrestrictRetries: number;
   }>();
 
+  private providerFailures = new Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>();
+
+  private lastStaleResetAt = 0;
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -769,6 +776,7 @@ export class DownloadManager extends EventEmitter {
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
     this.debridService = new DebridService(settings, { megaWebUnrestrict: options.megaWebUnrestrict });
+    this.invalidateMegaSessionFn = options.invalidateMegaSession;
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
@@ -2943,6 +2951,79 @@ export class DownloadManager extends EventEmitter {
     this.resetSessionTotalsIfQueueEmpty();
   }
 
+  // ── Provider Circuit Breaker ──────────────────────────────────────────
+
+  private recordProviderFailure(provider: string): void {
+    const now = nowMs();
+    const entry = this.providerFailures.get(provider) || { count: 0, lastFailAt: 0, cooldownUntil: 0 };
+    entry.count += 1;
+    entry.lastFailAt = now;
+    // Escalating cooldown: 5 failures→30s, 10→60s, 15→120s, 20+→300s
+    if (entry.count >= 5) {
+      const tier = Math.min(Math.floor((entry.count - 5) / 5), 3);
+      const cooldownMs = [30000, 60000, 120000, 300000][tier];
+      entry.cooldownUntil = now + cooldownMs;
+      logger.warn(`Provider Circuit-Breaker: ${provider} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
+      // Invalidate mega-debrid session on cooldown to force fresh login
+      if (provider === "megadebrid" && this.invalidateMegaSessionFn) {
+        try {
+          this.invalidateMegaSessionFn();
+        } catch { /* ignore */ }
+      }
+    }
+    this.providerFailures.set(provider, entry);
+  }
+
+  private recordProviderSuccess(provider: string): void {
+    if (this.providerFailures.has(provider)) {
+      this.providerFailures.delete(provider);
+    }
+  }
+
+  private getProviderCooldownRemaining(provider: string): number {
+    const entry = this.providerFailures.get(provider);
+    if (!entry || entry.cooldownUntil <= 0) {
+      return 0;
+    }
+    const remaining = entry.cooldownUntil - nowMs();
+    return remaining > 0 ? remaining : 0;
+  }
+
+  private resetStaleRetryState(): void {
+    const now = nowMs();
+    // Reset retry counters for items queued >10 min without progress
+    for (const [itemId, retryState] of this.retryStateByItem) {
+      const item = this.session.items[itemId];
+      if (!item || item.status !== "queued") {
+        continue;
+      }
+      if (this.activeTasks.has(itemId)) {
+        continue;
+      }
+      const retryAfter = this.retryAfterByItem.get(itemId) || 0;
+      if (retryAfter > now) {
+        continue;
+      }
+      const staleMs = now - item.updatedAt;
+      if (staleMs > 600000) {
+        retryState.stallRetries = 0;
+        retryState.unrestrictRetries = 0;
+        retryState.genericErrorRetries = 0;
+        retryState.freshRetryUsed = false;
+        logger.info(`Soft-Reset: Retry-Counter zurückgesetzt für ${item.fileName || itemId} (${Math.floor(staleMs / 60000)} min stale)`);
+      }
+    }
+    // Reset provider failures older than 15 min
+    for (const [provider, entry] of this.providerFailures) {
+      if (now - entry.lastFailAt > 900000) {
+        this.providerFailures.delete(provider);
+        logger.info(`Soft-Reset: Provider-Failures zurückgesetzt für ${provider}`);
+      }
+    }
+  }
+
+  // ── Scheduler ──────────────────────────────────────────────────────────
+
   private async ensureScheduler(): Promise<void> {
     if (this.scheduleRunning) {
       return;
@@ -2955,6 +3036,11 @@ export class DownloadManager extends EventEmitter {
         if (now - this.lastSchedulerHeartbeatAt >= 60000) {
           this.lastSchedulerHeartbeatAt = now;
           logger.info(`Scheduler Heartbeat: active=${this.activeTasks.size}, queued=${this.countQueuedItems()}, reconnect=${this.reconnectActive()}, paused=${this.session.paused}, postProcess=${this.packagePostProcessTasks.size}`);
+        }
+        // Periodic soft-reset every 10 min: clear stale retry counters & provider failures
+        if (now - this.lastStaleResetAt >= 600000) {
+          this.lastStaleResetAt = now;
+          this.resetStaleRetryState();
         }
 
         if (this.session.paused) {
@@ -3330,6 +3416,23 @@ export class DownloadManager extends EventEmitter {
     const maxStallRetries = maxItemRetries;
     while (true) {
       try {
+        // Check provider cooldown before attempting unrestrict
+        const lastProvider = item.provider || "";
+        const cooldownProviders = lastProvider ? [lastProvider] : ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "unknown"];
+        let maxCooldownMs = 0;
+        for (const prov of cooldownProviders) {
+          const cd = this.getProviderCooldownRemaining(prov);
+          if (cd > maxCooldownMs) {
+            maxCooldownMs = cd;
+          }
+        }
+        if (maxCooldownMs > 0) {
+          const delayMs = Math.min(maxCooldownMs + 1000, 310000);
+          this.queueRetry(item, active, delayMs, `Provider-Cooldown (${Math.ceil(delayMs / 1000)}s)`);
+          this.persistSoon();
+          this.emitState();
+          return;
+        }
         const unrestrictTimeoutSignal = AbortSignal.timeout(getUnrestrictTimeoutMs());
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
@@ -3337,13 +3440,22 @@ export class DownloadManager extends EventEmitter {
           unrestricted = await this.debridService.unrestrictLink(item.url, unrestrictedSignal);
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
+            // Record failure for all providers since we don't know which one timed out
+            this.recordProviderFailure(lastProvider || "unknown");
             throw new Error(`Unrestrict Timeout nach ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s`);
+          }
+          // Record failure for the provider that errored
+          const errText = compactErrorText(unrestrictError);
+          if (isUnrestrictFailure(errText)) {
+            this.recordProviderFailure(lastProvider || "unknown");
           }
           throw unrestrictError;
         }
         if (active.abortController.signal.aborted) {
           throw new Error(`aborted:${active.abortReason}`);
         }
+        // Unrestrict succeeded - reset provider failure counter
+        this.recordProviderSuccess(unrestricted.provider);
         item.provider = unrestricted.provider;
         item.retries += unrestricted.retriesUsed;
         item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
@@ -3528,17 +3640,47 @@ export class DownloadManager extends EventEmitter {
           item.status = "queued";
           item.speedBps = 0;
           item.fullStatus = "Wartet auf Reconnect";
+          // Persist retry counters so shelve logic survives reconnect interruption
+          this.retryStateByItem.set(item.id, {
+            freshRetryUsed: Boolean(active.freshRetryUsed),
+            stallRetries: Number(active.stallRetries || 0),
+            genericErrorRetries: Number(active.genericErrorRetries || 0),
+            unrestrictRetries: Number(active.unrestrictRetries || 0)
+          });
         } else if (reason === "package_toggle") {
           item.status = "queued";
           item.speedBps = 0;
           item.fullStatus = "Paket gestoppt";
+          this.retryStateByItem.set(item.id, {
+            freshRetryUsed: Boolean(active.freshRetryUsed),
+            stallRetries: Number(active.stallRetries || 0),
+            genericErrorRetries: Number(active.genericErrorRetries || 0),
+            unrestrictRetries: Number(active.unrestrictRetries || 0)
+          });
         } else if (reason === "stall") {
           const stallErrorText = compactErrorText(error);
           const isSlowThroughput = stallErrorText.includes("slow_throughput");
           const wasValidating = item.status === "validating";
           active.stallRetries += 1;
-          const stallDelayMs = retryDelayWithJitter(active.stallRetries, 500);
+          // Record provider failure if stall during validation
+          if (wasValidating && item.provider) {
+            this.recordProviderFailure(item.provider);
+          }
           logger.warn(`Stall erkannt: item=${item.fileName || item.id}, phase=${wasValidating ? "validating" : "downloading"}, retry=${active.stallRetries}/${retryDisplayLimit}, bytes=${item.downloadedBytes}, error=${stallErrorText || "none"}, provider=${item.provider || "?"}`);
+          // Shelve check: too many consecutive failures → long pause
+          const totalFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
+          if (totalFailures >= 15) {
+            item.retries += 1;
+            active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
+            active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
+            active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
+            logger.warn(`Item shelved: ${item.fileName || item.id}, totalFailures=${totalFailures}`);
+            this.queueRetry(item, active, 300000, `Viele Fehler (${totalFailures}x), Pause 5 min`);
+            item.lastError = stallErrorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           if (active.stallRetries <= maxStallRetries) {
             item.retries += 1;
             // Reset partial download so next attempt uses a fresh link
@@ -3552,6 +3694,14 @@ export class DownloadManager extends EventEmitter {
               item.progressPercent = 0;
               item.totalBytes = null;
               this.dropItemContribution(item.id);
+            }
+            let stallDelayMs = retryDelayWithJitter(active.stallRetries, 500);
+            // Respect provider cooldown
+            if (item.provider) {
+              const providerCooldown = this.getProviderCooldownRemaining(item.provider);
+              if (providerCooldown > stallDelayMs) {
+                stallDelayMs = providerCooldown + 1000;
+              }
             }
             const retryText = wasValidating
               ? `Link-Umwandlung hing, Retry ${active.stallRetries}/${retryDisplayLimit}`
@@ -3615,11 +3765,32 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
+          // Shelve check for non-stall errors
+          const totalNonStallFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
+          if (totalNonStallFailures >= 15) {
+            item.retries += 1;
+            active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
+            active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
+            active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
+            logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}`);
+            this.queueRetry(item, active, 300000, `Viele Fehler (${totalNonStallFailures}x), Pause 5 min`);
+            item.lastError = errorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
-            // Longer backoff for unrestrict: 5s, 10s, 15s (capped at 15s) to let API cache expire
-            const unrestrictDelayMs = Math.min(15000, 5000 * active.unrestrictRetries);
+            this.recordProviderFailure(item.provider || "unknown");
+            // Escalating backoff: 5s, 7.5s, 11s, 17s, 25s, 38s, ... up to 120s
+            let unrestrictDelayMs = Math.min(120000, Math.floor(5000 * Math.pow(1.5, active.unrestrictRetries - 1)));
+            // Respect provider cooldown
+            const providerCooldown = this.getProviderCooldownRemaining(item.provider || "unknown");
+            if (providerCooldown > unrestrictDelayMs) {
+              unrestrictDelayMs = providerCooldown + 1000;
+            }
             logger.warn(`Unrestrict-Fehler: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${unrestrictDelayMs}ms, error=${errorText}, link=${item.url.slice(0, 80)}`);
             // Reset partial download so next attempt starts fresh
             if (item.downloadedBytes > 0) {
