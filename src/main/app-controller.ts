@@ -212,6 +212,10 @@ export class AppController {
     this.manager.retryExtraction(packageId);
   }
 
+  public extractNow(packageId: string): void {
+    this.manager.extractNow(packageId);
+  }
+
   public cancelPackage(packageId: string): void {
     this.manager.cancelPackage(packageId);
   }

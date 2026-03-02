@@ -48,6 +48,7 @@ const api: ElectronApi = {
   importBackup: (): Promise<{ restored: boolean; message: string }> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_BACKUP),
   openLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
+  extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void): (() => void) => {
     const listener = (_event: unknown, snapshot: UiSnapshot): void => callback(snapshot);
     ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, listener);

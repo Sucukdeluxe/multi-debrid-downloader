@@ -2976,6 +2976,25 @@ export class DownloadManager extends EventEmitter {
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (retryExtraction): ${compactErrorText(err)}`));
   }
 
+  public extractNow(packageId: string): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg || pkg.cancelled) return;
+    if (this.packagePostProcessTasks.has(packageId)) return;
+    const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+    const completedItems = items.filter((item) => item.status === "completed");
+    if (completedItems.length === 0) return;
+    pkg.status = "queued";
+    pkg.updatedAt = nowMs();
+    for (const item of completedItems) {
+      item.fullStatus = "Entpacken - Ausstehend";
+      item.updatedAt = nowMs();
+    }
+    logger.info(`Jetzt entpacken: pkg=${pkg.name}, completed=${completedItems.length}`);
+    this.persistSoon();
+    this.emitState(true);
+    void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
+  }
+
   private removePackageFromSession(packageId: string, itemIds: string[]): void {
     const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
     if (postProcessController && !postProcessController.signal.aborted) {
@@ -4422,11 +4441,16 @@ export class DownloadManager extends EventEmitter {
 
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
-        if (!item || item.status === "cancelled" || this.activeTasks.has(itemId)) {
+        if (!item || this.activeTasks.has(itemId)) {
+          continue;
+        }
+        // Only check failed or completed items — skip queued/cancelled to avoid
+        // expensive fs.stat calls on hundreds of items (caused 5-10s freeze on start).
+        if (item.status !== "failed" && item.status !== "completed") {
           continue;
         }
 
-        const is416Failure = this.isHttp416Failure(item);
+        const is416Failure = item.status === "failed" && this.isHttp416Failure(item);
         const hasZeroByteArchive = await this.hasZeroByteArchiveArtifact(item);
 
         if (item.status === "failed") {
