@@ -133,6 +133,9 @@ export class AppController {
       return this.settings;
     }
 
+    // Preserve the live totalDownloadedAllTime from the download manager
+    const liveSettings = this.manager.getSettings();
+    nextSettings.totalDownloadedAllTime = Math.max(nextSettings.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
