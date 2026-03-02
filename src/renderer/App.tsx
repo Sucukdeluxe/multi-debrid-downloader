@@ -473,6 +473,7 @@ export function App(): ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -1418,8 +1419,11 @@ export function App(): ReactElement {
   }, []);
 
   const dragSelectRef = useRef(false);
+  const dragAnchorRef = useRef<string | null>(null);
+  const dragDidMoveRef = useRef(false);
 
   const onSelectId = useCallback((id: string, ctrlKey: boolean): void => {
+    if (dragDidMoveRef.current) return; // drag handled it, skip click
     setSelectedIds((prev) => {
       if (ctrlKey) {
         const next = new Set(prev);
@@ -1435,13 +1439,26 @@ export function App(): ReactElement {
     if (!e.ctrlKey || e.button !== 0) return;
     e.preventDefault();
     dragSelectRef.current = true;
-    setSelectedIds((prev) => { const next = new Set(prev); next.add(id); return next; });
-    const onUp = (): void => { dragSelectRef.current = false; window.removeEventListener("mouseup", onUp); };
+    dragAnchorRef.current = id;
+    dragDidMoveRef.current = false;
+    const onUp = (): void => {
+      dragSelectRef.current = false;
+      dragAnchorRef.current = null;
+      window.removeEventListener("mouseup", onUp);
+    };
     window.addEventListener("mouseup", onUp);
   }, []);
 
   const onSelectMouseEnter = useCallback((id: string): void => {
     if (!dragSelectRef.current) return;
+    if (!dragDidMoveRef.current) {
+      dragDidMoveRef.current = true;
+      // Add anchor item now that we know it's a drag
+      const anchor = dragAnchorRef.current;
+      if (anchor) {
+        setSelectedIds((prev) => { if (prev.has(anchor)) return prev; const next = new Set(prev); next.add(anchor); return next; });
+      }
+    }
     setSelectedIds((prev) => { if (prev.has(id)) return prev; const next = new Set(prev); next.add(id); return next; });
   }, []);
 
@@ -1559,18 +1576,42 @@ export function App(): ReactElement {
     };
   }, [contextMenu]);
 
-  useEffect(() => {
+  const executeDeleteSelection = useCallback((ids: Set<string>): void => {
+    for (const id of ids) {
+      if (snapshot.session.items[id]) void window.rd.removeItem(id);
+      else if (snapshot.session.packages[id]) onPackageCancel(id);
+    }
+    setSelectedIds(new Set());
+  }, [snapshot.session.items, snapshot.session.packages, onPackageCancel]);
+
+  const requestDeleteSelection = useCallback((): void => {
     if (selectedIds.size === 0) return;
-    const onKey = (e: KeyboardEvent): void => { if (e.key === "Escape") setSelectedIds(new Set()); };
-    const onClick = (e: MouseEvent): void => {
+    if (!settingsDraft.confirmDeleteSelection) {
+      executeDeleteSelection(selectedIds);
+      return;
+    }
+    setDeleteConfirm({ ids: new Set(selectedIds), dontAsk: false });
+  }, [selectedIds, settingsDraft.confirmDeleteSelection, executeDeleteSelection]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setSelectedIds(new Set());
+      if (e.key === "Delete" && selectedIds.size > 0) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+        e.preventDefault();
+        requestDeleteSelection();
+      }
+    };
+    const onDown = (e: MouseEvent): void => {
       const target = e.target as HTMLElement;
-      if (target.closest(".package-card")) return;
+      if (target.closest(".package-card") || target.closest(".ctx-menu")) return;
       setSelectedIds(new Set());
     };
     window.addEventListener("keydown", onKey);
-    window.addEventListener("click", onClick);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("click", onClick); };
-  }, [selectedIds.size]);
+    window.addEventListener("mousedown", onDown);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onDown); };
+  }, [selectedIds, requestDeleteSelection]);
 
   const onExportBackup = async (): Promise<void> => {
     closeMenus();
@@ -2196,6 +2237,7 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collapseNewPackages} onChange={(e) => setBool("collapseNewPackages", e.target.checked)} /> Neue Pakete eingeklappt</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
                       const next = e.target.checked ? "light" : "dark";
                       settingsDraftRevisionRef.current += 1;
@@ -2361,6 +2403,38 @@ export function App(): ReactElement {
           </div>
         </div>
       )}
+
+      {deleteConfirm && (() => {
+        const itemCount = [...deleteConfirm.ids].filter((id) => snapshot.session.items[id]).length;
+        const pkgCount = [...deleteConfirm.ids].filter((id) => snapshot.session.packages[id]).length;
+        const totalRemaining = Object.keys(snapshot.session.items).length + Object.keys(snapshot.session.packages).length - itemCount - pkgCount;
+        const parts: string[] = [];
+        if (pkgCount > 0) parts.push(`${pkgCount} Paket(e)`);
+        if (itemCount > 0) parts.push(`${itemCount} Link(s)`);
+        return (
+          <div className="modal-backdrop" onClick={() => setDeleteConfirm(null)}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <h3>Bist Du Dir sicher?</h3>
+              <p>Möchtest Du wirklich diese Aufräumaktion(en) durchführen?<br />Ausgewählte Links löschen</p>
+              <p><strong>Zu erledigende Aufgaben:</strong><br />{parts.join(" + ")} löschen – {totalRemaining} Link(s) verbleiben!</p>
+              <label className="toggle-line">
+                <input type="checkbox" checked={deleteConfirm.dontAsk} onChange={(e) => setDeleteConfirm((prev) => prev ? { ...prev, dontAsk: e.target.checked } : prev)} />
+                Nicht mehr anzeigen
+              </label>
+              <div className="modal-actions">
+                <button className="btn" onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
+                <button className="btn danger" onClick={() => {
+                  if (deleteConfirm.dontAsk) {
+                    setBool("confirmDeleteSelection", false);
+                  }
+                  executeDeleteSelection(deleteConfirm.ids);
+                  setDeleteConfirm(null);
+                }}>Fortfahren</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {startConflictPrompt && (
         <div className="modal-backdrop" onClick={() => closeStartConflictPrompt(null)}>
@@ -2570,7 +2644,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       className={`package-card${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
       draggable
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, undefined, e.clientX, e.clientY); }}
-      onClick={(e) => { onSelect(pkg.id, e.ctrlKey); }}
+      onClick={(e) => { if (e.ctrlKey) onSelect(pkg.id, true); }}
       onMouseDown={(e) => onSelectMouseDown(pkg.id, e)}
       onMouseEnter={() => onSelectMouseEnter(pkg.id)}
       onDragStart={(event) => { event.stopPropagation(); onDragStart(pkg.id); }}

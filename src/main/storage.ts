@@ -108,6 +108,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     minimizeToTray: Boolean(settings.minimizeToTray),
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
     autoSkipExtracted: settings.autoSkipExtracted !== undefined ? Boolean(settings.autoSkipExtracted) : defaults.autoSkipExtracted,
+    confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules)
   };

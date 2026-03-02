@@ -75,6 +75,7 @@ export function defaultSettings(): AppSettings {
     theme: "dark" as const,
     collapseNewPackages: true,
     autoSkipExtracted: false,
+    confirmDeleteSelection: true,
     bandwidthSchedules: []
   };
 }
