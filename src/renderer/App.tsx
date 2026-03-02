@@ -2055,10 +2055,14 @@ export function App(): ReactElement {
               </button>
             </div>
             <div className="pkg-column-header">
-              {(["name", "size", "hoster"] as PkgSortColumn[]).map((col) => {
+              {(["name", "size", "hoster"] as PkgSortColumn[]).flatMap((col) => {
                 const labels: Record<PkgSortColumn, string> = { name: "Name", size: "Größe", hoster: "Hoster" };
                 const isActive = downloadsSortColumn === col;
-                return (
+                const before: React.ReactNode[] = [];
+                if (col === "size") before.push(<span key="progress" className="pkg-col pkg-col-progress">Fortschritt</span>);
+                if (col === "hoster") before.push(<span key="downloaded" className="pkg-col pkg-col-downloaded">Geladen</span>);
+                return [
+                  ...before,
                   <span
                     key={col}
                     className={`pkg-col pkg-col-${col} sortable${isActive ? " sort-active" : ""}`}
@@ -2087,8 +2091,8 @@ export function App(): ReactElement {
                     }}
                   >
                     {labels[col]} {isActive ? (downloadsSortDescending ? "\u25BC" : "\u25B2") : ""}
-                  </span>
-                );
+                  </span>,
+                ];
               })}
               <span className="pkg-col pkg-col-status">Status</span>
               <span className="pkg-col pkg-col-speed">Geschwindigkeit</span>
@@ -2714,7 +2718,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <h4 onClick={(e) => { e.stopPropagation(); onStartEdit(pkg.id, pkg.name); }} title="Klicken zum Umbenennen">{pkg.name}</h4>
             )}
           </div>
+          <span className="pkg-col pkg-col-progress">{dlProgress}%</span>
           <span className="pkg-col pkg-col-size">{humanSize(items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0))}</span>
+          <span className="pkg-col pkg-col-downloaded">{humanSize(items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0))}</span>
           <span className="pkg-col pkg-col-hoster" title={(() => {
             const hosters = [...new Set(items.map((item) => formatHoster(item)).filter((h) => h !== "-"))];
             return hosters.join(", ");
@@ -2736,7 +2742,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       {!collapsed && items.map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           <span className="pkg-col pkg-col-name item-indent" title={item.fileName}>{item.fileName}</span>
+          <span className="pkg-col pkg-col-progress">{(item.status === "downloading" || item.status === "completed") ? `${item.progressPercent}%` : "-"}</span>
           <span className="pkg-col pkg-col-size">{humanSize(item.totalBytes || item.downloadedBytes || 0)}</span>
+          <span className="pkg-col pkg-col-downloaded">{humanSize(item.downloadedBytes || 0)}</span>
           <span className="pkg-col pkg-col-hoster" title={formatHoster(item)}>{formatHoster(item)}</span>
           <span className="pkg-col pkg-col-status" title={item.fullStatus}>
             {item.fullStatus}
