@@ -2180,10 +2180,12 @@ export function App(): ReactElement {
                       <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
                       <span className="pkg-col pkg-col-size">{(() => {
                         const pct = entry.totalBytes > 0 ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100)) : 0;
+                        const label = `${humanSize(entry.downloadedBytes)} / ${humanSize(entry.totalBytes)}`;
                         return entry.totalBytes > 0 ? (
                           <span className="progress-size">
                             <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                            <span className="progress-size-text">{humanSize(entry.downloadedBytes)} / {humanSize(entry.totalBytes)}</span>
+                            <span className="progress-size-text">{label}</span>
+                            <span className="progress-size-text-filled" style={{ width: `${pct}%` }}><span style={{ width: "160px", textAlign: "center", flexShrink: 0 }}>{label}</span></span>
                           </span>
                         ) : "-";
                       })()}</span>
@@ -2810,16 +2812,19 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
             <span className="progress-inline">
               <span className="progress-inline-bar" style={{ width: `${dlProgress}%` }} />
               <span className="progress-inline-text">{dlProgress}%</span>
+              <span className="progress-inline-text-filled" style={{ width: `${dlProgress}%` }}><span style={{ width: "70px", textAlign: "center", flexShrink: 0 }}>{dlProgress}%</span></span>
             </span>
           </span>
           <span className="pkg-col pkg-col-size">{(() => {
             const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
             const dlBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
             const pct = totalBytes > 0 ? Math.min(100, Math.round((dlBytes / totalBytes) * 100)) : 0;
+            const label = `${humanSize(dlBytes)} / ${humanSize(totalBytes)}`;
             return totalBytes > 0 ? (
               <span className="progress-size">
                 <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                <span className="progress-size-text">{humanSize(dlBytes)} / {humanSize(totalBytes)}</span>
+                <span className="progress-size-text">{label}</span>
+                <span className="progress-size-text-filled" style={{ width: `${pct}%` }}><span style={{ width: "160px", textAlign: "center", flexShrink: 0 }}>{label}</span></span>
               </span>
             ) : "-";
           })()}</span>
@@ -2849,6 +2854,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <span className="progress-inline progress-inline-small">
                 <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
                 <span className="progress-inline-text">{item.progressPercent}%</span>
+                <span className="progress-inline-text-filled" style={{ width: `${item.progressPercent}%` }}><span style={{ width: "70px", textAlign: "center", flexShrink: 0 }}>{item.progressPercent}%</span></span>
               </span>
             ) : "-"}
           </span>
@@ -2856,10 +2862,12 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
             const total = item.totalBytes || item.downloadedBytes || 0;
             const dl = item.downloadedBytes || 0;
             const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
+            const label = `${humanSize(dl)} / ${humanSize(total)}`;
             return total > 0 ? (
               <span className="progress-size progress-size-small">
                 <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                <span className="progress-size-text">{humanSize(dl)} / {humanSize(total)}</span>
+                <span className="progress-size-text">{label}</span>
+                <span className="progress-size-text-filled" style={{ width: `${pct}%` }}><span style={{ width: "160px", textAlign: "center", flexShrink: 0 }}>{label}</span></span>
               </span>
             ) : "-";
           })()}</span>
