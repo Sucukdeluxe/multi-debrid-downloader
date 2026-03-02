@@ -1903,18 +1903,25 @@ export function App(): ReactElement {
         <div className="buttons buttons-left">
           <button
             className="ctrl-icon-btn ctrl-play"
-            title="Start"
-            disabled={actionBusy || !snapshot.canStart}
-            onClick={() => { void onStartDownloads(); }}
+            title={snapshot.session.paused ? "Fortsetzen" : "Start"}
+            disabled={actionBusy || (!snapshot.canStart && !snapshot.session.paused)}
+            onClick={() => {
+              if (snapshot.session.paused) {
+                setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: false } }));
+                void window.rd.togglePause();
+              } else {
+                void onStartDownloads();
+              }
+            }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18"><polygon points="6,3 20,12 6,21" fill="currentColor" /></svg>
           </button>
           <button
-            className={`ctrl-icon-btn ctrl-pause${snapshot.session.running && !snapshot.session.paused ? " active" : ""}${snapshot.session.paused ? " paused" : ""}`}
-            title={snapshot.session.paused ? "Fortsetzen" : "Pause"}
-            disabled={!snapshot.canPause}
+            className={`ctrl-icon-btn ctrl-pause${snapshot.session.paused ? " paused" : ""}`}
+            title="Pause"
+            disabled={!snapshot.canPause || snapshot.session.paused}
             onClick={() => {
-              setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: !prev.session.paused } }));
+              setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: true } }));
               void window.rd.togglePause();
             }}
           >

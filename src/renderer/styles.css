@@ -323,14 +323,16 @@ body,
   background: rgba(74, 222, 128, 0.1);
 }
 
-.ctrl-icon-btn.ctrl-pause.active {
-  color: var(--accent);
-}
-
 .ctrl-icon-btn.ctrl-pause:not(:disabled):hover {
   border-color: #f59e0b;
   color: #f59e0b;
   background: rgba(245, 158, 11, 0.1);
+}
+
+.ctrl-icon-btn.ctrl-pause.paused {
+  border-color: #f59e0b;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
 }
 
 .ctrl-icon-btn.ctrl-stop:not(:disabled) {
