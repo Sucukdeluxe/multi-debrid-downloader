@@ -2565,6 +2565,14 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>Ausgewählte entfernen ({[...selectedIds].filter((id) => snapshot.session.items[id]).length})</button>
           )}
+          {hasPackages && !multi && (() => {
+            const pkg = snapshot.session.packages[contextMenu.packageId];
+            const items = pkg?.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean) || [];
+            const hasExtractError = items.some((item) => item && /^Entpack-Fehler/i.test(item.fullStatus));
+            return hasExtractError ? (
+              <button className="ctx-menu-item" onClick={() => { void window.rd.retryExtraction(contextMenu.packageId); setContextMenu(null); }}>Extraktion wiederholen</button>
+            ) : null;
+          })()}
           {hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
               setContextMenu(null);

@@ -2955,6 +2955,27 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  public retryExtraction(packageId: string): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) return;
+    if (this.packagePostProcessTasks.has(packageId)) return;
+    const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+    const completedItems = items.filter((item) => item.status === "completed");
+    if (completedItems.length === 0) return;
+    pkg.status = "queued";
+    pkg.updatedAt = nowMs();
+    for (const item of completedItems) {
+      if (!isExtractedLabel(item.fullStatus)) {
+        item.fullStatus = "Entpacken - Ausstehend";
+        item.updatedAt = nowMs();
+      }
+    }
+    logger.info(`Extraktion manuell wiederholt: pkg=${pkg.name}`);
+    this.persistSoon();
+    this.emitState(true);
+    void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (retryExtraction): ${compactErrorText(err)}`));
+  }
+
   private removePackageFromSession(packageId: string, itemIds: string[]): void {
     const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
     if (postProcessController && !postProcessController.signal.aborted) {

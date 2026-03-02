@@ -42,6 +42,7 @@ export interface ElectronApi {
   exportBackup: () => Promise<{ saved: boolean }>;
   importBackup: () => Promise<{ restored: boolean; message: string }>;
   openLog: () => Promise<void>;
+  retryExtraction: (packageId: string) => Promise<void>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;
