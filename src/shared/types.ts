@@ -255,3 +255,21 @@ export interface SessionStats {
   activeDownloads: number;
   queuedDownloads: number;
 }
+
+export interface HistoryEntry {
+  id: string;
+  name: string;
+  totalBytes: number;
+  downloadedBytes: number;
+  fileCount: number;
+  provider: DebridProvider | null;
+  completedAt: number;
+  durationSeconds: number;
+  status: "completed" | "deleted";
+  outputDir: string;
+}
+
+export interface HistoryState {
+  entries: HistoryEntry[];
+  maxEntries: number;
+}

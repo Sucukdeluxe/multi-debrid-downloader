@@ -2,6 +2,7 @@ import type {
   AddLinksPayload,
   AppSettings,
   DuplicatePolicy,
+  HistoryEntry,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -44,6 +45,9 @@ export interface ElectronApi {
   openLog: () => Promise<void>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
+  getHistory: () => Promise<HistoryEntry[]>;
+  clearHistory: () => Promise<void>;
+  removeHistoryEntry: (entryId: string) => Promise<void>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;

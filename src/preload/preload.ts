@@ -3,6 +3,7 @@ import {
   AddLinksPayload,
   AppSettings,
   DuplicatePolicy,
+  HistoryEntry,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -49,6 +50,9 @@ const api: ElectronApi = {
   openLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
+  getHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_HISTORY),
+  clearHistory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_HISTORY),
+  removeHistoryEntry: (entryId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, entryId),
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void): (() => void) => {
     const listener = (_event: unknown, snapshot: UiSnapshot): void => callback(snapshot);
     ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, listener);

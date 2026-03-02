@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, DownloadStatus, PackageEntry, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
@@ -164,13 +164,15 @@ export interface StoragePaths {
   baseDir: string;
   configFile: string;
   sessionFile: string;
+  historyFile: string;
 }
 
 export function createStoragePaths(baseDir: string): StoragePaths {
   return {
     baseDir,
     configFile: path.join(baseDir, "rd_downloader_config.json"),
-    sessionFile: path.join(baseDir, "rd_session_state.json")
+    sessionFile: path.join(baseDir, "rd_session_state.json"),
+    historyFile: path.join(baseDir, "rd_history.json")
   };
 }
 
@@ -561,4 +563,83 @@ async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Pr
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
   await saveSessionPayloadAsync(paths, payload);
+}
+
+const MAX_HISTORY_ENTRIES = 500;
+
+function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry | null {
+  const entry = asRecord(raw);
+  if (!entry) return null;
+  
+  const id = asText(entry.id) || `hist-${Date.now().toString(36)}-${index}`;
+  const name = asText(entry.name) || "Unbenannt";
+  const providerRaw = asText(entry.provider);
+  
+  return {
+    id,
+    name,
+    totalBytes: clampNumber(entry.totalBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    downloadedBytes: clampNumber(entry.downloadedBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    fileCount: clampNumber(entry.fileCount, 0, 0, 100000),
+    provider: VALID_ITEM_PROVIDERS.has(providerRaw as DebridProvider) ? providerRaw as DebridProvider : null,
+    completedAt: clampNumber(entry.completedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
+    durationSeconds: clampNumber(entry.durationSeconds, 0, 0, Number.MAX_SAFE_INTEGER),
+    status: entry.status === "deleted" ? "deleted" : "completed",
+    outputDir: asText(entry.outputDir)
+  };
+}
+
+export function loadHistory(paths: StoragePaths): HistoryEntry[] {
+  ensureBaseDir(paths.baseDir);
+  if (!fs.existsSync(paths.historyFile)) {
+    return [];
+  }
+  
+  try {
+    const raw = JSON.parse(fs.readFileSync(paths.historyFile, "utf8")) as unknown;
+    if (!Array.isArray(raw)) return [];
+    
+    const entries: HistoryEntry[] = [];
+    for (let i = 0; i < raw.length && entries.length < MAX_HISTORY_ENTRIES; i++) {
+      const normalized = normalizeHistoryEntry(raw[i], i);
+      if (normalized) entries.push(normalized);
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+export function saveHistory(paths: StoragePaths, entries: HistoryEntry[]): void {
+  ensureBaseDir(paths.baseDir);
+  const trimmed = entries.slice(0, MAX_HISTORY_ENTRIES);
+  const payload = JSON.stringify(trimmed, null, 2);
+  const tempPath = `${paths.historyFile}.tmp`;
+  fs.writeFileSync(tempPath, payload, "utf8");
+  syncRenameWithExdevFallback(tempPath, paths.historyFile);
+}
+
+export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry): HistoryEntry[] {
+  const existing = loadHistory(paths);
+  const updated = [entry, ...existing].slice(0, MAX_HISTORY_ENTRIES);
+  saveHistory(paths, updated);
+  return updated;
+}
+
+export function removeHistoryEntry(paths: StoragePaths, entryId: string): HistoryEntry[] {
+  const existing = loadHistory(paths);
+  const updated = existing.filter(e => e.id !== entryId);
+  saveHistory(paths, updated);
+  return updated;
+}
+
+export function clearHistory(paths: StoragePaths): void {
+  ensureBaseDir(paths.baseDir);
+  if (fs.existsSync(paths.historyFile)) {
+    try {
+      fs.unlinkSync(paths.historyFile);
+    } catch {
+      // ignore
+    }
+  }
 }

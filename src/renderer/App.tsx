@@ -600,17 +600,17 @@ export function App(): ReactElement {
 
       const itemCount = Object.keys(state.session.items).length;
       let flushDelay = itemCount >= 1500
-        ? 850
+        ? 1200
         : itemCount >= 700
-          ? 620
+          ? 920
           : itemCount >= 250
-            ? 420
-            : 180;
+            ? 640
+            : 300;
       if (!state.session.running) {
-        flushDelay = Math.min(flushDelay, 260);
+        flushDelay = Math.min(flushDelay, 320);
       }
       if (activeTabRef.current !== "downloads") {
-        flushDelay = Math.max(flushDelay, 320);
+        flushDelay = Math.max(flushDelay, 800);
       }
 
       stateFlushTimerRef.current = setTimeout(() => {
@@ -1740,6 +1740,35 @@ export function App(): ReactElement {
     return map;
   }, [snapshot.packageSpeedBps]);
 
+  const itemStatusCounts = useMemo(() => {
+    const counts = { downloading: 0, queued: 0, failed: 0 };
+    for (const item of Object.values(snapshot.session.items)) {
+      if (item.status === "downloading") {
+        counts.downloading += 1;
+      } else if (item.status === "queued" || item.status === "reconnect_wait") {
+        counts.queued += 1;
+      } else if (item.status === "failed") {
+        counts.failed += 1;
+      }
+    }
+    return counts;
+  }, [snapshot.session.items]);
+
+  const providerStats = useMemo(() => {
+    const stats: Record<string, { total: number; completed: number; failed: number; bytes: number }> = {};
+    for (const item of Object.values(snapshot.session.items)) {
+      const provider = item.provider || "unknown";
+      if (!stats[provider]) {
+        stats[provider] = { total: 0, completed: 0, failed: 0, bytes: 0 };
+      }
+      stats[provider].total += 1;
+      if (item.status === "completed") stats[provider].completed += 1;
+      if (item.status === "failed") stats[provider].failed += 1;
+      stats[provider].bytes += item.downloadedBytes;
+    }
+    return Object.entries(stats);
+  }, [snapshot.session.items]);
+
   return (
     <div
       className={`app-shell${dragOver ? " drag-over" : ""}`}
@@ -2255,15 +2284,15 @@ export function App(): ReactElement {
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">Aktive Downloads</span>
-                  <span className="stat-value">{Object.values(snapshot.session.items).filter((item) => item.status === "downloading").length}</span>
+                  <span className="stat-value">{itemStatusCounts.downloading}</span>
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">In Warteschlange</span>
-                  <span className="stat-value">{Object.values(snapshot.session.items).filter((item) => item.status === "queued" || item.status === "reconnect_wait").length}</span>
+                  <span className="stat-value">{itemStatusCounts.queued}</span>
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">Fehlerhaft</span>
-                  <span className="stat-value danger">{Object.values(snapshot.session.items).filter((item) => item.status === "failed").length}</span>
+                  <span className="stat-value danger">{itemStatusCounts.failed}</span>
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">{snapshot.etaText.split(": ")[0]}</span>
@@ -2280,19 +2309,7 @@ export function App(): ReactElement {
             <article className="card stats-provider-card">
               <h3>Provider-Statistik</h3>
               <div className="provider-stats">
-                {Object.entries(
-                  Object.values(snapshot.session.items).reduce((acc, item) => {
-                    const provider = item.provider || "unknown";
-                    if (!acc[provider]) {
-                      acc[provider] = { total: 0, completed: 0, failed: 0, bytes: 0 };
-                    }
-                    acc[provider].total += 1;
-                    if (item.status === "completed") acc[provider].completed += 1;
-                    if (item.status === "failed") acc[provider].failed += 1;
-                    acc[provider].bytes += item.downloadedBytes;
-                    return acc;
-                  }, {} as Record<string, { total: number; completed: number; failed: number; bytes: number }>)
-                ).map(([provider, stats]) => (
+                {providerStats.map(([provider, stats]) => (
                   <div key={provider} className="provider-stat-item">
                     <span className="provider-name">{provider === "unknown" ? "Unbekannt" : providerLabels[provider as DebridProvider] || provider}</span>
                     <div className="provider-bars">

@@ -17,7 +17,7 @@ for (const line of credResult.stdout.split(/\r?\n/)) {
 const auth = "Basic " + Buffer.from(creds.get("username") + ":" + creds.get("password")).toString("base64");
 const owner = "Sucukdeluxe";
 const repo = "real-debrid-downloader";
-const tag = "v1.5.27";
+const tag = "v1.5.35";
 const baseApi = `https://codeberg.org/api/v1/repos/${owner}/${repo}`;
 
 async function main() {
@@ -34,7 +34,7 @@ async function main() {
       tag_name: tag,
       target_commitish: "main",
       name: tag,
-      body: "- Increase column spacing for Fortschritt/Größe/Geladen",
+      body: "- Fix: Fortschritt zeigt jetzt kombinierten Wert (Download + Entpacken)\n- Fix: Pausieren zeigt nicht mehr 'Warte auf Daten'\n- Pixel-perfekte Dual-Layer Progress-Bar Texte (clip-path)",
       draft: false,
       prerelease: false
     })
@@ -47,10 +47,10 @@ async function main() {
   console.log("Release created:", release.id);
 
   const files = [
-    "Real-Debrid-Downloader Setup 1.5.27.exe",
-    "Real-Debrid-Downloader 1.5.27.exe",
+    "Real-Debrid-Downloader Setup 1.5.35.exe",
+    "Real-Debrid-Downloader 1.5.35.exe",
     "latest.yml",
-    "Real-Debrid-Downloader Setup 1.5.27.exe.blockmap"
+    "Real-Debrid-Downloader Setup 1.5.35.exe.blockmap"
   ];
   for (const f of files) {
     const filePath = path.join("release", f);

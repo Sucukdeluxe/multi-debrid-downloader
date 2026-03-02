@@ -4,6 +4,7 @@ import {
   AddLinksPayload,
   AppSettings,
   DuplicatePolicy,
+  HistoryEntry,
   ParsedPackageInput,
   SessionStats,
   StartConflictEntry,
@@ -19,7 +20,7 @@ import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 
@@ -59,7 +60,10 @@ export class AppController {
     }));
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal),
-      invalidateMegaSession: () => this.megaWebFallback.invalidateSession()
+      invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
+      onHistoryEntry: (entry: HistoryEntry) => {
+        addHistoryEntry(this.storagePaths, entry);
+      }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
       this.onStateHandler?.(snapshot);
@@ -279,5 +283,21 @@ export class AppController {
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
     logger.info("App beendet");
+  }
+
+  public getHistory(): HistoryEntry[] {
+    return loadHistory(this.storagePaths);
+  }
+
+  public clearHistory(): void {
+    clearHistory(this.storagePaths);
+  }
+
+  public removeHistoryEntry(entryId: string): void {
+    removeHistoryEntry(this.storagePaths, entryId);
+  }
+
+  public addToHistory(entry: HistoryEntry): void {
+    addHistoryEntry(this.storagePaths, entry);
   }
 }

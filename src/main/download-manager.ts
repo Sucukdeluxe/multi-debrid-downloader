@@ -242,6 +242,20 @@ function isUnrestrictFailure(errorText: string): boolean {
     || text.includes("session") || text.includes("login");
 }
 
+function isProviderBusyUnrestrictError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("too many active")
+    || text.includes("too many concurrent")
+    || text.includes("too many downloads")
+    || text.includes("active download")
+    || text.includes("concurrent limit")
+    || text.includes("slot limit")
+    || text.includes("limit reached")
+    || text.includes("zu viele aktive")
+    || text.includes("zu viele gleichzeitige")
+    || text.includes("zu viele downloads");
+}
+
 function isFinishedStatus(status: DownloadStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
@@ -3126,6 +3140,15 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private applyProviderBusyBackoff(provider: string, cooldownMs: number): void {
+    const key = String(provider || "").trim() || "unknown";
+    const now = nowMs();
+    const entry = this.providerFailures.get(key) || { count: 0, lastFailAt: 0, cooldownUntil: 0 };
+    entry.lastFailAt = now;
+    entry.cooldownUntil = Math.max(entry.cooldownUntil, now + Math.max(0, Math.floor(cooldownMs)));
+    this.providerFailures.set(key, entry);
+  }
+
   private getProviderCooldownRemaining(provider: string): number {
     const entry = this.providerFailures.get(provider);
     if (!entry || entry.cooldownUntil <= 0) {
@@ -3498,7 +3521,15 @@ export class DownloadManager extends EventEmitter {
     if (!item || !pkg || pkg.cancelled || !pkg.enabled) {
       return;
     }
+    if (item.status !== "queued" && item.status !== "reconnect_wait") {
+      return;
+    }
     if (this.activeTasks.has(itemId)) {
+      return;
+    }
+    const maxParallel = Math.max(1, Number(this.settings.maxParallel) || 1);
+    if (this.activeTasks.size >= maxParallel) {
+      logger.warn(`startItem übersprungen (Parallel-Limit): active=${this.activeTasks.size}, max=${maxParallel}, item=${item.fileName || item.id}`);
       return;
     }
 
@@ -3580,8 +3611,7 @@ export class DownloadManager extends EventEmitter {
           throw new Error(`aborted:${active.abortReason}`);
         }
         // Check provider cooldown before attempting unrestrict
-        const lastProvider = item.provider || "";
-        const cooldownProvider = lastProvider || this.settings.providerPrimary || "unknown";
+        const cooldownProvider = item.provider || this.settings.providerPrimary || "unknown";
         const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
         if (cooldownMs > 0) {
           const delayMs = Math.min(cooldownMs + 1000, 310000);
@@ -3598,13 +3628,17 @@ export class DownloadManager extends EventEmitter {
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
             // Record failure for all providers since we don't know which one timed out
-            this.recordProviderFailure(lastProvider || "unknown");
+            this.recordProviderFailure(cooldownProvider);
             throw new Error(`Unrestrict Timeout nach ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s`);
           }
           // Record failure for the provider that errored
           const errText = compactErrorText(unrestrictError);
           if (isUnrestrictFailure(errText)) {
-            this.recordProviderFailure(lastProvider || "unknown");
+            this.recordProviderFailure(cooldownProvider);
+            if (isProviderBusyUnrestrictError(errText)) {
+              const busyCooldownMs = Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
+              this.applyProviderBusyBackoff(cooldownProvider, busyCooldownMs);
+            }
           }
           throw unrestrictError;
         }
@@ -3951,11 +3985,16 @@ export class DownloadManager extends EventEmitter {
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
-            this.recordProviderFailure(item.provider || "unknown");
+            const failureProvider = item.provider || this.settings.providerPrimary || "unknown";
+            this.recordProviderFailure(failureProvider);
+            if (isProviderBusyUnrestrictError(errorText)) {
+              const busyCooldownMs = Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
+              this.applyProviderBusyBackoff(failureProvider, busyCooldownMs);
+            }
             // Escalating backoff: 5s, 7.5s, 11s, 17s, 25s, 38s, ... up to 120s
             let unrestrictDelayMs = Math.min(120000, Math.floor(5000 * Math.pow(1.5, active.unrestrictRetries - 1)));
             // Respect provider cooldown
-            const providerCooldown = this.getProviderCooldownRemaining(item.provider || "unknown");
+            const providerCooldown = this.getProviderCooldownRemaining(failureProvider);
             if (providerCooldown > unrestrictDelayMs) {
               unrestrictDelayMs = providerCooldown + 1000;
             }
