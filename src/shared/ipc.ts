@@ -26,5 +26,10 @@ export const IPC_CHANNELS = {
   STATE_UPDATE: "state:update",
   CLIPBOARD_DETECTED: "clipboard:detected",
   TOGGLE_CLIPBOARD: "clipboard:toggle",
-  GET_SESSION_STATS: "stats:get-session-stats"
+  GET_SESSION_STATS: "stats:get-session-stats",
+  RESTART: "app:restart",
+  QUIT: "app:quit",
+  EXPORT_BACKUP: "app:export-backup",
+  IMPORT_BACKUP: "app:import-backup",
+  OPEN_LOG: "app:open-log"
 } as const;

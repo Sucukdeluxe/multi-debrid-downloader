@@ -106,6 +106,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     updateRepo: asText(settings.updateRepo) || defaults.updateRepo,
     clipboardWatch: Boolean(settings.clipboardWatch),
     minimizeToTray: Boolean(settings.minimizeToTray),
+    collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
+    autoSkipExtracted: settings.autoSkipExtracted !== undefined ? Boolean(settings.autoSkipExtracted) : defaults.autoSkipExtracted,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules)
   };

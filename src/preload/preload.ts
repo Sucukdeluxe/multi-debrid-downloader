@@ -42,6 +42,11 @@ const api: ElectronApi = {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.PICK_FOLDER),
   pickContainers: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.PICK_CONTAINERS),
   getSessionStats: (): Promise<SessionStats> => ipcRenderer.invoke(IPC_CHANNELS.GET_SESSION_STATS),
+  restart: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESTART),
+  quit: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.QUIT),
+  exportBackup: (): Promise<{ saved: boolean }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_BACKUP),
+  importBackup: (): Promise<{ restored: boolean; message: string }> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_BACKUP),
+  openLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG),
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void): (() => void) => {
     const listener = (_event: unknown, snapshot: UiSnapshot): void => callback(snapshot);
     ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, listener);
