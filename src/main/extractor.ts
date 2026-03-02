@@ -178,7 +178,7 @@ function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip"
 }
 
 function cleanErrorText(text: string): string {
-  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
 function appendLimited(base: string, chunk: string, maxLen = MAX_EXTRACT_OUTPUT_BUFFER): string {

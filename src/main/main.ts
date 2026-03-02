@@ -314,6 +314,10 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.togglePackage(packageId);
   });
+  ipcMain.handle(IPC_CHANNELS.RETRY_EXTRACTION, (_event: IpcMainInvokeEvent, packageId: string) => {
+    validateString(packageId, "packageId");
+    return controller.retryExtraction(packageId);
+  });
   ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, () => controller.exportQueue());
   ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
     validateString(json, "json");

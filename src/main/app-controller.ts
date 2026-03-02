@@ -208,6 +208,10 @@ export class AppController {
     return this.manager.togglePause();
   }
 
+  public retryExtraction(packageId: string): void {
+    this.manager.retryExtraction(packageId);
+  }
+
   public cancelPackage(packageId: string): void {
     this.manager.cancelPackage(packageId);
   }
