@@ -2185,7 +2185,7 @@ export function App(): ReactElement {
                           <span className="progress-size">
                             <span className="progress-size-bar" style={{ width: `${pct}%` }} />
                             <span className="progress-size-text">{label}</span>
-                            <span className="progress-size-text-filled" style={{ width: `${pct}%` }}><span style={{ width: "160px", textAlign: "center", flexShrink: 0 }}>{label}</span></span>
+                            <span className="progress-size-text-clip" style={{ width: `${pct}%` }}><span className="progress-size-text-filled" style={{ width: "160px" }}>{label}</span></span>
                           </span>
                         ) : "-";
                       })()}</span>
@@ -2812,7 +2812,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
             <span className="progress-inline">
               <span className="progress-inline-bar" style={{ width: `${dlProgress}%` }} />
               <span className="progress-inline-text">{dlProgress}%</span>
-              <span className="progress-inline-text-filled" style={{ width: `${dlProgress}%` }}><span style={{ width: "70px", textAlign: "center", flexShrink: 0 }}>{dlProgress}%</span></span>
+              <span className="progress-inline-text-clip" style={{ width: `${dlProgress}%` }}><span className="progress-inline-text-filled" style={{ width: "70px" }}>{dlProgress}%</span></span>
             </span>
           </span>
           <span className="pkg-col pkg-col-size">{(() => {
@@ -2824,7 +2824,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <span className="progress-size">
                 <span className="progress-size-bar" style={{ width: `${pct}%` }} />
                 <span className="progress-size-text">{label}</span>
-                <span className="progress-size-text-filled" style={{ width: `${pct}%` }}><span style={{ width: "160px", textAlign: "center", flexShrink: 0 }}>{label}</span></span>
+                <span className="progress-size-text-clip" style={{ width: `${pct}%` }}><span className="progress-size-text-filled" style={{ width: "160px" }}>{label}</span></span>
               </span>
             ) : "-";
           })()}</span>
@@ -2854,7 +2854,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <span className="progress-inline progress-inline-small">
                 <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
                 <span className="progress-inline-text">{item.progressPercent}%</span>
-                <span className="progress-inline-text-filled" style={{ width: `${item.progressPercent}%` }}><span style={{ width: "70px", textAlign: "center", flexShrink: 0 }}>{item.progressPercent}%</span></span>
+                <span className="progress-inline-text-clip" style={{ width: `${item.progressPercent}%` }}><span className="progress-inline-text-filled" style={{ width: "70px" }}>{item.progressPercent}%</span></span>
               </span>
             ) : "-"}
           </span>
@@ -2867,7 +2867,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <span className="progress-size progress-size-small">
                 <span className="progress-size-bar" style={{ width: `${pct}%` }} />
                 <span className="progress-size-text">{label}</span>
-                <span className="progress-size-text-filled" style={{ width: `${pct}%` }}><span style={{ width: "160px", textAlign: "center", flexShrink: 0 }}>{label}</span></span>
+                <span className="progress-size-text-clip" style={{ width: `${pct}%` }}><span className="progress-size-text-filled" style={{ width: "160px" }}>{label}</span></span>
               </span>
             ) : "-";
           })()}</span>
