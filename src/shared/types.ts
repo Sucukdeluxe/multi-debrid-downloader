@@ -161,6 +161,7 @@ export interface UiSnapshot {
   canPause: boolean;
   clipboardActive: boolean;
   reconnectSeconds: number;
+  packageSpeedBps: Record<string, number>;
 }
 
 export interface AddLinksPayload {

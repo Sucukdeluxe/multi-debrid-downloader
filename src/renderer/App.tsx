@@ -77,7 +77,7 @@ const emptySnapshot = (): UiSnapshot => ({
     paused: false, running: false, updatedAt: Date.now()
   },
   summary: null, stats: emptyStats(), speedText: "Geschwindigkeit: 0 B/s", etaText: "ETA: --",
-  canStart: true, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0
+  canStart: true, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}
 });
 
 const cleanupLabels: Record<string, string> = {
@@ -1704,13 +1704,11 @@ export function App(): ReactElement {
 
   const packageSpeedMap = useMemo(() => {
     const map = new Map<string, number>();
-    for (const item of Object.values(snapshot.session.items)) {
-      if (item.speedBps > 0) {
-        map.set(item.packageId, (map.get(item.packageId) ?? 0) + item.speedBps);
-      }
+    for (const [pid, bps] of Object.entries(snapshot.packageSpeedBps)) {
+      if (bps > 0) map.set(pid, bps);
     }
     return map;
-  }, [snapshot.session.items]);
+  }, [snapshot.packageSpeedBps]);
 
   return (
     <div
@@ -2527,18 +2525,27 @@ export function App(): ReactElement {
             </button>
           )}
           {!multi && contextMenu.itemId && (
-            <button className="ctx-menu-item ctx-danger" onClick={() => { void window.rd.removeItem(contextMenu.itemId!); setContextMenu(null); }}>Entfernen</button>
+            <button className="ctx-menu-item ctx-danger" onClick={() => {
+              setContextMenu(null);
+              const ids = new Set([contextMenu.itemId!]);
+              if (settingsDraft.confirmDeleteSelection) { setDeleteConfirm({ ids, dontAsk: false }); }
+              else { executeDeleteSelection(ids); }
+            }}>Entfernen</button>
           )}
           {multi && hasItems && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
-              for (const id of selectedIds) { if (snapshot.session.items[id]) void window.rd.removeItem(id); }
-              setSelectedIds(new Set()); setContextMenu(null);
+              setContextMenu(null);
+              const ids = new Set([...selectedIds].filter((id) => snapshot.session.items[id]));
+              if (settingsDraft.confirmDeleteSelection) { setDeleteConfirm({ ids, dontAsk: false }); }
+              else { executeDeleteSelection(ids); }
             }}>Ausgewählte entfernen ({[...selectedIds].filter((id) => snapshot.session.items[id]).length})</button>
           )}
           {hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
-              for (const id of selectedIds) { if (snapshot.session.packages[id]) onPackageCancel(id); }
-              setSelectedIds(new Set()); setContextMenu(null);
+              setContextMenu(null);
+              const ids = new Set([...selectedIds].filter((id) => snapshot.session.packages[id]));
+              if (settingsDraft.confirmDeleteSelection) { setDeleteConfirm({ ids, dontAsk: false }); }
+              else { executeDeleteSelection(ids); }
             }}>{multi ? `Ausgewählte löschen (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : "Löschen"}</button>
           )}
         </div>
@@ -2683,10 +2690,10 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
           <span className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : "-"}</span>
         </div>
       </header>
-      {!collapsed && <div className="progress">
+      <div className="progress">
         <div className="progress-dl" style={{ width: `${dlProgress}%` }} />
         {extracting && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
-      </div>}
+      </div>
       {!collapsed && items.map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           <span className="pkg-col pkg-col-name item-indent" title={item.fileName}>{item.fileName}</span>
