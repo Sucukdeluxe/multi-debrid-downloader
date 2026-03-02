@@ -577,7 +577,7 @@ body,
 
 .pkg-column-header {
   display: grid;
-  grid-template-columns: 1fr 100px 220px 180px 100px;
+  grid-template-columns: 1fr 55px 80px 80px 220px 180px 100px;
   gap: 8px;
   padding: 5px 12px;
   background: var(--card);
@@ -603,7 +603,7 @@ body,
 
 .pkg-columns {
   display: grid;
-  grid-template-columns: 1fr 100px 220px 180px 100px;
+  grid-template-columns: 1fr 55px 80px 80px 220px 180px 100px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -623,6 +623,8 @@ body,
   white-space: nowrap;
 }
 
+.pkg-columns .pkg-col-progress,
+.pkg-columns .pkg-col-downloaded,
 .pkg-columns .pkg-col-size,
 .pkg-columns .pkg-col-hoster,
 .pkg-columns .pkg-col-status,
@@ -632,6 +634,11 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pkg-col-progress,
+.pkg-col-downloaded {
+  font-variant-numeric: tabular-nums;
 }
 
 .search-input {
@@ -1085,7 +1092,7 @@ td {
 
 .item-row {
   display: grid;
-  grid-template-columns: 1fr 100px 220px 180px 100px;
+  grid-template-columns: 1fr 55px 80px 80px 220px 180px 100px;
   gap: 8px;
   align-items: center;
   margin: 0 -12px;
@@ -1544,6 +1551,8 @@ td {
     grid-template-columns: 1fr;
   }
 
+  .pkg-column-header .pkg-col-progress,
+  .pkg-column-header .pkg-col-downloaded,
   .pkg-column-header .pkg-col-size,
   .pkg-column-header .pkg-col-hoster,
   .pkg-column-header .pkg-col-status,
@@ -1551,6 +1560,8 @@ td {
     display: none;
   }
 
+  .pkg-columns .pkg-col-progress,
+  .pkg-columns .pkg-col-downloaded,
   .pkg-columns .pkg-col-size,
   .pkg-columns .pkg-col-hoster,
   .pkg-columns .pkg-col-status,
