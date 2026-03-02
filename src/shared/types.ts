@@ -73,6 +73,8 @@ export interface AppSettings {
   clipboardWatch: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
+  collapseNewPackages: boolean;
+  autoSkipExtracted: boolean;
   bandwidthSchedules: BandwidthScheduleEntry[];
 }
 

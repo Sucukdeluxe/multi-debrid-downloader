@@ -37,6 +37,11 @@ export interface ElectronApi {
   pickFolder: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   getSessionStats: () => Promise<SessionStats>;
+  restart: () => Promise<void>;
+  quit: () => Promise<void>;
+  exportBackup: () => Promise<{ saved: boolean }>;
+  importBackup: () => Promise<{ restored: boolean; message: string }>;
+  openLog: () => Promise<void>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;

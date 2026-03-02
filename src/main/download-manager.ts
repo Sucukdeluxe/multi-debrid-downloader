@@ -867,7 +867,7 @@ export class DownloadManager extends EventEmitter {
       summary: snapshotSummary,
       stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
-      etaText: paused ? "ETA: --" : `ETA: ${formatEta(eta)}`,
+      etaText: paused || !this.session.running ? "ETA: --" : `ETA: ${formatEta(eta)}`,
       canStart: !this.session.running,
       canStop: this.session.running,
       canPause: this.session.running,

@@ -19,7 +19,7 @@ import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSettings } from "./storage";
+import { createStoragePaths, loadSession, loadSettings, normalizeSettings, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 
@@ -235,6 +235,31 @@ export class AppController {
 
   public getSessionStats(): SessionStats {
     return this.manager.getSessionStats();
+  }
+
+  public exportBackup(): string {
+    const settings = this.settings;
+    const session = this.manager.getSession();
+    return JSON.stringify({ version: 1, settings, session }, null, 2);
+  }
+
+  public importBackup(json: string): { restored: boolean; message: string } {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      return { restored: false, message: "Ungültiges JSON" };
+    }
+    if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.session) {
+      return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
+    }
+    const restoredSettings = normalizeSettings(parsed.settings as AppSettings);
+    this.settings = restoredSettings;
+    saveSettings(this.storagePaths, this.settings);
+    this.manager.setSettings(this.settings);
+    const restoredSession = parsed.session as ReturnType<typeof loadSession>;
+    saveSession(this.storagePaths, restoredSession);
+    return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }
 
   public shutdown(): void {

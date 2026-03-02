@@ -73,6 +73,8 @@ export function defaultSettings(): AppSettings {
     clipboardWatch: false,
     minimizeToTray: false,
     theme: "dark" as const,
+    collapseNewPackages: true,
+    autoSkipExtracted: false,
     bandwidthSchedules: []
   };
 }

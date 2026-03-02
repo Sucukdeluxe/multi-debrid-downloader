@@ -1,9 +1,10 @@
+import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, shell, Tray } from "electron";
 import { AddLinksPayload, AppSettings, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
-import { logger } from "./logger";
+import { getLogFilePath, logger } from "./logger";
 import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
 
@@ -85,6 +86,9 @@ function createWindow(): BrowserWindow {
       });
     });
   }
+
+  window.setMenuBarVisibility(false);
+  window.setAutoHideMenuBar(true);
 
   if (isDevMode()) {
     void window.loadURL("http://localhost:5173");
@@ -345,6 +349,51 @@ function registerIpcHandlers(): void {
     return result.canceled ? [] : result.filePaths;
   });
   ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
+
+  ipcMain.handle(IPC_CHANNELS.RESTART, () => {
+    app.relaunch();
+    app.quit();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.QUIT, () => {
+    app.quit();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.EXPORT_BACKUP, async () => {
+    const options = {
+      defaultPath: `mdd-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "Backup", extensions: ["json"] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) {
+      return { saved: false };
+    }
+    const json = controller.exportBackup();
+    await fs.promises.writeFile(result.filePath, json, "utf8");
+    return { saved: true };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPEN_LOG, async () => {
+    const logPath = getLogFilePath();
+    await shell.openPath(logPath);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {
+    const options = {
+      properties: ["openFile"] as Array<"openFile">,
+      filters: [
+        { name: "Backup", extensions: ["json"] },
+        { name: "Alle Dateien", extensions: ["*"] }
+      ]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { restored: false, message: "Abgebrochen" };
+    }
+    const filePath = result.filePaths[0];
+    const json = await fs.promises.readFile(filePath, "utf8");
+    return controller.importBackup(json);
+  });
 
   controller.onState = (snapshot) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
