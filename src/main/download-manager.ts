@@ -3437,6 +3437,7 @@ export class DownloadManager extends EventEmitter {
           // A real archive part or video file should be at least 1 KB.
           const tooSmall = expectsNonEmptyFile && (
             fileSizeOnDisk <= 0
+            || fileSizeOnDisk < 512
             || (item.totalBytes && item.totalBytes > 10240 && fileSizeOnDisk < 1024)
           );
           if (tooSmall) {
@@ -4104,6 +4105,24 @@ export class DownloadManager extends EventEmitter {
             }
             logger.warn(`Stream-Abschlussfehler unterdrückt: ${compactErrorText(streamCloseError)}`);
           }
+        }
+
+        // Detect tiny error-response files (e.g. hoster returning "Forbidden" with HTTP 200).
+        // No legitimate file-hoster download is < 512 bytes.
+        if (written > 0 && written < 512) {
+          let snippet = "";
+          try {
+            snippet = await fs.promises.readFile(effectiveTargetPath, "utf8");
+            snippet = snippet.slice(0, 200).replace(/[\r\n]+/g, " ").trim();
+          } catch { /* ignore */ }
+          logger.warn(`Tiny download erkannt (${written} B): "${snippet}"`);
+          try {
+            await fs.promises.rm(effectiveTargetPath, { force: true });
+          } catch { /* ignore */ }
+          this.dropItemContribution(active.itemId);
+          item.downloadedBytes = 0;
+          item.progressPercent = 0;
+          throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);
         }
 
         item.downloadedBytes = written;
