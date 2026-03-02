@@ -3346,14 +3346,7 @@ export class DownloadManager extends EventEmitter {
         }
         item.provider = unrestricted.provider;
         item.retries += unrestricted.retriesUsed;
-        const resolvedName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
-        // Only overwrite fileName if the resolved name is better (not "download.bin" / opaque)
-        if (resolvedName && !looksLikeOpaqueFilename(resolvedName) && resolvedName.toLowerCase() !== "download.bin") {
-          item.fileName = resolvedName;
-        } else if (looksLikeOpaqueFilename(item.fileName)) {
-          // Current name is also opaque, use whatever we got
-          item.fileName = resolvedName;
-        }
+        item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
         try {
           fs.mkdirSync(pkg.outputDir, { recursive: true });
         } catch (mkdirError) {
@@ -3440,7 +3433,13 @@ export class DownloadManager extends EventEmitter {
             }
           }
           const expectsNonEmptyFile = (item.totalBytes || 0) > 0 || isArchiveLikePath(finalTargetPath || item.fileName);
-          if (expectsNonEmptyFile && fileSizeOnDisk <= 0) {
+          // Catch both empty files (0 B) and suspiciously small error-response files.
+          // A real archive part or video file should be at least 1 KB.
+          const tooSmall = expectsNonEmptyFile && (
+            fileSizeOnDisk <= 0
+            || (item.totalBytes && item.totalBytes > 10240 && fileSizeOnDisk < 1024)
+          );
+          if (tooSmall) {
             try {
               fs.rmSync(finalTargetPath, { force: true });
             } catch {
@@ -3452,7 +3451,7 @@ export class DownloadManager extends EventEmitter {
             item.totalBytes = (item.totalBytes || 0) > 0 ? item.totalBytes : null;
             item.speedBps = 0;
             item.updatedAt = nowMs();
-            throw new Error("Leere Datei erkannt (0 B)");
+            throw new Error(`Datei zu klein (${humanSize(fileSizeOnDisk)}, erwartet ${item.totalBytes ? humanSize(item.totalBytes) : ">1 KB"})`);
           }
 
           done = true;
@@ -4512,7 +4511,7 @@ export class DownloadManager extends EventEmitter {
       for (const part of missingParts) {
         try {
           const stat = fs.statSync(part);
-          if (stat.size <= 0) {
+          if (stat.size < 10240) {
             allMissingExistOnDisk = false;
             break;
           }
@@ -4742,7 +4741,12 @@ export class DownloadManager extends EventEmitter {
       }
       try {
         const stat = fs.statSync(item.targetPath);
-        if (stat.size > 0) {
+        // Require file to be either ≥50% of expected size or at least 10 KB to avoid
+        // recovering tiny error-response files (e.g. 9-byte "Forbidden" pages).
+        const minSize = item.totalBytes && item.totalBytes > 0
+          ? Math.max(10240, Math.floor(item.totalBytes * 0.5))
+          : 10240;
+        if (stat.size >= minSize) {
           logger.info(`Item-Recovery: ${item.fileName} war "${item.status}" aber Datei existiert (${humanSize(stat.size)}), setze auf completed`);
           item.status = "completed";
           item.fullStatus = this.settings.autoExtract ? "Entpacken - Ausstehend" : `Fertig (${humanSize(stat.size)})`;
@@ -4751,6 +4755,8 @@ export class DownloadManager extends EventEmitter {
           item.speedBps = 0;
           item.updatedAt = nowMs();
           this.recordRunOutcome(item.id, "completed");
+        } else if (stat.size > 0) {
+          logger.warn(`Item-Recovery: ${item.fileName} übersprungen – Datei zu klein (${humanSize(stat.size)}, erwartet mind. ${humanSize(minSize)})`);
         }
       } catch {
         // file doesn't exist, nothing to recover
