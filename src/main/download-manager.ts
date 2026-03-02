@@ -3926,6 +3926,17 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             return { resumable: true };
           }
+          // No total available but we have substantial data - assume file is complete
+          // This prevents deleting multi-GB files when the server sends 416 without Content-Range
+          if (!expectedTotal && existingBytes > 1048576) {
+            logger.warn(`HTTP 416 ohne Größeninfo, ${humanSize(existingBytes)} vorhanden – als vollständig behandelt: ${item.fileName}`);
+            item.totalBytes = existingBytes;
+            item.downloadedBytes = existingBytes;
+            item.progressPercent = 100;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            return { resumable: true };
+          }
 
           try {
             await fs.promises.rm(effectiveTargetPath, { force: true });
@@ -3988,6 +3999,13 @@ export class DownloadManager extends EventEmitter {
         const resumable = response.status === 206 || acceptRanges;
         active.resumable = resumable;
 
+        // CRITICAL: If we sent Range header but server responded 200 (not 206),
+        // it's sending the full file. We MUST write in truncate mode, not append.
+        const serverIgnoredRange = existingBytes > 0 && response.status === 200;
+        if (serverIgnoredRange) {
+          logger.warn(`Server ignorierte Range-Header (HTTP 200 statt 206), starte von vorne: ${item.fileName}`);
+        }
+
         const rawContentLength = Number(response.headers.get("content-length") || 0);
         const contentLength = Number.isFinite(rawContentLength) && rawContentLength > 0 ? rawContentLength : 0;
         const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
@@ -3996,7 +4014,8 @@ export class DownloadManager extends EventEmitter {
         } else if (totalFromRange) {
           item.totalBytes = totalFromRange;
         } else if (contentLength > 0) {
-          item.totalBytes = existingBytes + contentLength;
+          // Only add existingBytes for 206 responses; for 200 the Content-Length is the full file
+          item.totalBytes = response.status === 206 ? existingBytes + contentLength : contentLength;
         }
 
         const writeMode = existingBytes > 0 && response.status === 206 ? "a" : "w";
@@ -4044,10 +4063,10 @@ export class DownloadManager extends EventEmitter {
             stream.off("drain", onDrain);
             stream.off("error", onError);
             active.abortController.signal.removeEventListener("abort", onAbort);
-            if (!active.abortController.signal.aborted) {
-              active.abortReason = "stall";
-              active.abortController.abort("stall");
-            }
+            // Do NOT abort the controller here – drain timeout means disk is slow,
+            // not network stall.  Rejecting without abort lets the inner retry loop
+            // handle it (resume download) instead of escalating to processItem's
+            // stall handler which would re-unrestrict and record provider failures.
             reject(new Error("write_drain_timeout"));
           }, drainTimeoutMs);
 
@@ -4275,6 +4294,10 @@ export class DownloadManager extends EventEmitter {
               throw streamCloseError;
             }
             logger.warn(`Stream-Abschlussfehler unterdrückt: ${compactErrorText(streamCloseError)}`);
+          }
+          // Ensure stream is fully destroyed before potential retry opens new handle
+          if (!stream.destroyed) {
+            stream.destroy();
           }
         }
 
