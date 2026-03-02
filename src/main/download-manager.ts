@@ -23,7 +23,7 @@ import { DebridService, MegaWebUnrestrictor } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
-import { StoragePaths, saveSession, saveSessionAsync } from "./storage";
+import { StoragePaths, saveSession, saveSessionAsync, saveSettings } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 
 type ActiveTask = {
@@ -735,6 +735,7 @@ export class DownloadManager extends EventEmitter {
   private statsCacheAt = 0;
 
   private lastPersistAt = 0;
+  private lastSettingsPersistAt = 0;
 
   private cleanupQueue: Promise<void> = Promise.resolve();
 
@@ -802,6 +803,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public setSettings(next: AppSettings): void {
+    next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     this.settings = next;
     this.debridService.setSettings(next);
     this.resolveExistingQueuedOpaqueFilenames();
@@ -2462,6 +2464,7 @@ export class DownloadManager extends EventEmitter {
     this.retryAfterByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
+    this.lastSettingsPersistAt = 0; // force settings save on shutdown
     this.persistNow();
     this.emitState(true);
     logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
@@ -2636,8 +2639,13 @@ export class DownloadManager extends EventEmitter {
   }
 
   private persistNow(): void {
-    this.lastPersistAt = nowMs();
+    const now = nowMs();
+    this.lastPersistAt = now;
     void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
+    if (now - this.lastSettingsPersistAt >= 30000) {
+      this.lastSettingsPersistAt = now;
+      try { saveSettings(this.storagePaths, this.settings); } catch (err) { logger.warn(`saveSettings Fehler: ${compactErrorText(err as Error)}`); }
+    }
   }
 
   private emitState(force = false): void {
@@ -5405,6 +5413,7 @@ export class DownloadManager extends EventEmitter {
     this.nonResumableActive = 0;
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
+    this.lastSettingsPersistAt = 0; // force settings save on run finish
     this.persistNow();
     this.emitState();
   }
