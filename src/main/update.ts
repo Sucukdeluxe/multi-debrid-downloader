@@ -910,6 +910,7 @@ export async function installLatestUpdate(
     : await checkGitHubUpdate(safeRepo);
 
   if (check.error) {
+    activeUpdateAbortController = null;
     safeEmitProgress(onProgress, {
       stage: "error",
       percent: null,
@@ -920,6 +921,7 @@ export async function installLatestUpdate(
     return { started: false, message: check.error };
   }
   if (!check.updateAvailable) {
+    activeUpdateAbortController = null;
     safeEmitProgress(onProgress, {
       stage: "error",
       percent: null,
@@ -962,6 +964,14 @@ export async function installLatestUpdate(
 
   let candidates = buildDownloadCandidates(safeRepo, effectiveCheck);
   if (candidates.length === 0) {
+    activeUpdateAbortController = null;
+    safeEmitProgress(onProgress, {
+      stage: "error",
+      percent: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "Setup-Asset nicht gefunden"
+    });
     return { started: false, message: "Setup-Asset nicht gefunden" };
   }
 
