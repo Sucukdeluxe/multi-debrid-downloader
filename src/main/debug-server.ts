@@ -5,7 +5,7 @@ import { logger, getLogFilePath } from "./logger";
 import type { DownloadManager } from "./download-manager";
 
 const DEFAULT_PORT = 9868;
-const MAX_LOG_LINES = 500;
+const MAX_LOG_LINES = 10000;
 
 let server: http.Server | null = null;
 let manager: DownloadManager | null = null;
@@ -95,7 +95,12 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
   if (pathname === "/log") {
     const count = Math.min(Number(url.searchParams.get("lines") || "100"), MAX_LOG_LINES);
-    const lines = readLogTail(count);
+    const grep = url.searchParams.get("grep") || "";
+    let lines = readLogTail(count);
+    if (grep) {
+      const pattern = grep.toLowerCase();
+      lines = lines.filter((l) => l.toLowerCase().includes(pattern));
+    }
     jsonResponse(res, 200, { lines, count: lines.length });
     return;
   }
@@ -196,13 +201,51 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     return;
   }
 
+  if (pathname === "/session") {
+    if (!manager) {
+      jsonResponse(res, 503, { error: "Manager not initialized" });
+      return;
+    }
+    const snapshot = manager.getSnapshot();
+    const pkg = url.searchParams.get("package");
+    if (pkg) {
+      const pkgLower = pkg.toLowerCase();
+      const matchedPkg = Object.values(snapshot.session.packages)
+        .find((p) => p.name.toLowerCase().includes(pkgLower));
+      if (matchedPkg) {
+        const ids = new Set(matchedPkg.itemIds);
+        const pkgItems = Object.values(snapshot.session.items)
+          .filter((i) => ids.has(i.id));
+        jsonResponse(res, 200, {
+          package: matchedPkg,
+          items: pkgItems
+        });
+        return;
+      }
+    }
+    jsonResponse(res, 200, {
+      running: snapshot.session.running,
+      paused: snapshot.session.paused,
+      packageCount: Object.keys(snapshot.session.packages).length,
+      itemCount: Object.keys(snapshot.session.items).length,
+      packages: Object.values(snapshot.session.packages).map((p) => ({
+        id: p.id,
+        name: p.name,
+        status: p.status,
+        items: p.itemIds.length
+      }))
+    });
+    return;
+  }
+
   jsonResponse(res, 404, {
     error: "Not found",
     endpoints: [
       "GET /health",
-      "GET /log?lines=100",
+      "GET /log?lines=100&grep=keyword",
       "GET /status",
-      "GET /items?status=downloading&package=Bloodline"
+      "GET /items?status=downloading&package=Bloodline",
+      "GET /session?package=Criminal"
     ]
   });
 }

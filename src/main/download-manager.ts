@@ -4472,20 +4472,59 @@ export class DownloadManager extends EventEmitter {
       return ready;
     }
 
+    // Build lookup: pathKey → item status for pending items
+    const pendingItemStatus = new Map<string, string>();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (item && item.targetPath && item.status !== "completed") {
+        pendingItemStatus.set(pathKey(item.targetPath), item.status);
+      }
+    }
+
     for (const candidate of candidates) {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
-      if (!allPartsCompleted) {
+      if (allPartsCompleted) {
+        const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
+          const pendingName = path.basename(pendingPath).toLowerCase();
+          const candidateStem = path.basename(candidate).toLowerCase();
+          return this.looksLikeArchivePart(pendingName, candidateStem);
+        });
+        if (hasUnstartedParts) {
+          continue;
+        }
+        ready.add(pathKey(candidate));
         continue;
       }
-      const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
-        const pendingName = path.basename(pendingPath).toLowerCase();
-        const candidateStem = path.basename(candidate).toLowerCase();
-        return this.looksLikeArchivePart(pendingName, candidateStem);
+
+      // Disk-fallback: if all parts exist on disk but some items lack "completed" status,
+      // allow extraction if none of those parts are actively downloading/validating.
+      // This handles items that finished downloading but whose status was not updated.
+      const missingParts = partsOnDisk.filter((part) => !completedPaths.has(pathKey(part)));
+      let allMissingExistOnDisk = true;
+      for (const part of missingParts) {
+        try {
+          const stat = fs.statSync(part);
+          if (stat.size <= 0) {
+            allMissingExistOnDisk = false;
+            break;
+          }
+        } catch {
+          allMissingExistOnDisk = false;
+          break;
+        }
+      }
+      if (!allMissingExistOnDisk) {
+        continue;
+      }
+      const anyActivelyProcessing = missingParts.some((part) => {
+        const status = pendingItemStatus.get(pathKey(part));
+        return status === "downloading" || status === "validating" || status === "integrity_check";
       });
-      if (hasUnstartedParts) {
+      if (anyActivelyProcessing) {
         continue;
       }
+      logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${missingParts.length} Part(s) auf Disk ohne completed-Status)`);
       ready.add(pathKey(candidate));
     }
 
