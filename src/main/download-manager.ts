@@ -2526,7 +2526,16 @@ export class DownloadManager extends EventEmitter {
         || item.status === "paused"
         || item.status === "reconnect_wait") {
         item.status = "queued";
+        item.fullStatus = "Wartet";
         item.speedBps = 0;
+      }
+      // Clear stale transient status texts from previous session
+      if (item.status === "queued" && item.fullStatus) {
+        const fs = item.fullStatus.toLowerCase();
+        if (fs.includes("provider-cooldown") || fs.includes("warte auf daten") || fs.includes("keine daten")
+          || fs.includes("link wird umgewandelt") || fs.includes("verbindungsfehler")) {
+          item.fullStatus = "Wartet";
+        }
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
