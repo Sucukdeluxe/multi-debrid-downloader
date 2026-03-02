@@ -3051,11 +3051,18 @@ export class DownloadManager extends EventEmitter {
     if (entry.lastFailAt > 0 && now - entry.lastFailAt > 120000) {
       entry.count = 0;
     }
+    // Debounce: simultaneous failures (within 2s) count as one failure
+    // This prevents 8 parallel downloads failing at once from immediately hitting the threshold
+    if (entry.lastFailAt > 0 && now - entry.lastFailAt < 2000) {
+      entry.lastFailAt = now;
+      this.providerFailures.set(provider, entry);
+      return;
+    }
     entry.count += 1;
     entry.lastFailAt = now;
-    // Escalating cooldown: 8 failures→30s, 15→60s, 25→120s, 40+→300s
-    if (entry.count >= 8) {
-      const tier = entry.count >= 40 ? 3 : entry.count >= 25 ? 2 : entry.count >= 15 ? 1 : 0;
+    // Escalating cooldown: 20 failures→30s, 35→60s, 50→120s, 80+→300s
+    if (entry.count >= 20) {
+      const tier = entry.count >= 80 ? 3 : entry.count >= 50 ? 2 : entry.count >= 35 ? 1 : 0;
       const cooldownMs = [30000, 60000, 120000, 300000][tier];
       entry.cooldownUntil = now + cooldownMs;
       logger.warn(`Provider Circuit-Breaker: ${provider} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
