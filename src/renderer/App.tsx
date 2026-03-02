@@ -2569,9 +2569,15 @@ export function App(): ReactElement {
             const pkg = snapshot.session.packages[contextMenu.packageId];
             const items = pkg?.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean) || [];
             const hasExtractError = items.some((item) => item && /^Entpack-Fehler/i.test(item.fullStatus));
-            return hasExtractError ? (
-              <button className="ctx-menu-item" onClick={() => { void window.rd.retryExtraction(contextMenu.packageId); setContextMenu(null); }}>Extraktion wiederholen</button>
-            ) : null;
+            const allCompleted = items.length > 0 && items.every((item) => item && item.status === "completed");
+            return (<>
+              {allCompleted && (
+                <button className="ctx-menu-item" onClick={() => { void window.rd.extractNow(contextMenu.packageId); setContextMenu(null); }}>Jetzt entpacken</button>
+              )}
+              {hasExtractError && (
+                <button className="ctx-menu-item" onClick={() => { void window.rd.retryExtraction(contextMenu.packageId); setContextMenu(null); }}>Extraktion wiederholen</button>
+              )}
+            </>);
           })()}
           {hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
