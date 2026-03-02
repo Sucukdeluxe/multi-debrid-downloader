@@ -618,4 +618,119 @@ describe("extractor", () => {
     expect(result.extracted).toBe(1);
     expect(result.failed).toBe(0);
   });
+
+  describe("disk space check", () => {
+    it("aborts extraction when disk space is insufficient", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-diskspace-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      const zip = new AdmZip();
+      zip.addFile("test.txt", Buffer.alloc(1024, 0x41));
+      zip.writeZip(path.join(packageDir, "test.zip"));
+
+      const originalStatfs = fs.promises.statfs;
+      (fs.promises as any).statfs = async () => ({ bfree: 1, bsize: 1 });
+
+      try {
+        await expect(
+          extractPackageArchives({
+            packageDir,
+            targetDir,
+            cleanupMode: "none" as any,
+            conflictMode: "overwrite" as any,
+            removeLinks: false,
+            removeSamples: false,
+          })
+        ).rejects.toThrow(/Nicht genug Speicherplatz/);
+      } finally {
+        (fs.promises as any).statfs = originalStatfs;
+      }
+    });
+
+    it("proceeds when disk space is sufficient", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-diskspace-ok-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      const zip = new AdmZip();
+      zip.addFile("test.txt", Buffer.alloc(1024, 0x41));
+      zip.writeZip(path.join(packageDir, "test.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none" as any,
+        conflictMode: "overwrite" as any,
+        removeLinks: false,
+        removeSamples: false,
+      });
+      expect(result.extracted).toBe(1);
+      expect(result.failed).toBe(0);
+    });
+  });
+
+  describe("nested extraction", () => {
+    it("extracts archives found inside extracted output", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nested-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      const innerZip = new AdmZip();
+      innerZip.addFile("deep.txt", Buffer.from("deep content"));
+
+      const outerZip = new AdmZip();
+      outerZip.addFile("inner.zip", innerZip.toBuffer());
+      outerZip.writeZip(path.join(packageDir, "outer.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none" as any,
+        conflictMode: "overwrite" as any,
+        removeLinks: false,
+        removeSamples: false,
+      });
+
+      expect(result.extracted).toBe(2);
+      expect(result.failed).toBe(0);
+      expect(fs.existsSync(path.join(targetDir, "deep.txt"))).toBe(true);
+    });
+
+    it("does not extract blacklisted extensions like .iso", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nested-bl-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      const zip = new AdmZip();
+      zip.addFile("disc.iso", Buffer.alloc(64, 0));
+      zip.addFile("readme.txt", Buffer.from("hello"));
+      zip.writeZip(path.join(packageDir, "package.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none" as any,
+        conflictMode: "overwrite" as any,
+        removeLinks: false,
+        removeSamples: false,
+      });
+
+      expect(result.extracted).toBe(1);
+      expect(fs.existsSync(path.join(targetDir, "disc.iso"))).toBe(true);
+      expect(fs.existsSync(path.join(targetDir, "readme.txt"))).toBe(true);
+    });
+  });
 });
