@@ -688,14 +688,14 @@ export function App(): ReactElement {
     if (active.length === 0 || active.length === packages.length) {
       return packages;
     }
-    // Sort active packages: most progress first (completed items, then downloaded bytes)
+    // Sort active packages: highest completion percentage first
     active.sort((a, b) => {
       const aItems = a.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean);
       const bItems = b.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean);
-      const aCompleted = aItems.filter((i) => i.status === "completed").length;
-      const bCompleted = bItems.filter((i) => i.status === "completed").length;
-      if (aCompleted !== bCompleted) {
-        return bCompleted - aCompleted;
+      const aPct = aItems.length > 0 ? aItems.filter((i) => i.status === "completed").length / aItems.length : 0;
+      const bPct = bItems.length > 0 ? bItems.filter((i) => i.status === "completed").length / bItems.length : 0;
+      if (aPct !== bPct) {
+        return bPct - aPct;
       }
       const aBytes = aItems.reduce((s, i) => s + (i.downloadedBytes || 0), 0);
       const bBytes = bItems.reduce((s, i) => s + (i.downloadedBytes || 0), 0);
