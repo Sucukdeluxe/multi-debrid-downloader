@@ -2773,6 +2773,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     return sum;
   }, 0);
   const exProgress = Math.floor(((extracted + extractingProgress) / total) * 50);
+  const combinedProgress = extracting ? dlProgress + exProgress : dlProgress;
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
@@ -2810,9 +2811,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
           </div>
           <span className="pkg-col pkg-col-progress">
             <span className="progress-inline">
-              <span className="progress-inline-bar" style={{ width: `${dlProgress}%` }} />
-              <span className="progress-inline-text">{dlProgress}%</span>
-              <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - dlProgress}% 0 0)` }}>{dlProgress}%</span>
+              <span className="progress-inline-bar" style={{ width: `${combinedProgress}%` }} />
+              <span className="progress-inline-text">{combinedProgress}%</span>
+              <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - combinedProgress}% 0 0)` }}>{combinedProgress}%</span>
             </span>
           </span>
           <span className="pkg-col pkg-col-size">{(() => {
