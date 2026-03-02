@@ -272,7 +272,9 @@ async function writeExtractResumeState(packageDir: string, completedArchives: Se
         .map((name) => archiveNameKey(name))
         .sort((a, b) => a.localeCompare(b))
     };
-    await fs.promises.writeFile(progressPath, JSON.stringify(payload, null, 2), "utf8");
+    const tmpPath = progressPath + ".tmp";
+    await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
+    await fs.promises.rename(tmpPath, progressPath);
   } catch (error) {
     logger.warn(`ExtractResumeState schreiben fehlgeschlagen: ${String(error)}`);
   }
@@ -929,7 +931,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   if (/\.zip$/i.test(fileName)) {
     const stem = escapeRegex(fileName.replace(/\.zip$/i, ""));
     addMatching(new RegExp(`^${stem}\\.zip$`, "i"));
-    addMatching(new RegExp(`^${stem}\\.z\\d{2}$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.z\\d{2,3}$`, "i"));
     return Array.from(targets);
   }
 
