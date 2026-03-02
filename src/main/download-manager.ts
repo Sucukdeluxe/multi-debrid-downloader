@@ -4786,7 +4786,7 @@ export class DownloadManager extends EventEmitter {
       }
       const anyActivelyProcessing = missingParts.some((part) => {
         const status = pendingItemStatus.get(pathKey(part));
-        return status === "downloading" || status === "validating" || status === "integrity_check";
+        return status !== undefined && status !== "failed" && status !== "cancelled";
       });
       if (anyActivelyProcessing) {
         continue;
