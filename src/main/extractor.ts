@@ -8,6 +8,21 @@ import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 
 const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
+
+/**
+ * On Windows, prefix an absolute path with \\?\ to bypass the 260-char MAX_PATH limit.
+ * WinRAR 5.x+ and 7-Zip support this prefix for long output paths.
+ */
+function longPathForWindows(p: string): string {
+  if (process.platform !== "win32") return p;
+  const resolved = path.resolve(p);
+  if (resolved.startsWith("\\\\?\\")) return resolved;
+  if (resolved.startsWith("\\\\")) {
+    // UNC path \\server\share -> \\?\UNC\server\share
+    return "\\\\?\\UNC\\" + resolved.slice(2);
+  }
+  return "\\\\?\\" + resolved;
+}
 const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installieren.";
 
 let resolvedExtractorCommand: string | null = null;
@@ -606,13 +621,14 @@ export function buildExternalExtractArgs(
     const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
       ? ["-idc", extractorThreadSwitch()]
       : [];
-    return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
+    const longTarget = longPathForWindows(targetDir);
+    return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${longTarget}${path.sep}`];
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
   // NOTE: Same password-in-args limitation as above applies to 7z as well.
   const pass = password ? `-p${password}` : "-p";
-  return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
+  return ["x", "-y", overwrite, pass, archivePath, `-o${longPathForWindows(targetDir)}`];
 }
 
 async function resolveExtractorCommandInternal(): Promise<string> {
