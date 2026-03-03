@@ -775,7 +775,7 @@ export class DownloadManager extends EventEmitter {
 
   private packagePostProcessActive = 0;
 
-  private packagePostProcessWaiters: Array<() => void> = [];
+  private packagePostProcessWaiters: Array<{ packageId: string; resolve: () => void }> = [];
 
   private packagePostProcessTasks = new Map<string, Promise<void>>();
 
@@ -1175,7 +1175,7 @@ export class DownloadManager extends EventEmitter {
     this.hybridExtractRequeue.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.packagePostProcessActive = 0;
-    for (const waiter of this.packagePostProcessWaiters) { waiter(); }
+    for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
     this.packagePostProcessWaiters = [];
     this.summary = null;
     this.nonResumableActive = 0;
@@ -2996,24 +2996,36 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private async acquirePostProcessSlot(): Promise<void> {
+  private async acquirePostProcessSlot(packageId: string): Promise<void> {
     const maxConcurrent = this.settings.maxParallelExtract || 2;
     if (this.packagePostProcessActive < maxConcurrent) {
       this.packagePostProcessActive += 1;
       return;
     }
     await new Promise<void>((resolve) => {
-      this.packagePostProcessWaiters.push(resolve);
+      this.packagePostProcessWaiters.push({ packageId, resolve });
     });
     this.packagePostProcessActive += 1;
   }
 
   private releasePostProcessSlot(): void {
     this.packagePostProcessActive -= 1;
-    const next = this.packagePostProcessWaiters.shift();
-    if (next) {
-      next();
+    if (this.packagePostProcessWaiters.length === 0) return;
+    // Pick the waiter whose package appears earliest in packageOrder
+    const order = this.session.packageOrder;
+    let bestIdx = 0;
+    let bestOrder = order.indexOf(this.packagePostProcessWaiters[0].packageId);
+    if (bestOrder === -1) bestOrder = Infinity;
+    for (let i = 1; i < this.packagePostProcessWaiters.length; i++) {
+      let pos = order.indexOf(this.packagePostProcessWaiters[i].packageId);
+      if (pos === -1) pos = Infinity;
+      if (pos < bestOrder) {
+        bestOrder = pos;
+        bestIdx = i;
+      }
     }
+    const [next] = this.packagePostProcessWaiters.splice(bestIdx, 1);
+    next.resolve();
   }
 
   private runPackagePostProcessing(packageId: string): Promise<void> {
@@ -3027,7 +3039,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessAbortControllers.set(packageId, abortController);
 
     const task = (async () => {
-      await this.acquirePostProcessSlot();
+      await this.acquirePostProcessSlot(packageId);
       try {
         await this.handlePackagePostProcessing(packageId, abortController.signal);
       } catch (error) {
