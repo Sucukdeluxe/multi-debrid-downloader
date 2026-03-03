@@ -5199,8 +5199,8 @@ export class DownloadManager extends EventEmitter {
 
     const completedItems = items.filter((item) => item.status === "completed");
 
-    // Build set of item targetPaths belonging to ready archives
-    const hybridItemPaths = new Set<string>();
+    // Build set of file names belonging to ready archives (for matching items)
+    const hybridFileNames = new Set<string>();
     let dirFiles: string[] | undefined;
     try {
       dirFiles = (await fs.promises.readdir(pkg.outputDir, { withFileTypes: true }))
@@ -5210,13 +5210,20 @@ export class DownloadManager extends EventEmitter {
     for (const archiveKey of readyArchives) {
       const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
       for (const part of parts) {
-        hybridItemPaths.add(pathKey(part));
+        hybridFileNames.add(path.basename(part).toLowerCase());
       }
-      hybridItemPaths.add(pathKey(archiveKey));
+      hybridFileNames.add(path.basename(archiveKey).toLowerCase());
     }
-    const hybridItems = completedItems.filter((item) =>
-      item.targetPath && hybridItemPaths.has(pathKey(item.targetPath))
-    );
+    const isHybridItem = (item: DownloadItem): boolean => {
+      if (item.targetPath && hybridFileNames.has(path.basename(item.targetPath).toLowerCase())) {
+        return true;
+      }
+      if (item.fileName && hybridFileNames.has(item.fileName.toLowerCase())) {
+        return true;
+      }
+      return false;
+    };
+    const hybridItems = completedItems.filter(isHybridItem);
 
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, hybridItems);
