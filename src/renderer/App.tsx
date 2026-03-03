@@ -512,7 +512,11 @@ export function App(): ReactElement {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const historyEntriesRef = useRef<HistoryEntry[]>([]);
   const [historyCollapsed, setHistoryCollapsed] = useState<Record<string, boolean>>({});
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
+  const [historyCtxMenu, setHistoryCtxMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
+  const historyCtxMenuRef = useRef<HTMLDivElement>(null);
 
   // Load history when tab changes to history
   useEffect(() => {
@@ -530,6 +534,8 @@ export function App(): ReactElement {
     };
     void loadHistory();
   }, [tab]);
+
+  useEffect(() => { historyEntriesRef.current = historyEntries; }, [historyEntries]);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -1664,6 +1670,29 @@ export function App(): ReactElement {
     }
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!historyCtxMenu) return;
+    const close = (): void => setHistoryCtxMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+    };
+  }, [historyCtxMenu]);
+
+  useLayoutEffect(() => {
+    if (!historyCtxMenu || !historyCtxMenuRef.current) return;
+    const el = historyCtxMenuRef.current;
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight) {
+      el.style.top = `${Math.max(0, historyCtxMenu.y - rect.height)}px`;
+    }
+    if (rect.right > window.innerWidth) {
+      el.style.left = `${Math.max(0, historyCtxMenu.x - rect.width)}px`;
+    }
+  }, [historyCtxMenu]);
+
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
     const current = snapshotRef.current;
     for (const id of ids) {
@@ -1773,6 +1802,9 @@ export function App(): ReactElement {
           if (tabRef.current === "downloads") {
             e.preventDefault();
             setSelectedIds(new Set(Object.keys(snapshotRef.current.session.packages)));
+          } else if (tabRef.current === "history") {
+            e.preventDefault();
+            setSelectedHistoryIds(new Set(historyEntriesRef.current.map(e => e.id)));
           }
           return;
         }
@@ -2244,17 +2276,50 @@ export function App(): ReactElement {
         {tab === "history" && (
           <section className="history-view">
             <div className="history-toolbar">
-              <span className="history-count">{historyEntries.length} Paket{historyEntries.length !== 1 ? "e" : ""} im Verlauf</span>
+              <span className="history-count">
+                {selectedHistoryIds.size > 0
+                  ? `${selectedHistoryIds.size} von ${historyEntries.length} ausgewählt`
+                  : `${historyEntries.length} Paket${historyEntries.length !== 1 ? "e" : ""} im Verlauf`}
+              </span>
+              {selectedHistoryIds.size > 0 && (
+                <button className="btn btn-danger" onClick={() => {
+                  const ids = [...selectedHistoryIds];
+                  void Promise.all(ids.map(id => window.rd.removeHistoryEntry(id))).then(() => {
+                    setHistoryEntries((prev) => prev.filter((e) => !selectedHistoryIds.has(e.id)));
+                    setSelectedHistoryIds(new Set());
+                  });
+                }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
+              )}
               {historyEntries.length > 0 && (
-                <button className="btn btn-danger" onClick={() => { void window.rd.clearHistory().then(() => setHistoryEntries([])); }}>Verlauf leeren</button>
+                <button className="btn btn-danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }); }}>Verlauf leeren</button>
               )}
             </div>
             {historyEntries.length === 0 && <div className="empty">Noch keine abgeschlossenen Pakete im Verlauf.</div>}
             {historyEntries.map((entry) => {
               const collapsed = historyCollapsed[entry.id] ?? true;
+              const isSelected = selectedHistoryIds.has(entry.id);
               return (
-                <article key={entry.id} className="package-card history-card">
-                  <header onClick={() => setHistoryCollapsed((prev) => ({ ...prev, [entry.id]: !collapsed }))} style={{ cursor: "pointer" }}>
+                <article
+                  key={entry.id}
+                  className={`package-card history-card${isSelected ? " pkg-selected" : ""}`}
+                  onClick={(e) => {
+                    if (e.ctrlKey) {
+                      e.preventDefault();
+                      setSelectedHistoryIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(entry.id)) next.delete(entry.id); else next.add(entry.id);
+                        return next;
+                      });
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSelectedHistoryIds((prev) => prev.has(entry.id) ? prev : new Set([entry.id]));
+                    setHistoryCtxMenu({ x: e.clientX, y: e.clientY, entryId: entry.id });
+                  }}
+                >
+                  <header onClick={(e) => { if (e.ctrlKey) return; setHistoryCollapsed((prev) => ({ ...prev, [entry.id]: !collapsed })); }} style={{ cursor: "pointer" }}>
                     <div className="pkg-columns">
                       <div className="pkg-col pkg-col-name">
                         <button className="pkg-toggle" title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
@@ -2302,7 +2367,7 @@ export function App(): ReactElement {
                         <span>{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
                       </div>
                       <div className="history-actions">
-                        <button className="btn" onClick={() => { void window.rd.removeHistoryEntry(entry.id).then(() => setHistoryEntries((prev) => prev.filter((e) => e.id !== entry.id))); }}>Eintrag entfernen</button>
+                        <button className="btn" onClick={() => { void window.rd.removeHistoryEntry(entry.id).then(() => { setHistoryEntries((prev) => prev.filter((e) => e.id !== entry.id)); setSelectedHistoryIds((prev) => { const n = new Set(prev); n.delete(entry.id); return n; }); }); }}>Eintrag entfernen</button>
                       </div>
                     </div>
                   )}
@@ -2758,6 +2823,41 @@ export function App(): ReactElement {
             }}>{multi ? `Ausgewählte löschen (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : "Löschen"}</button>
           )}
         </div>
+        );
+      })()}
+      {historyCtxMenu && (() => {
+        const multi = selectedHistoryIds.size > 1;
+        const contextEntry = historyEntries.find(e => e.id === historyCtxMenu.entryId);
+        const hasUrls = (contextEntry?.urls?.length ?? 0) > 0;
+        const removeSelected = (): void => {
+          const ids = [...selectedHistoryIds];
+          void Promise.all(ids.map(id => window.rd.removeHistoryEntry(id))).then(() => {
+            setHistoryEntries((prev) => prev.filter((e) => !selectedHistoryIds.has(e.id)));
+            setSelectedHistoryIds(new Set());
+          });
+          setHistoryCtxMenu(null);
+        };
+        return (
+          <div ref={historyCtxMenuRef} className="ctx-menu" style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }} onClick={(e) => e.stopPropagation()}>
+            <button className="ctx-menu-item ctx-danger" onClick={removeSelected}>
+              {multi ? `Ausgewählte entfernen (${selectedHistoryIds.size})` : "Eintrag entfernen"}
+            </button>
+            {hasUrls && !multi && (
+              <>
+                <div className="ctx-menu-sep" />
+                <button className="ctx-menu-item" onClick={() => {
+                  const urls = contextEntry!.urls!;
+                  setLinkPopup({ title: contextEntry!.name, links: urls, isPackage: urls.length > 1 });
+                  setHistoryCtxMenu(null);
+                }}>Linkadressen anzeigen</button>
+              </>
+            )}
+            <div className="ctx-menu-sep" />
+            <button className="ctx-menu-item ctx-danger" onClick={() => {
+              void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); });
+              setHistoryCtxMenu(null);
+            }}>Verlauf leeren</button>
+          </div>
         );
       })()}
       {linkPopup && (

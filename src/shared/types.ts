@@ -268,6 +268,7 @@ export interface HistoryEntry {
   durationSeconds: number;
   status: "completed" | "deleted";
   outputDir: string;
+  urls?: string[];
 }
 
 export interface HistoryState {
