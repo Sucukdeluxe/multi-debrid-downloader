@@ -1266,8 +1266,8 @@ async function runExternalExtract(
         }
         logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
       } else {
-        const maskedPasswords = passwordCandidates.map((p) => p === "" ? '""' : `"${p.slice(0, 2)}${"*".repeat(Math.max(0, p.length - 2))}"`);
-        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}, ${passwordCandidates.length} Passwörter: [${maskedPasswords.join(", ")}]`);
+        const quotedPasswords = passwordCandidates.map((p) => p === "" ? '""' : `"${p}"`);
+        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}, ${passwordCandidates.length} Passwörter: [${quotedPasswords.join(", ")}]`);
         const jvmResult = await runJvmExtractCommand(
           layout,
           archivePath,
@@ -1356,8 +1356,8 @@ async function runExternalExtractInner(
   const passwords = passwordCandidates;
   let lastError = "";
 
-  const maskedPasswords = passwords.map((p) => p === "" ? '""' : `"${p.slice(0, 2)}${"*".repeat(Math.max(0, p.length - 2))}"`);
-  logger.info(`Legacy-Extractor: ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${maskedPasswords.join(", ")}]`);
+  const quotedPasswords = passwords.map((p) => p === "" ? '""' : `"${p}"`);
+  logger.info(`Legacy-Extractor: ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${quotedPasswords.join(", ")}]`);
 
   let announcedStart = false;
   let bestPercent = 0;
@@ -1373,8 +1373,8 @@ async function runExternalExtractInner(
       onArchiveProgress?.(0);
     }
     passwordAttempt += 1;
-    const maskedPw = password === "" ? '""' : `"${password.slice(0, 2)}${"*".repeat(Math.max(0, password.length - 2))}"`;
-    logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${maskedPw}`);
+    const quotedPw = password === "" ? '""' : `"${password}"`;
+    logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
     let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
     let result = await runExtractCommand(command, args, (chunk) => {
       const parsed = parseProgressPercent(chunk);
