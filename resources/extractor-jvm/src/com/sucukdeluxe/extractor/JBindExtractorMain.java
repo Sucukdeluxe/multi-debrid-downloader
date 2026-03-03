@@ -11,6 +11,7 @@ import net.sf.sevenzipjbinding.IInStream;
 import net.sf.sevenzipjbinding.ISequentialOutStream;
 import net.sf.sevenzipjbinding.ICryptoGetTextPassword;
 import net.sf.sevenzipjbinding.PropID;
+import net.sf.sevenzipjbinding.ArchiveFormat;
 import net.sf.sevenzipjbinding.SevenZip;
 import net.sf.sevenzipjbinding.SevenZipException;
 import net.sf.sevenzipjbinding.impl.RandomAccessFileInStream;
@@ -328,13 +329,9 @@ public final class JBindExtractorMain {
         String effectivePassword = password == null ? "" : password;
         SevenZipVolumeCallback callback = new SevenZipVolumeCallback(archiveFile, effectivePassword);
 
-        // Multi-volume archives need VolumedArchiveInStream so 7z-JBinding can
-        // request additional volumes via the IArchiveOpenVolumeCallback.
-        boolean isMultiVolume = SEVEN_ZIP_SPLIT_RE.matcher(nameLower).matches()
-            || RAR_MULTIPART_RE.matcher(nameLower).matches()
-            || hasOldStyleRarSplits(archiveFile);
-
-        if (isMultiVolume) {
+        // VolumedArchiveInStream is ONLY for .7z.001 split archives.
+        // It internally checks for the ".7z.001" suffix and rejects everything else.
+        if (SEVEN_ZIP_SPLIT_RE.matcher(nameLower).matches()) {
             VolumedArchiveInStream volumed = new VolumedArchiveInStream(archiveFile.getName(), callback);
             IInArchive archive = SevenZip.openInArchive(null, volumed, callback);
             return new SevenZipArchiveContext(archive, null, volumed, callback);
@@ -342,6 +339,35 @@ public final class JBindExtractorMain {
 
         RandomAccessFile raf = new RandomAccessFile(archiveFile, "r");
         RandomAccessFileInStream stream = new RandomAccessFileInStream(raf);
+
+        // Multi-part RAR (.part1.rar, .part2.rar or old-style .rar/.r01/.r02):
+        // Auto-detection with null format can fail for multi-volume RAR because
+        // 7z-JBinding may not fully recognize the format from a single part.
+        // Specify the format explicitly (try RAR5 first, then RAR4).
+        if (RAR_MULTIPART_RE.matcher(nameLower).matches() || hasOldStyleRarSplits(archiveFile)) {
+            ArchiveFormat[] rarFormats = { ArchiveFormat.RAR5, ArchiveFormat.RAR };
+            Exception lastError = null;
+            for (ArchiveFormat fmt : rarFormats) {
+                try {
+                    stream.seek(0L, 0);
+                    IInArchive archive = SevenZip.openInArchive(fmt, stream, callback);
+                    return new SevenZipArchiveContext(archive, stream, null, callback);
+                } catch (Exception e) {
+                    lastError = e;
+                }
+            }
+            // Final attempt with auto-detection
+            try {
+                stream.seek(0L, 0);
+                IInArchive archive = SevenZip.openInArchive(null, stream, callback);
+                return new SevenZipArchiveContext(archive, stream, null, callback);
+            } catch (Exception e) {
+                // Close the RAF since we're about to throw
+                try { raf.close(); } catch (Throwable ignored) {}
+                throw lastError != null ? lastError : e;
+            }
+        }
+
         IInArchive archive = SevenZip.openInArchive(null, stream, callback);
         return new SevenZipArchiveContext(archive, stream, null, callback);
     }
