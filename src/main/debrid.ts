@@ -226,7 +226,9 @@ function isRapidgatorLink(link: string): boolean {
     return hostname === "rapidgator.net"
       || hostname.endsWith(".rapidgator.net")
       || hostname === "rg.to"
-      || hostname.endsWith(".rg.to");
+      || hostname.endsWith(".rg.to")
+      || hostname === "rapidgator.asia"
+      || hostname.endsWith(".rapidgator.asia");
   } catch {
     return false;
   }
@@ -458,6 +460,89 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
   }
 
   return "";
+}
+
+export interface RapidgatorCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSize: string | null;
+}
+
+const RG_FILE_ID_RE = /\/file\/([a-z0-9]{32}|\d+)/i;
+const RG_FILE_NOT_FOUND_RE = />\s*404\s*File not found/i;
+const RG_FILESIZE_RE = /File\s*size:\s*<strong>([^<>"]+)<\/strong>/i;
+
+export async function checkRapidgatorOnline(
+  link: string,
+  signal?: AbortSignal
+): Promise<RapidgatorCheckResult | null> {
+  if (!isRapidgatorLink(link)) {
+    return null;
+  }
+
+  const fileIdMatch = link.match(RG_FILE_ID_RE);
+  if (!fileIdMatch) {
+    return null;
+  }
+  const fileId = fileIdMatch[1];
+
+  for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+    try {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+
+      const response = await fetch(link, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
+        },
+        signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+      });
+
+      if (response.status === 404) {
+        return { online: false, fileName: "", fileSize: null };
+      }
+
+      if (!response.ok) {
+        if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+          await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+          continue;
+        }
+        return null;
+      }
+
+      const finalUrl = response.url || link;
+      if (!finalUrl.includes(fileId)) {
+        return { online: false, fileName: "", fileSize: null };
+      }
+
+      const html = await readResponseTextLimited(response, RAPIDGATOR_SCAN_MAX_BYTES, signal);
+
+      if (RG_FILE_NOT_FOUND_RE.test(html)) {
+        return { online: false, fileName: "", fileSize: null };
+      }
+
+      const fileName = extractRapidgatorFilenameFromHtml(html) || filenameFromRapidgatorUrlPath(link);
+      const sizeMatch = html.match(RG_FILESIZE_RE);
+      const fileSize = sizeMatch ? sizeMatch[1].trim() : null;
+
+      return { online: true, fileName, fileSize };
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      if (/aborted/i.test(errorText)) throw error;
+      if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
+        return null;
+      }
+    }
+
+    if (attempt <= REQUEST_RETRIES) {
+      await sleepWithSignal(retryDelay(attempt), signal);
+    }
+  }
+
+  return null;
 }
 
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
