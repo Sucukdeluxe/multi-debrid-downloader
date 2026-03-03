@@ -2187,6 +2187,7 @@ export function App(): ReactElement {
                   </span>,
                 ];
               })}
+              <span className="pkg-col pkg-col-account">Account</span>
               <span className="pkg-col pkg-col-status">Status</span>
               <span className="pkg-col pkg-col-speed">Geschwindigkeit</span>
             </div>
@@ -2262,7 +2263,8 @@ export function App(): ReactElement {
                           </span>
                         ) : "-";
                       })()}</span>
-                      <span className="pkg-col pkg-col-hoster">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
+                      <span className="pkg-col pkg-col-hoster">-</span>
+                      <span className="pkg-col pkg-col-account">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
                       <span className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
                       <span className="pkg-col pkg-col-speed">-</span>
                     </div>
@@ -2888,14 +2890,18 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
             ) : "-";
           })()}</span>
           <span className="pkg-col pkg-col-hoster" title={(() => {
-            const hosters = [...new Set(items.map((item) => formatHoster(item)).filter((h) => h !== "-"))];
+            const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
             return hosters.join(", ");
           })()}>{(() => {
             const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
+            return hosters.length > 0 ? hosters.join(", ") : "-";
+          })()}</span>
+          <span className="pkg-col pkg-col-account" title={(() => {
             const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
-            const hosterStr = hosters.length > 0 ? hosters.join(", ") : "-";
-            if (providers.length > 0) return `${hosterStr} via. ${providers.map((p) => providerLabels[p!] || p).join(", ")}`;
-            return hosterStr;
+            return providers.map((p) => providerLabels[p!] || p).join(", ");
+          })()}>{(() => {
+            const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
+            return providers.length > 0 ? providers.map((p) => providerLabels[p!] || p).join(", ") : "-";
           })()}</span>
           <span className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]</span>
           <span className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : "-"}</span>
@@ -2930,7 +2936,8 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               </span>
             ) : "-";
           })()}</span>
-          <span className="pkg-col pkg-col-hoster" title={formatHoster(item)}>{formatHoster(item)}</span>
+          <span className="pkg-col pkg-col-hoster" title={extractHoster(item.url)}>{extractHoster(item.url) || "-"}</span>
+          <span className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : "-"}</span>
           <span className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
             {item.fullStatus}
           </span>
