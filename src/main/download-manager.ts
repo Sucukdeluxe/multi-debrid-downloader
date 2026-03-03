@@ -5306,47 +5306,21 @@ export class DownloadManager extends EventEmitter {
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, hybridItems);
 
-    // Only update the items currently being extracted, not all hybrid items at once
-    let currentArchiveItems: DownloadItem[] = [];
-    const updateExtractingStatus = (text: string): void => {
-      const normalized = String(text || "");
-      if (hybridLastStatusText === normalized) {
-        return;
-      }
-      hybridLastStatusText = normalized;
-      const updatedAt = nowMs();
-      for (const entry of currentArchiveItems) {
-        if (isExtractedLabel(entry.fullStatus)) {
-          continue;
-        }
-        if (entry.fullStatus === normalized) {
-          continue;
-        }
-        entry.fullStatus = normalized;
-        entry.updatedAt = updatedAt;
-      }
-    };
-
-    let hybridLastStatusText = "";
+    // Track multiple active archives for parallel hybrid extraction
+    const activeHybridArchiveMap = new Map<string, DownloadItem[]>();
     let hybridLastEmitAt = 0;
-    let lastHybridArchiveName = "";
-    const emitHybridStatus = (text: string, force = false): void => {
-      updateExtractingStatus(text);
-      const now = nowMs();
-      if (!force && now - hybridLastEmitAt < EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
-        return;
-      }
-      hybridLastEmitAt = now;
-      this.emitState();
-    };
 
     // Mark hybrid items as pending, others as waiting for parts
+    // If all items are completed, no item should show "Warten auf Parts"
     const hybridItemIds = new Set(hybridItems.map((item) => item.id));
+    const allDownloaded = completedItems.length >= items.length;
     for (const entry of completedItems) {
       if (isExtractedLabel(entry.fullStatus)) {
         continue;
       }
       if (hybridItemIds.has(entry.id)) {
+        entry.fullStatus = "Entpacken - Ausstehend";
+      } else if (allDownloaded) {
         entry.fullStatus = "Entpacken - Ausstehend";
       } else {
         entry.fullStatus = "Entpacken - Warten auf Parts";
@@ -5369,33 +5343,65 @@ export class DownloadManager extends EventEmitter {
         skipPostCleanup: true,
         packageId,
         hybridMode: true,
+        maxParallel: this.settings.maxParallelExtract || 2,
         onProgress: (progress) => {
           if (progress.phase === "done") {
-            return;
-          }
-          // When a new archive starts, mark the previous archive's items as done
-          if (progress.archiveName && progress.archiveName !== lastHybridArchiveName) {
-            if (lastHybridArchiveName && currentArchiveItems.length > 0) {
+            // Mark all remaining active archives as done
+            for (const [, archItems] of activeHybridArchiveMap) {
               const doneAt = nowMs();
-              for (const entry of currentArchiveItems) {
+              for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
                   entry.fullStatus = "Entpackt - Done";
                   entry.updatedAt = doneAt;
                 }
               }
             }
-            lastHybridArchiveName = progress.archiveName;
-            const resolved = resolveArchiveItems(progress.archiveName);
-            currentArchiveItems = resolved;
+            activeHybridArchiveMap.clear();
+            return;
           }
-          const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
-          const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
-            ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
-            : "";
-          const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
-          const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-          const label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
-          emitHybridStatus(label);
+
+          if (progress.archiveName) {
+            // Resolve items for this archive if not yet tracked
+            if (!activeHybridArchiveMap.has(progress.archiveName)) {
+              activeHybridArchiveMap.set(progress.archiveName, resolveArchiveItems(progress.archiveName));
+            }
+            const archItems = activeHybridArchiveMap.get(progress.archiveName)!;
+
+            // If archive is at 100%, mark its items as done and remove from active
+            if (Number(progress.archivePercent ?? 0) >= 100) {
+              const doneAt = nowMs();
+              for (const entry of archItems) {
+                if (!isExtractedLabel(entry.fullStatus)) {
+                  entry.fullStatus = "Entpackt - Done";
+                  entry.updatedAt = doneAt;
+                }
+              }
+              activeHybridArchiveMap.delete(progress.archiveName);
+            } else {
+              // Update this archive's items with current progress
+              const archive = ` · ${progress.archiveName}`;
+              const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
+                ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
+                : "";
+              const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+              const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+              const label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+              const updatedAt = nowMs();
+              for (const entry of archItems) {
+                if (!isExtractedLabel(entry.fullStatus)) {
+                  entry.fullStatus = label;
+                  entry.updatedAt = updatedAt;
+                }
+              }
+            }
+          }
+
+          // Throttled emit
+          const now = nowMs();
+          if (now - hybridLastEmitAt >= EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
+            hybridLastEmitAt = now;
+            this.emitState();
+          }
         }
       });
 
