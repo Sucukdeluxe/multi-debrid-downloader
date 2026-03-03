@@ -26,6 +26,7 @@ import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSes
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 import { decryptCredentials, encryptCredentials, SENSITIVE_KEYS } from "./backup-crypto";
+import { compactErrorText } from "./utils";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -330,6 +331,58 @@ export class AppController {
 
   public async checkMegaAccount(): Promise<ProviderAccountInfo> {
     return this.megaWebFallback.getAccountInfo();
+  }
+
+  public async checkRealDebridAccount(): Promise<ProviderAccountInfo> {
+    try {
+      const response = await fetch("https://api.real-debrid.com/rest/1.0/user", {
+        headers: { Authorization: `Bearer ${this.settings.token}` }
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        return { provider: "realdebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: `HTTP ${response.status}: ${compactErrorText(text)}` };
+      }
+      const data = await response.json() as Record<string, unknown>;
+      const username = String(data.username ?? "");
+      const type = String(data.type ?? "");
+      const expiration = data.expiration ? new Date(String(data.expiration)) : null;
+      const daysRemaining = expiration ? Math.max(0, Math.round((expiration.getTime() - Date.now()) / 86400000)) : null;
+      const points = typeof data.points === "number" ? data.points : null;
+      return { provider: "realdebrid", username, accountType: type === "premium" ? "Premium" : type, daysRemaining, loyaltyPoints: points as number | null };
+    } catch (err) {
+      return { provider: "realdebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: compactErrorText(err) };
+    }
+  }
+
+  public async checkAllDebridAccount(): Promise<ProviderAccountInfo> {
+    try {
+      const response = await fetch("https://api.alldebrid.com/v4/user", {
+        headers: { Authorization: `Bearer ${this.settings.allDebridToken}` }
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        return { provider: "alldebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: `HTTP ${response.status}: ${compactErrorText(text)}` };
+      }
+      const data = await response.json() as Record<string, unknown>;
+      const userData = (data.data as Record<string, unknown> | undefined)?.user as Record<string, unknown> | undefined;
+      if (!userData) {
+        return { provider: "alldebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Ungültige API-Antwort" };
+      }
+      const username = String(userData.username ?? "");
+      const isPremium = Boolean(userData.isPremium);
+      const premiumUntil = typeof userData.premiumUntil === "number" ? userData.premiumUntil : 0;
+      const daysRemaining = premiumUntil > 0 ? Math.max(0, Math.round((premiumUntil * 1000 - Date.now()) / 86400000)) : null;
+      return { provider: "alldebrid", username, accountType: isPremium ? "Premium" : "Free", daysRemaining, loyaltyPoints: null };
+    } catch (err) {
+      return { provider: "alldebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: compactErrorText(err) };
+    }
+  }
+
+  public async checkBestDebridAccount(): Promise<ProviderAccountInfo> {
+    if (!this.settings.bestToken.trim()) {
+      return { provider: "bestdebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Kein Token konfiguriert" };
+    }
+    return { provider: "bestdebrid", username: "(Token konfiguriert)", accountType: "Konfiguriert", daysRemaining: null, loyaltyPoints: null };
   }
 
   public addToHistory(entry: HistoryEntry): void {

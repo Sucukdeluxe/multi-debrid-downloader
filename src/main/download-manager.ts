@@ -4992,12 +4992,25 @@ export class DownloadManager extends EventEmitter {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
       if (allPartsCompleted) {
+        const candidateBase = path.basename(candidate).toLowerCase();
         const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
           const pendingName = path.basename(pendingPath).toLowerCase();
-          const candidateStem = path.basename(candidate).toLowerCase();
-          return this.looksLikeArchivePart(pendingName, candidateStem);
+          return this.looksLikeArchivePart(pendingName, candidateBase);
         });
-        if (hasUnstartedParts) {
+        // Also check items without targetPath (queued items that only have fileName)
+        const hasMatchingPendingItems = pkg.itemIds.some((itemId) => {
+          const item = this.session.items[itemId];
+          if (!item || item.status === "completed" || item.status === "failed" || item.status === "cancelled") {
+            return false;
+          }
+          if (item.fileName && !item.targetPath) {
+            if (this.looksLikeArchivePart(item.fileName.toLowerCase(), candidateBase)) {
+              return true;
+            }
+          }
+          return false;
+        });
+        if (hasUnstartedParts || hasMatchingPendingItems) {
           continue;
         }
         ready.add(pathKey(candidate));
@@ -5007,6 +5020,11 @@ export class DownloadManager extends EventEmitter {
       // Disk-fallback: if all parts exist on disk but some items lack "completed" status,
       // allow extraction if none of those parts are actively downloading/validating.
       // This handles items that finished downloading but whose status was not updated.
+      // Skip disk-fallback entirely for multi-part archives — only allPartsCompleted should handle those.
+      const isMultiPart = /\.part0*1\.rar$/i.test(path.basename(candidate));
+      if (isMultiPart) {
+        continue;
+      }
       const missingParts = partsOnDisk.filter((part) => !completedPaths.has(pathKey(part)));
       let allMissingExistOnDisk = true;
       for (const part of missingParts) {
@@ -5029,6 +5047,22 @@ export class DownloadManager extends EventEmitter {
         return status !== undefined && status !== "failed" && status !== "cancelled";
       });
       if (anyActivelyProcessing) {
+        continue;
+      }
+      // Also check fileName for items without targetPath (queued/downloading items)
+      const candidateBaseFb = path.basename(candidate).toLowerCase();
+      const hasMatchingPendingFb = pkg.itemIds.some((itemId) => {
+        const item = this.session.items[itemId];
+        if (!item || item.status === "completed" || item.status === "failed" || item.status === "cancelled") {
+          return false;
+        }
+        const nameToCheck = item.fileName?.toLowerCase() || (item.targetPath ? path.basename(item.targetPath).toLowerCase() : "");
+        if (!nameToCheck) {
+          return false;
+        }
+        return nameToCheck === candidateBaseFb || this.looksLikeArchivePart(nameToCheck, candidateBaseFb);
+      });
+      if (hasMatchingPendingFb) {
         continue;
       }
       logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${missingParts.length} Part(s) auf Disk ohne completed-Status)`);
