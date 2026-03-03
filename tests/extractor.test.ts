@@ -2,14 +2,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildExternalExtractArgs, collectArchiveCleanupTargets, extractPackageArchives } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
+const originalExtractBackend = process.env.RD_EXTRACT_BACKEND;
+
+beforeEach(() => {
+  process.env.RD_EXTRACT_BACKEND = "legacy";
+});
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+  if (originalExtractBackend === undefined) {
+    delete process.env.RD_EXTRACT_BACKEND;
+  } else {
+    process.env.RD_EXTRACT_BACKEND = originalExtractBackend;
   }
 });
 

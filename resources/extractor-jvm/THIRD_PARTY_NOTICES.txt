@@ -1,0 +1,12 @@
+Bundled JVM extractor dependencies:
+
+1) sevenzipjbinding (16.02-2.01)
+   - Maven artifact: net.sf.sevenzipjbinding:sevenzipjbinding
+   - Maven artifact: net.sf.sevenzipjbinding:sevenzipjbinding-all-platforms
+   - Upstream: https://sevenzipjbind.sourceforge.net/
+
+2) zip4j (2.11.5)
+   - Maven artifact: net.lingala.zip4j:zip4j
+   - Upstream: https://github.com/srikanth-lingala/zip4j
+
+Please review upstream licenses and notices before redistribution.

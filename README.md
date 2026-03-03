@@ -62,7 +62,8 @@ Requirements:
 - Node.js `20+` (recommended `22+`)
 - npm
 - Windows `10/11` (for packaging and regular desktop use)
-- Optional: 7-Zip/UnRAR for specific archive formats
+- Java Runtime `8+` (for SevenZipJBinding sidecar backend)
+- Optional fallback: 7-Zip/UnRAR if you force legacy extraction mode
 
 ```bash
 npm install
@@ -122,7 +123,7 @@ The app stores runtime files in Electron's `userData` directory, including:
 ## Troubleshooting
 
 - Download does not start: verify token and selected provider in Settings.
-- Extraction fails: check archive passwords and extraction tool availability.
+- Extraction fails: check archive passwords, JVM runtime (`resources/extractor-jvm`), or force legacy mode with `RD_EXTRACT_BACKEND=legacy`.
 - Very slow downloads: check active speed limit and bandwidth schedules.
 - Unexpected interruptions: enable reconnect and fallback providers.
 
