@@ -36,5 +36,6 @@ export const IPC_CHANNELS = {
   EXTRACT_NOW: "queue:extract-now",
   GET_HISTORY: "history:get",
   CLEAR_HISTORY: "history:clear",
-  REMOVE_HISTORY_ENTRY: "history:remove-entry"
+  REMOVE_HISTORY_ENTRY: "history:remove-entry",
+  CHECK_ACCOUNT: "app:check-account"
 } as const;

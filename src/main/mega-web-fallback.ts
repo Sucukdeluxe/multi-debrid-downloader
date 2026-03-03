@@ -1,3 +1,4 @@
+import { ProviderAccountInfo } from "../shared/types";
 import { UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, sleep } from "./utils";
 
@@ -15,6 +16,7 @@ const LOGIN_URL = "https://www.mega-debrid.eu/index.php?form=login";
 const DEBRID_URL = "https://www.mega-debrid.eu/index.php?form=debrid";
 const DEBRID_AJAX_URL = "https://www.mega-debrid.eu/index.php?ajax=debrid&json";
 const DEBRID_REFERER = "https://www.mega-debrid.eu/index.php?page=debrideur&lang=de";
+const PROFILE_URL = "https://www.mega-debrid.eu/index.php?page=profil";
 
 function normalizeLink(link: string): string {
   return link.trim().toLowerCase();
@@ -262,6 +264,51 @@ export class MegaWebFallback {
         retriesUsed: 0
       };
     }, signal);
+  }
+
+  public async getAccountInfo(): Promise<ProviderAccountInfo> {
+    return this.runExclusive(async () => {
+      const creds = this.getCredentials();
+      if (!creds.login.trim() || !creds.password.trim()) {
+        return { provider: "megadebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Login/Passwort nicht konfiguriert" };
+      }
+
+      try {
+        if (!this.cookie || Date.now() - this.cookieSetAt > 20 * 60 * 1000) {
+          await this.login(creds.login, creds.password);
+        }
+
+        const res = await fetch(PROFILE_URL, {
+          method: "GET",
+          headers: {
+            "User-Agent": "Mozilla/5.0",
+            Cookie: this.cookie,
+            Referer: DEBRID_REFERER
+          },
+          signal: AbortSignal.timeout(30000)
+        });
+        const html = await res.text();
+
+        const usernameMatch = html.match(/<a[^>]*id=["']user_link["'][^>]*><span>([^<]+)<\/span>/i);
+        const username = usernameMatch?.[1]?.trim() || "";
+
+        const typeMatch = html.match(/(Premiumuser|Freeuser)\s*-\s*(\d+)\s*Tag/i);
+        const accountType = typeMatch?.[1] || "Unbekannt";
+        const daysRemaining = typeMatch?.[2] ? parseInt(typeMatch[2], 10) : null;
+
+        const pointsMatch = html.match(/(\d+)\s*Treuepunkte/i);
+        const loyaltyPoints = pointsMatch?.[1] ? parseInt(pointsMatch[1], 10) : null;
+
+        if (!username && !typeMatch) {
+          this.cookie = "";
+          return { provider: "megadebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Profil konnte nicht gelesen werden (Session ungültig?)" };
+        }
+
+        return { provider: "megadebrid", username, accountType, daysRemaining, loyaltyPoints };
+      } catch (err) {
+        return { provider: "megadebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: compactErrorText(err) };
+      }
+    });
   }
 
   public invalidateSession(): void {

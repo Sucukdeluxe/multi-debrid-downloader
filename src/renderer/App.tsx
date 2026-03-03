@@ -10,6 +10,7 @@ import type {
   DuplicatePolicy,
   HistoryEntry,
   PackageEntry,
+  ProviderAccountInfo,
   StartConflictEntry,
   UiSnapshot,
   UpdateCheckResult,
@@ -442,6 +443,8 @@ export function App(): ReactElement {
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [megaAccountInfo, setMegaAccountInfo] = useState<ProviderAccountInfo | null>(null);
+  const [megaAccountLoading, setMegaAccountLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -2390,6 +2393,23 @@ export function App(): ReactElement {
                     <input value={settingsDraft.megaLogin} onChange={(e) => setText("megaLogin", e.target.value)} />
                     <label>Mega-Debrid Passwort</label>
                     <input type="password" value={settingsDraft.megaPassword} onChange={(e) => setText("megaPassword", e.target.value)} />
+                    <button className="btn" disabled={megaAccountLoading || !settingsDraft.megaLogin.trim() || !settingsDraft.megaPassword.trim()} onClick={() => {
+                      setMegaAccountLoading(true);
+                      setMegaAccountInfo(null);
+                      window.rd.checkAccount("megadebrid").then((info) => {
+                        setMegaAccountInfo(info);
+                      }).catch(() => {
+                        setMegaAccountInfo({ provider: "megadebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Verbindungsfehler" });
+                      }).finally(() => {
+                        setMegaAccountLoading(false);
+                      });
+                    }}>{megaAccountLoading ? "Prüfe…" : "Account prüfen"}</button>
+                    {megaAccountInfo && !megaAccountInfo.error && (
+                      <div className="account-info account-info-success">✓ {megaAccountInfo.username} — {megaAccountInfo.accountType}{megaAccountInfo.daysRemaining !== null ? ` — ${megaAccountInfo.daysRemaining} Tage` : ""}{megaAccountInfo.loyaltyPoints !== null ? ` — ${megaAccountInfo.loyaltyPoints} Treuepunkte` : ""}</div>
+                    )}
+                    {megaAccountInfo?.error && (
+                      <div className="account-info account-info-error">✗ {megaAccountInfo.error}</div>
+                    )}
                     <label>BestDebrid API Token</label>
                     <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
                     <label>AllDebrid API Key</label>

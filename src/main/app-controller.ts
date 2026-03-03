@@ -7,6 +7,7 @@ import {
   DuplicatePolicy,
   HistoryEntry,
   ParsedPackageInput,
+  ProviderAccountInfo,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -325,6 +326,10 @@ export class AppController {
 
   public removeHistoryEntry(entryId: string): void {
     removeHistoryEntry(this.storagePaths, entryId);
+  }
+
+  public async checkMegaAccount(): Promise<ProviderAccountInfo> {
+    return this.megaWebFallback.getAccountInfo();
   }
 
   public addToHistory(entry: HistoryEntry): void {

@@ -384,6 +384,13 @@ function registerIpcHandlers(): void {
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
   });
+  ipcMain.handle(IPC_CHANNELS.CHECK_ACCOUNT, async (_event: IpcMainInvokeEvent, provider: string) => {
+    validateString(provider, "provider");
+    if (provider === "megadebrid") {
+      return controller.checkMegaAccount();
+    }
+    return { provider, username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Nicht unterstützt" };
+  });
   ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
 
   ipcMain.handle(IPC_CHANNELS.RESTART, () => {
