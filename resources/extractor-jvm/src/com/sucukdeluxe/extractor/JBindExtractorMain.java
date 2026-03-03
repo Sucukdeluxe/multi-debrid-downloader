@@ -42,6 +42,8 @@ public final class JBindExtractorMain {
     private static final Pattern NUMBERED_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.zip\\.\\d{3}$");
     private static final Pattern OLD_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.z\\d{2,3}$");
     private static final Pattern SEVEN_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.7z\\.001$");
+    private static final Pattern RAR_MULTIPART_RE = Pattern.compile("(?i).*\\.part\\d+\\.rar$");
+    private static final Pattern RAR_OLDSPLIT_RE = Pattern.compile("(?i).*\\.r\\d{2,3}$");
     private static volatile boolean sevenZipInitialized = false;
 
     private JBindExtractorMain() {
@@ -326,7 +328,13 @@ public final class JBindExtractorMain {
         String effectivePassword = password == null ? "" : password;
         SevenZipVolumeCallback callback = new SevenZipVolumeCallback(archiveFile, effectivePassword);
 
-        if (SEVEN_ZIP_SPLIT_RE.matcher(nameLower).matches()) {
+        // Multi-volume archives need VolumedArchiveInStream so 7z-JBinding can
+        // request additional volumes via the IArchiveOpenVolumeCallback.
+        boolean isMultiVolume = SEVEN_ZIP_SPLIT_RE.matcher(nameLower).matches()
+            || RAR_MULTIPART_RE.matcher(nameLower).matches()
+            || hasOldStyleRarSplits(archiveFile);
+
+        if (isMultiVolume) {
             VolumedArchiveInStream volumed = new VolumedArchiveInStream(archiveFile.getName(), callback);
             IInArchive archive = SevenZip.openInArchive(null, volumed, callback);
             return new SevenZipArchiveContext(archive, null, volumed, callback);
@@ -336,6 +344,36 @@ public final class JBindExtractorMain {
         RandomAccessFileInStream stream = new RandomAccessFileInStream(raf);
         IInArchive archive = SevenZip.openInArchive(null, stream, callback);
         return new SevenZipArchiveContext(archive, stream, null, callback);
+    }
+
+    private static boolean hasOldStyleRarSplits(File archiveFile) {
+        // Old-style RAR splits: main.rar + main.r01, main.r02, ...
+        String name = archiveFile.getName();
+        if (!name.toLowerCase(Locale.ROOT).endsWith(".rar")) {
+            return false;
+        }
+        File parent = archiveFile.getParentFile();
+        if (parent == null || !parent.exists()) {
+            return false;
+        }
+        File[] siblings = parent.listFiles();
+        if (siblings == null) {
+            return false;
+        }
+        String stem = name.substring(0, name.length() - 4);
+        for (File sibling : siblings) {
+            if (!sibling.isFile()) {
+                continue;
+            }
+            String sibName = sibling.getName();
+            if (sibName.length() > stem.length() + 1 && sibName.substring(0, stem.length()).equalsIgnoreCase(stem)) {
+                String suffix = sibName.substring(stem.length());
+                if (RAR_OLDSPLIT_RE.matcher(suffix).matches() || suffix.toLowerCase(Locale.ROOT).matches("\\.r\\d{2,3}")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static boolean isWrongPassword(ZipException error, boolean encrypted) {
