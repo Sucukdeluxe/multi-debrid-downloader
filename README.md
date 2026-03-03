@@ -20,8 +20,10 @@ Desktop downloader for **Real-Debrid, Mega-Debrid, BestDebrid, and AllDebrid** w
 
 - Package-based queue with file status, progress, ETA, speed, and retry counters.
 - Start, pause, stop, and cancel for both single items and full packages.
+- Multi-select via Ctrl+Click for batch operations on packages and items.
 - Duplicate handling when adding links: keep, skip, or overwrite.
 - Session recovery after restart, including optional auto-resume.
+- Circuit breaker with escalating backoff cooldowns to handle provider outages gracefully.
 
 ### Debrid and link handling
 
@@ -32,10 +34,30 @@ Desktop downloader for **Real-Debrid, Mega-Debrid, BestDebrid, and AllDebrid** w
 
 ### Extraction, cleanup, and quality
 
+- JVM-based extraction backend using SevenZipJBinding + Zip4j (supports RAR, 7z, ZIP, and more).
+- Automatic fallback to legacy UnRAR/7z CLI tools when JVM is unavailable.
 - Auto-extract with separate target directory and conflict strategies.
-- Hybrid extraction, optional removal of link artifacts and sample files.
+- Hybrid extraction: simultaneous downloading and extracting with smart I/O priority throttling.
+- Nested extraction: archives within archives are automatically extracted (one level deep).
+- Pre-extraction disk space validation to prevent incomplete extracts.
+- Right-click "Extract now" on any package with at least one completed item.
 - Post-download integrity checks (`CRC32`, `MD5`, `SHA1`) with auto-retry on failures.
 - Completed-item cleanup policy: `never`, `immediate`, `on_start`, `package_done`.
+- Optional removal of link artifacts and sample files after extraction.
+
+### Auto-rename
+
+- Automatic renaming of extracted files based on series/episode patterns.
+- Multi-episode token parsing for batch renames.
+
+### UI and progress
+
+- Visual progress bars with percentage overlay for packages and individual items.
+- Real-time bandwidth chart showing current download speeds.
+- Persistent download counters: all-time totals and per-session statistics.
+- Download history for completed packages.
+- Vertical sidebar with organized settings tabs.
+- Hoster display showing both the original source and the debrid provider used.
 
 ### Convenience and automation
 
@@ -43,7 +65,8 @@ Desktop downloader for **Real-Debrid, Mega-Debrid, BestDebrid, and AllDebrid** w
 - Minimize-to-tray with tray menu controls.
 - Speed limits globally or per download.
 - Bandwidth schedules for time-based speed profiles.
-- Built-in update checks via Codeberg Releases.
+- Built-in auto-updater via Codeberg Releases.
+- Long path support (>260 characters) on Windows.
 
 ## Installation
 
@@ -111,6 +134,7 @@ This command will:
 - `src/renderer` - React UI
 - `src/shared` - shared types and IPC contracts
 - `tests` - unit tests and self-check tests
+- `resources/extractor-jvm` - SevenZipJBinding + Zip4j sidecar JAR and native libraries
 
 ## Data and logs
 
@@ -126,6 +150,7 @@ The app stores runtime files in Electron's `userData` directory, including:
 - Extraction fails: check archive passwords, JVM runtime (`resources/extractor-jvm`), or force legacy mode with `RD_EXTRACT_BACKEND=legacy`.
 - Very slow downloads: check active speed limit and bandwidth schedules.
 - Unexpected interruptions: enable reconnect and fallback providers.
+- Stalled downloads: the app auto-detects stalls within 10 seconds and retries automatically.
 
 ## Changelog
 
