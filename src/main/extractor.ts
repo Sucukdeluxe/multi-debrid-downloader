@@ -471,9 +471,10 @@ function extractCpuBudgetPercent(): number {
 
 function extractorThreadSwitch(hybridMode = false): string {
   if (hybridMode) {
-    const cpuCount = Math.max(1, os.cpus().length || 1);
-    const hybridThreads = Math.max(1, Math.min(8, Math.floor(cpuCount / 2)));
-    return `-mt${hybridThreads}`;
+    // 2 threads during hybrid extraction (download + extract simultaneously).
+    // JDownloader 2 uses in-process 7-Zip-JBinding which naturally limits throughput
+    // to ~16 MB/s write. 2 UnRAR threads produce similar controlled disk load.
+    return "-mt2";
   }
   const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
   if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
@@ -486,25 +487,7 @@ function extractorThreadSwitch(hybridMode = false): string {
   return `-mt${threadCount}`;
 }
 
-function setWindowsBackgroundIO(pid: number): void {
-  if (process.platform !== "win32") {
-    return;
-  }
-  // NtSetInformationProcess: set I/O priority to Very Low (0) and Page priority to Very Low (1).
-  // IDLE_PRIORITY_CLASS (set by os.setPriority) only lowers CPU scheduling priority;
-  // it does NOT lower I/O priority on modern Windows (Vista+). This call does.
-  const script = `$c=@'\nusing System;using System.Runtime.InteropServices;\npublic class P{[DllImport("ntdll.dll")]static extern int NtSetInformationProcess(IntPtr h,int c,ref int d,int s);[DllImport("kernel32.dll")]static extern IntPtr OpenProcess(int a,bool i,int p);[DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr h);public static void S(int pid){IntPtr h=OpenProcess(0x0600,false,pid);if(h==IntPtr.Zero)return;int v=0;NtSetInformationProcess(h,0x21,ref v,4);v=1;NtSetInformationProcess(h,0x27,ref v,4);CloseHandle(h);}}\n'@\nAdd-Type -TypeDefinition $c;[P]::S(${pid})`;
-  try {
-    spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
-      windowsHide: true,
-      stdio: "ignore"
-    }).unref();
-  } catch {
-    // best-effort: powershell may not be available
-  }
-}
-
-function lowerExtractProcessPriority(childPid: number | undefined, lowIo = false): void {
+function lowerExtractProcessPriority(childPid: number | undefined): void {
   if (process.platform !== "win32") {
     return;
   }
@@ -513,14 +496,11 @@ function lowerExtractProcessPriority(childPid: number | undefined, lowIo = false
     return;
   }
   try {
-    // IDLE_PRIORITY_CLASS: lowers CPU scheduling priority only
+    // IDLE_PRIORITY_CLASS: lowers CPU scheduling priority so extraction
+    // doesn't starve other processes. I/O priority stays Normal (like JDownloader 2).
     os.setPriority(pid, os.constants.priority.PRIORITY_LOW);
   } catch {
     // ignore: priority lowering is best-effort
-  }
-  // Lower I/O + page priority only in hybrid mode (download + extract simultaneously)
-  if (lowIo) {
-    setWindowsBackgroundIO(pid);
   }
 }
 
@@ -578,8 +558,7 @@ function runExtractCommand(
   args: string[],
   onChunk?: (chunk: string) => void,
   signal?: AbortSignal,
-  timeoutMs?: number,
-  hybridMode = false
+  timeoutMs?: number
 ): Promise<ExtractSpawnResult> {
   if (signal?.aborted) {
     return Promise.resolve({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
@@ -589,7 +568,7 @@ function runExtractCommand(
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid, hybridMode);
+    lowerExtractProcessPriority(child.pid);
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
@@ -846,7 +825,7 @@ async function runExternalExtractInner(
       }
       bestPercent = parsed;
       onArchiveProgress?.(bestPercent);
-    }, signal, timeoutMs, hybridMode);
+    }, signal, timeoutMs);
 
     if (!result.ok && usePerformanceFlags && isUnsupportedExtractorSwitchError(result.errorText)) {
       usePerformanceFlags = false;
@@ -860,7 +839,7 @@ async function runExternalExtractInner(
         }
         bestPercent = parsed;
         onArchiveProgress?.(bestPercent);
-      }, signal, timeoutMs, hybridMode);
+      }, signal, timeoutMs);
     }
 
     if (result.ok) {
