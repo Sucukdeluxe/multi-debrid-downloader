@@ -485,7 +485,57 @@ export async function checkRapidgatorOnline(
     return null;
   }
   const fileId = fileIdMatch[1];
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
+  };
 
+  // Fast path: HEAD request (no body download, much faster)
+  for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+    try {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+
+      const response = await fetch(link, {
+        method: "HEAD",
+        redirect: "follow",
+        headers,
+        signal: withTimeoutSignal(signal, 15000)
+      });
+
+      if (response.status === 404) {
+        return { online: false, fileName: "", fileSize: null };
+      }
+
+      if (response.ok) {
+        const finalUrl = response.url || link;
+        if (!finalUrl.includes(fileId)) {
+          return { online: false, fileName: "", fileSize: null };
+        }
+        // HEAD 200 + URL still contains file ID → online
+        const fileName = filenameFromRapidgatorUrlPath(link);
+        return { online: true, fileName, fileSize: null };
+      }
+
+      // Non-OK, non-404: retry or give up
+      if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+        await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+        continue;
+      }
+
+      // HEAD inconclusive — fall through to GET
+      break;
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      if (/aborted/i.test(errorText)) throw error;
+      if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
+        break; // fall through to GET
+      }
+      await sleepWithSignal(retryDelay(attempt), signal);
+    }
+  }
+
+  // Slow path: GET request (downloads HTML, more thorough)
   for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
     try {
       if (signal?.aborted) throw new Error("aborted:debrid");
@@ -493,11 +543,7 @@ export async function checkRapidgatorOnline(
       const response = await fetch(link, {
         method: "GET",
         redirect: "follow",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
-        },
+        headers,
         signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
       });
 

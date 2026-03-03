@@ -838,6 +838,7 @@ export class DownloadManager extends EventEmitter {
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
     this.resolveExistingQueuedOpaqueFilenames();
+    this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
   }
 
@@ -1534,49 +1535,28 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
     }
 
-    const uniqueUrls = [...new Set(itemsToCheck.map(i => i.url))];
-    const concurrency = 4;
-    const queue = [...uniqueUrls];
-    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-      while (queue.length > 0) {
-        const url = queue.shift()!;
-        const result = await checkRapidgatorOnline(url);
-        if (result !== null) checked.set(url, result);
-      }
-    });
-    await Promise.all(workers);
+    // Check links one by one (sequentially) so the user sees dots change progressively
+    const checkedUrls = new Map<string, Awaited<ReturnType<typeof checkRapidgatorOnline>>>();
 
-    if (checked.size === 0) return;
-
-    let changed = false;
     for (const { itemId, url } of itemsToCheck) {
-      const result = checked.get(url);
-      if (!result) continue;
       const item = this.session.items[itemId];
-      if (!item || item.status !== "queued") continue;
+      if (!item) continue;
 
-      if (!result.online) {
-        item.status = "failed";
-        item.fullStatus = "Offline";
-        item.lastError = "Datei nicht gefunden auf Rapidgator";
-        item.onlineStatus = "offline";
-        item.updatedAt = nowMs();
-        changed = true;
-      } else {
-        if (result.fileName && looksLikeOpaqueFilename(item.fileName)) {
-          item.fileName = sanitizeFilename(result.fileName);
-          this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
-        }
-        item.onlineStatus = "online";
-        item.updatedAt = nowMs();
-        changed = true;
+      // Reuse result if same URL was already checked
+      if (checkedUrls.has(url)) {
+        const cached = checkedUrls.get(url);
+        this.applyRapidgatorCheckResult(item, cached);
+        this.emitState();
+        continue;
       }
-    }
 
-    if (changed) {
-      this.persistSoon();
+      const result = await checkRapidgatorOnline(url);
+      checkedUrls.set(url, result);
+      this.applyRapidgatorCheckResult(item, result);
       this.emitState();
     }
+
+    this.persistSoon();
   }
 
   private resolveExistingQueuedOpaqueFilenames(): void {
@@ -1599,6 +1579,43 @@ export class DownloadManager extends EventEmitter {
 
     if (unresolvedByLink.size > 0) {
       void this.resolveQueuedFilenames(unresolvedByLink).catch((err) => logger.warn(`resolveQueuedFilenames Fehler (resolveExisting): ${compactErrorText(err)}`));
+    }
+  }
+
+  private applyRapidgatorCheckResult(item: DownloadItem, result: Awaited<ReturnType<typeof checkRapidgatorOnline>>): void {
+    if (!result) {
+      if (item.onlineStatus === "checking") {
+        item.onlineStatus = undefined;
+      }
+      return;
+    }
+    if (item.status !== "queued") return;
+
+    if (!result.online) {
+      item.status = "failed";
+      item.fullStatus = "Offline";
+      item.lastError = "Datei nicht gefunden auf Rapidgator";
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+    } else {
+      if (result.fileName && looksLikeOpaqueFilename(item.fileName)) {
+        item.fileName = sanitizeFilename(result.fileName);
+        this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
+      }
+      item.onlineStatus = "online";
+      item.updatedAt = nowMs();
+    }
+  }
+
+  private checkExistingRapidgatorLinks(): void {
+    const uncheckedIds: string[] = [];
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "queued") continue;
+      if (item.onlineStatus) continue; // already checked
+      uncheckedIds.push(item.id);
+    }
+    if (uncheckedIds.length > 0) {
+      void this.checkRapidgatorLinks(uncheckedIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler (startup): ${compactErrorText(err)}`));
     }
   }
 
@@ -2803,9 +2820,13 @@ export class DownloadManager extends EventEmitter {
       // Clear stale transient status texts from previous session
       if (item.status === "queued") {
         const fs = (item.fullStatus || "").trim();
-        if (fs !== "Wartet" && fs !== "Paket gestoppt") {
+        if (fs !== "Wartet" && fs !== "Paket gestoppt" && fs !== "Online") {
           item.fullStatus = "Wartet";
         }
+      }
+      // Reset stale "checking" status from interrupted checks
+      if (item.onlineStatus === "checking") {
+        item.onlineStatus = undefined;
       }
       if (item.status === "completed") {
         const fs = (item.fullStatus || "").trim();
