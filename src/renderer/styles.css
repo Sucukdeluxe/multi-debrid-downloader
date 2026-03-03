@@ -577,7 +577,7 @@ body,
 
 .pkg-column-header {
   display: grid;
-  grid-template-columns: 1fr 90px 160px 220px 180px 100px;
+  grid-template-columns: 1fr 90px 170px 140px 130px 180px 100px;
   gap: 8px;
   padding: 5px 12px;
   background: var(--card);
@@ -587,6 +587,15 @@ body,
   font-weight: 700;
   color: var(--muted);
   user-select: none;
+}
+
+.pkg-column-header .pkg-col-progress,
+.pkg-column-header .pkg-col-size,
+.pkg-column-header .pkg-col-hoster,
+.pkg-column-header .pkg-col-account,
+.pkg-column-header .pkg-col-status,
+.pkg-column-header .pkg-col-speed {
+  text-align: center;
 }
 
 .pkg-column-header .sortable {
@@ -603,7 +612,7 @@ body,
 
 .pkg-columns {
   display: grid;
-  grid-template-columns: 1fr 90px 160px 220px 180px 100px;
+  grid-template-columns: 1fr 90px 170px 140px 130px 180px 100px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -626,6 +635,7 @@ body,
 .pkg-columns .pkg-col-progress,
 .pkg-columns .pkg-col-size,
 .pkg-columns .pkg-col-hoster,
+.pkg-columns .pkg-col-account,
 .pkg-columns .pkg-col-status,
 .pkg-columns .pkg-col-speed {
   font-size: 13px;
@@ -633,10 +643,12 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
 }
 
 .pkg-col-progress {
   font-variant-numeric: tabular-nums;
+  padding-right: 12px;
 }
 
 .progress-size {
@@ -1272,7 +1284,7 @@ td {
 
 .item-row {
   display: grid;
-  grid-template-columns: 1fr 90px 160px 220px 180px 100px;
+  grid-template-columns: 1fr 90px 170px 140px 130px 180px 100px;
   gap: 8px;
   align-items: center;
   margin: 0 -12px;
@@ -1291,6 +1303,11 @@ td {
   white-space: nowrap;
   color: var(--muted);
   font-size: 13px;
+  text-align: center;
+}
+
+.item-row .pkg-col-name {
+  text-align: left;
 }
 
 .item-row .pkg-col-name {
@@ -1734,6 +1751,7 @@ td {
   .pkg-column-header .pkg-col-progress,
   .pkg-column-header .pkg-col-size,
   .pkg-column-header .pkg-col-hoster,
+  .pkg-column-header .pkg-col-account,
   .pkg-column-header .pkg-col-status,
   .pkg-column-header .pkg-col-speed {
     display: none;
@@ -1742,6 +1760,7 @@ td {
   .pkg-columns .pkg-col-progress,
   .pkg-columns .pkg-col-size,
   .pkg-columns .pkg-col-hoster,
+  .pkg-columns .pkg-col-account,
   .pkg-columns .pkg-col-status,
   .pkg-columns .pkg-col-speed {
     display: none;
