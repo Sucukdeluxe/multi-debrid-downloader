@@ -1315,6 +1315,33 @@ td {
   padding-left: 32px;
 }
 
+.link-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.link-status-dot.online {
+  background: #22c55e;
+  box-shadow: 0 0 4px #22c55e80;
+}
+.link-status-dot.offline {
+  background: #ef4444;
+  box-shadow: 0 0 4px #ef444480;
+}
+.link-status-dot.checking {
+  background: #f59e0b;
+  box-shadow: 0 0 4px #f59e0b80;
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .item-remove {
   background: none;
   border: none;

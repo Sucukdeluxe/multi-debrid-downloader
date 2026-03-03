@@ -101,6 +101,7 @@ export interface DownloadItem {
   fullStatus: string;
   createdAt: number;
   updatedAt: number;
+  onlineStatus?: "online" | "offline" | "checking";
 }
 
 export interface PackageEntry {
