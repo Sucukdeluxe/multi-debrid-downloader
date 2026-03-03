@@ -20,6 +20,7 @@ apply_update.cmd
 .claude/
 .github/
 docs/plans/
+CHANGELOG.md
 
 node_modules/
 .vite/

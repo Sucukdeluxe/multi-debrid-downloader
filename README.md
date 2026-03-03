@@ -154,7 +154,7 @@ The app stores runtime files in Electron's `userData` directory, including:
 
 ## Changelog
 
-Release history is available in `CHANGELOG.md` and on Codeberg Releases.
+Release history is available on [Codeberg Releases](https://codeberg.org/Sucukdeluxe/real-debrid-downloader/releases).
 
 ## License
 
