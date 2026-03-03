@@ -177,7 +177,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "retry", links: ["https://dummy/retry"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -253,7 +253,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "same-name", links: ["https://dummy/first", "https://dummy/second"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const items = Object.values(manager.getSnapshot().session.items);
@@ -465,7 +465,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "stall", links: ["https://dummy/stall"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -563,7 +563,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "connect-stall", links: ["https://dummy/connect-stall"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 30000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -666,7 +666,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "stall-connect", links: ["https://dummy/stall-connect"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 30000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -765,7 +765,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "watchdog-stall", links: ["https://dummy/watchdog-stall"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 30000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -969,7 +969,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "content-name", links: ["https://rapidgator.net/file/6f09df2984fe01378537c7cd8d7fa7ce"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -1099,7 +1099,7 @@ describe("download manager", () => {
         createStoragePaths(path.join(root, "state"))
       );
 
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = manager.getSnapshot().session.items[itemId];
@@ -1232,7 +1232,7 @@ describe("download manager", () => {
         createStoragePaths(path.join(root, "state"))
       );
 
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = manager.getSnapshot().session.items[itemId];
@@ -1376,7 +1376,7 @@ describe("download manager", () => {
         createStoragePaths(path.join(root, "state"))
       );
 
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = manager.getSnapshot().session.items[itemId];
@@ -1491,7 +1491,7 @@ describe("download manager", () => {
         createStoragePaths(path.join(root, "state"))
       );
 
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 45000);
 
       const item = manager.getSnapshot().session.items[itemId];
@@ -1572,7 +1572,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "status-retry", links: ["https://dummy/status-retry"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 30000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -1792,7 +1792,7 @@ describe("download manager", () => {
     expect(fs.existsSync(targetPath)).toBe(false);
   });
 
-  it("detects start conflicts when extract output already exists", () => {
+  it("detects start conflicts when extract output already exists", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -1851,7 +1851,7 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    const conflicts = manager.getStartConflicts();
+    const conflicts = await manager.getStartConflicts();
     expect(conflicts.length).toBe(1);
     expect(conflicts[0]?.packageId).toBe(packageId);
   });
@@ -2495,7 +2495,7 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    manager.start();
+    await manager.start();
     await waitFor(() => !manager.getSnapshot().session.running, 5000);
 
     const snapshot = manager.getSnapshot();
@@ -2727,7 +2727,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "new", links: ["https://dummy/new"] }]);
-      manager.start();
+      await manager.start();
       await new Promise((resolve) => setTimeout(resolve, 120));
 
       const runningSnapshot = manager.getSnapshot();
@@ -2805,7 +2805,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "fresh-retry", links: ["https://dummy/fresh"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 30000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
@@ -2890,7 +2890,7 @@ describe("download manager", () => {
       expect(extractDir).toBeTruthy();
       expect(fs.existsSync(extractDir)).toBe(false);
 
-      manager.start();
+      await manager.start();
       await new Promise((resolve) => setTimeout(resolve, 140));
       expect(fs.existsSync(extractDir)).toBe(false);
 
@@ -2899,14 +2899,14 @@ describe("download manager", () => {
       const snapshot = manager.getSnapshot();
       const item = Object.values(snapshot.session.items)[0];
       expect(item?.status).toBe("completed");
-      expect(item?.fullStatus).toBe("Entpackt");
+      expect(item?.fullStatus).toBe("Entpackt - Done");
       expect(fs.existsSync(extractDir)).toBe(true);
       expect(fs.existsSync(path.join(extractDir, "inside.txt"))).toBe(true);
     } finally {
       server.close();
       await once(server, "close");
     }
-  });
+  }, 35000);
 
   it("keeps accurate summary when completed items are cleaned immediately", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
@@ -2967,7 +2967,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "cleanup", links: ["https://dummy/cleanup"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const snapshot = manager.getSnapshot();
@@ -3048,7 +3048,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "cleanup-package", links: ["https://dummy/cleanup-package"] }]);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 30000);
 
       const snapshot = manager.getSnapshot();
@@ -3061,7 +3061,7 @@ describe("download manager", () => {
       server.close();
       await once(server, "close");
     }
-  });
+  }, 35000);
 
   it("counts queued package cancellations in run summary", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
@@ -3213,7 +3213,7 @@ describe("download manager", () => {
       const disabledItemId = initial.session.packages[disabledPkgId]?.itemIds[0] || "";
 
       manager.togglePackage(disabledPkgId);
-      manager.start();
+      await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const snapshot = manager.getSnapshot();
@@ -3705,7 +3705,7 @@ describe("download manager", () => {
     await waitFor(() => fs.existsSync(path.join(extractDir, "episode.txt")), 25000);
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
-    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
   });
 
   it("does not fail startup post-processing when source package dir is missing but extract output exists", async () => {
@@ -3772,7 +3772,7 @@ describe("download manager", () => {
     await waitFor(() => manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt"), 12000);
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
-    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
   });
 
   it("marks missing source package dir as extracted instead of failed", async () => {
@@ -4012,7 +4012,7 @@ describe("download manager", () => {
     await waitFor(() => fs.existsSync(expectedPath), 12000);
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
-    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt");
+    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
     expect(fs.existsSync(expectedPath)).toBe(true);
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   });
@@ -4135,7 +4135,7 @@ describe("download manager", () => {
     await waitFor(() => fs.existsSync(flattenedPath), 12000);
 
     expect(manager.getSnapshot().session.packages[packageId]?.status).toBe("completed");
-    expect(manager.getSnapshot().session.items[itemId]?.fullStatus).toBe("Entpackt");
+    expect(manager.getSnapshot().session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
     expect(fs.existsSync(flattenedPath)).toBe(true);
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   });
@@ -4306,7 +4306,7 @@ describe("download manager", () => {
     expect(internal.globalSpeedLimitNextAt).toBeGreaterThan(start);
   });
 
-  it("resets speed window head when start finds no runnable items", () => {
+  it("resets speed window head when start finds no runnable items", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -4330,7 +4330,7 @@ describe("download manager", () => {
     internal.speedEventsHead = 5;
     internal.speedBytesLastWindow = 999;
 
-    manager.start();
+    await manager.start();
     expect(internal.speedEventsHead).toBe(0);
     expect(internal.speedEvents.length).toBe(0);
     expect(internal.speedBytesLastWindow).toBe(0);
