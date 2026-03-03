@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildExternalExtractArgs, collectArchiveCleanupTargets, extractPackageArchives } from "../src/main/extractor";
+import {
+  buildExternalExtractArgs,
+  collectArchiveCleanupTargets,
+  extractPackageArchives,
+  archiveFilenamePasswords,
+  detectArchiveSignature,
+  classifyExtractionError,
+  findArchiveCandidates,
+} from "../src/main/extractor";
 
 const tempDirs: string[] = [];
 const originalExtractBackend = process.env.RD_EXTRACT_BACKEND;
@@ -741,6 +749,257 @@ describe("extractor", () => {
       expect(result.extracted).toBe(1);
       expect(fs.existsSync(path.join(targetDir, "disc.iso"))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, "readme.txt"))).toBe(true);
+    });
+  });
+
+  describe("archiveFilenamePasswords", () => {
+    it("extracts stem and spaced variant from archive name", () => {
+      const result = archiveFilenamePasswords("MyRelease.S01E01.rar");
+      expect(result).toContain("MyRelease.S01E01");
+      expect(result).toContain("MyRelease S01E01");
+    });
+
+    it("strips multipart rar suffix", () => {
+      const result = archiveFilenamePasswords("Show.S02E03.part01.rar");
+      expect(result).toContain("Show.S02E03");
+      expect(result).toContain("Show S02E03");
+    });
+
+    it("strips .zip.001 suffix", () => {
+      const result = archiveFilenamePasswords("Movie.2024.zip.001");
+      expect(result).toContain("Movie.2024");
+    });
+
+    it("strips .tar.gz suffix", () => {
+      const result = archiveFilenamePasswords("backup.tar.gz");
+      expect(result).toContain("backup");
+    });
+
+    it("returns empty array for empty input", () => {
+      expect(archiveFilenamePasswords("")).toEqual([]);
+    });
+
+    it("returns single entry when no dots/underscores", () => {
+      const result = archiveFilenamePasswords("simple.zip");
+      expect(result).toEqual(["simple"]);
+    });
+
+    it("replaces underscores with spaces", () => {
+      const result = archiveFilenamePasswords("my_archive_name.7z");
+      expect(result).toContain("my_archive_name");
+      expect(result).toContain("my archive name");
+    });
+  });
+
+  describe(".rev cleanup", () => {
+    it("collects .rev files for single RAR cleanup", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rev-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      const mainRar = path.join(packageDir, "show.rar");
+      const rev = path.join(packageDir, "show.rev");
+      const r00 = path.join(packageDir, "show.r00");
+
+      fs.writeFileSync(mainRar, "a", "utf8");
+      fs.writeFileSync(rev, "b", "utf8");
+      fs.writeFileSync(r00, "c", "utf8");
+
+      const targets = new Set(collectArchiveCleanupTargets(mainRar));
+      expect(targets.has(mainRar)).toBe(true);
+      expect(targets.has(rev)).toBe(true);
+      expect(targets.has(r00)).toBe(true);
+    });
+
+    it("collects .rev files for multipart RAR cleanup", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rev-mp-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      const part1 = path.join(packageDir, "show.part01.rar");
+      const part2 = path.join(packageDir, "show.part02.rar");
+      const rev = path.join(packageDir, "show.rev");
+
+      fs.writeFileSync(part1, "a", "utf8");
+      fs.writeFileSync(part2, "b", "utf8");
+      fs.writeFileSync(rev, "c", "utf8");
+
+      const targets = new Set(collectArchiveCleanupTargets(part1));
+      expect(targets.has(part1)).toBe(true);
+      expect(targets.has(part2)).toBe(true);
+      expect(targets.has(rev)).toBe(true);
+    });
+  });
+
+  describe("generic .001 split cleanup", () => {
+    it("collects all numbered parts for generic splits", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-split-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      const p001 = path.join(packageDir, "movie.001");
+      const p002 = path.join(packageDir, "movie.002");
+      const p003 = path.join(packageDir, "movie.003");
+      const other = path.join(packageDir, "other.001");
+
+      fs.writeFileSync(p001, "a", "utf8");
+      fs.writeFileSync(p002, "b", "utf8");
+      fs.writeFileSync(p003, "c", "utf8");
+      fs.writeFileSync(other, "x", "utf8");
+
+      const targets = new Set(collectArchiveCleanupTargets(p001));
+      expect(targets.has(p001)).toBe(true);
+      expect(targets.has(p002)).toBe(true);
+      expect(targets.has(p003)).toBe(true);
+      expect(targets.has(other)).toBe(false);
+    });
+  });
+
+  describe("detectArchiveSignature", () => {
+    it("detects RAR signature", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-sig-"));
+      tempDirs.push(root);
+      const filePath = path.join(root, "test.rar");
+      // RAR5 signature: 52 61 72 21 1A 07
+      fs.writeFileSync(filePath, Buffer.from("526172211a0700", "hex"));
+      const sig = await detectArchiveSignature(filePath);
+      expect(sig).toBe("rar");
+    });
+
+    it("detects ZIP signature", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-sig-"));
+      tempDirs.push(root);
+      const filePath = path.join(root, "test.zip");
+      fs.writeFileSync(filePath, Buffer.from("504b030414000000", "hex"));
+      const sig = await detectArchiveSignature(filePath);
+      expect(sig).toBe("zip");
+    });
+
+    it("detects 7z signature", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-sig-"));
+      tempDirs.push(root);
+      const filePath = path.join(root, "test.7z");
+      fs.writeFileSync(filePath, Buffer.from("377abcaf271c0004", "hex"));
+      const sig = await detectArchiveSignature(filePath);
+      expect(sig).toBe("7z");
+    });
+
+    it("returns null for non-archive files", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-sig-"));
+      tempDirs.push(root);
+      const filePath = path.join(root, "test.txt");
+      fs.writeFileSync(filePath, "Hello World", "utf8");
+      const sig = await detectArchiveSignature(filePath);
+      expect(sig).toBeNull();
+    });
+
+    it("returns null for non-existent file", async () => {
+      const sig = await detectArchiveSignature("/nonexistent/file.rar");
+      expect(sig).toBeNull();
+    });
+  });
+
+  describe("findArchiveCandidates extended formats", () => {
+    it("finds .tar.gz files", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-tar-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "backup.tar.gz"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "readme.txt"), "info", "utf8");
+
+      const candidates = await findArchiveCandidates(packageDir);
+      expect(candidates.map((c) => path.basename(c))).toContain("backup.tar.gz");
+    });
+
+    it("finds .tar.bz2 files", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-tar-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "archive.tar.bz2"), "data", "utf8");
+
+      const candidates = await findArchiveCandidates(packageDir);
+      expect(candidates.map((c) => path.basename(c))).toContain("archive.tar.bz2");
+    });
+
+    it("finds generic .001 split files", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-split-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "movie.001"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "movie.002"), "data", "utf8");
+
+      const candidates = await findArchiveCandidates(packageDir);
+      const names = candidates.map((c) => path.basename(c));
+      expect(names).toContain("movie.001");
+      // .002 should NOT be in candidates (only .001 is the entry point)
+      expect(names).not.toContain("movie.002");
+    });
+
+    it("does not duplicate .zip.001 as generic split", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dedup-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "movie.zip.001"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "movie.zip.002"), "data", "utf8");
+
+      const candidates = await findArchiveCandidates(packageDir);
+      const names = candidates.map((c) => path.basename(c));
+      // .zip.001 should appear once from zipSplit detection, not duplicated by genericSplit
+      expect(names.filter((n) => n === "movie.zip.001")).toHaveLength(1);
+    });
+  });
+
+  describe("classifyExtractionError", () => {
+    it("classifies CRC errors", () => {
+      expect(classifyExtractionError("CRC failed for file.txt")).toBe("crc_error");
+      expect(classifyExtractionError("Checksum error in data")).toBe("crc_error");
+    });
+
+    it("classifies wrong password", () => {
+      expect(classifyExtractionError("Wrong password")).toBe("wrong_password");
+      expect(classifyExtractionError("Falsches Passwort")).toBe("wrong_password");
+    });
+
+    it("classifies missing parts", () => {
+      expect(classifyExtractionError("Missing volume: part2.rar")).toBe("missing_parts");
+      expect(classifyExtractionError("Unexpected end of archive")).toBe("missing_parts");
+    });
+
+    it("classifies unsupported format", () => {
+      expect(classifyExtractionError("kein RAR-Archiv")).toBe("unsupported_format");
+      expect(classifyExtractionError("UNSUPPORTEDMETHOD")).toBe("unsupported_format");
+    });
+
+    it("classifies disk full", () => {
+      expect(classifyExtractionError("Nicht genug Speicherplatz")).toBe("disk_full");
+      expect(classifyExtractionError("No space left on device")).toBe("disk_full");
+    });
+
+    it("classifies timeout", () => {
+      expect(classifyExtractionError("Entpacken Timeout nach 360s")).toBe("timeout");
+    });
+
+    it("classifies abort", () => {
+      expect(classifyExtractionError("aborted:extract")).toBe("aborted");
+    });
+
+    it("classifies no extractor", () => {
+      expect(classifyExtractionError("WinRAR/UnRAR nicht gefunden")).toBe("no_extractor");
+    });
+
+    it("returns unknown for unrecognized errors", () => {
+      expect(classifyExtractionError("something weird happened")).toBe("unknown");
     });
   });
 });
