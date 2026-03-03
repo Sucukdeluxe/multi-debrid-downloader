@@ -8,11 +8,18 @@ const LOG_BUFFER_LIMIT_CHARS = 1_000_000;
 const LOG_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const rotateCheckAtByFile = new Map<string, number>();
 
+type LogListener = (line: string) => void;
+let logListener: LogListener | null = null;
+
 let pendingLines: string[] = [];
 let pendingChars = 0;
 let flushTimer: NodeJS.Timeout | null = null;
 let flushInFlight = false;
 let exitHookAttached = false;
+
+export function setLogListener(listener: LogListener | null): void {
+  logListener = listener;
+}
 
 export function configureLogger(baseDir: string): void {
   logFilePath = path.join(baseDir, "rd_downloader.log");
@@ -187,6 +194,10 @@ function write(level: "INFO" | "WARN" | "ERROR", message: string): void {
   const line = `${new Date().toISOString()} [${level}] ${message}\n`;
   pendingLines.push(line);
   pendingChars += line.length;
+
+  if (logListener) {
+    try { logListener(line); } catch { /* ignore */ }
+  }
 
   while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {
     const removed = pendingLines.shift();

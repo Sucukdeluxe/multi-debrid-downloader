@@ -19,6 +19,7 @@ import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
+import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
@@ -52,6 +53,7 @@ export class AppController {
 
   public constructor() {
     configureLogger(this.storagePaths.baseDir);
+    initSessionLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     const session = loadSession(this.storagePaths);
     this.megaWebFallback = new MegaWebFallback(() => ({
@@ -224,6 +226,10 @@ export class AppController {
     this.manager.extractNow(packageId);
   }
 
+  public resetPackage(packageId: string): void {
+    this.manager.resetPackage(packageId);
+  }
+
   public cancelPackage(packageId: string): void {
     this.manager.cancelPackage(packageId);
   }
@@ -281,11 +287,16 @@ export class AppController {
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }
 
+  public getSessionLogPath(): string | null {
+    return getSessionLogPath();
+  }
+
   public shutdown(): void {
     stopDebugServer();
     abortActiveUpdateDownload();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
+    shutdownSessionLog();
     logger.info("App beendet");
   }
 
