@@ -386,10 +386,18 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.CHECK_ACCOUNT, async (_event: IpcMainInvokeEvent, provider: string) => {
     validateString(provider, "provider");
-    if (provider === "megadebrid") {
-      return controller.checkMegaAccount();
+    switch (provider) {
+      case "realdebrid":
+        return controller.checkRealDebridAccount();
+      case "megadebrid":
+        return controller.checkMegaAccount();
+      case "bestdebrid":
+        return controller.checkBestDebridAccount();
+      case "alldebrid":
+        return controller.checkAllDebridAccount();
+      default:
+        return { provider, username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Nicht unterstützt" };
     }
-    return { provider, username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Nicht unterstützt" };
   });
   ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
 

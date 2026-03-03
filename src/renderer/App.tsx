@@ -93,6 +93,15 @@ const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid"
 };
 
+const allProviders: DebridProvider[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid"];
+
+const providerCredentialFields: Record<DebridProvider, { key: keyof AppSettings; label: string; type: string }[]> = {
+  realdebrid: [{ key: "token", label: "API Token", type: "password" }],
+  megadebrid: [{ key: "megaLogin", label: "Login", type: "text" }, { key: "megaPassword", label: "Passwort", type: "password" }],
+  bestdebrid: [{ key: "bestToken", label: "API Token", type: "password" }],
+  alldebrid: [{ key: "allDebridToken", label: "API Key", type: "password" }]
+};
+
 function extractHoster(url: string): string {
   try {
     const host = new URL(url).hostname.replace(/^www\./, "");
@@ -443,8 +452,11 @@ export function App(): ReactElement {
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [megaAccountInfo, setMegaAccountInfo] = useState<ProviderAccountInfo | null>(null);
-  const [megaAccountLoading, setMegaAccountLoading] = useState(false);
+  const [accountInfoMap, setAccountInfoMap] = useState<Record<string, ProviderAccountInfo>>({});
+  const [accountCheckLoading, setAccountCheckLoading] = useState<Set<DebridProvider>>(new Set());
+  const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+  const [addAccountProvider, setAddAccountProvider] = useState<DebridProvider | "">("");
+  const [addAccountFields, setAddAccountFields] = useState<Record<string, string>>({});
   const [dragOver, setDragOver] = useState(false);
   const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -831,6 +843,8 @@ export function App(): ReactElement {
     }
     return list;
   }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken]);
+
+  const unconfiguredProviders = useMemo(() => allProviders.filter((p) => !configuredProviders.includes(p)), [configuredProviders]);
 
   const primaryProviderValue: DebridProvider = useMemo(() => {
     if (configuredProviders.includes(settingsDraft.providerPrimary)) {
@@ -1224,6 +1238,42 @@ export function App(): ReactElement {
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
+  };
+
+  const checkSingleAccount = (provider: DebridProvider): void => {
+    setAccountCheckLoading((prev) => new Set(prev).add(provider));
+    window.rd.checkAccount(provider).then((info) => {
+      setAccountInfoMap((prev) => ({ ...prev, [provider]: info }));
+    }).catch(() => {
+      setAccountInfoMap((prev) => ({ ...prev, [provider]: { provider, username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Verbindungsfehler" } }));
+    }).finally(() => {
+      setAccountCheckLoading((prev) => { const next = new Set(prev); next.delete(provider); return next; });
+    });
+  };
+
+  const checkAllAccounts = (): void => {
+    for (const provider of configuredProviders) {
+      checkSingleAccount(provider);
+    }
+  };
+
+  const removeAccount = (provider: DebridProvider): void => {
+    for (const field of providerCredentialFields[provider]) {
+      setText(field.key, "");
+    }
+    setAccountInfoMap((prev) => { const next = { ...prev }; delete next[provider]; return next; });
+  };
+
+  const saveAddAccountModal = (): void => {
+    if (!addAccountProvider) {
+      return;
+    }
+    for (const field of providerCredentialFields[addAccountProvider]) {
+      setText(field.key, addAccountFields[field.key] || "");
+    }
+    setShowAddAccountModal(false);
+    setAddAccountProvider("");
+    setAddAccountFields({});
   };
 
   const performQuickAction = async (
@@ -2387,36 +2437,62 @@ export function App(): ReactElement {
                 {settingsSubTab === "accounts" && (
                   <div className="settings-section card">
                     <h3>Accounts</h3>
-                    <label>Real-Debrid API Token</label>
-                    <input type="password" value={settingsDraft.token} onChange={(e) => setText("token", e.target.value)} />
-                    <label>Mega-Debrid Login</label>
-                    <input value={settingsDraft.megaLogin} onChange={(e) => setText("megaLogin", e.target.value)} />
-                    <label>Mega-Debrid Passwort</label>
-                    <input type="password" value={settingsDraft.megaPassword} onChange={(e) => setText("megaPassword", e.target.value)} />
-                    <button className="btn" disabled={megaAccountLoading || !settingsDraft.megaLogin.trim() || !settingsDraft.megaPassword.trim()} onClick={() => {
-                      setMegaAccountLoading(true);
-                      setMegaAccountInfo(null);
-                      window.rd.checkAccount("megadebrid").then((info) => {
-                        setMegaAccountInfo(info);
-                      }).catch(() => {
-                        setMegaAccountInfo({ provider: "megadebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Verbindungsfehler" });
-                      }).finally(() => {
-                        setMegaAccountLoading(false);
-                      });
-                    }}>{megaAccountLoading ? "Prüfe…" : "Account prüfen"}</button>
-                    {megaAccountInfo && !megaAccountInfo.error && (
-                      <div className="account-info account-info-success">✓ {megaAccountInfo.username} — {megaAccountInfo.accountType}{megaAccountInfo.daysRemaining !== null ? ` — ${megaAccountInfo.daysRemaining} Tage` : ""}{megaAccountInfo.loyaltyPoints !== null ? ` — ${megaAccountInfo.loyaltyPoints} Treuepunkte` : ""}</div>
+                    {configuredProviders.length === 0 ? (
+                      <div className="empty">Keine Accounts konfiguriert</div>
+                    ) : (
+                      <table className="account-table">
+                        <thead>
+                          <tr>
+                            <th>Hoster</th>
+                            <th>Status</th>
+                            <th>Benutzername</th>
+                            <th>Verfallsdatum</th>
+                            <th>Aktionen</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {configuredProviders.map((provider) => {
+                            const info = accountInfoMap[provider];
+                            const loading = accountCheckLoading.has(provider);
+                            let statusClass = "account-status-unknown";
+                            let statusText = "Nicht geprüft";
+                            if (loading) {
+                              statusClass = "account-status-loading";
+                              statusText = "Prüfe…";
+                            } else if (info?.error) {
+                              statusClass = "account-status-error";
+                              statusText = "Fehler";
+                            } else if (info && (info.accountType === "Premium" || info.accountType === "premium")) {
+                              statusClass = "account-status-ok";
+                              statusText = "Premium";
+                            } else if (info && info.accountType) {
+                              statusClass = "account-status-configured";
+                              statusText = info.accountType;
+                            }
+                            return (
+                              <tr key={provider}>
+                                <td className="account-col-hoster">{providerLabels[provider]}</td>
+                                <td><span className={`account-status ${statusClass}`}>{statusText}</span>{info?.error ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--danger)" }}>{info.error}</span> : null}</td>
+                                <td>{info?.username || "—"}</td>
+                                <td>{info?.daysRemaining !== null && info?.daysRemaining !== undefined ? `${info.daysRemaining} Tage` : "—"}</td>
+                                <td className="account-actions-cell">
+                                  <button className="btn" disabled={loading} onClick={() => checkSingleAccount(provider)}>Prüfen</button>
+                                  <button className="btn danger" onClick={() => removeAccount(provider)}>Entfernen</button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     )}
-                    {megaAccountInfo?.error && (
-                      <div className="account-info account-info-error">✗ {megaAccountInfo.error}</div>
-                    )}
-                    <label>BestDebrid API Token</label>
-                    <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
-                    <label>AllDebrid API Key</label>
-                    <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
-                    {configuredProviders.length === 0 && (
-                      <div className="hint">Füge mindestens einen Account hinzu, dann erscheint die Hoster-Auswahl.</div>
-                    )}
+                    <div className="account-toolbar">
+                      <button className="btn accent" disabled={unconfiguredProviders.length === 0} onClick={() => {
+                        setAddAccountProvider(unconfiguredProviders[0] || "");
+                        setAddAccountFields({});
+                        setShowAddAccountModal(true);
+                      }}>Hinzufügen</button>
+                      <button className="btn" disabled={configuredProviders.length === 0 || accountCheckLoading.size > 0} onClick={checkAllAccounts}>Alle aktualisieren</button>
+                    </div>
                     {configuredProviders.length >= 1 && (
                       <div><label>Hauptaccount</label><select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
                         {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
@@ -2538,6 +2614,30 @@ export function App(): ReactElement {
           </section>
         )}
       </main>
+
+      {showAddAccountModal && (
+        <div className="modal-backdrop" onClick={() => setShowAddAccountModal(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Account hinzufügen</h3>
+            <div>
+              <label>Provider</label>
+              <select value={addAccountProvider} onChange={(e) => { setAddAccountProvider(e.target.value as DebridProvider); setAddAccountFields({}); }}>
+                {unconfiguredProviders.map((p) => (<option key={p} value={p}>{providerLabels[p]}</option>))}
+              </select>
+            </div>
+            {addAccountProvider && providerCredentialFields[addAccountProvider].map((field) => (
+              <div key={field.key}>
+                <label>{field.label}</label>
+                <input type={field.type} value={addAccountFields[field.key] || ""} onChange={(e) => setAddAccountFields((prev) => ({ ...prev, [field.key]: e.target.value }))} />
+              </div>
+            ))}
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setShowAddAccountModal(false)}>Abbrechen</button>
+              <button className="btn accent" disabled={!addAccountProvider || providerCredentialFields[addAccountProvider as DebridProvider]?.some((f) => !(addAccountFields[f.key] || "").trim())} onClick={saveAddAccountModal}>Speichern</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmPrompt && (
         <div className="modal-backdrop" onClick={() => closeConfirmPrompt(false)}>
