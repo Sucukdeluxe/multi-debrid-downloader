@@ -577,7 +577,7 @@ body,
 
 .pkg-column-header {
   display: grid;
-  grid-template-columns: 1fr 170px 90px 140px 130px 180px 100px;
+  grid-template-columns: 1fr 160px 80px 110px 110px 70px 160px 90px;
   gap: 8px;
   padding: 5px 12px;
   background: var(--card);
@@ -593,6 +593,7 @@ body,
 .pkg-column-header .pkg-col-size,
 .pkg-column-header .pkg-col-hoster,
 .pkg-column-header .pkg-col-account,
+.pkg-column-header .pkg-col-prio,
 .pkg-column-header .pkg-col-status,
 .pkg-column-header .pkg-col-speed {
   text-align: center;
@@ -612,7 +613,7 @@ body,
 
 .pkg-columns {
   display: grid;
-  grid-template-columns: 1fr 170px 90px 140px 130px 180px 100px;
+  grid-template-columns: 1fr 160px 80px 110px 110px 70px 160px 90px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -636,6 +637,7 @@ body,
 .pkg-columns .pkg-col-size,
 .pkg-columns .pkg-col-hoster,
 .pkg-columns .pkg-col-account,
+.pkg-columns .pkg-col-prio,
 .pkg-columns .pkg-col-status,
 .pkg-columns .pkg-col-speed {
   font-size: 13px;
@@ -1284,7 +1286,7 @@ td {
 
 .item-row {
   display: grid;
-  grid-template-columns: 1fr 170px 90px 140px 130px 180px 100px;
+  grid-template-columns: 1fr 160px 80px 110px 110px 70px 160px 90px;
   gap: 8px;
   align-items: center;
   margin: 0 -12px;
@@ -1335,6 +1337,45 @@ td {
 .link-status-dot.checking {
   background: #f59e0b;
   box-shadow: 0 0 4px #f59e0b80;
+}
+
+.prio-high {
+  color: #f59e0b !important;
+  font-weight: 700;
+}
+
+.prio-low {
+  color: #64748b !important;
+}
+
+.ctx-menu-sub {
+  position: relative;
+}
+
+.ctx-menu-sub > .ctx-menu-item::after {
+  content: "";
+}
+
+.ctx-menu-sub-items {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  min-width: 120px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,.3);
+  z-index: 1001;
+}
+
+.ctx-menu-sub:hover .ctx-menu-sub-items {
+  display: block;
+}
+
+.ctx-menu-active {
+  color: var(--accent) !important;
 }
 
 .item-remove {
@@ -1774,6 +1815,7 @@ td {
   .pkg-column-header .pkg-col-size,
   .pkg-column-header .pkg-col-hoster,
   .pkg-column-header .pkg-col-account,
+  .pkg-column-header .pkg-col-prio,
   .pkg-column-header .pkg-col-status,
   .pkg-column-header .pkg-col-speed {
     display: none;
@@ -1783,6 +1825,7 @@ td {
   .pkg-columns .pkg-col-size,
   .pkg-columns .pkg-col-hoster,
   .pkg-columns .pkg-col-account,
+  .pkg-columns .pkg-col-prio,
   .pkg-columns .pkg-col-status,
   .pkg-columns .pkg-col-speed {
     display: none;

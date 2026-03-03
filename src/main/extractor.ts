@@ -98,6 +98,9 @@ export interface ExtractProgressUpdate {
   archivePercent?: number;
   elapsedMs?: number;
   phase: "extracting" | "done";
+  passwordAttempt?: number;
+  passwordTotal?: number;
+  passwordFound?: boolean;
 }
 
 const MAX_EXTRACT_OUTPUT_BUFFER = 48 * 1024;
@@ -1242,7 +1245,8 @@ async function runExternalExtract(
   passwordCandidates: string[],
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal,
-  hybridMode = false
+  hybridMode = false,
+  onPasswordAttempt?: (attempt: number, total: number) => void
 ): Promise<string> {
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
   const backendMode = extractorBackendMode();
@@ -1328,7 +1332,8 @@ async function runExternalExtract(
       onArchiveProgress,
       signal,
       timeoutMs,
-      hybridMode
+      hybridMode,
+      onPasswordAttempt
     );
     const extractorName = path.basename(command).replace(/\.exe$/i, "");
     if (jvmFailureReason) {
@@ -1351,7 +1356,8 @@ async function runExternalExtractInner(
   onArchiveProgress: ((percent: number) => void) | undefined,
   signal: AbortSignal | undefined,
   timeoutMs: number,
-  hybridMode = false
+  hybridMode = false,
+  onPasswordAttempt?: (attempt: number, total: number) => void
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
@@ -1375,6 +1381,9 @@ async function runExternalExtractInner(
     passwordAttempt += 1;
     const quotedPw = password === "" ? '""' : `"${password}"`;
     logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
+    if (passwords.length > 1) {
+      onPasswordAttempt?.(passwordAttempt, passwords.length);
+    }
     let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
     let result = await runExtractCommand(command, args, (chunk) => {
       const parsed = parseProgressPercent(chunk);
@@ -1889,7 +1898,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     archiveName: string,
     phase: "extracting" | "done",
     archivePercent?: number,
-    elapsedMs?: number
+    elapsedMs?: number,
+    pwInfo?: { passwordAttempt?: number; passwordTotal?: number; passwordFound?: boolean }
   ): void => {
     if (!options.onProgress) {
       return;
@@ -1909,7 +1919,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         archiveName,
         archivePercent,
         elapsedMs,
-        phase
+        phase,
+        ...(pwInfo || {})
       });
     } catch (error) {
       logger.warn(`onProgress callback Fehler unterdrückt: ${cleanErrorText(String(error))}`);
@@ -1953,6 +1964,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
 
     logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
+    const hasManyPasswords = archivePasswordCandidates.length > 1;
+    if (hasManyPasswords) {
+      emitProgress(extracted + failed, archiveName, "extracting", 0, 0, { passwordAttempt: 0, passwordTotal: archivePasswordCandidates.length });
+    }
+    const onPwAttempt = hasManyPasswords
+      ? (attempt: number, total: number) => { emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, { passwordAttempt: attempt, passwordTotal: total }); }
+      : undefined;
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
@@ -1962,7 +1980,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-            }, options.signal, hybrid);
+            }, options.signal, hybrid, onPwAttempt);
             passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
@@ -1983,7 +2001,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
                 archivePercent = Math.max(archivePercent, value);
                 emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-              }, options.signal, hybrid);
+              }, options.signal, hybrid, onPwAttempt);
               passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
             } catch (externalError) {
               if (isNoExtractorError(String(externalError)) || isUnsupportedArchiveFormatError(String(externalError))) {
@@ -1997,7 +2015,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
           archivePercent = Math.max(archivePercent, value);
           emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
-        }, options.signal, hybrid);
+        }, options.signal, hybrid, onPwAttempt);
         passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
       }
       extracted += 1;
@@ -2006,7 +2024,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
       archivePercent = 100;
-      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+      if (hasManyPasswords) {
+        emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, { passwordFound: true });
+      } else {
+        emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+      }
     } catch (error) {
       failed += 1;
       const errorText = String(error);

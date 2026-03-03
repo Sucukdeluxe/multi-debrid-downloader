@@ -12,6 +12,7 @@ import {
   DuplicatePolicy,
   HistoryEntry,
   PackageEntry,
+  PackagePriority,
   ParsedPackageInput,
   SessionState,
   StartConflictEntry,
@@ -1210,6 +1211,7 @@ export class DownloadManager extends EventEmitter {
         itemIds: [],
         cancelled: false,
         enabled: true,
+        priority: "normal",
         createdAt: nowMs(),
         updatedAt: nowMs()
       };
@@ -2430,6 +2432,30 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
+  public setPackagePriority(packageId: string, priority: PackagePriority): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) return;
+    if (priority !== "high" && priority !== "normal" && priority !== "low") return;
+    pkg.priority = priority;
+    pkg.updatedAt = nowMs();
+    this.persistSoon();
+    this.emitState();
+  }
+
+  public skipItems(itemIds: string[]): void {
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+      if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
+      item.status = "cancelled";
+      item.fullStatus = "Übersprungen";
+      item.speedBps = 0;
+      item.updatedAt = nowMs();
+    }
+    this.persistSoon();
+    this.emitState();
+  }
+
   public async startPackages(packageIds: string[]): Promise<void> {
     const targetSet = new Set(packageIds);
 
@@ -2838,6 +2864,9 @@ export class DownloadManager extends EventEmitter {
     for (const pkg of Object.values(this.session.packages)) {
       if (pkg.enabled === undefined) {
         pkg.enabled = true;
+      }
+      if (!pkg.priority) {
+        pkg.priority = "normal";
       }
       if (pkg.status === "downloading"
         || pkg.status === "validating"
@@ -3720,28 +3749,34 @@ export class DownloadManager extends EventEmitter {
 
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
     const now = nowMs();
-    for (const packageId of this.session.packageOrder) {
-      const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled || !pkg.enabled) {
-        continue;
-      }
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
-        continue;
-      }
-      for (const itemId of pkg.itemIds) {
-        const item = this.session.items[itemId];
-        if (!item) {
+    const priorityOrder: Array<PackagePriority> = ["high", "normal", "low"];
+    for (const prio of priorityOrder) {
+      for (const packageId of this.session.packageOrder) {
+        const pkg = this.session.packages[packageId];
+        if (!pkg || pkg.cancelled || !pkg.enabled) {
           continue;
         }
-        const retryAfter = this.retryAfterByItem.get(itemId) || 0;
-        if (retryAfter > now) {
+        if ((pkg.priority || "normal") !== prio) {
           continue;
         }
-        if (retryAfter > 0) {
-          this.retryAfterByItem.delete(itemId);
+        if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
+          continue;
         }
-        if (item.status === "queued" || item.status === "reconnect_wait") {
-          return { packageId, itemId };
+        for (const itemId of pkg.itemIds) {
+          const item = this.session.items[itemId];
+          if (!item) {
+            continue;
+          }
+          const retryAfter = this.retryAfterByItem.get(itemId) || 0;
+          if (retryAfter > now) {
+            continue;
+          }
+          if (retryAfter > 0) {
+            this.retryAfterByItem.delete(itemId);
+          }
+          if (item.status === "queued" || item.status === "reconnect_wait") {
+            return { packageId, itemId };
+          }
         }
       }
     }
@@ -3995,7 +4030,7 @@ export class DownloadManager extends EventEmitter {
         item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
         item.totalBytes = unrestricted.fileSize;
         item.status = "downloading";
-        item.fullStatus = `Download läuft (${unrestricted.providerLabel})`;
+        item.fullStatus = `Starte... (${unrestricted.providerLabel})`;
         item.updatedAt = nowMs();
         this.emitState();
 
@@ -4888,7 +4923,9 @@ export class DownloadManager extends EventEmitter {
         item.downloadedBytes = written;
         item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 100;
         item.speedBps = 0;
+        item.fullStatus = "Finalisierend...";
         item.updatedAt = nowMs();
+        this.emitState();
         return { resumable };
       } catch (error) {
         if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
@@ -5474,7 +5511,15 @@ export class DownloadManager extends EventEmitter {
                 : "";
               const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
               const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-              const label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+              let label: string;
+              if (progress.passwordFound) {
+                label = `Passwort gefunden · ${progress.archiveName}`;
+              } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
+                const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
+                label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
+              } else {
+                label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+              }
               const updatedAt = nowMs();
               for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
@@ -5713,7 +5758,15 @@ export class DownloadManager extends EventEmitter {
                   : "";
                 const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
                 const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-                const label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+                let label: string;
+                if (progress.passwordFound) {
+                  label = `Passwort gefunden · ${progress.archiveName}`;
+                } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
+                  const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
+                  label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
+                } else {
+                  label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+                }
                 const updatedAt = nowMs();
                 for (const entry of archiveItems) {
                   if (!isExtractedLabel(entry.fullStatus) && entry.fullStatus !== label) {
@@ -5731,7 +5784,15 @@ export class DownloadManager extends EventEmitter {
               : "";
             const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
             const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-            const overallLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+            let overallLabel: string;
+            if (progress.passwordFound) {
+              overallLabel = `Passwort gefunden · ${progress.archiveName || ""}`;
+            } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
+              const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
+              overallLabel = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName || ""}`;
+            } else {
+              overallLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+            }
             emitExtractStatus(overallLabel);
           }
         });

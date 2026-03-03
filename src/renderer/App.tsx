@@ -2229,6 +2229,7 @@ export function App(): ReactElement {
                 ];
               })}
               <span className="pkg-col pkg-col-account">Service</span>
+              <span className="pkg-col pkg-col-prio">Priorität</span>
               <span className="pkg-col pkg-col-status">Status</span>
               <span className="pkg-col pkg-col-speed">Geschwindigkeit</span>
             </div>
@@ -2339,6 +2340,7 @@ export function App(): ReactElement {
                       <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
                       <span className="pkg-col pkg-col-hoster">-</span>
                       <span className="pkg-col pkg-col-account">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
+                      <span className="pkg-col pkg-col-prio"></span>
                       <span className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
                       <span className="pkg-col pkg-col-speed">-</span>
                     </div>
@@ -2814,6 +2816,26 @@ export function App(): ReactElement {
               )}
             </>);
           })()}
+          {hasPackages && !contextMenu.itemId && (<>
+            <div className="ctx-menu-sep" />
+            <div className="ctx-menu-sub">
+              <button className="ctx-menu-item">Priorität ▸</button>
+              <div className="ctx-menu-sub-items">
+                {(["high", "normal", "low"] as const).map((p) => {
+                  const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
+                  const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
+                  const allMatch = pkgIds.every((id) => (snapshot.session.packages[id]?.priority || "normal") === p);
+                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p); setContextMenu(null); }}>{allMatch ? `✓ ${label}` : label}</button>;
+                })}
+              </div>
+            </div>
+          </>)}
+          {hasItems && (() => {
+            const itemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
+            const skippable = itemIds.filter((id) => { const it = snapshot.session.items[id]; return it && (it.status === "queued" || it.status === "reconnect_wait"); });
+            if (skippable.length === 0) return null;
+            return <button className="ctx-menu-item" onClick={() => { void window.rd.skipItems(skippable); setContextMenu(null); }}>Überspringen{skippable.length > 1 ? ` (${skippable.length})` : ""}</button>;
+          })()}
           {hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
               setContextMenu(null);
@@ -3019,6 +3041,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
             const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
             return providers.length > 0 ? providers.map((p) => providerLabels[p!] || p).join(", ") : "-";
           })()}</span>
+          <span className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : "-"}</span>
           <span className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]</span>
           <span className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : "-"}</span>
         </div>
@@ -3057,6 +3080,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
           </span>
           <span className="pkg-col pkg-col-hoster" title={extractHoster(item.url)}>{extractHoster(item.url) || "-"}</span>
           <span className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : "-"}</span>
+          <span className="pkg-col pkg-col-prio"></span>
           <span className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
             {item.fullStatus}
           </span>
