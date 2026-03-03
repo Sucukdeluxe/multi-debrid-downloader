@@ -25,15 +25,15 @@ describe("cleanup", () => {
     expect(fs.existsSync(path.join(dir, "movie.mkv"))).toBe(true);
   });
 
-  it("removes sample artifacts and link files", () => {
+  it("removes sample artifacts and link files", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-"));
     tempDirs.push(dir);
     fs.mkdirSync(path.join(dir, "Samples"), { recursive: true });
     fs.writeFileSync(path.join(dir, "Samples", "demo-sample.mkv"), "x");
     fs.writeFileSync(path.join(dir, "download_links.txt"), "https://example.com/a\n");
 
-    const links = removeDownloadLinkArtifacts(dir);
-    const samples = removeSampleArtifacts(dir);
+    const links = await removeDownloadLinkArtifacts(dir);
+    const samples = await removeSampleArtifacts(dir);
     expect(links).toBeGreaterThan(0);
     expect(samples.files + samples.dirs).toBeGreaterThan(0);
   });
@@ -66,7 +66,7 @@ describe("cleanup", () => {
     expect(fs.existsSync(path.join(sub2, "subtitle.srt"))).toBe(true);
   });
 
-  it("detects link artifacts by URL content in text files", () => {
+  it("detects link artifacts by URL content in text files", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-"));
     tempDirs.push(dir);
 
@@ -81,7 +81,7 @@ describe("cleanup", () => {
     // .dlc files should always be removed
     fs.writeFileSync(path.join(dir, "container.dlc"), "encrypted-data");
 
-    const removed = removeDownloadLinkArtifacts(dir);
+    const removed = await removeDownloadLinkArtifacts(dir);
     expect(removed).toBeGreaterThanOrEqual(3); // download_links.txt + bookmark.url + container.dlc
     expect(fs.existsSync(path.join(dir, "download_links.txt"))).toBe(false);
     expect(fs.existsSync(path.join(dir, "bookmark.url"))).toBe(false);
@@ -90,7 +90,7 @@ describe("cleanup", () => {
     expect(fs.existsSync(path.join(dir, "readme.txt"))).toBe(true);
   });
 
-  it("does not recurse into sample symlink or junction targets", () => {
+  it("does not recurse into sample symlink or junction targets", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-"));
     const external = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-ext-"));
     tempDirs.push(dir, external);
@@ -102,7 +102,7 @@ describe("cleanup", () => {
     const linkType: fs.symlink.Type = process.platform === "win32" ? "junction" : "dir";
     fs.symlinkSync(external, linkedSampleDir, linkType);
 
-    const result = removeSampleArtifacts(dir);
+    const result = await removeSampleArtifacts(dir);
     expect(result.files).toBe(0);
     expect(fs.existsSync(outsideFile)).toBe(true);
   });
