@@ -254,31 +254,9 @@ function registerIpcHandlers(): void {
       return false;
     }
   });
-  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, async (_event: IpcMainInvokeEvent, partial: Partial<AppSettings>) => {
-    const validated = validatePlainObject(partial ?? {}, "partial") as Partial<AppSettings>;
-    const oldSettings = controller.getSettings();
-    const dirKeys = ["outputDir", "extractDir", "mkvLibraryDir"] as const;
-    for (const key of dirKeys) {
-      const newVal = validated[key];
-      if (typeof newVal === "string" && newVal.trim() && newVal !== oldSettings[key]) {
-        if (!fs.existsSync(newVal)) {
-          const msgOpts = {
-            type: "question" as const,
-            buttons: ["Ja", "Nein"],
-            defaultId: 0,
-            title: "Ordner erstellen?",
-            message: `Der Ordner existiert nicht:\n${newVal}\n\nSoll er erstellt werden?`
-          };
-          const { response } = mainWindow
-            ? await dialog.showMessageBox(mainWindow, msgOpts)
-            : await dialog.showMessageBox(msgOpts);
-          if (response === 0) {
-            fs.mkdirSync(newVal, { recursive: true });
-          }
-        }
-      }
-    }
-    const result = controller.updateSettings(validated);
+  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: Partial<AppSettings>) => {
+    const validated = validatePlainObject(partial ?? {}, "partial");
+    const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     return result;
@@ -310,6 +288,10 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
   ipcMain.handle(IPC_CHANNELS.START, () => controller.start());
+  ipcMain.handle(IPC_CHANNELS.START_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+    if (!Array.isArray(packageIds)) throw new Error("packageIds muss ein Array sein");
+    return controller.startPackages(packageIds);
+  });
   ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());
   ipcMain.handle(IPC_CHANNELS.TOGGLE_PAUSE, () => controller.togglePause());
   ipcMain.handle(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
@@ -383,21 +365,6 @@ function registerIpcHandlers(): void {
     };
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
-  });
-  ipcMain.handle(IPC_CHANNELS.CHECK_ACCOUNT, async (_event: IpcMainInvokeEvent, provider: string) => {
-    validateString(provider, "provider");
-    switch (provider) {
-      case "realdebrid":
-        return controller.checkRealDebridAccount();
-      case "megadebrid":
-        return controller.checkMegaAccount();
-      case "bestdebrid":
-        return controller.checkBestDebridAccount();
-      case "alldebrid":
-        return controller.checkAllDebridAccount();
-      default:
-        return { provider, username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Nicht unterstützt" };
-    }
   });
   ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
 

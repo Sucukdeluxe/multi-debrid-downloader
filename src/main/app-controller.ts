@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import {
@@ -7,7 +6,6 @@ import {
   DuplicatePolicy,
   HistoryEntry,
   ParsedPackageInput,
-  ProviderAccountInfo,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -25,8 +23,6 @@ import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
-import { decryptCredentials, encryptCredentials, SENSITIVE_KEYS } from "./backup-crypto";
-import { compactErrorText } from "./utils";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -208,6 +204,10 @@ export class AppController {
     await this.manager.start();
   }
 
+  public async startPackages(packageIds: string[]): Promise<void> {
+    await this.manager.startPackages(packageIds);
+  }
+
   public stop(): void {
     this.manager.stop();
   }
@@ -257,16 +257,9 @@ export class AppController {
   }
 
   public exportBackup(): string {
-    const settingsCopy = { ...this.settings } as Record<string, unknown>;
-    const sensitiveFields: Record<string, string> = {};
-    for (const key of SENSITIVE_KEYS) {
-      sensitiveFields[key] = String(settingsCopy[key] ?? "");
-      delete settingsCopy[key];
-    }
-    const username = os.userInfo().username;
-    const credentials = encryptCredentials(sensitiveFields, username);
+    const settings = this.settings;
     const session = this.manager.getSession();
-    return JSON.stringify({ version: 2, settings: settingsCopy, credentials, session }, null, 2);
+    return JSON.stringify({ version: 1, settings, session }, null, 2);
   }
 
   public importBackup(json: string): { restored: boolean; message: string } {
@@ -279,28 +272,7 @@ export class AppController {
     if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.session) {
       return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
     }
-
-    const version = typeof parsed.version === "number" ? parsed.version : 1;
-    let settingsObj = parsed.settings as Record<string, unknown>;
-
-    if (version >= 2) {
-      const creds = parsed.credentials as { salt: string; iv: string; tag: string; data: string } | undefined;
-      if (!creds || !creds.salt || !creds.iv || !creds.tag || !creds.data) {
-        return { restored: false, message: "Backup v2: Verschlüsselte Zugangsdaten fehlen" };
-      }
-      try {
-        const username = os.userInfo().username;
-        const decrypted = decryptCredentials(creds, username);
-        settingsObj = { ...settingsObj, ...decrypted };
-      } catch {
-        return {
-          restored: false,
-          message: "Entschlüsselung fehlgeschlagen. Das Backup wurde mit einem anderen Benutzer erstellt."
-        };
-      }
-    }
-
-    const restoredSettings = normalizeSettings(settingsObj as AppSettings);
+    const restoredSettings = normalizeSettings(parsed.settings as AppSettings);
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
@@ -327,62 +299,6 @@ export class AppController {
 
   public removeHistoryEntry(entryId: string): void {
     removeHistoryEntry(this.storagePaths, entryId);
-  }
-
-  public async checkMegaAccount(): Promise<ProviderAccountInfo> {
-    return this.megaWebFallback.getAccountInfo();
-  }
-
-  public async checkRealDebridAccount(): Promise<ProviderAccountInfo> {
-    try {
-      const response = await fetch("https://api.real-debrid.com/rest/1.0/user", {
-        headers: { Authorization: `Bearer ${this.settings.token}` }
-      });
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        return { provider: "realdebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: `HTTP ${response.status}: ${compactErrorText(text)}` };
-      }
-      const data = await response.json() as Record<string, unknown>;
-      const username = String(data.username ?? "");
-      const type = String(data.type ?? "");
-      const expiration = data.expiration ? new Date(String(data.expiration)) : null;
-      const daysRemaining = expiration ? Math.max(0, Math.round((expiration.getTime() - Date.now()) / 86400000)) : null;
-      const points = typeof data.points === "number" ? data.points : null;
-      return { provider: "realdebrid", username, accountType: type === "premium" ? "Premium" : type, daysRemaining, loyaltyPoints: points as number | null };
-    } catch (err) {
-      return { provider: "realdebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: compactErrorText(err) };
-    }
-  }
-
-  public async checkAllDebridAccount(): Promise<ProviderAccountInfo> {
-    try {
-      const response = await fetch("https://api.alldebrid.com/v4/user", {
-        headers: { Authorization: `Bearer ${this.settings.allDebridToken}` }
-      });
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        return { provider: "alldebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: `HTTP ${response.status}: ${compactErrorText(text)}` };
-      }
-      const data = await response.json() as Record<string, unknown>;
-      const userData = (data.data as Record<string, unknown> | undefined)?.user as Record<string, unknown> | undefined;
-      if (!userData) {
-        return { provider: "alldebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Ungültige API-Antwort" };
-      }
-      const username = String(userData.username ?? "");
-      const isPremium = Boolean(userData.isPremium);
-      const premiumUntil = typeof userData.premiumUntil === "number" ? userData.premiumUntil : 0;
-      const daysRemaining = premiumUntil > 0 ? Math.max(0, Math.round((premiumUntil * 1000 - Date.now()) / 86400000)) : null;
-      return { provider: "alldebrid", username, accountType: isPremium ? "Premium" : "Free", daysRemaining, loyaltyPoints: null };
-    } catch (err) {
-      return { provider: "alldebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: compactErrorText(err) };
-    }
-  }
-
-  public async checkBestDebridAccount(): Promise<ProviderAccountInfo> {
-    if (!this.settings.bestToken.trim()) {
-      return { provider: "bestdebrid", username: "", accountType: "", daysRemaining: null, loyaltyPoints: null, error: "Kein Token konfiguriert" };
-    }
-    return { provider: "bestdebrid", username: "(Token konfiguriert)", accountType: "Konfiguriert", daysRemaining: null, loyaltyPoints: null };
   }
 
   public addToHistory(entry: HistoryEntry): void {

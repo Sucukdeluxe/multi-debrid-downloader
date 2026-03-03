@@ -499,7 +499,7 @@ function extractorThreadSwitch(hybridMode = false): string {
   return `-mt${threadCount}`;
 }
 
-function lowerExtractProcessPriority(childPid: number | undefined, label = ""): void {
+function lowerExtractProcessPriority(childPid: number | undefined): void {
   if (process.platform !== "win32") {
     return;
   }
@@ -511,9 +511,6 @@ function lowerExtractProcessPriority(childPid: number | undefined, label = ""): 
     // IDLE_PRIORITY_CLASS: lowers CPU scheduling priority so extraction
     // doesn't starve other processes. I/O priority stays Normal (like JDownloader 2).
     os.setPriority(pid, os.constants.priority.PRIORITY_LOW);
-    if (label) {
-      logger.info(`Prozess-Priorität: CPU=Idle, I/O=Normal (PID ${pid}, ${label})`);
-    }
   } catch {
     // ignore: priority lowering is best-effort
   }
@@ -583,7 +580,7 @@ function runExtractCommand(
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid, `legacy/${path.basename(command).replace(/\.exe$/i, "")}`);
+    lowerExtractProcessPriority(child.pid);
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
@@ -900,7 +897,7 @@ function runJvmExtractCommand(
     let stderrBuffer = "";
 
     const child = spawn(layout.javaCommand, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid, "7zjbinding/single-thread");
+    lowerExtractProcessPriority(child.pid);
 
     const flushLines = (rawChunk: string, fromStdErr = false): void => {
       if (!rawChunk) {
@@ -1169,63 +1166,38 @@ async function runExternalExtract(
         }
         logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
       } else {
-        if (hybridMode) {
-          try {
-            const archiveStat = await fs.promises.stat(archivePath);
-            logger.info(`Hybrid-Extract JVM: ${path.basename(archivePath)} (${(archiveStat.size / 1048576).toFixed(1)} MB)`);
-          } catch (statErr) {
-            logger.warn(`Hybrid-Extract JVM: Archiv nicht zugreifbar: ${path.basename(archivePath)} — ${String(statErr)}`);
-          }
-        }
         logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}`);
-        const maxJvmAttempts = hybridMode ? 2 : 1;
-        for (let jvmAttempt = 1; jvmAttempt <= maxJvmAttempts; jvmAttempt++) {
-          const jvmResult = await runJvmExtractCommand(
-            layout,
-            archivePath,
-            targetDir,
-            conflictMode,
-            passwordCandidates,
-            onArchiveProgress,
-            signal,
-            timeoutMs
-          );
+        const jvmResult = await runJvmExtractCommand(
+          layout,
+          archivePath,
+          targetDir,
+          conflictMode,
+          passwordCandidates,
+          onArchiveProgress,
+          signal,
+          timeoutMs
+        );
 
-          if (jvmResult.ok) {
-            if (jvmAttempt > 1) {
-              logger.info(`JVM-Extractor Retry #${jvmAttempt - 1} erfolgreich: ${path.basename(archivePath)}`);
-            }
-            logger.info(`Entpackt via ${jvmResult.backend || "jvm"} [CPU=Idle, I/O=Normal, single-thread]: ${path.basename(archivePath)}`);
-            return jvmResult.usedPassword;
-          }
-          if (jvmResult.aborted) {
-            throw new Error("aborted:extract");
-          }
-          if (jvmResult.timedOut) {
-            throw new Error(jvmResult.errorText || `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`);
-          }
+        if (jvmResult.ok) {
+          logger.info(`Entpackt via ${jvmResult.backend || "jvm"}: ${path.basename(archivePath)}`);
+          return jvmResult.usedPassword;
+        }
+        if (jvmResult.aborted) {
+          throw new Error("aborted:extract");
+        }
+        if (jvmResult.timedOut) {
+          throw new Error(jvmResult.errorText || `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`);
+        }
 
-          jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
-
-          // In hybrid mode, retry once on "codecs" / "can't be opened" errors —
-          // these can be caused by transient Windows file locks right after download completion.
-          const isTransientOpen = jvmFailureReason.includes("codecs") || jvmFailureReason.includes("can't be opened");
-          if (hybridMode && isTransientOpen && jvmAttempt < maxJvmAttempts) {
-            logger.warn(`JVM-Extractor Hybrid-Retry: ${jvmFailureReason} — warte 3s vor Versuch #${jvmAttempt + 1}: ${path.basename(archivePath)}`);
-            await new Promise((r) => setTimeout(r, 3000));
-            continue;
-          }
-
-          const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
-          if (backendMode === "jvm" && !isUnsupportedMethod) {
-            throw new Error(jvmFailureReason);
-          }
-          if (isUnsupportedMethod) {
-            logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
-          } else {
-            logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
-          }
-          break;
+        jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
+        const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
+        if (backendMode === "jvm" && !isUnsupportedMethod) {
+          throw new Error(jvmFailureReason);
+        }
+        if (isUnsupportedMethod) {
+          logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
+        } else {
+          logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
         }
       }
     }
@@ -1247,12 +1219,10 @@ async function runExternalExtract(
       hybridMode
     );
     const extractorName = path.basename(command).replace(/\.exe$/i, "");
-    const threadInfo = extractorThreadSwitch(hybridMode);
-    const modeLabel = hybridMode ? "hybrid" : "normal";
     if (jvmFailureReason) {
-      logger.info(`Entpackt via legacy/${extractorName} [CPU=Idle, I/O=Normal, ${threadInfo}, ${modeLabel}] (nach JVM-Fehler): ${path.basename(archivePath)}`);
+      logger.info(`Entpackt via legacy/${extractorName} (nach JVM-Fehler): ${path.basename(archivePath)}`);
     } else {
-      logger.info(`Entpackt via legacy/${extractorName} [CPU=Idle, I/O=Normal, ${threadInfo}, ${modeLabel}]: ${path.basename(archivePath)}`);
+      logger.info(`Entpackt via legacy/${extractorName}: ${path.basename(archivePath)}`);
     }
     return password;
   } finally {

@@ -3,7 +3,6 @@ import type {
   AppSettings,
   DuplicatePolicy,
   HistoryEntry,
-  ProviderAccountInfo,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -26,6 +25,7 @@ export interface ElectronApi {
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;
   clearAll: () => Promise<void>;
   start: () => Promise<void>;
+  startPackages: (packageIds: string[]) => Promise<void>;
   stop: () => Promise<void>;
   togglePause: () => Promise<boolean>;
   cancelPackage: (packageId: string) => Promise<void>;
@@ -49,7 +49,6 @@ export interface ElectronApi {
   getHistory: () => Promise<HistoryEntry[]>;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
-  checkAccount: (provider: string) => Promise<ProviderAccountInfo>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;

@@ -4,7 +4,6 @@ import {
   AppSettings,
   DuplicatePolicy,
   HistoryEntry,
-  ProviderAccountInfo,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -31,6 +30,7 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_START_CONFLICT, packageId, policy),
   clearAll: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_ALL),
   start: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.START),
+  startPackages: (packageIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.START_PACKAGES, packageIds),
   stop: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.STOP),
   togglePause: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_PAUSE),
   cancelPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_PACKAGE, packageId),
@@ -54,7 +54,6 @@ const api: ElectronApi = {
   getHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_HISTORY),
   clearHistory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_HISTORY),
   removeHistoryEntry: (entryId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, entryId),
-  checkAccount: (provider: string): Promise<ProviderAccountInfo> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_ACCOUNT, provider),
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void): (() => void) => {
     const listener = (_event: unknown, snapshot: UiSnapshot): void => callback(snapshot);
     ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, listener);

@@ -269,15 +269,6 @@ export interface HistoryEntry {
   outputDir: string;
 }
 
-export interface ProviderAccountInfo {
-  provider: DebridProvider;
-  username: string;
-  accountType: string;
-  daysRemaining: number | null;
-  loyaltyPoints: number | null;
-  error?: string;
-}
-
 export interface HistoryState {
   entries: HistoryEntry[];
   maxEntries: number;

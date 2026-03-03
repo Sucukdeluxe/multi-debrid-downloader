@@ -12,6 +12,7 @@ export const IPC_CHANNELS = {
   RESOLVE_START_CONFLICT: "queue:resolve-start-conflict",
   CLEAR_ALL: "queue:clear-all",
   START: "queue:start",
+  START_PACKAGES: "queue:start-packages",
   STOP: "queue:stop",
   TOGGLE_PAUSE: "queue:toggle-pause",
   CANCEL_PACKAGE: "queue:cancel-package",
@@ -36,6 +37,5 @@ export const IPC_CHANNELS = {
   EXTRACT_NOW: "queue:extract-now",
   GET_HISTORY: "history:get",
   CLEAR_HISTORY: "history:clear",
-  REMOVE_HISTORY_ENTRY: "history:remove-entry",
-  CHECK_ACCOUNT: "app:check-account"
+  REMOVE_HISTORY_ENTRY: "history:remove-entry"
 } as const;

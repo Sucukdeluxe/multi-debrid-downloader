@@ -218,35 +218,6 @@ function isArchiveLikePath(filePath: string): boolean {
   return /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|z\d{1,3}|7z(?:\.\d+)?)$/i.test(lower);
 }
 
-const ITEM_RECOVERY_MIN_BYTES = 10 * 1024;
-const ARCHIVE_RECOVERY_MIN_RATIO = 0.995;
-const ARCHIVE_RECOVERY_MAX_SLACK_BYTES = 4 * 1024 * 1024;
-const FILE_RECOVERY_MIN_RATIO = 0.98;
-const FILE_RECOVERY_MAX_SLACK_BYTES = 8 * 1024 * 1024;
-
-function recoveryExpectedMinSize(filePath: string, totalBytes: number | null | undefined): number {
-  const knownTotal = Number(totalBytes || 0);
-  if (!Number.isFinite(knownTotal) || knownTotal <= 0) {
-    return ITEM_RECOVERY_MIN_BYTES;
-  }
-
-  const archiveLike = isArchiveLikePath(filePath);
-  const minRatio = archiveLike ? ARCHIVE_RECOVERY_MIN_RATIO : FILE_RECOVERY_MIN_RATIO;
-  const maxSlack = archiveLike ? ARCHIVE_RECOVERY_MAX_SLACK_BYTES : FILE_RECOVERY_MAX_SLACK_BYTES;
-  const ratioBased = Math.floor(knownTotal * minRatio);
-  const slackBased = Math.max(0, Math.floor(knownTotal) - maxSlack);
-  return Math.max(ITEM_RECOVERY_MIN_BYTES, Math.max(ratioBased, slackBased));
-}
-
-function isRecoveredFileSizeSufficient(item: Pick<DownloadItem, "targetPath" | "fileName" | "totalBytes">, fileSize: number): boolean {
-  if (!Number.isFinite(fileSize) || fileSize <= 0) {
-    return false;
-  }
-  const candidatePath = String(item.targetPath || item.fileName || "");
-  const minSize = recoveryExpectedMinSize(candidatePath, item.totalBytes);
-  return fileSize >= minSize;
-}
-
 function isFetchFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
@@ -2306,6 +2277,92 @@ export class DownloadManager extends EventEmitter {
       .catch((error) => {
         logger.warn(`Cleanup für Paket ${packageName} fehlgeschlagen: ${compactErrorText(error)}`);
       });
+  }
+
+  public async startPackages(packageIds: string[]): Promise<void> {
+    const targetSet = new Set(packageIds);
+
+    // Enable specified packages if disabled
+    for (const pkgId of targetSet) {
+      const pkg = this.session.packages[pkgId];
+      if (pkg && !pkg.enabled) {
+        pkg.enabled = true;
+      }
+    }
+
+    // Recover stopped items in specified packages
+    for (const item of Object.values(this.session.items)) {
+      if (!targetSet.has(item.packageId)) continue;
+      if (item.status === "cancelled" && item.fullStatus === "Gestoppt") {
+        const pkg = this.session.packages[item.packageId];
+        if (pkg && !pkg.cancelled && pkg.enabled) {
+          item.status = "queued";
+          item.fullStatus = "Wartet";
+          item.lastError = "";
+          item.speedBps = 0;
+          item.updatedAt = nowMs();
+        }
+      }
+    }
+
+    // If already running, the scheduler will pick up newly enabled items
+    if (this.session.running) {
+      // Add new items to runItemIds so the scheduler processes them
+      for (const item of Object.values(this.session.items)) {
+        if (!targetSet.has(item.packageId)) continue;
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          this.runItemIds.add(item.id);
+          this.runPackageIds.add(item.packageId);
+        }
+      }
+      this.persistSoon();
+      this.emitState(true);
+      return;
+    }
+
+    // Not running: start with only items from specified packages
+    const runItems = Object.values(this.session.items)
+      .filter((item) => {
+        if (!targetSet.has(item.packageId)) return false;
+        if (item.status !== "queued" && item.status !== "reconnect_wait") return false;
+        const pkg = this.session.packages[item.packageId];
+        return Boolean(pkg && !pkg.cancelled && pkg.enabled);
+      });
+    if (runItems.length === 0) {
+      this.persistSoon();
+      this.emitState(true);
+      return;
+    }
+    this.runItemIds = new Set(runItems.map((item) => item.id));
+    this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.runOutcomes.clear();
+    this.runCompletedPackages.clear();
+    this.retryAfterByItem.clear();
+    this.session.running = true;
+    this.session.paused = false;
+    this.session.runStartedAt = nowMs();
+    this.session.totalDownloadedBytes = 0;
+    this.session.summaryText = "";
+    this.session.reconnectUntil = 0;
+    this.session.reconnectReason = "";
+    this.speedEvents = [];
+    this.speedBytesLastWindow = 0;
+    this.speedBytesPerPackage.clear();
+    this.speedEventsHead = 0;
+    this.lastGlobalProgressBytes = 0;
+    this.lastGlobalProgressAt = nowMs();
+    this.summary = null;
+    this.nonResumableActive = 0;
+    this.persistSoon();
+    this.emitState(true);
+    logger.info(`Start (nur Pakete: ${packageIds.length}): ${runItems.length} Items`);
+    void this.ensureScheduler().catch((error) => {
+      logger.error(`Scheduler abgestürzt: ${compactErrorText(error)}`);
+      this.session.running = false;
+      this.session.paused = false;
+      this.persistSoon();
+      this.emitState(true);
+    });
   }
 
   public async start(): Promise<void> {
@@ -4978,7 +5035,6 @@ export class DownloadManager extends EventEmitter {
     }
 
     const completedPaths = new Set<string>();
-    const completedItemsByPath = new Map<string, DownloadItem>();
     const pendingPaths = new Set<string>();
     for (const itemId of pkg.itemIds) {
       const item = this.session.items[itemId];
@@ -4986,9 +5042,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       if (item.status === "completed" && item.targetPath) {
-        const key = pathKey(item.targetPath);
-        completedPaths.add(key);
-        completedItemsByPath.set(key, item);
+        completedPaths.add(pathKey(item.targetPath));
       } else if (item.targetPath) {
         pendingPaths.add(pathKey(item.targetPath));
       }
@@ -5024,82 +5078,12 @@ export class DownloadManager extends EventEmitter {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
       if (allPartsCompleted) {
-        let allPartsLikelyComplete = true;
-        for (const part of partsOnDisk) {
-          const completedItem = completedItemsByPath.get(pathKey(part));
-          if (!completedItem) {
-            continue;
-          }
-          try {
-            const stat = fs.statSync(part);
-            if (isRecoveredFileSizeSufficient(completedItem, stat.size)) {
-              continue;
-            }
-            const minSize = recoveryExpectedMinSize(completedItem.targetPath || completedItem.fileName, completedItem.totalBytes);
-            logger.info(`Hybrid-Extract: ${path.basename(candidate)} übersprungen – ${path.basename(part)} zu klein (${humanSize(stat.size)}, erwartet mind. ${humanSize(minSize)})`);
-            allPartsLikelyComplete = false;
-            break;
-          } catch {
-            allPartsLikelyComplete = false;
-            break;
-          }
-        }
-        if (!allPartsLikelyComplete) {
-          continue;
-        }
-
-        const candidateBase = path.basename(candidate).toLowerCase();
-
-        // For multi-part archives (.part1.rar), check if parts of THIS SPECIFIC archive
-        // are still pending. We match by archive prefix so E01 parts don't block E02.
-        const multiMatch = candidateBase.match(/^(.*)\.part0*1\.rar$/i);
-        if (multiMatch) {
-          const prefix = multiMatch[1].toLowerCase();
-          const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const partPattern = new RegExp(`^${escapedPrefix}\\.part\\d+\\.rar$`, "i");
-          const hasRelatedPending = pkg.itemIds.some((itemId) => {
-            const item = this.session.items[itemId];
-            if (!item || item.status === "completed" || item.status === "failed" || item.status === "cancelled") {
-              return false;
-            }
-            // Check fileName (set early from link URL)
-            if (item.fileName && partPattern.test(item.fileName)) {
-              return true;
-            }
-            // Check targetPath basename (set when download starts)
-            if (item.targetPath && partPattern.test(path.basename(item.targetPath))) {
-              return true;
-            }
-            // Item has no identity at all — might be an unresolved part, be conservative
-            if (!item.fileName && !item.targetPath) {
-              return true;
-            }
-            return false;
-          });
-          if (hasRelatedPending) {
-            logger.info(`Hybrid-Extract: ${path.basename(candidate)} übersprungen – zugehörige Parts noch ausstehend`);
-            continue;
-          }
-        }
-
         const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
           const pendingName = path.basename(pendingPath).toLowerCase();
-          return this.looksLikeArchivePart(pendingName, candidateBase);
+          const candidateStem = path.basename(candidate).toLowerCase();
+          return this.looksLikeArchivePart(pendingName, candidateStem);
         });
-        // Also check items without targetPath (queued items that only have fileName)
-        const hasMatchingPendingItems = pkg.itemIds.some((itemId) => {
-          const item = this.session.items[itemId];
-          if (!item || item.status === "completed" || item.status === "failed" || item.status === "cancelled") {
-            return false;
-          }
-          if (item.fileName && !item.targetPath) {
-            if (this.looksLikeArchivePart(item.fileName.toLowerCase(), candidateBase)) {
-              return true;
-            }
-          }
-          return false;
-        });
-        if (hasUnstartedParts || hasMatchingPendingItems) {
+        if (hasUnstartedParts) {
           continue;
         }
         ready.add(pathKey(candidate));
@@ -5109,11 +5093,6 @@ export class DownloadManager extends EventEmitter {
       // Disk-fallback: if all parts exist on disk but some items lack "completed" status,
       // allow extraction if none of those parts are actively downloading/validating.
       // This handles items that finished downloading but whose status was not updated.
-      // Skip disk-fallback entirely for multi-part archives — only allPartsCompleted should handle those.
-      const isMultiPart = /\.part0*1\.rar$/i.test(path.basename(candidate));
-      if (isMultiPart) {
-        continue;
-      }
       const missingParts = partsOnDisk.filter((part) => !completedPaths.has(pathKey(part)));
       let allMissingExistOnDisk = true;
       for (const part of missingParts) {
@@ -5136,22 +5115,6 @@ export class DownloadManager extends EventEmitter {
         return status !== undefined && status !== "failed" && status !== "cancelled";
       });
       if (anyActivelyProcessing) {
-        continue;
-      }
-      // Also check fileName for items without targetPath (queued/downloading items)
-      const candidateBaseFb = path.basename(candidate).toLowerCase();
-      const hasMatchingPendingFb = pkg.itemIds.some((itemId) => {
-        const item = this.session.items[itemId];
-        if (!item || item.status === "completed" || item.status === "failed" || item.status === "cancelled") {
-          return false;
-        }
-        const nameToCheck = item.fileName?.toLowerCase() || (item.targetPath ? path.basename(item.targetPath).toLowerCase() : "");
-        if (!nameToCheck) {
-          return false;
-        }
-        return nameToCheck === candidateBaseFb || this.looksLikeArchivePart(nameToCheck, candidateBaseFb);
-      });
-      if (hasMatchingPendingFb) {
         continue;
       }
       logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${missingParts.length} Part(s) auf Disk ohne completed-Status)`);
@@ -5281,9 +5244,17 @@ export class DownloadManager extends EventEmitter {
           if (progress.phase === "done") {
             return;
           }
-          // Track only currently active archive items; final statuses are set
-          // after extraction result is known.
+          // When a new archive starts, mark the previous archive's items as done
           if (progress.archiveName && progress.archiveName !== lastHybridArchiveName) {
+            if (lastHybridArchiveName && currentArchiveItems.length > 0) {
+              const doneAt = nowMs();
+              for (const entry of currentArchiveItems) {
+                if (!isExtractedLabel(entry.fullStatus)) {
+                  entry.fullStatus = "Entpackt - Done";
+                  entry.updatedAt = doneAt;
+                }
+              }
+            }
             lastHybridArchiveName = progress.archiveName;
             const resolved = resolveArchiveItems(progress.archiveName);
             currentArchiveItems = resolved;
@@ -5358,8 +5329,12 @@ export class DownloadManager extends EventEmitter {
       }
       try {
         const stat = fs.statSync(item.targetPath);
-        const minSize = recoveryExpectedMinSize(item.targetPath || item.fileName, item.totalBytes);
-        if (isRecoveredFileSizeSufficient(item, stat.size)) {
+        // Require file to be either ≥50% of expected size or at least 10 KB to avoid
+        // recovering tiny error-response files (e.g. 9-byte "Forbidden" pages).
+        const minSize = item.totalBytes && item.totalBytes > 0
+          ? Math.max(10240, Math.floor(item.totalBytes * 0.5))
+          : 10240;
+        if (stat.size >= minSize) {
           logger.info(`Item-Recovery: ${item.fileName} war "${item.status}" aber Datei existiert (${humanSize(stat.size)}), setze auf completed`);
           item.status = "completed";
           item.fullStatus = this.settings.autoExtract ? "Entpacken - Ausstehend" : `Fertig (${humanSize(stat.size)})`;
@@ -5493,9 +5468,17 @@ export class DownloadManager extends EventEmitter {
           signal: extractAbortController.signal,
           packageId,
           onProgress: (progress) => {
-            // Track only currently active archive items; final statuses are set
-            // after extraction result is known.
+            // When a new archive starts, mark the previous archive's items as done
             if (progress.archiveName && progress.archiveName !== lastExtractArchiveName) {
+              if (lastExtractArchiveName && currentArchiveItems.length > 0) {
+                const doneAt = nowMs();
+                for (const entry of currentArchiveItems) {
+                  if (!isExtractedLabel(entry.fullStatus)) {
+                    entry.fullStatus = "Entpackt - Done";
+                    entry.updatedAt = doneAt;
+                  }
+                }
+              }
               lastExtractArchiveName = progress.archiveName;
               currentArchiveItems = resolveArchiveItems(progress.archiveName);
             }
