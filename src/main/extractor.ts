@@ -2031,33 +2031,49 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       await extractSingleArchive(archivePath);
     }
   } else {
-    // Parallel extraction pool: N workers pull from a shared queue
-    const queue = [...pendingCandidates];
-    let nextIdx = 0;
-    let abortError: Error | null = null;
-
-    const worker = async (): Promise<void> => {
-      while (nextIdx < queue.length && !abortError && !noExtractorEncountered) {
-        if (options.signal?.aborted) break;
-        const idx = nextIdx;
-        nextIdx += 1;
-        try {
-          await extractSingleArchive(queue[idx]);
-        } catch (error) {
-          if (isExtractAbortError(String(error))) {
-            abortError = error instanceof Error ? error : new Error(String(error));
-            break;
-          }
-          // Non-abort errors are already handled inside extractSingleArchive
-        }
+    // Password discovery: extract first archive serially to find the correct password,
+    // then run remaining archives in parallel with the promoted password order.
+    let parallelQueue = pendingCandidates;
+    if (passwordCandidates.length > 1 && pendingCandidates.length > 1) {
+      logger.info(`Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
+      const first = pendingCandidates[0];
+      await extractSingleArchive(first);
+      parallelQueue = pendingCandidates.slice(1);
+      if (parallelQueue.length > 0) {
+        logger.info(`Passwort-Discovery abgeschlossen, starte parallele Extraktion für ${parallelQueue.length} verbleibende Archive`);
       }
-    };
+    }
 
-    const workerCount = Math.min(maxParallel, pendingCandidates.length);
-    logger.info(`Parallele Extraktion: ${workerCount} gleichzeitige Worker für ${pendingCandidates.length} Archive`);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    if (parallelQueue.length > 0 && !options.signal?.aborted && !noExtractorEncountered) {
+      // Parallel extraction pool: N workers pull from a shared queue
+      const queue = [...parallelQueue];
+      let nextIdx = 0;
+      let abortError: Error | null = null;
 
-    if (abortError) throw new Error("aborted:extract");
+      const worker = async (): Promise<void> => {
+        while (nextIdx < queue.length && !abortError && !noExtractorEncountered) {
+          if (options.signal?.aborted) break;
+          const idx = nextIdx;
+          nextIdx += 1;
+          try {
+            await extractSingleArchive(queue[idx]);
+          } catch (error) {
+            if (isExtractAbortError(String(error))) {
+              abortError = error instanceof Error ? error : new Error(String(error));
+              break;
+            }
+            // Non-abort errors are already handled inside extractSingleArchive
+          }
+        }
+      };
+
+      const workerCount = Math.min(maxParallel, parallelQueue.length);
+      logger.info(`Parallele Extraktion: ${workerCount} gleichzeitige Worker für ${parallelQueue.length} Archive`);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+      if (abortError) throw new Error("aborted:extract");
+    }
+
     if (noExtractorEncountered) {
       const remaining = candidates.length - (extracted + failed);
       if (remaining > 0) {
