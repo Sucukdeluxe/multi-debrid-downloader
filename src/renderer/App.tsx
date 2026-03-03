@@ -2150,7 +2150,7 @@ export function App(): ReactElement {
               </button>
             </div>
             <div className="pkg-column-header">
-              {(["name", "progress", "size", "hoster"] as PkgSortColumn[]).flatMap((col) => {
+              {(["name", "size", "progress", "hoster"] as PkgSortColumn[]).flatMap((col) => {
                 const labels: Record<PkgSortColumn, string> = { name: "Name", progress: "Fortschritt", size: "Geladen / Größe", hoster: "Hoster" };
                 const isActive = downloadsSortColumn === col;
                 return [
@@ -2187,7 +2187,7 @@ export function App(): ReactElement {
                   </span>,
                 ];
               })}
-              <span className="pkg-col pkg-col-account">Account</span>
+              <span className="pkg-col pkg-col-account">Service</span>
               <span className="pkg-col pkg-col-status">Status</span>
               <span className="pkg-col pkg-col-speed">Geschwindigkeit</span>
             </div>
@@ -2251,7 +2251,6 @@ export function App(): ReactElement {
                         <button className="pkg-toggle" title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
                         <h4>{entry.name}</h4>
                       </div>
-                      <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
                       <span className="pkg-col pkg-col-size">{(() => {
                         const pct = entry.totalBytes > 0 ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100)) : 0;
                         const label = `${humanSize(entry.downloadedBytes)} / ${humanSize(entry.totalBytes)}`;
@@ -2263,6 +2262,7 @@ export function App(): ReactElement {
                           </span>
                         ) : "-";
                       })()}</span>
+                      <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
                       <span className="pkg-col pkg-col-hoster">-</span>
                       <span className="pkg-col pkg-col-account">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
                       <span className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
@@ -2723,6 +2723,13 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>Ausgewählte entfernen ({[...selectedIds].filter((id) => snapshot.session.items[id]).length})</button>
           )}
+          {hasPackages && !contextMenu.itemId && (
+            <button className="ctx-menu-item" onClick={() => {
+              const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
+              for (const id of pkgIds) void window.rd.resetPackage(id);
+              setContextMenu(null);
+            }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : ""}</button>
+          )}
           {hasPackages && !multi && (() => {
             const pkg = snapshot.session.packages[contextMenu.packageId];
             const items = pkg?.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean) || [];
@@ -2869,13 +2876,6 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               <h4 onClick={(e) => { e.stopPropagation(); onStartEdit(pkg.id, pkg.name); }} title="Klicken zum Umbenennen">{pkg.name}</h4>
             )}
           </div>
-          <span className="pkg-col pkg-col-progress">
-            <span className="progress-inline">
-              <span className="progress-inline-bar" style={{ width: `${combinedProgress}%` }} />
-              <span className="progress-inline-text">{combinedProgress}%</span>
-              <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - combinedProgress}% 0 0)` }}>{combinedProgress}%</span>
-            </span>
-          </span>
           <span className="pkg-col pkg-col-size">{(() => {
             const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
             const dlBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
@@ -2889,6 +2889,13 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               </span>
             ) : "-";
           })()}</span>
+          <span className="pkg-col pkg-col-progress">
+            <span className="progress-inline">
+              <span className="progress-inline-bar" style={{ width: `${combinedProgress}%` }} />
+              <span className="progress-inline-text">{combinedProgress}%</span>
+              <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - combinedProgress}% 0 0)` }}>{combinedProgress}%</span>
+            </span>
+          </span>
           <span className="pkg-col pkg-col-hoster" title={(() => {
             const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
             return hosters.join(", ");
@@ -2914,15 +2921,6 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       {!collapsed && items.map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           <span className="pkg-col pkg-col-name item-indent" title={item.fileName}>{item.fileName}</span>
-          <span className="pkg-col pkg-col-progress">
-            {item.totalBytes > 0 ? (
-              <span className="progress-inline progress-inline-small">
-                <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
-                <span className="progress-inline-text">{item.progressPercent}%</span>
-                <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
-              </span>
-            ) : "-"}
-          </span>
           <span className="pkg-col pkg-col-size">{(() => {
             const total = item.totalBytes || item.downloadedBytes || 0;
             const dl = item.downloadedBytes || 0;
@@ -2936,6 +2934,15 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               </span>
             ) : "-";
           })()}</span>
+          <span className="pkg-col pkg-col-progress">
+            {item.totalBytes > 0 ? (
+              <span className="progress-inline progress-inline-small">
+                <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
+                <span className="progress-inline-text">{item.progressPercent}%</span>
+                <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
+              </span>
+            ) : "-"}
+          </span>
           <span className="pkg-col pkg-col-hoster" title={extractHoster(item.url)}>{extractHoster(item.url) || "-"}</span>
           <span className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : "-"}</span>
           <span className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
