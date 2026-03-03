@@ -712,7 +712,7 @@ type JvmExtractResult = {
 };
 
 function extractorBackendMode(): ExtractBackendMode {
-  const defaultMode = process.env.VITEST ? "legacy" : "auto";
+  const defaultMode = process.env.VITEST ? "legacy" : "jvm";
   const raw = String(process.env.RD_EXTRACT_BACKEND || defaultMode).trim().toLowerCase();
   if (raw === "legacy") {
     return "legacy";
@@ -753,6 +753,7 @@ function resolveJvmExtractorRootCandidates(): string[] {
   const electronResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath || "";
   const candidates = [
     fromEnv,
+    electronResourcesPath ? path.join(electronResourcesPath, "app.asar.unpacked", "resources", "extractor-jvm") : "",
     path.join(process.cwd(), "resources", "extractor-jvm"),
     path.join(process.cwd(), "build", "resources", "extractor-jvm"),
     path.join(__dirname, "..", "..", "..", "resources", "extractor-jvm"),
