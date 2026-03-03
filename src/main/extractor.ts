@@ -1266,7 +1266,8 @@ async function runExternalExtract(
         }
         logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
       } else {
-        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}`);
+        const maskedPasswords = passwordCandidates.map((p) => p === "" ? '""' : `"${p.slice(0, 2)}${"*".repeat(Math.max(0, p.length - 2))}"`);
+        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}, ${passwordCandidates.length} Passwörter: [${maskedPasswords.join(", ")}]`);
         const jvmResult = await runJvmExtractCommand(
           layout,
           archivePath,
@@ -1295,7 +1296,9 @@ async function runExternalExtract(
         const isCodecError = jvmFailureLower.includes("registered codecs")
           || jvmFailureLower.includes("can not open")
           || jvmFailureLower.includes("cannot open archive");
-        const shouldFallbackToLegacy = isUnsupportedMethod || isCodecError;
+        const isWrongPassword = jvmFailureReason.includes("WRONG_PASSWORD")
+          || jvmFailureLower.includes("wrong password");
+        const shouldFallbackToLegacy = isUnsupportedMethod || isCodecError || isWrongPassword;
         if (backendMode === "jvm" && !shouldFallbackToLegacy) {
           throw new Error(jvmFailureReason);
         }
@@ -1303,6 +1306,8 @@ async function runExternalExtract(
           logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
         } else if (isCodecError) {
           logger.warn(`JVM-Extractor: Archiv-Format nicht erkannt, fallback auf Legacy: ${path.basename(archivePath)}`);
+        } else if (isWrongPassword) {
+          logger.warn(`JVM-Extractor: Kein Passwort hat funktioniert, fallback auf Legacy: ${path.basename(archivePath)}`);
         } else {
           logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
         }
@@ -1351,8 +1356,12 @@ async function runExternalExtractInner(
   const passwords = passwordCandidates;
   let lastError = "";
 
+  const maskedPasswords = passwords.map((p) => p === "" ? '""' : `"${p.slice(0, 2)}${"*".repeat(Math.max(0, p.length - 2))}"`);
+  logger.info(`Legacy-Extractor: ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${maskedPasswords.join(", ")}]`);
+
   let announcedStart = false;
   let bestPercent = 0;
+  let passwordAttempt = 0;
   let usePerformanceFlags = externalExtractorSupportsPerfFlags && shouldUseExtractorPerformanceFlags();
 
   for (const password of passwords) {
@@ -1363,6 +1372,9 @@ async function runExternalExtractInner(
       announcedStart = true;
       onArchiveProgress?.(0);
     }
+    passwordAttempt += 1;
+    const maskedPw = password === "" ? '""' : `"${password.slice(0, 2)}${"*".repeat(Math.max(0, password.length - 2))}"`;
+    logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${maskedPw}`);
     let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
     let result = await runExtractCommand(command, args, (chunk) => {
       const parsed = parseProgressPercent(chunk);
