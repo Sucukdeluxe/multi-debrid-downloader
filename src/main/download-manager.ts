@@ -773,6 +773,10 @@ export class DownloadManager extends EventEmitter {
 
   private packagePostProcessQueue: Promise<void> = Promise.resolve();
 
+  private packagePostProcessActive = 0;
+
+  private packagePostProcessWaiters: Array<() => void> = [];
+
   private packagePostProcessTasks = new Map<string, Promise<void>>();
 
   private packagePostProcessAbortControllers = new Map<string, AbortController>();
@@ -1170,6 +1174,9 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessAbortControllers.clear();
     this.hybridExtractRequeue.clear();
     this.packagePostProcessQueue = Promise.resolve();
+    this.packagePostProcessActive = 0;
+    for (const waiter of this.packagePostProcessWaiters) { waiter(); }
+    this.packagePostProcessWaiters = [];
     this.summary = null;
     this.nonResumableActive = 0;
     this.retryAfterByItem.clear();
@@ -2989,6 +2996,26 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private async acquirePostProcessSlot(): Promise<void> {
+    const maxConcurrent = 2;
+    if (this.packagePostProcessActive < maxConcurrent) {
+      this.packagePostProcessActive += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.packagePostProcessWaiters.push(resolve);
+    });
+    this.packagePostProcessActive += 1;
+  }
+
+  private releasePostProcessSlot(): void {
+    this.packagePostProcessActive -= 1;
+    const next = this.packagePostProcessWaiters.shift();
+    if (next) {
+      next();
+    }
+  }
+
   private runPackagePostProcessing(packageId: string): Promise<void> {
     const existing = this.packagePostProcessTasks.get(packageId);
     if (existing) {
@@ -2999,15 +3026,14 @@ export class DownloadManager extends EventEmitter {
     const abortController = new AbortController();
     this.packagePostProcessAbortControllers.set(packageId, abortController);
 
-    const task = this.packagePostProcessQueue
-      .catch(() => undefined)
-      .then(async () => {
+    const task = (async () => {
+      await this.acquirePostProcessSlot();
+      try {
         await this.handlePackagePostProcessing(packageId, abortController.signal);
-      })
-      .catch((error) => {
+      } catch (error) {
         logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
-      })
-      .finally(() => {
+      } finally {
+        this.releasePostProcessSlot();
         this.packagePostProcessTasks.delete(packageId);
         this.packagePostProcessAbortControllers.delete(packageId);
         this.persistSoon();
@@ -3017,10 +3043,10 @@ export class DownloadManager extends EventEmitter {
             logger.warn(`runPackagePostProcessing Fehler (hybridRequeue): ${compactErrorText(err)}`)
           );
         }
-      });
+      }
+    })();
 
     this.packagePostProcessTasks.set(packageId, task);
-    this.packagePostProcessQueue = task;
     return task;
   }
 
@@ -5229,12 +5255,18 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
     };
 
-    // Mark items not yet being extracted as pending
-    for (const entry of hybridItems) {
-      if (!isExtractedLabel(entry.fullStatus)) {
-        entry.fullStatus = "Entpacken - Ausstehend";
-        entry.updatedAt = nowMs();
+    // Mark hybrid items as pending, others as waiting for parts
+    const hybridItemIds = new Set(hybridItems.map((item) => item.id));
+    for (const entry of completedItems) {
+      if (isExtractedLabel(entry.fullStatus)) {
+        continue;
       }
+      if (hybridItemIds.has(entry.id)) {
+        entry.fullStatus = "Entpacken - Ausstehend";
+      } else {
+        entry.fullStatus = "Entpacken - Warten auf Parts";
+      }
+      entry.updatedAt = nowMs();
     }
     this.emitState();
 
@@ -5302,7 +5334,7 @@ export class DownloadManager extends EventEmitter {
           if (result.extracted > 0 && result.failed === 0) {
             entry.fullStatus = "Entpackt - Done";
           } else {
-            entry.fullStatus = `Fertig (${humanSize(entry.downloadedBytes)})`;
+            entry.fullStatus = "Entpacken - Error";
           }
           entry.updatedAt = updatedAt;
         }
