@@ -7,6 +7,8 @@ import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 
+import crypto from "node:crypto";
+
 const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
 const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installieren.";
 const NO_JVM_EXTRACTOR_MESSAGE = "7-Zip-JBinding Runtime nicht gefunden. Bitte resources/extractor-jvm prüfen.";
@@ -865,8 +867,13 @@ function runJvmExtractCommand(
   }
 
   const mode = effectiveConflictMode(conflictMode);
+  // Each JVM process needs its own temp dir so parallel SevenZipJBinding
+  // instances don't fight over the same native DLL file lock.
+  const jvmTmpDir = path.join(os.tmpdir(), `rd-extract-${crypto.randomUUID()}`);
+  fs.mkdirSync(jvmTmpDir, { recursive: true });
   const args = [
     "-Dfile.encoding=UTF-8",
+    `-Djava.io.tmpdir=${jvmTmpDir}`,
     "-Xms32m",
     "-Xmx512m",
     "-cp",
@@ -917,6 +924,10 @@ function runJvmExtractCommand(
       }
     };
 
+    const cleanupTmpDir = (): void => {
+      fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
+    };
+
     const finish = (result: JvmExtractResult): void => {
       if (settled) {
         return;
@@ -929,6 +940,7 @@ function runJvmExtractCommand(
       if (signal && onAbort) {
         signal.removeEventListener("abort", onAbort);
       }
+      cleanupTmpDir();
       resolve(result);
     };
 
