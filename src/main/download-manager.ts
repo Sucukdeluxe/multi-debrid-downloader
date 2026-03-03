@@ -4988,24 +4988,42 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // Pre-compute: does the package still have any non-terminal items?
-    const packageHasPendingItems = pkg.itemIds.some((itemId) => {
-      const item = this.session.items[itemId];
-      return item != null && item.status !== "completed" && item.status !== "failed" && item.status !== "cancelled";
-    });
-
     for (const candidate of candidates) {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
       if (allPartsCompleted) {
         const candidateBase = path.basename(candidate).toLowerCase();
 
-        // For multi-part archives (.part1.rar), require ALL package items to be terminal.
-        // partsOnDisk only contains parts found ON DISK — pending parts that haven't been
-        // downloaded yet (no targetPath, no fileName) would slip through the regular checks.
-        if (/\.part0*1\.rar$/i.test(candidateBase) && packageHasPendingItems) {
-          logger.info(`Hybrid-Extract: ${path.basename(candidate)} übersprungen – Paket hat noch ausstehende Items`);
-          continue;
+        // For multi-part archives (.part1.rar), check if parts of THIS SPECIFIC archive
+        // are still pending. We match by archive prefix so E01 parts don't block E02.
+        const multiMatch = candidateBase.match(/^(.*)\.part0*1\.rar$/i);
+        if (multiMatch) {
+          const prefix = multiMatch[1].toLowerCase();
+          const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const partPattern = new RegExp(`^${escapedPrefix}\\.part\\d+\\.rar$`, "i");
+          const hasRelatedPending = pkg.itemIds.some((itemId) => {
+            const item = this.session.items[itemId];
+            if (!item || item.status === "completed" || item.status === "failed" || item.status === "cancelled") {
+              return false;
+            }
+            // Check fileName (set early from link URL)
+            if (item.fileName && partPattern.test(item.fileName)) {
+              return true;
+            }
+            // Check targetPath basename (set when download starts)
+            if (item.targetPath && partPattern.test(path.basename(item.targetPath))) {
+              return true;
+            }
+            // Item has no identity at all — might be an unresolved part, be conservative
+            if (!item.fileName && !item.targetPath) {
+              return true;
+            }
+            return false;
+          });
+          if (hasRelatedPending) {
+            logger.info(`Hybrid-Extract: ${path.basename(candidate)} übersprungen – zugehörige Parts noch ausstehend`);
+            continue;
+          }
         }
 
         const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
