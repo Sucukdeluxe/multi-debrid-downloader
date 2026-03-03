@@ -1151,9 +1151,10 @@ async function runExternalExtract(
   await fs.promises.mkdir(targetDir, { recursive: true });
 
   // On Windows, long targetDir + archive internal paths can exceed MAX_PATH (260 chars).
-  // Use "subst" to map the targetDir to a short drive letter for the extraction process.
-  const subst = createSubstMapping(targetDir);
-  const effectiveTargetDir = subst ? `${subst.drive}:` : targetDir;
+  // Use "subst" to map the targetDir to a short drive letter for the legacy extraction process.
+  // JVM does NOT use subst — Java handles long paths natively and subst causes
+  // false-positive path traversal errors in secureResolve (getCanonicalFile inconsistency).
+  let subst: SubstMapping | null = null;
 
   try {
     if (backendMode !== "legacy") {
@@ -1169,7 +1170,7 @@ async function runExternalExtract(
         const jvmResult = await runJvmExtractCommand(
           layout,
           archivePath,
-          effectiveTargetDir,
+          targetDir,
           conflictMode,
           passwordCandidates,
           onArchiveProgress,
@@ -1195,6 +1196,10 @@ async function runExternalExtract(
         logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
       }
     }
+
+    // subst only needed for legacy UnRAR/7z (MAX_PATH limit)
+    subst = createSubstMapping(targetDir);
+    const effectiveTargetDir = subst ? `${subst.drive}:` : targetDir;
 
     const command = await resolveExtractorCommand();
     const password = await runExternalExtractInner(
