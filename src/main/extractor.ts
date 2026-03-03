@@ -1289,12 +1289,19 @@ async function runExternalExtract(
         }
 
         jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
+        const jvmFailureLower = jvmFailureReason.toLowerCase();
         const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
-        if (backendMode === "jvm" && !isUnsupportedMethod) {
+        const isCodecError = jvmFailureLower.includes("registered codecs")
+          || jvmFailureLower.includes("can not open")
+          || jvmFailureLower.includes("cannot open archive");
+        const shouldFallbackToLegacy = isUnsupportedMethod || isCodecError;
+        if (backendMode === "jvm" && !shouldFallbackToLegacy) {
           throw new Error(jvmFailureReason);
         }
         if (isUnsupportedMethod) {
           logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
+        } else if (isCodecError) {
+          logger.warn(`JVM-Extractor: Archiv-Format nicht erkannt, fallback auf Legacy: ${path.basename(archivePath)}`);
         } else {
           logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
         }
