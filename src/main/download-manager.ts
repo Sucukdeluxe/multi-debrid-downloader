@@ -3069,6 +3069,9 @@ export class DownloadManager extends EventEmitter {
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) return;
     if (this.packagePostProcessTasks.has(packageId)) return;
+    if (!pkg.enabled) {
+      pkg.enabled = true;
+    }
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
     const completedItems = items.filter((item) => item.status === "completed");
     if (completedItems.length === 0) return;
