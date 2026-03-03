@@ -1527,7 +1527,11 @@ export class DownloadManager extends EventEmitter {
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item || item.status !== "queued") continue;
+      item.onlineStatus = "checking";
       itemsToCheck.push({ itemId, url: item.url });
+    }
+    if (itemsToCheck.length > 0) {
+      this.emitState();
     }
 
     const uniqueUrls = [...new Set(itemsToCheck.map(i => i.url))];
@@ -1555,16 +1559,15 @@ export class DownloadManager extends EventEmitter {
         item.status = "failed";
         item.fullStatus = "Offline";
         item.lastError = "Datei nicht gefunden auf Rapidgator";
+        item.onlineStatus = "offline";
         item.updatedAt = nowMs();
         changed = true;
       } else {
         if (result.fileName && looksLikeOpaqueFilename(item.fileName)) {
           item.fileName = sanitizeFilename(result.fileName);
           this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
-          item.updatedAt = nowMs();
-          changed = true;
         }
-        item.fullStatus = "Online";
+        item.onlineStatus = "online";
         item.updatedAt = nowMs();
         changed = true;
       }
