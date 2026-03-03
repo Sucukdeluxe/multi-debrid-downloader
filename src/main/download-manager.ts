@@ -2286,6 +2286,69 @@ export class DownloadManager extends EventEmitter {
       });
   }
 
+  public resetPackage(packageId: string): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) return;
+
+    const itemIds = [...pkg.itemIds];
+
+    // 1. Abort active downloads for items in THIS package only
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+
+      const active = this.activeTasks.get(itemId);
+      if (active) {
+        active.abortReason = "cancel";
+        active.abortController.abort("cancel");
+      }
+
+      // Delete partial download file
+      const targetPath = String(item.targetPath || "").trim();
+      if (targetPath) {
+        try { fs.rmSync(targetPath, { force: true }); } catch { /* ignore */ }
+        this.releaseTargetPath(itemId);
+      }
+
+      // Reset item state
+      this.dropItemContribution(itemId);
+      this.runOutcomes.delete(itemId);
+      this.runItemIds.delete(itemId);
+      this.retryAfterByItem.delete(itemId);
+      this.retryStateByItem.delete(itemId);
+
+      item.status = "queued";
+      item.downloadedBytes = 0;
+      item.totalBytes = null;
+      item.progressPercent = 0;
+      item.speedBps = 0;
+      item.attempts = 0;
+      item.retries = 0;
+      item.lastError = "";
+      item.resumable = true;
+      item.targetPath = "";
+      item.provider = null;
+      item.fullStatus = "Wartet";
+      item.updatedAt = nowMs();
+    }
+
+    // 2. Abort post-processing (extraction) if active for THIS package
+    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+    if (postProcessController && !postProcessController.signal.aborted) {
+      postProcessController.abort("reset");
+    }
+
+    // 3. Reset package state
+    pkg.status = "queued";
+    pkg.cancelled = false;
+    pkg.enabled = true;
+    pkg.updatedAt = nowMs();
+
+    logger.info(`Paket "${pkg.name}" zurückgesetzt (${itemIds.length} Items)`);
+    this.persistSoon();
+    this.emitState(true);
+  }
+
   public async startPackages(packageIds: string[]): Promise<void> {
     const targetSet = new Set(packageIds);
 
@@ -2997,7 +3060,10 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async acquirePostProcessSlot(packageId: string): Promise<void> {
-    const maxConcurrent = this.settings.maxParallelExtract || 2;
+    // Extract packages sequentially (one at a time) to focus I/O on finishing
+    // the earliest package first. maxParallelExtract is reserved for future
+    // intra-package parallelism.
+    const maxConcurrent = 1;
     if (this.packagePostProcessActive < maxConcurrent) {
       this.packagePostProcessActive += 1;
       return;
