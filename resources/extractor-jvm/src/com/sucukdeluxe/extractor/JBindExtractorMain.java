@@ -42,6 +42,7 @@ public final class JBindExtractorMain {
     private static final Pattern NUMBERED_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.zip\\.\\d{3}$");
     private static final Pattern OLD_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.z\\d{2,3}$");
     private static final Pattern SEVEN_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.7z\\.001$");
+    private static volatile boolean sevenZipInitialized = false;
 
     private JBindExtractorMain() {
     }
@@ -204,7 +205,16 @@ public final class JBindExtractorMain {
         }
     }
 
+    private static synchronized void ensureSevenZipInitialized() throws Exception {
+        if (sevenZipInitialized) {
+            return;
+        }
+        SevenZip.initSevenZipFromPlatformJAR();
+        sevenZipInitialized = true;
+    }
+
     private static void extractWithSevenZip(ExtractionRequest request, String password) throws Exception {
+        ensureSevenZipInitialized();
         SevenZipArchiveContext context = null;
         try {
             context = openSevenZipArchive(request.archiveFile, password);
@@ -269,7 +279,7 @@ public final class JBindExtractorMain {
                             progress.advance(accounted);
                             return data.length;
                         }
-                    });
+                    }, password == null ? "" : password);
 
                     if (remaining[0] > 0) {
                         progress.advance(remaining[0]);
