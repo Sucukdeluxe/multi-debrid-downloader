@@ -471,7 +471,9 @@ function extractCpuBudgetPercent(): number {
 
 function extractorThreadSwitch(hybridMode = false): string {
   if (hybridMode) {
-    return "-mt1";
+    const cpuCount = Math.max(1, os.cpus().length || 1);
+    const hybridThreads = Math.max(1, Math.min(8, Math.floor(cpuCount / 2)));
+    return `-mt${hybridThreads}`;
   }
   const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
   if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
@@ -502,7 +504,7 @@ function setWindowsBackgroundIO(pid: number): void {
   }
 }
 
-function lowerExtractProcessPriority(childPid: number | undefined): void {
+function lowerExtractProcessPriority(childPid: number | undefined, lowIo = false): void {
   if (process.platform !== "win32") {
     return;
   }
@@ -516,8 +518,10 @@ function lowerExtractProcessPriority(childPid: number | undefined): void {
   } catch {
     // ignore: priority lowering is best-effort
   }
-  // Also lower I/O + page priority via Windows API (fire-and-forget)
-  setWindowsBackgroundIO(pid);
+  // Lower I/O + page priority only in hybrid mode (download + extract simultaneously)
+  if (lowIo) {
+    setWindowsBackgroundIO(pid);
+  }
 }
 
 type ExtractSpawnResult = {
@@ -574,7 +578,8 @@ function runExtractCommand(
   args: string[],
   onChunk?: (chunk: string) => void,
   signal?: AbortSignal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  hybridMode = false
 ): Promise<ExtractSpawnResult> {
   if (signal?.aborted) {
     return Promise.resolve({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
@@ -584,7 +589,7 @@ function runExtractCommand(
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid);
+    lowerExtractProcessPriority(child.pid, hybridMode);
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
@@ -841,7 +846,7 @@ async function runExternalExtractInner(
       }
       bestPercent = parsed;
       onArchiveProgress?.(bestPercent);
-    }, signal, timeoutMs);
+    }, signal, timeoutMs, hybridMode);
 
     if (!result.ok && usePerformanceFlags && isUnsupportedExtractorSwitchError(result.errorText)) {
       usePerformanceFlags = false;
@@ -855,7 +860,7 @@ async function runExternalExtractInner(
         }
         bestPercent = parsed;
         onArchiveProgress?.(bestPercent);
-      }, signal, timeoutMs);
+      }, signal, timeoutMs, hybridMode);
     }
 
     if (result.ok) {
@@ -1379,7 +1384,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
     }, 1100);
     const hybrid = Boolean(options.hybridMode);
-    logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, -mt1, low I/O)" : ""}`);
+    logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
     try {
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
