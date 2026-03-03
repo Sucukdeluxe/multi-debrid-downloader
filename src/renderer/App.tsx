@@ -1,4 +1,4 @@
-import { DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   AppSettings,
   AppTheme,
@@ -97,7 +97,7 @@ function extractHoster(url: string): string {
   try {
     const host = new URL(url).hostname.replace(/^www\./, "");
     const parts = host.split(".");
-    return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+    return parts.length >= 2 ? parts[parts.length - 2] : host;
   } catch { return ""; }
 }
 
@@ -466,6 +466,8 @@ export function App(): ReactElement {
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -504,6 +506,7 @@ export function App(): ReactElement {
   const confirmQueueRef = useRef<Array<{ prompt: ConfirmPromptState; resolve: (confirmed: boolean) => void }>>([]);
   const importQueueFocusHandlerRef = useRef<(() => void) | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
@@ -1648,6 +1651,18 @@ export function App(): ReactElement {
     };
   }, [contextMenu]);
 
+  useLayoutEffect(() => {
+    if (!contextMenu || !ctxMenuRef.current) return;
+    const el = ctxMenuRef.current;
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight) {
+      el.style.top = `${Math.max(0, contextMenu.y - rect.height)}px`;
+    }
+    if (rect.right > window.innerWidth) {
+      el.style.left = `${Math.max(0, contextMenu.x - rect.width)}px`;
+    }
+  }, [contextMenu]);
+
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
     const current = snapshotRef.current;
     for (const id of ids) {
@@ -1753,6 +1768,13 @@ export function App(): ReactElement {
           void onImportDlc();
           return;
         }
+        if (!e.shiftKey && e.key.toLowerCase() === "a") {
+          if (tabRef.current === "downloads") {
+            e.preventDefault();
+            setSelectedIds(new Set(Object.keys(snapshotRef.current.session.packages)));
+          }
+          return;
+        }
       }
     };
     window.addEventListener("keydown", handler);
@@ -1797,14 +1819,14 @@ export function App(): ReactElement {
   const providerStats = useMemo(() => {
     const stats: Record<string, { total: number; completed: number; failed: number; bytes: number }> = {};
     for (const item of Object.values(snapshot.session.items)) {
-      const provider = item.provider || "unknown";
-      if (!stats[provider]) {
-        stats[provider] = { total: 0, completed: 0, failed: 0, bytes: 0 };
+      const hoster = extractHoster(item.url) || "unknown";
+      if (!stats[hoster]) {
+        stats[hoster] = { total: 0, completed: 0, failed: 0, bytes: 0 };
       }
-      stats[provider].total += 1;
-      if (item.status === "completed") stats[provider].completed += 1;
-      if (item.status === "failed") stats[provider].failed += 1;
-      stats[provider].bytes += item.downloadedBytes;
+      stats[hoster].total += 1;
+      if (item.status === "completed") stats[hoster].completed += 1;
+      if (item.status === "failed") stats[hoster].failed += 1;
+      stats[hoster].bytes += item.downloadedBytes;
     }
     return Object.entries(stats);
   }, [snapshot.session.items]);
@@ -2029,18 +2051,6 @@ export function App(): ReactElement {
             onClick={() => { void performQuickAction(() => window.rd.stop()); }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" /></svg>
-          </button>
-          <div className="ctrl-separator" />
-          <button
-            className={`ctrl-icon-btn ctrl-speed${settingsDraft.speedLimitEnabled ? " active" : ""}`}
-            title={settingsDraft.speedLimitEnabled ? `Geschwindigkeitslimit: ${formatMbpsInputFromKbps(settingsDraft.speedLimitKbps)} MB/s` : "Geschwindigkeitslimit aus"}
-            onClick={() => {
-              const next = !settingsDraft.speedLimitEnabled;
-              setSettingsDraft((prev) => ({ ...prev, speedLimitEnabled: next }));
-              void window.rd.updateSettings({ speedLimitEnabled: next });
-            }}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z" fill="currentColor"/><path d="M12 6v6l4.24 2.54.76-1.27-3.5-2.08V6h-1.5z" fill="currentColor" opacity={settingsDraft.speedLimitEnabled ? 1 : 0.5}/></svg>
           </button>
         </div>
         {snapshot.reconnectSeconds > 0 && (
@@ -2351,11 +2361,11 @@ export function App(): ReactElement {
             </article>
 
             <article className="card stats-provider-card">
-              <h3>Provider-Statistik</h3>
+              <h3>Hoster-Statistik</h3>
               <div className="provider-stats">
                 {providerStats.map(([provider, stats]) => (
                   <div key={provider} className="provider-stat-item">
-                    <span className="provider-name">{provider === "unknown" ? "Unbekannt" : providerLabels[provider as DebridProvider] || provider}</span>
+                    <span className="provider-name">{provider === "unknown" ? "Unbekannt" : provider}</span>
                     <div className="provider-bars">
                       <div className="provider-bar">
                         <div className="bar-fill completed" style={{ width: `${stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}%` }} />
@@ -2686,7 +2696,7 @@ export function App(): ReactElement {
         const hasPackages = [...selectedIds].some((id) => snapshot.session.packages[id]);
         const hasItems = [...selectedIds].some((id) => snapshot.session.items[id]);
         return (
-        <div className="ctx-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div ref={ctxMenuRef} className="ctx-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
           {(!contextMenu.itemId || multi) && hasPackages && (
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
