@@ -1983,6 +1983,9 @@ export function App(): ReactElement {
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog(); }}>
                 <span>Log öffnen</span>
               </button>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog(); }}>
+                <span>Session-Log öffnen</span>
+              </button>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onCheckUpdates(); }}>
                 <span>Suche Aktualisierungen</span>
               </button>

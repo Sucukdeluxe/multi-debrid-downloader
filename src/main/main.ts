@@ -326,6 +326,10 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.extractNow(packageId);
   });
+  ipcMain.handle(IPC_CHANNELS.RESET_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
+    validateString(packageId, "packageId");
+    return controller.resetPackage(packageId);
+  });
   ipcMain.handle(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
   ipcMain.handle(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
   ipcMain.handle(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
@@ -394,6 +398,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.OPEN_LOG, async () => {
     const logPath = getLogFilePath();
     await shell.openPath(logPath);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
+    const logPath = controller.getSessionLogPath();
+    if (logPath) {
+      await shell.openPath(logPath);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {

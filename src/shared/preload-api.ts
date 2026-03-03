@@ -44,8 +44,10 @@ export interface ElectronApi {
   exportBackup: () => Promise<{ saved: boolean }>;
   importBackup: () => Promise<{ restored: boolean; message: string }>;
   openLog: () => Promise<void>;
+  openSessionLog: () => Promise<void>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
+  resetPackage: (packageId: string) => Promise<void>;
   getHistory: () => Promise<HistoryEntry[]>;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
