@@ -17,6 +17,7 @@ export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "packag
 export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid";
 export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
+export type PackagePriority = "high" | "normal" | "low";
 
 export interface BandwidthScheduleEntry {
   id: string;
@@ -113,6 +114,7 @@ export interface PackageEntry {
   itemIds: string[];
   cancelled: boolean;
   enabled: boolean;
+  priority: PackagePriority;
   createdAt: number;
   updatedAt: number;
 }

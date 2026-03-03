@@ -39,5 +39,7 @@ export const IPC_CHANNELS = {
   RESET_PACKAGE: "queue:reset-package",
   GET_HISTORY: "history:get",
   CLEAR_HISTORY: "history:clear",
-  REMOVE_HISTORY_ENTRY: "history:remove-entry"
+  REMOVE_HISTORY_ENTRY: "history:remove-entry",
+  SET_PACKAGE_PRIORITY: "queue:set-package-priority",
+  SKIP_ITEMS: "queue:skip-items"
 } as const;

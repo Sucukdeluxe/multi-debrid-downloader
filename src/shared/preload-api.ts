@@ -3,6 +3,7 @@ import type {
   AppSettings,
   DuplicatePolicy,
   HistoryEntry,
+  PackagePriority,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -51,6 +52,8 @@ export interface ElectronApi {
   getHistory: () => Promise<HistoryEntry[]>;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
+  setPackagePriority: (packageId: string, priority: PackagePriority) => Promise<void>;
+  skipItems: (itemIds: string[]) => Promise<void>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;

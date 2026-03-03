@@ -330,6 +330,15 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.resetPackage(packageId);
   });
+  ipcMain.handle(IPC_CHANNELS.SET_PACKAGE_PRIORITY, (_event: IpcMainInvokeEvent, packageId: string, priority: string) => {
+    validateString(packageId, "packageId");
+    validateString(priority, "priority");
+    return controller.setPackagePriority(packageId, priority as any);
+  });
+  ipcMain.handle(IPC_CHANNELS.SKIP_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+    if (!Array.isArray(itemIds)) throw new Error("itemIds must be an array");
+    return controller.skipItems(itemIds);
+  });
   ipcMain.handle(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
   ipcMain.handle(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
   ipcMain.handle(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
