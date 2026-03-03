@@ -577,7 +577,7 @@ body,
 
 .pkg-column-header {
   display: grid;
-  grid-template-columns: 1fr 90px 170px 140px 130px 180px 100px;
+  grid-template-columns: 1fr 170px 90px 140px 130px 180px 100px;
   gap: 8px;
   padding: 5px 12px;
   background: var(--card);
@@ -612,7 +612,7 @@ body,
 
 .pkg-columns {
   display: grid;
-  grid-template-columns: 1fr 90px 170px 140px 130px 180px 100px;
+  grid-template-columns: 1fr 170px 90px 140px 130px 180px 100px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -1284,7 +1284,7 @@ td {
 
 .item-row {
   display: grid;
-  grid-template-columns: 1fr 90px 170px 140px 130px 180px 100px;
+  grid-template-columns: 1fr 170px 90px 140px 130px 180px 100px;
   gap: 8px;
   align-items: center;
   margin: 0 -12px;
