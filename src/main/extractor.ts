@@ -106,7 +106,37 @@ const EXTRACT_PER_GIB_TIMEOUT_MS = 4 * 60 * 1000;
 const EXTRACT_MAX_TIMEOUT_MS = 120 * 60 * 1000;
 const ARCHIVE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const DISK_SPACE_SAFETY_FACTOR = 1.1;
-const NESTED_EXTRACT_BLACKLIST_RE = /\.(iso|img|bin|dmg)$/i;
+const NESTED_EXTRACT_BLACKLIST_RE = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
+
+export type ArchiveSignature = "rar" | "7z" | "zip" | "gzip" | "bzip2" | "xz" | null;
+
+const ARCHIVE_SIGNATURES: { prefix: string; type: ArchiveSignature }[] = [
+  { prefix: "526172211a07", type: "rar" },
+  { prefix: "377abcaf271c", type: "7z" },
+  { prefix: "504b0304", type: "zip" },
+  { prefix: "1f8b08", type: "gzip" },
+  { prefix: "425a68", type: "bzip2" },
+  { prefix: "fd377a585a00", type: "xz" },
+];
+
+export async function detectArchiveSignature(filePath: string): Promise<ArchiveSignature> {
+  let fd: fs.promises.FileHandle | null = null;
+  try {
+    fd = await fs.promises.open(filePath, "r");
+    const buf = Buffer.alloc(8);
+    const { bytesRead } = await fd.read(buf, 0, 8, 0);
+    if (bytesRead < 3) return null;
+    const hex = buf.subarray(0, bytesRead).toString("hex");
+    for (const sig of ARCHIVE_SIGNATURES) {
+      if (hex.startsWith(sig.prefix)) return sig.type;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await fd?.close();
+  }
+}
 
 async function estimateArchivesTotalBytes(candidates: string[]): Promise<number> {
   let total = 0;
@@ -172,6 +202,8 @@ function archiveSortKey(filePath: string): string {
     .replace(/\.part0*1\.rar$/i, "")
     .replace(/\.zip\.\d{3}$/i, "")
     .replace(/\.7z\.\d{3}$/i, "")
+    .replace(/\.\d{3}$/i, "")
+    .replace(/\.tar\.(gz|bz2|xz)$/i, "")
     .replace(/\.rar$/i, "")
     .replace(/\.zip$/i, "")
     .replace(/\.7z$/i, "")
@@ -191,6 +223,12 @@ function archiveTypeRank(filePath: string): number {
   }
   if (/\.7z(?:\.\d{3})?$/i.test(fileName)) {
     return 3;
+  }
+  if (/\.tar\.(gz|bz2|xz)$/i.test(fileName)) {
+    return 4;
+  }
+  if (/\.\d{3}$/i.test(fileName)) {
+    return 5;
   }
   return 9;
 }
@@ -237,10 +275,18 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
     }
     return !fileNamesLower.has(`${fileName}.001`.toLowerCase());
   });
+  const tarCompressed = files.filter((filePath) => /\.tar\.(gz|bz2|xz)$/i.test(filePath));
+  // Generic .001 splits (HJSplit etc.) — exclude already-recognized .zip.001 and .7z.001
+  const genericSplit = files.filter((filePath) => {
+    const fileName = path.basename(filePath).toLowerCase();
+    if (!/\.001$/.test(fileName)) return false;
+    if (/\.zip\.001$/.test(fileName) || /\.7z\.001$/.test(fileName)) return false;
+    return true;
+  });
 
   const unique: string[] = [];
   const seen = new Set<string>();
-  for (const candidate of [...multipartRar, ...singleRar, ...zipSplit, ...zip, ...sevenSplit, ...seven]) {
+  for (const candidate of [...multipartRar, ...singleRar, ...zipSplit, ...zip, ...sevenSplit, ...seven, ...tarCompressed, ...genericSplit]) {
     const key = pathSetKey(candidate);
     if (seen.has(key)) {
       continue;
@@ -388,9 +434,50 @@ async function clearExtractResumeState(packageDir: string, packageId?: string): 
   }
 }
 
+export type ExtractErrorCategory =
+  | "crc_error"
+  | "wrong_password"
+  | "missing_parts"
+  | "unsupported_format"
+  | "disk_full"
+  | "timeout"
+  | "aborted"
+  | "no_extractor"
+  | "unknown";
+
+export function classifyExtractionError(errorText: string): ExtractErrorCategory {
+  const text = String(errorText || "").toLowerCase();
+  if (text.includes("aborted:extract") || text.includes("extract_aborted")) return "aborted";
+  if (text.includes("timeout")) return "timeout";
+  if (text.includes("wrong password") || text.includes("falsches passwort") || text.includes("incorrect password")) return "wrong_password";
+  if (text.includes("crc failed") || text.includes("checksum error") || text.includes("crc error")) return "crc_error";
+  if (text.includes("missing volume") || text.includes("next volume") || text.includes("unexpected end of archive") || text.includes("missing parts")) return "missing_parts";
+  if (text.includes("nicht gefunden") || text.includes("not found") || text.includes("no extractor")) return "no_extractor";
+  if (text.includes("kein rar-archiv") || text.includes("not a rar archive") || text.includes("unsupported") || text.includes("unsupportedmethod")) return "unsupported_format";
+  if (text.includes("disk full") || text.includes("speicherplatz") || text.includes("no space left") || text.includes("not enough space")) return "disk_full";
+  return "unknown";
+}
+
 function isExtractAbortError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("aborted:extract") || text.includes("extract_aborted");
+}
+
+export function archiveFilenamePasswords(archiveName: string): string[] {
+  const name = String(archiveName || "");
+  if (!name) return [];
+  const stem = name
+    .replace(/\.part\d+\.rar$/i, "")
+    .replace(/\.zip\.\d{3}$/i, "")
+    .replace(/\.7z\.\d{3}$/i, "")
+    .replace(/\.\d{3}$/i, "")
+    .replace(/\.tar\.(gz|bz2|xz)$/i, "")
+    .replace(/\.(rar|zip|7z|tar|gz|bz2|xz)$/i, "");
+  if (!stem) return [];
+  const candidates = [stem];
+  const withSpaces = stem.replace(/[._]/g, " ");
+  if (withSpaces !== stem) candidates.push(withSpaces);
+  return candidates;
 }
 
 function archivePasswords(listInput: string): string[] {
@@ -1491,6 +1578,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   if (multipartRar) {
     const prefix = escapeRegex(multipartRar[1]);
     addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i"));
+    addMatching(new RegExp(`^${prefix}\\.rev$`, "i"));
     return Array.from(targets);
   }
 
@@ -1498,6 +1586,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     const stem = escapeRegex(fileName.replace(/\.rar$/i, ""));
     addMatching(new RegExp(`^${stem}\\.rar$`, "i"));
     addMatching(new RegExp(`^${stem}\\.r\\d{2,3}$`, "i"));
+    addMatching(new RegExp(`^${stem}\\.rev$`, "i"));
     return Array.from(targets);
   }
 
@@ -1528,6 +1617,14 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     const stem = escapeRegex(splitSeven[1]);
     addMatching(new RegExp(`^${stem}\\.7z$`, "i"));
     addMatching(new RegExp(`^${stem}\\.7z\\.\\d{3}$`, "i"));
+    return Array.from(targets);
+  }
+
+  // Generic .NNN split files (HJSplit etc.)
+  const genericSplit = fileName.match(/^(.*)\.(\d{3})$/i);
+  if (genericSplit) {
+    const stem = escapeRegex(genericSplit[1]);
+    addMatching(new RegExp(`^${stem}\\.\\d{3}$`, "i"));
     return Array.from(targets);
   }
 
@@ -1814,6 +1911,23 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
     }, 1100);
     const hybrid = Boolean(options.hybridMode);
+    // Insert archive-filename-derived passwords after "" but before custom passwords
+    const filenamePasswords = archiveFilenamePasswords(archiveName);
+    const archivePasswordCandidates = filenamePasswords.length > 0
+      ? Array.from(new Set(["", ...filenamePasswords, ...passwordCandidates.filter((p) => p !== "")]))
+      : passwordCandidates;
+
+    // Validate generic .001 splits via file signature before attempting extraction
+    const isGenericSplit = /\.\d{3}$/i.test(archiveName) && !/\.(zip|7z)\.\d{3}$/i.test(archiveName);
+    if (isGenericSplit) {
+      const sig = await detectArchiveSignature(archivePath);
+      if (!sig) {
+        logger.info(`Generische Split-Datei übersprungen (keine Archiv-Signatur): ${archiveName}`);
+        continue;
+      }
+      logger.info(`Generische Split-Datei verifiziert (Signatur: ${sig}): ${archiveName}`);
+    }
+
     logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
     try {
       const ext = path.extname(archivePath).toLowerCase();
@@ -1821,7 +1935,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         const preferExternal = await shouldPreferExternalZip(archivePath);
         if (preferExternal) {
           try {
-            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+            const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
               archivePercent = Math.max(archivePercent, value);
               emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
             }, options.signal, hybrid);
@@ -1842,7 +1956,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               throw error;
             }
             try {
-              const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+              const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
                 archivePercent = Math.max(archivePercent, value);
                 emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
               }, options.signal, hybrid);
@@ -1856,7 +1970,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           }
         }
       } else {
-        const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, passwordCandidates, (value) => {
+        const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
           archivePercent = Math.max(archivePercent, value);
           emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
         }, options.signal, hybrid);
@@ -1876,7 +1990,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         throw new Error("aborted:extract");
       }
       lastError = errorText;
-      logger.error(`Entpack-Fehler ${path.basename(archivePath)}: ${errorText}`);
+      const errorCategory = classifyExtractionError(errorText);
+      logger.error(`Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
       if (isNoExtractorError(errorText)) {
         const remaining = candidates.length - (extracted + failed);
@@ -1898,6 +2013,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         .filter((p) => !NESTED_EXTRACT_BLACKLIST_RE.test(p));
       if (nestedCandidates.length > 0) {
         logger.info(`Nested-Extraction: ${nestedCandidates.length} Archive im Output gefunden`);
+        let nestedExtracted = 0;
+        let nestedFailed = 0;
         try {
           await checkDiskSpaceForExtraction(options.targetDir, nestedCandidates);
         } catch (spaceError) {
@@ -1936,6 +2053,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               passwordCandidates = prioritizePassword(passwordCandidates, usedPw);
             }
             extracted += 1;
+            nestedExtracted += 1;
             extractedArchives.add(nestedArchive);
             resumeCompleted.add(nestedKey);
             await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
@@ -1953,12 +2071,15 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               break;
             }
             failed += 1;
+            nestedFailed += 1;
             lastError = errText;
-            logger.error(`Nested-Entpack-Fehler ${nestedName}: ${errText}`);
+            const nestedCategory = classifyExtractionError(errText);
+            logger.error(`Nested-Entpack-Fehler ${nestedName} [${nestedCategory}]: ${errText}`);
           } finally {
             clearInterval(nestedPulse);
           }
         }
+        logger.info(`Nested-Extraction abgeschlossen: ${nestedExtracted} entpackt, ${nestedFailed} fehlgeschlagen von ${nestedCandidates.length} Kandidaten`);
       }
     } catch (nestedError) {
       const errText = String(nestedError);

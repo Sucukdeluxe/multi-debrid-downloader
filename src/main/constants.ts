@@ -21,7 +21,7 @@ export const SAMPLE_VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", 
 export const LINK_ARTIFACT_EXTENSIONS = new Set([".url", ".webloc", ".dlc", ".rsdf", ".ccf"]);
 export const SAMPLE_TOKEN_RE = /(^|[._\-\s])sample([._\-\s]|$)/i;
 
-export const ARCHIVE_TEMP_EXTENSIONS = new Set([".rar", ".zip", ".7z", ".tmp", ".part", ".tar", ".gz", ".bz2", ".xz"]);
+export const ARCHIVE_TEMP_EXTENSIONS = new Set([".rar", ".zip", ".7z", ".tmp", ".part", ".tar", ".gz", ".bz2", ".xz", ".rev"]);
 export const RAR_SPLIT_RE = /\.r\d{2,3}$/i;
 
 export const MAX_MANIFEST_FILE_BYTES = 5 * 1024 * 1024;
