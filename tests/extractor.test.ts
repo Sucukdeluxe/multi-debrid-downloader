@@ -1002,4 +1002,98 @@ describe("extractor", () => {
       expect(classifyExtractionError("something weird happened")).toBe("unknown");
     });
   });
+
+  describe("password discovery", () => {
+    it("extracts first archive serially before parallel pool when multiple passwords", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-pwdisc-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      // Create 3 zip archives
+      for (const name of ["ep01.zip", "ep02.zip", "ep03.zip"]) {
+        const zip = new AdmZip();
+        zip.addFile(`${name}.txt`, Buffer.from(name));
+        zip.writeZip(path.join(packageDir, name));
+      }
+
+      const seenOrder: string[] = [];
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        maxParallel: 2,
+        passwordList: "pw1|pw2|pw3",
+        onProgress: (update) => {
+          if (update.phase !== "extracting" || !update.archiveName) return;
+          if (seenOrder[seenOrder.length - 1] !== update.archiveName) {
+            seenOrder.push(update.archiveName);
+          }
+        }
+      });
+
+      expect(result.extracted).toBe(3);
+      expect(result.failed).toBe(0);
+      // First archive should be ep01 (natural order, extracted serially for discovery)
+      expect(seenOrder[0]).toBe("ep01.zip");
+    });
+
+    it("skips discovery when only one password candidate", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-pwdisc-skip-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      for (const name of ["a.zip", "b.zip"]) {
+        const zip = new AdmZip();
+        zip.addFile(`${name}.txt`, Buffer.from(name));
+        zip.writeZip(path.join(packageDir, name));
+      }
+
+      // No passwordList → only empty string → length=1 → no discovery phase
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        maxParallel: 4
+      });
+
+      expect(result.extracted).toBe(2);
+      expect(result.failed).toBe(0);
+    });
+
+    it("skips discovery when only one archive", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-pwdisc-one-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      const zip = new AdmZip();
+      zip.addFile("single.txt", Buffer.from("single"));
+      zip.writeZip(path.join(packageDir, "only.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        maxParallel: 4,
+        passwordList: "pw1|pw2|pw3"
+      });
+
+      expect(result.extracted).toBe(1);
+      expect(result.failed).toBe(0);
+    });
+  });
 });

@@ -4128,7 +4128,7 @@ export class DownloadManager extends EventEmitter {
               item.totalBytes = null;
               this.dropItemContribution(item.id);
             }
-            let stallDelayMs = retryDelayWithJitter(active.stallRetries, 300);
+            let stallDelayMs = retryDelayWithJitter(active.stallRetries, 200);
             // Respect provider cooldown
             if (item.provider) {
               const providerCooldown = this.getProviderCooldownRemaining(item.provider);
@@ -4188,7 +4188,7 @@ export class DownloadManager extends EventEmitter {
               // ignore
             }
             this.releaseTargetPath(item.id);
-            this.queueRetry(item, active, 450, "Netzwerkfehler erkannt, frischer Retry");
+            this.queueRetry(item, active, 300, "Netzwerkfehler erkannt, frischer Retry");
             item.lastError = "";
             item.downloadedBytes = 0;
             item.totalBytes = null;
@@ -4267,7 +4267,7 @@ export class DownloadManager extends EventEmitter {
           if (active.genericErrorRetries < maxGenericErrorRetries) {
             active.genericErrorRetries += 1;
             item.retries += 1;
-            const genericDelayMs = retryDelayWithJitter(active.genericErrorRetries, 400);
+            const genericDelayMs = retryDelayWithJitter(active.genericErrorRetries, 250);
             logger.warn(`Generic-Fehler: item=${item.fileName || item.id}, retry=${active.genericErrorRetries}/${retryDisplayLimit}, error=${errorText}, provider=${item.provider || "?"}`);
             this.queueRetry(item, active, genericDelayMs, `Fehler erkannt, Auto-Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
             item.lastError = errorText;
@@ -4356,7 +4356,7 @@ export class DownloadManager extends EventEmitter {
           item.retries += 1;
           item.fullStatus = `Verbindungsfehler, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
-          await sleep(retryDelayWithJitter(attempt, 300));
+          await sleep(retryDelayWithJitter(attempt, 200));
           continue;
         }
         throw error;
@@ -4406,7 +4406,7 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
           if (attempt < maxAttempts) {
             item.retries += 1;
-            await sleep(retryDelayWithJitter(attempt, 280));
+            await sleep(retryDelayWithJitter(attempt, 200));
             continue;
           }
           lastError = "HTTP 416";
@@ -4425,7 +4425,7 @@ export class DownloadManager extends EventEmitter {
           item.retries += 1;
           item.fullStatus = `Serverfehler ${response.status}, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
-          await sleep(retryDelayWithJitter(attempt, 350));
+          await sleep(retryDelayWithJitter(attempt, 250));
           continue;
         }
         throw new Error(lastError);
@@ -4818,7 +4818,7 @@ export class DownloadManager extends EventEmitter {
           item.retries += 1;
           item.fullStatus = `Downloadfehler, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
-          await sleep(retryDelayWithJitter(attempt, 350));
+          await sleep(retryDelayWithJitter(attempt, 250));
           continue;
         }
         throw new Error(lastError || "Download fehlgeschlagen");
