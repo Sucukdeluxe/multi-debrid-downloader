@@ -20,7 +20,7 @@ import {
 } from "../shared/types";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
-import { DebridService, MegaWebUnrestrictor } from "./debrid";
+import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -1190,6 +1190,7 @@ export class DownloadManager extends EventEmitter {
     let addedPackages = 0;
     let addedLinks = 0;
     const unresolvedByLink = new Map<string, string[]>();
+    const newItemIds: string[] = [];
     for (const pkg of packages) {
       const links = pkg.links.filter((link) => !!link.trim());
       if (links.length === 0) {
@@ -1250,6 +1251,7 @@ export class DownloadManager extends EventEmitter {
           existing.push(itemId);
           unresolvedByLink.set(link, existing);
         }
+        newItemIds.push(itemId);
         addedLinks += 1;
       }
 
@@ -1262,6 +1264,9 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
     if (unresolvedByLink.size > 0) {
       void this.resolveQueuedFilenames(unresolvedByLink).catch((err) => logger.warn(`resolveQueuedFilenames Fehler (addPackages): ${compactErrorText(err)}`));
+    }
+    if (newItemIds.length > 0) {
+      void this.checkRapidgatorLinks(newItemIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler: ${compactErrorText(err)}`));
     }
     return { addedPackages, addedLinks };
   }
@@ -1512,6 +1517,62 @@ export class DownloadManager extends EventEmitter {
       }
     } catch (error) {
       logger.warn(`Dateinamen-Resolve fehlgeschlagen: ${compactErrorText(error)}`);
+    }
+  }
+
+  private async checkRapidgatorLinks(itemIds: string[]): Promise<void> {
+    const checked = new Map<string, Awaited<ReturnType<typeof checkRapidgatorOnline>>>();
+    const itemsToCheck: Array<{ itemId: string; url: string }> = [];
+
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || item.status !== "queued") continue;
+      itemsToCheck.push({ itemId, url: item.url });
+    }
+
+    const uniqueUrls = [...new Set(itemsToCheck.map(i => i.url))];
+    const concurrency = 4;
+    const queue = [...uniqueUrls];
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const url = queue.shift()!;
+        const result = await checkRapidgatorOnline(url);
+        if (result !== null) checked.set(url, result);
+      }
+    });
+    await Promise.all(workers);
+
+    if (checked.size === 0) return;
+
+    let changed = false;
+    for (const { itemId, url } of itemsToCheck) {
+      const result = checked.get(url);
+      if (!result) continue;
+      const item = this.session.items[itemId];
+      if (!item || item.status !== "queued") continue;
+
+      if (!result.online) {
+        item.status = "failed";
+        item.fullStatus = "Offline";
+        item.lastError = "Datei nicht gefunden auf Rapidgator";
+        item.updatedAt = nowMs();
+        changed = true;
+      } else {
+        if (result.fileName && looksLikeOpaqueFilename(item.fileName)) {
+          item.fileName = sanitizeFilename(result.fileName);
+          this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
+          item.updatedAt = nowMs();
+          changed = true;
+        }
+        item.fullStatus = "Online";
+        item.updatedAt = nowMs();
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.persistSoon();
+      this.emitState();
     }
   }
 
