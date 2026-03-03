@@ -374,7 +374,33 @@ function sortPackageOrderByHoster(order: string[], packages: Record<string, Pack
   return sorted;
 }
 
-type PkgSortColumn = "name" | "size" | "hoster";
+function sortPackageOrderByProgress(order: string[], packages: Record<string, PackageEntry>, items: Record<string, DownloadItem>, descending: boolean): string[] {
+  const sorted = [...order];
+  sorted.sort((a, b) => {
+    const progressA = computePackageProgress(packages[a], items);
+    const progressB = computePackageProgress(packages[b], items);
+    const cmp = progressA - progressB;
+    return descending ? -cmp : cmp;
+  });
+  return sorted;
+}
+
+function computePackageProgress(pkg: PackageEntry | undefined, items: Record<string, DownloadItem>): number {
+  if (!pkg) return 0;
+  const ids = pkg.itemIds ?? [];
+  if (ids.length === 0) return 0;
+  let totalDown = 0;
+  let totalSize = 0;
+  for (const id of ids) {
+    const item = items[id];
+    if (!item) continue;
+    totalDown += item.downloadedBytes || 0;
+    totalSize += item.totalBytes || item.downloadedBytes || 0;
+  }
+  return totalSize > 0 ? totalDown / totalSize : 0;
+}
+
+type PkgSortColumn = "name" | "size" | "hoster" | "progress";
 
 function sameStringArray(a: string[], b: string[]): boolean {
   if (a.length !== b.length) {
@@ -807,6 +833,25 @@ export function App(): ReactElement {
       setShowAllPackages(false);
     }
   }, [snapshot.session.running]);
+
+  // Auto-expand packages that are currently extracting
+  useEffect(() => {
+    const extractingPkgIds: string[] = [];
+    for (const pkg of packages) {
+      if (collapsedPackages[pkg.id]) {
+        const items = (pkg.itemIds ?? []).map((id) => snapshot.session.items[id]).filter(Boolean);
+        const isExtracting = items.some((item) => item.fullStatus?.startsWith("Entpacken -") && !item.fullStatus?.includes("Done"));
+        if (isExtracting) extractingPkgIds.push(pkg.id);
+      }
+    }
+    if (extractingPkgIds.length > 0) {
+      setCollapsedPackages((prev) => {
+        const next = { ...prev };
+        for (const id of extractingPkgIds) next[id] = false;
+        return next;
+      });
+    }
+  }, [packages, snapshot.session.items]);
 
   const allPackagesCollapsed = useMemo(() => (
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
@@ -2105,13 +2150,10 @@ export function App(): ReactElement {
               </button>
             </div>
             <div className="pkg-column-header">
-              {(["name", "size", "hoster"] as PkgSortColumn[]).flatMap((col) => {
-                const labels: Record<PkgSortColumn, string> = { name: "Name", size: "Geladen / Größe", hoster: "Hoster" };
+              {(["name", "progress", "size", "hoster"] as PkgSortColumn[]).flatMap((col) => {
+                const labels: Record<PkgSortColumn, string> = { name: "Name", progress: "Fortschritt", size: "Geladen / Größe", hoster: "Hoster" };
                 const isActive = downloadsSortColumn === col;
-                const before: React.ReactNode[] = [];
-                if (col === "size") before.push(<span key="progress" className="pkg-col pkg-col-progress">Fortschritt</span>);
                 return [
-                  ...before,
                   <span
                     key={col}
                     className={`pkg-col pkg-col-${col} sortable${isActive ? " sort-active" : ""}`}
@@ -2121,7 +2163,9 @@ export function App(): ReactElement {
                       setDownloadsSortDescending(nextDesc);
                       const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
                       let sorted: string[];
-                      if (col === "size") {
+                      if (col === "progress") {
+                        sorted = sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
+                      } else if (col === "size") {
                         sorted = sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
                       } else if (col === "hoster") {
                         sorted = sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
