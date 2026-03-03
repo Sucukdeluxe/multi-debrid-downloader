@@ -2997,7 +2997,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async acquirePostProcessSlot(): Promise<void> {
-    const maxConcurrent = 2;
+    const maxConcurrent = this.settings.maxParallelExtract || 2;
     if (this.packagePostProcessActive < maxConcurrent) {
       this.packagePostProcessActive += 1;
       return;

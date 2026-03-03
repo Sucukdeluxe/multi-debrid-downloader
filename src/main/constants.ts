@@ -64,6 +64,7 @@ export function defaultSettings(): AppSettings {
     reconnectWaitSeconds: 45,
     completedCleanupPolicy: "never",
     maxParallel: 4,
+    maxParallelExtract: 2,
     retryLimit: 0,
     speedLimitEnabled: false,
     speedLimitKbps: 0,

@@ -96,6 +96,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     autoResumeOnStart: Boolean(settings.autoResumeOnStart),
     autoReconnect: Boolean(settings.autoReconnect),
     maxParallel: clampNumber(settings.maxParallel, defaults.maxParallel, 1, 50),
+    maxParallelExtract: clampNumber(settings.maxParallelExtract, defaults.maxParallelExtract, 1, 8),
     retryLimit: clampNumber(settings.retryLimit, defaults.retryLimit, 0, 99),
     reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
     completedCleanupPolicy: settings.completedCleanupPolicy,

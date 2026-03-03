@@ -2431,6 +2431,7 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (Beta)</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
+                    <div><label>Parallele Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /></div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> MKV nach Paketabschluss in Sammelordner verschieben (flach)</label>
                     <label>MKV-Sammelordner</label>
                     <div className="input-row">

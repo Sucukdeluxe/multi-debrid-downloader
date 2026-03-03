@@ -65,6 +65,7 @@ export interface AppSettings {
   reconnectWaitSeconds: number;
   completedCleanupPolicy: FinishedCleanupPolicy;
   maxParallel: number;
+  maxParallelExtract: number;
   retryLimit: number;
   speedLimitEnabled: boolean;
   speedLimitKbps: number;
