@@ -3297,7 +3297,8 @@ export class DownloadManager extends EventEmitter {
           completedAt: nowMs(),
           durationSeconds,
           status: reason === "completed" ? "completed" : "deleted",
-          outputDir: pkg.outputDir
+          outputDir: pkg.outputDir,
+          urls: completedItems.map(item => item.url).filter(Boolean),
         };
         this.onHistoryEntryCallback(entry);
       }
