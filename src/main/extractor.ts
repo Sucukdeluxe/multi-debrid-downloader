@@ -1177,6 +1177,7 @@ async function runExternalExtract(
         );
 
         if (jvmResult.ok) {
+          logger.info(`Entpackt via ${jvmResult.backend || "jvm"}: ${path.basename(archivePath)}`);
           return jvmResult.usedPassword;
         }
         if (jvmResult.aborted) {
@@ -1206,8 +1207,11 @@ async function runExternalExtract(
       timeoutMs,
       hybridMode
     );
+    const extractorName = path.basename(command).replace(/\.exe$/i, "");
     if (jvmFailureReason) {
-      logger.info(`Legacy-Extractor übernahm nach JVM-Fehler: ${path.basename(archivePath)}`);
+      logger.info(`Entpackt via legacy/${extractorName} (nach JVM-Fehler): ${path.basename(archivePath)}`);
+    } else {
+      logger.info(`Entpackt via legacy/${extractorName}: ${path.basename(archivePath)}`);
     }
     return password;
   } finally {
