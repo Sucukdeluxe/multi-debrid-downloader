@@ -254,9 +254,31 @@ function registerIpcHandlers(): void {
       return false;
     }
   });
-  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: Partial<AppSettings>) => {
-    const validated = validatePlainObject(partial ?? {}, "partial");
-    const result = controller.updateSettings(validated as Partial<AppSettings>);
+  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, async (_event: IpcMainInvokeEvent, partial: Partial<AppSettings>) => {
+    const validated = validatePlainObject(partial ?? {}, "partial") as Partial<AppSettings>;
+    const oldSettings = controller.getSettings();
+    const dirKeys = ["outputDir", "extractDir", "mkvLibraryDir"] as const;
+    for (const key of dirKeys) {
+      const newVal = validated[key];
+      if (typeof newVal === "string" && newVal.trim() && newVal !== oldSettings[key]) {
+        if (!fs.existsSync(newVal)) {
+          const msgOpts = {
+            type: "question" as const,
+            buttons: ["Ja", "Nein"],
+            defaultId: 0,
+            title: "Ordner erstellen?",
+            message: `Der Ordner existiert nicht:\n${newVal}\n\nSoll er erstellt werden?`
+          };
+          const { response } = mainWindow
+            ? await dialog.showMessageBox(mainWindow, msgOpts)
+            : await dialog.showMessageBox(msgOpts);
+          if (response === 0) {
+            fs.mkdirSync(newVal, { recursive: true });
+          }
+        }
+      }
+    }
+    const result = controller.updateSettings(validated);
     updateClipboardWatcher();
     updateTray();
     return result;
