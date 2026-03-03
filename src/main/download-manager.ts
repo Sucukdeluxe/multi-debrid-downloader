@@ -4988,11 +4988,26 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    // Pre-compute: does the package still have any non-terminal items?
+    const packageHasPendingItems = pkg.itemIds.some((itemId) => {
+      const item = this.session.items[itemId];
+      return item != null && item.status !== "completed" && item.status !== "failed" && item.status !== "cancelled";
+    });
+
     for (const candidate of candidates) {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
       if (allPartsCompleted) {
         const candidateBase = path.basename(candidate).toLowerCase();
+
+        // For multi-part archives (.part1.rar), require ALL package items to be terminal.
+        // partsOnDisk only contains parts found ON DISK — pending parts that haven't been
+        // downloaded yet (no targetPath, no fileName) would slip through the regular checks.
+        if (/\.part0*1\.rar$/i.test(candidateBase) && packageHasPendingItems) {
+          logger.info(`Hybrid-Extract: ${path.basename(candidate)} übersprungen – Paket hat noch ausstehende Items`);
+          continue;
+        }
+
         const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
           const pendingName = path.basename(pendingPath).toLowerCase();
           return this.looksLikeArchivePart(pendingName, candidateBase);

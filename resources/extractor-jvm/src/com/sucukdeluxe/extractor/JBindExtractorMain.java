@@ -356,7 +356,10 @@ public final class JBindExtractorMain {
         if (!encrypted || result == null) {
             return false;
         }
-        return result == ExtractOperationResult.CRCERROR || result == ExtractOperationResult.DATAERROR;
+        // Only DATAERROR reliably indicates wrong password. CRCERROR can also mean
+        // a genuinely corrupt or incomplete archive, and 7z-JBinding sometimes
+        // falsely reports encrypted=true for non-encrypted RAR files.
+        return result == ExtractOperationResult.DATAERROR;
     }
 
     private static boolean looksLikeWrongPassword(Throwable error, boolean encrypted) {
@@ -367,7 +370,9 @@ public final class JBindExtractorMain {
         if (text.contains("wrong password") || text.contains("falsches passwort")) {
             return true;
         }
-        return encrypted && (text.contains("crc") || text.contains("data error") || text.contains("checksum"));
+        // Only "data error" suggests wrong password. CRC errors can also mean
+        // corrupt/incomplete archives, so we don't treat them as password failures.
+        return encrypted && text.contains("data error");
     }
 
     private static boolean shouldUseZip4j(File archiveFile) {
