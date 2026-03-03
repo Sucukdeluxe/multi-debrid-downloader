@@ -1169,38 +1169,63 @@ async function runExternalExtract(
         }
         logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
       } else {
+        if (hybridMode) {
+          try {
+            const archiveStat = await fs.promises.stat(archivePath);
+            logger.info(`Hybrid-Extract JVM: ${path.basename(archivePath)} (${(archiveStat.size / 1048576).toFixed(1)} MB)`);
+          } catch (statErr) {
+            logger.warn(`Hybrid-Extract JVM: Archiv nicht zugreifbar: ${path.basename(archivePath)} — ${String(statErr)}`);
+          }
+        }
         logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}`);
-        const jvmResult = await runJvmExtractCommand(
-          layout,
-          archivePath,
-          targetDir,
-          conflictMode,
-          passwordCandidates,
-          onArchiveProgress,
-          signal,
-          timeoutMs
-        );
+        const maxJvmAttempts = hybridMode ? 2 : 1;
+        for (let jvmAttempt = 1; jvmAttempt <= maxJvmAttempts; jvmAttempt++) {
+          const jvmResult = await runJvmExtractCommand(
+            layout,
+            archivePath,
+            targetDir,
+            conflictMode,
+            passwordCandidates,
+            onArchiveProgress,
+            signal,
+            timeoutMs
+          );
 
-        if (jvmResult.ok) {
-          logger.info(`Entpackt via ${jvmResult.backend || "jvm"} [CPU=Idle, I/O=Normal, single-thread]: ${path.basename(archivePath)}`);
-          return jvmResult.usedPassword;
-        }
-        if (jvmResult.aborted) {
-          throw new Error("aborted:extract");
-        }
-        if (jvmResult.timedOut) {
-          throw new Error(jvmResult.errorText || `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`);
-        }
+          if (jvmResult.ok) {
+            if (jvmAttempt > 1) {
+              logger.info(`JVM-Extractor Retry #${jvmAttempt - 1} erfolgreich: ${path.basename(archivePath)}`);
+            }
+            logger.info(`Entpackt via ${jvmResult.backend || "jvm"} [CPU=Idle, I/O=Normal, single-thread]: ${path.basename(archivePath)}`);
+            return jvmResult.usedPassword;
+          }
+          if (jvmResult.aborted) {
+            throw new Error("aborted:extract");
+          }
+          if (jvmResult.timedOut) {
+            throw new Error(jvmResult.errorText || `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`);
+          }
 
-        jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
-        const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
-        if (backendMode === "jvm" && !isUnsupportedMethod) {
-          throw new Error(jvmFailureReason);
-        }
-        if (isUnsupportedMethod) {
-          logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
-        } else {
-          logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
+          jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
+
+          // In hybrid mode, retry once on "codecs" / "can't be opened" errors —
+          // these can be caused by transient Windows file locks right after download completion.
+          const isTransientOpen = jvmFailureReason.includes("codecs") || jvmFailureReason.includes("can't be opened");
+          if (hybridMode && isTransientOpen && jvmAttempt < maxJvmAttempts) {
+            logger.warn(`JVM-Extractor Hybrid-Retry: ${jvmFailureReason} — warte 3s vor Versuch #${jvmAttempt + 1}: ${path.basename(archivePath)}`);
+            await new Promise((r) => setTimeout(r, 3000));
+            continue;
+          }
+
+          const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
+          if (backendMode === "jvm" && !isUnsupportedMethod) {
+            throw new Error(jvmFailureReason);
+          }
+          if (isUnsupportedMethod) {
+            logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
+          } else {
+            logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
+          }
+          break;
         }
       }
     }
