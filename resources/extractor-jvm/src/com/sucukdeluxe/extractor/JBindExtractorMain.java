@@ -337,37 +337,37 @@ public final class JBindExtractorMain {
             return new SevenZipArchiveContext(archive, null, volumed, callback);
         }
 
-        RandomAccessFile raf = new RandomAccessFile(archiveFile, "r");
-        RandomAccessFileInStream stream = new RandomAccessFileInStream(raf);
-
         // Multi-part RAR (.part1.rar, .part2.rar or old-style .rar/.r01/.r02):
-        // Auto-detection with null format can fail for multi-volume RAR because
-        // 7z-JBinding may not fully recognize the format from a single part.
-        // Specify the format explicitly (try RAR5 first, then RAR4).
-        if (RAR_MULTIPART_RE.matcher(nameLower).matches() || hasOldStyleRarSplits(archiveFile)) {
-            ArchiveFormat[] rarFormats = { ArchiveFormat.RAR5, ArchiveFormat.RAR };
+        // The first stream MUST be obtained via the callback so the volume name
+        // tracker is properly initialized. 7z-JBinding uses getProperty(NAME)
+        // to compute subsequent volume filenames.
+        boolean isMultiPartRar = RAR_MULTIPART_RE.matcher(nameLower).matches()
+            || hasOldStyleRarSplits(archiveFile);
+
+        if (isMultiPartRar) {
+            IInStream inStream = callback.getStream(archiveFile.getAbsolutePath());
+            if (inStream == null) {
+                throw new IOException("Archiv konnte nicht geoeffnet werden: " + archiveFile.getAbsolutePath());
+            }
+            // Try RAR5 first (modern), then RAR4, then auto-detect
             Exception lastError = null;
+            ArchiveFormat[] rarFormats = { ArchiveFormat.RAR5, ArchiveFormat.RAR, null };
             for (ArchiveFormat fmt : rarFormats) {
                 try {
-                    stream.seek(0L, 0);
-                    IInArchive archive = SevenZip.openInArchive(fmt, stream, callback);
-                    return new SevenZipArchiveContext(archive, stream, null, callback);
+                    inStream.seek(0L, 0);
+                    IInArchive archive = SevenZip.openInArchive(fmt, inStream, callback);
+                    return new SevenZipArchiveContext(archive, null, null, callback);
                 } catch (Exception e) {
                     lastError = e;
                 }
             }
-            // Final attempt with auto-detection
-            try {
-                stream.seek(0L, 0);
-                IInArchive archive = SevenZip.openInArchive(null, stream, callback);
-                return new SevenZipArchiveContext(archive, stream, null, callback);
-            } catch (Exception e) {
-                // Close the RAF since we're about to throw
-                try { raf.close(); } catch (Throwable ignored) {}
-                throw lastError != null ? lastError : e;
-            }
+            callback.close();
+            throw lastError != null ? lastError : new IOException("Archiv konnte nicht geoeffnet werden");
         }
 
+        // Single-file archives: open directly with auto-detection
+        RandomAccessFile raf = new RandomAccessFile(archiveFile, "r");
+        RandomAccessFileInStream stream = new RandomAccessFileInStream(raf);
         IInArchive archive = SevenZip.openInArchive(null, stream, callback);
         return new SevenZipArchiveContext(archive, stream, null, callback);
     }
@@ -840,20 +840,22 @@ public final class JBindExtractorMain {
 
     private static final class SevenZipVolumeCallback implements IArchiveOpenCallback, IArchiveOpenVolumeCallback, ICryptoGetTextPassword, Closeable {
         private final File archiveDir;
-        private final String firstFileName;
         private final String password;
         private final Map<String, RandomAccessFile> openRafs = new HashMap<String, RandomAccessFile>();
+        // Must track the LAST opened volume name — 7z-JBinding queries this via
+        // getProperty(NAME) to compute the next volume filename.
+        private volatile String currentVolumeName;
 
         SevenZipVolumeCallback(File archiveFile, String password) {
             this.archiveDir = archiveFile.getAbsoluteFile().getParentFile();
-            this.firstFileName = archiveFile.getName();
+            this.currentVolumeName = archiveFile.getName();
             this.password = password == null ? "" : password;
         }
 
         @Override
         public Object getProperty(PropID propID) {
             if (propID == PropID.NAME) {
-                return firstFileName;
+                return currentVolumeName;
             }
             return null;
         }
@@ -872,6 +874,9 @@ public final class JBindExtractorMain {
                     openRafs.put(key, raf);
                 }
                 raf.seek(0L);
+                // Update current volume name so getProperty(NAME) returns the
+                // correct value when 7z-JBinding computes the next volume.
+                currentVolumeName = filename;
                 return new RandomAccessFileInStream(raf);
             } catch (IOException error) {
                 throw new SevenZipException("Volume konnte nicht geoffnet werden: " + filename, error);
