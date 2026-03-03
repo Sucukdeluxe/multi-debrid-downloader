@@ -18,6 +18,8 @@ _update_staging/
 apply_update.cmd
 
 .claude/
+.github/
+docs/plans/
 
 node_modules/
 .vite/
