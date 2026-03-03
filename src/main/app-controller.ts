@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import {
@@ -23,6 +24,7 @@ import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
+import { decryptCredentials, encryptCredentials, SENSITIVE_KEYS } from "./backup-crypto";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -253,9 +255,16 @@ export class AppController {
   }
 
   public exportBackup(): string {
-    const settings = this.settings;
+    const settingsCopy = { ...this.settings } as Record<string, unknown>;
+    const sensitiveFields: Record<string, string> = {};
+    for (const key of SENSITIVE_KEYS) {
+      sensitiveFields[key] = String(settingsCopy[key] ?? "");
+      delete settingsCopy[key];
+    }
+    const username = os.userInfo().username;
+    const credentials = encryptCredentials(sensitiveFields, username);
     const session = this.manager.getSession();
-    return JSON.stringify({ version: 1, settings, session }, null, 2);
+    return JSON.stringify({ version: 2, settings: settingsCopy, credentials, session }, null, 2);
   }
 
   public importBackup(json: string): { restored: boolean; message: string } {
@@ -268,7 +277,28 @@ export class AppController {
     if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.session) {
       return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
     }
-    const restoredSettings = normalizeSettings(parsed.settings as AppSettings);
+
+    const version = typeof parsed.version === "number" ? parsed.version : 1;
+    let settingsObj = parsed.settings as Record<string, unknown>;
+
+    if (version >= 2) {
+      const creds = parsed.credentials as { salt: string; iv: string; tag: string; data: string } | undefined;
+      if (!creds || !creds.salt || !creds.iv || !creds.tag || !creds.data) {
+        return { restored: false, message: "Backup v2: Verschlüsselte Zugangsdaten fehlen" };
+      }
+      try {
+        const username = os.userInfo().username;
+        const decrypted = decryptCredentials(creds, username);
+        settingsObj = { ...settingsObj, ...decrypted };
+      } catch {
+        return {
+          restored: false,
+          message: "Entschlüsselung fehlgeschlagen. Das Backup wurde mit einem anderen Benutzer erstellt."
+        };
+      }
+    }
+
+    const restoredSettings = normalizeSettings(settingsObj as AppSettings);
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
