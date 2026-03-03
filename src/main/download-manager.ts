@@ -5216,7 +5216,7 @@ export class DownloadManager extends EventEmitter {
       let allMissingExistOnDisk = true;
       for (const part of missingParts) {
         try {
-          const stat = fs.statSync(part);
+          const stat = await fs.promises.stat(part);
           if (stat.size < 10240) {
             allMissingExistOnDisk = false;
             break;
@@ -5466,7 +5466,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       try {
-        const stat = fs.statSync(item.targetPath);
+        const stat = await fs.promises.stat(item.targetPath);
         // Require file to be either ≥50% of expected size or at least 10 KB to avoid
         // recovering tiny error-response files (e.g. 9-byte "Forbidden" pages).
         const minSize = item.totalBytes && item.totalBytes > 0

@@ -69,9 +69,10 @@ const emptySnapshot = (): UiSnapshot => ({
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    maxParallel: 4, maxParallelExtract: 2, retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, bandwidthSchedules: []
+    theme: "dark", collapseNewPackages: true, autoSkipExtracted: false, confirmDeleteSelection: true,
+    bandwidthSchedules: [], totalDownloadedAllTime: 0
   },
   session: {
     version: 2, packageOrder: [], packages: {}, items: {}, runStartedAt: 0,
@@ -144,7 +145,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastUpdateRef = useRef<number>(0);
-  const [, forceUpdate] = useState(0);
+
   const animationFrameRef = useRef<number>(0);
 
   const drawChart = useCallback(() => {
@@ -268,13 +269,10 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 
   useEffect(() => {
     const interval = setInterval(() => {
-      const now = Date.now();
-      if (now - lastUpdateRef.current >= 250) {
-        forceUpdate((n) => n + 1);
-      }
+      drawChart();
     }, 250);
     return () => clearInterval(interval);
-  }, []);
+  }, [drawChart]);
 
   useEffect(() => {
     const now = Date.now();
@@ -313,7 +311,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 
   useEffect(() => {
     drawChart();
-  });
+  }, [drawChart, items, paused]);
 
   return (
     <div ref={containerRef} className="bandwidth-chart-container">
@@ -466,6 +464,8 @@ export function App(): ReactElement {
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
   const latestStateRef = useRef<UiSnapshot | null>(null);
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1649,13 +1649,11 @@ export function App(): ReactElement {
   }, [contextMenu]);
 
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
-    setSnapshot((prev) => {
-      for (const id of ids) {
-        if (prev.session.items[id]) void window.rd.removeItem(id);
-        else if (prev.session.packages[id]) void window.rd.cancelPackage(id);
-      }
-      return prev;
-    });
+    const current = snapshotRef.current;
+    for (const id of ids) {
+      if (current.session.items[id]) void window.rd.removeItem(id);
+      else if (current.session.packages[id]) void window.rd.cancelPackage(id);
+    }
     setSelectedIds(new Set());
   }, []);
 
@@ -1752,10 +1750,7 @@ export function App(): ReactElement {
         if (!e.shiftKey && e.key.toLowerCase() === "o") {
           e.preventDefault();
           setOpenMenu(null);
-          void window.rd.pickContainers().then(async (files) => {
-            if (files.length === 0) { return; }
-            await window.rd.addContainers(files);
-          }).catch(() => undefined);
+          void onImportDlc();
           return;
         }
       }
