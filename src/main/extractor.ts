@@ -1190,10 +1190,15 @@ async function runExternalExtract(
         }
 
         jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
-        if (backendMode === "jvm") {
+        const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
+        if (backendMode === "jvm" && !isUnsupportedMethod) {
           throw new Error(jvmFailureReason);
         }
-        logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
+        if (isUnsupportedMethod) {
+          logger.warn(`JVM-Extractor: Komprimierungsmethode nicht unterstützt, fallback auf Legacy: ${path.basename(archivePath)}`);
+        } else {
+          logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
+        }
       }
     }
 
