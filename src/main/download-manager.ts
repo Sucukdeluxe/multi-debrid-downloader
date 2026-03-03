@@ -3537,6 +3537,9 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
+        continue;
+      }
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
         if (!item) {
@@ -3562,6 +3565,9 @@ export class DownloadManager extends EventEmitter {
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
         continue;
       }
       for (const itemId of pkg.itemIds) {
@@ -3598,6 +3604,9 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(item.packageId)) {
+        continue;
+      }
       return true;
     }
     return false;
@@ -3608,6 +3617,9 @@ export class DownloadManager extends EventEmitter {
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
         continue;
       }
       for (const itemId of pkg.itemIds) {
