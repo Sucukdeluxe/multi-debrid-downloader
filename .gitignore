@@ -17,6 +17,8 @@ rd_download_manifest.json
 _update_staging/
 apply_update.cmd
 
+.claude/
+
 node_modules/
 .vite/
 coverage/
