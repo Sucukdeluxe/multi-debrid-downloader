@@ -2890,9 +2890,8 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
             ) : "-";
           })()}</span>
           <span className="pkg-col pkg-col-hoster" title={formatHoster(item)}>{formatHoster(item)}</span>
-          <span className="pkg-col pkg-col-status" title={item.fullStatus}>
+          <span className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
             {item.fullStatus}
-            {item.retries > 0 && ` · R${item.retries}`}
           </span>
           <span className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : "-"}</span>
         </div>
