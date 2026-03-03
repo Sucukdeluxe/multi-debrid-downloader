@@ -9,6 +9,15 @@ import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 
 const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
 const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installieren.";
+const NO_JVM_EXTRACTOR_MESSAGE = "7-Zip-JBinding Runtime nicht gefunden. Bitte resources/extractor-jvm prüfen.";
+const JVM_EXTRACTOR_MAIN_CLASS = "com.sucukdeluxe.extractor.JBindExtractorMain";
+const JVM_EXTRACTOR_CLASSES_SUBDIR = "classes";
+const JVM_EXTRACTOR_LIB_SUBDIR = "lib";
+const JVM_EXTRACTOR_REQUIRED_LIBS = [
+  "sevenzipjbinding.jar",
+  "sevenzipjbinding-all-platforms.jar",
+  "zip4j.jar"
+];
 
 // ── subst drive mapping for long paths on Windows ──
 const SUBST_THRESHOLD = 100;
@@ -296,6 +305,9 @@ function parseProgressPercent(chunk: string): number | null {
 }
 
 async function shouldPreferExternalZip(archivePath: string): Promise<boolean> {
+  if (extractorBackendMode() !== "legacy") {
+    return true;
+  }
   try {
     const stat = await fs.promises.stat(archivePath);
     return stat.size >= 64 * 1024 * 1024;
@@ -680,6 +692,365 @@ function runExtractCommand(
   });
 }
 
+type ExtractBackendMode = "auto" | "jvm" | "legacy";
+
+type JvmExtractorLayout = {
+  javaCommand: string;
+  classPath: string;
+  rootDir: string;
+};
+
+type JvmExtractResult = {
+  ok: boolean;
+  missingCommand: boolean;
+  missingRuntime: boolean;
+  aborted: boolean;
+  timedOut: boolean;
+  errorText: string;
+  usedPassword: string;
+  backend: string;
+};
+
+function extractorBackendMode(): ExtractBackendMode {
+  const defaultMode = process.env.VITEST ? "legacy" : "auto";
+  const raw = String(process.env.RD_EXTRACT_BACKEND || defaultMode).trim().toLowerCase();
+  if (raw === "legacy") {
+    return "legacy";
+  }
+  if (raw === "jvm" || raw === "jbind" || raw === "7zjbinding") {
+    return "jvm";
+  }
+  return "auto";
+}
+
+function isJvmRuntimeMissingError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("could not find or load main class")
+    || text.includes("classnotfoundexception")
+    || text.includes("noclassdeffounderror")
+    || text.includes("unsatisfiedlinkerror")
+    || text.includes("enoent");
+}
+
+function resolveJavaCommandCandidates(): string[] {
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const localAppData = process.env.LOCALAPPDATA || "";
+
+  const candidates = [
+    process.env.RD_JAVA_BIN || "",
+    path.join(programFiles, "JDownloader", "jre", "bin", "java.exe"),
+    path.join(programFilesX86, "JDownloader", "jre", "bin", "java.exe"),
+    localAppData ? path.join(localAppData, "JDownloader", "jre", "bin", "java.exe") : "",
+    "java"
+  ].filter(Boolean);
+
+  return Array.from(new Set(candidates));
+}
+
+function resolveJvmExtractorRootCandidates(): string[] {
+  const fromEnv = String(process.env.RD_EXTRACTOR_JVM_DIR || "").trim();
+  const electronResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath || "";
+  const candidates = [
+    fromEnv,
+    path.join(process.cwd(), "resources", "extractor-jvm"),
+    path.join(process.cwd(), "build", "resources", "extractor-jvm"),
+    path.join(__dirname, "..", "..", "..", "resources", "extractor-jvm"),
+    electronResourcesPath ? path.join(electronResourcesPath, "extractor-jvm") : ""
+  ].filter(Boolean);
+  return Array.from(new Set(candidates));
+}
+
+let cachedJvmLayout: JvmExtractorLayout | null | undefined;
+
+function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
+  if (cachedJvmLayout !== undefined) {
+    return cachedJvmLayout;
+  }
+  const javaCandidates = resolveJavaCommandCandidates();
+  const javaCommand = javaCandidates.find((candidate) => {
+    if (!candidate) {
+      return false;
+    }
+    if (!isAbsoluteCommand(candidate)) {
+      return true;
+    }
+    return fs.existsSync(candidate);
+  }) || "";
+
+  if (!javaCommand) {
+    return null;
+  }
+
+  for (const rootDir of resolveJvmExtractorRootCandidates()) {
+    const classesDir = path.join(rootDir, JVM_EXTRACTOR_CLASSES_SUBDIR);
+    if (!fs.existsSync(classesDir)) {
+      continue;
+    }
+    const libs = JVM_EXTRACTOR_REQUIRED_LIBS.map((name) => path.join(rootDir, JVM_EXTRACTOR_LIB_SUBDIR, name));
+    if (libs.some((filePath) => !fs.existsSync(filePath))) {
+      continue;
+    }
+    const classPath = [classesDir, ...libs].join(path.delimiter);
+    const layout = { javaCommand, classPath, rootDir };
+    cachedJvmLayout = layout;
+    return layout;
+  }
+
+  cachedJvmLayout = null;
+  return null;
+}
+
+function parseJvmLine(
+  line: string,
+  onArchiveProgress: ((percent: number) => void) | undefined,
+  state: { bestPercent: number; usedPassword: string; backend: string; reportedError: string }
+): void {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) {
+    return;
+  }
+
+  if (trimmed.startsWith("RD_PROGRESS ")) {
+    const parsed = parseProgressPercent(trimmed);
+    if (parsed !== null && parsed > state.bestPercent) {
+      state.bestPercent = parsed;
+      onArchiveProgress?.(parsed);
+    }
+    return;
+  }
+
+  if (trimmed.startsWith("RD_PASSWORD ")) {
+    const encoded = trimmed.slice("RD_PASSWORD ".length).trim();
+    try {
+      state.usedPassword = Buffer.from(encoded, "base64").toString("utf8");
+    } catch {
+      state.usedPassword = "";
+    }
+    return;
+  }
+
+  if (trimmed.startsWith("RD_BACKEND ")) {
+    state.backend = trimmed.slice("RD_BACKEND ".length).trim();
+    return;
+  }
+
+  if (trimmed.startsWith("RD_ERROR ")) {
+    state.reportedError = trimmed.slice("RD_ERROR ".length).trim();
+  }
+}
+
+function runJvmExtractCommand(
+  layout: JvmExtractorLayout,
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  passwordCandidates: string[],
+  onArchiveProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+  timeoutMs?: number
+): Promise<JvmExtractResult> {
+  if (signal?.aborted) {
+    return Promise.resolve({
+      ok: false,
+      missingCommand: false,
+      missingRuntime: false,
+      aborted: true,
+      timedOut: false,
+      errorText: "aborted:extract",
+      usedPassword: "",
+      backend: ""
+    });
+  }
+
+  const mode = effectiveConflictMode(conflictMode);
+  const args = [
+    "-Dfile.encoding=UTF-8",
+    "-Xms32m",
+    "-Xmx512m",
+    "-cp",
+    layout.classPath,
+    JVM_EXTRACTOR_MAIN_CLASS,
+    "--archive",
+    archivePath,
+    "--target",
+    targetDir,
+    "--conflict",
+    mode,
+    "--backend",
+    "auto"
+  ];
+  for (const password of passwordCandidates) {
+    args.push("--password", password);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let output = "";
+    let timeoutId: NodeJS.Timeout | null = null;
+    let timedOutByWatchdog = false;
+    let abortedBySignal = false;
+    let onAbort: (() => void) | null = null;
+    const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+
+    const child = spawn(layout.javaCommand, args, { windowsHide: true });
+    lowerExtractProcessPriority(child.pid);
+
+    const flushLines = (rawChunk: string, fromStdErr = false): void => {
+      if (!rawChunk) {
+        return;
+      }
+      output = appendLimited(output, rawChunk);
+      const nextBuffer = `${fromStdErr ? stderrBuffer : stdoutBuffer}${rawChunk}`;
+      const lines = nextBuffer.split(/\r?\n/);
+      const keep = lines.pop() || "";
+      for (const line of lines) {
+        parseJvmLine(line, onArchiveProgress, parseState);
+      }
+      if (fromStdErr) {
+        stderrBuffer = keep;
+      } else {
+        stdoutBuffer = keep;
+      }
+    };
+
+    const finish = (result: JvmExtractResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve(result);
+    };
+
+    if (timeoutMs && timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        timedOutByWatchdog = true;
+        killProcessTree(child);
+        finish({
+          ok: false,
+          missingCommand: false,
+          missingRuntime: false,
+          aborted: false,
+          timedOut: true,
+          errorText: `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`,
+          usedPassword: parseState.usedPassword,
+          backend: parseState.backend
+        });
+      }, timeoutMs);
+    }
+
+    onAbort = signal
+      ? (): void => {
+        abortedBySignal = true;
+        killProcessTree(child);
+        finish({
+          ok: false,
+          missingCommand: false,
+          missingRuntime: false,
+          aborted: true,
+          timedOut: false,
+          errorText: "aborted:extract",
+          usedPassword: parseState.usedPassword,
+          backend: parseState.backend
+        });
+      }
+      : null;
+
+    if (signal && onAbort) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout.on("data", (chunk) => {
+      flushLines(String(chunk || ""), false);
+    });
+    child.stderr.on("data", (chunk) => {
+      flushLines(String(chunk || ""), true);
+    });
+
+    child.on("error", (error) => {
+      const text = cleanErrorText(String(error));
+      finish({
+        ok: false,
+        missingCommand: text.toLowerCase().includes("enoent"),
+        missingRuntime: true,
+        aborted: false,
+        timedOut: false,
+        errorText: text,
+        usedPassword: parseState.usedPassword,
+        backend: parseState.backend
+      });
+    });
+
+    child.on("close", (code) => {
+      parseJvmLine(stdoutBuffer, onArchiveProgress, parseState);
+      parseJvmLine(stderrBuffer, onArchiveProgress, parseState);
+
+      if (abortedBySignal) {
+        finish({
+          ok: false,
+          missingCommand: false,
+          missingRuntime: false,
+          aborted: true,
+          timedOut: false,
+          errorText: "aborted:extract",
+          usedPassword: parseState.usedPassword,
+          backend: parseState.backend
+        });
+        return;
+      }
+      if (timedOutByWatchdog) {
+        finish({
+          ok: false,
+          missingCommand: false,
+          missingRuntime: false,
+          aborted: false,
+          timedOut: true,
+          errorText: `Entpacken Timeout nach ${Math.ceil((timeoutMs || 0) / 1000)}s`,
+          usedPassword: parseState.usedPassword,
+          backend: parseState.backend
+        });
+        return;
+      }
+
+      const message = cleanErrorText(parseState.reportedError || output) || `Exit Code ${String(code ?? "?")}`;
+      if (code === 0) {
+        onArchiveProgress?.(100);
+        finish({
+          ok: true,
+          missingCommand: false,
+          missingRuntime: false,
+          aborted: false,
+          timedOut: false,
+          errorText: "",
+          usedPassword: parseState.usedPassword,
+          backend: parseState.backend
+        });
+        return;
+      }
+
+      finish({
+        ok: false,
+        missingCommand: false,
+        missingRuntime: isJvmRuntimeMissingError(message),
+        aborted: false,
+        timedOut: false,
+        errorText: message,
+        usedPassword: parseState.usedPassword,
+        backend: parseState.backend
+      });
+    });
+  });
+}
+
 export function buildExternalExtractArgs(
   command: string,
   archivePath: string,
@@ -772,10 +1143,9 @@ async function runExternalExtract(
   signal?: AbortSignal,
   hybridMode = false
 ): Promise<string> {
-  const command = await resolveExtractorCommand();
-  const passwords = passwordCandidates;
-  let lastError = "";
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
+  const backendMode = extractorBackendMode();
+  let jvmFailureReason = "";
 
   await fs.promises.mkdir(targetDir, { recursive: true });
 
@@ -785,7 +1155,61 @@ async function runExternalExtract(
   const effectiveTargetDir = subst ? `${subst.drive}:` : targetDir;
 
   try {
-    return await runExternalExtractInner(command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, hybridMode);
+    if (backendMode !== "legacy") {
+      const layout = resolveJvmExtractorLayout();
+      if (!layout) {
+        jvmFailureReason = NO_JVM_EXTRACTOR_MESSAGE;
+        if (backendMode === "jvm") {
+          throw new Error(NO_JVM_EXTRACTOR_MESSAGE);
+        }
+        logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
+      } else {
+        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}`);
+        const jvmResult = await runJvmExtractCommand(
+          layout,
+          archivePath,
+          effectiveTargetDir,
+          conflictMode,
+          passwordCandidates,
+          onArchiveProgress,
+          signal,
+          timeoutMs
+        );
+
+        if (jvmResult.ok) {
+          return jvmResult.usedPassword;
+        }
+        if (jvmResult.aborted) {
+          throw new Error("aborted:extract");
+        }
+        if (jvmResult.timedOut) {
+          throw new Error(jvmResult.errorText || `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`);
+        }
+
+        jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
+        if (backendMode === "jvm") {
+          throw new Error(jvmFailureReason);
+        }
+        logger.warn(`JVM-Extractor Fehler, fallback auf Legacy: ${jvmFailureReason}`);
+      }
+    }
+
+    const command = await resolveExtractorCommand();
+    const password = await runExternalExtractInner(
+      command,
+      archivePath,
+      effectiveTargetDir,
+      conflictMode,
+      passwordCandidates,
+      onArchiveProgress,
+      signal,
+      timeoutMs,
+      hybridMode
+    );
+    if (jvmFailureReason) {
+      logger.info(`Legacy-Extractor übernahm nach JVM-Fehler: ${path.basename(archivePath)}`);
+    }
+    return password;
   } finally {
     if (subst) removeSubstMapping(subst);
   }
@@ -1471,7 +1895,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           logger.info(`Nested-Entpacke: ${nestedName} -> ${options.targetDir}${hybrid ? " (hybrid)" : ""}`);
           try {
             const ext = path.extname(nestedArchive).toLowerCase();
-            if (ext === ".zip") {
+            if (ext === ".zip" && !(await shouldPreferExternalZip(nestedArchive))) {
               try {
                 await extractZipArchive(nestedArchive, options.targetDir, options.conflictMode, options.signal);
                 nestedPercent = 100;

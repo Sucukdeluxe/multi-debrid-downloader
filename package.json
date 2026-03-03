@@ -1,6 +1,6 @@
 {
   "name": "real-debrid-downloader",
-  "version": "1.5.42",
+  "version": "1.5.43",
   "description": "Real-Debrid Downloader Desktop (Electron + React + TypeScript)",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -53,6 +53,7 @@
     "files": [
       "build/main/**/*",
       "build/renderer/**/*",
+      "resources/extractor-jvm/**/*",
       "package.json"
     ],
     "win": {
