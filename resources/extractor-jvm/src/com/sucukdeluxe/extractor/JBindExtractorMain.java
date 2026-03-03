@@ -11,7 +11,6 @@ import net.sf.sevenzipjbinding.IInStream;
 import net.sf.sevenzipjbinding.ISequentialOutStream;
 import net.sf.sevenzipjbinding.ICryptoGetTextPassword;
 import net.sf.sevenzipjbinding.PropID;
-import net.sf.sevenzipjbinding.ArchiveFormat;
 import net.sf.sevenzipjbinding.SevenZip;
 import net.sf.sevenzipjbinding.SevenZipException;
 import net.sf.sevenzipjbinding.impl.RandomAccessFileInStream;
@@ -43,8 +42,6 @@ public final class JBindExtractorMain {
     private static final Pattern NUMBERED_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.zip\\.\\d{3}$");
     private static final Pattern OLD_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.z\\d{2,3}$");
     private static final Pattern SEVEN_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.7z\\.001$");
-    private static final Pattern RAR_MULTIPART_RE = Pattern.compile("(?i).*\\.part\\d+\\.rar$");
-    private static final Pattern RAR_OLDSPLIT_RE = Pattern.compile("(?i).*\\.r\\d{2,3}$");
     private static volatile boolean sevenZipInitialized = false;
 
     private JBindExtractorMain() {
@@ -329,77 +326,16 @@ public final class JBindExtractorMain {
         String effectivePassword = password == null ? "" : password;
         SevenZipVolumeCallback callback = new SevenZipVolumeCallback(archiveFile, effectivePassword);
 
-        // VolumedArchiveInStream is ONLY for .7z.001 split archives.
-        // It internally checks for the ".7z.001" suffix and rejects everything else.
         if (SEVEN_ZIP_SPLIT_RE.matcher(nameLower).matches()) {
             VolumedArchiveInStream volumed = new VolumedArchiveInStream(archiveFile.getName(), callback);
             IInArchive archive = SevenZip.openInArchive(null, volumed, callback);
             return new SevenZipArchiveContext(archive, null, volumed, callback);
         }
 
-        // Multi-part RAR (.part1.rar, .part2.rar or old-style .rar/.r01/.r02):
-        // The first stream MUST be obtained via the callback so the volume name
-        // tracker is properly initialized. 7z-JBinding uses getProperty(NAME)
-        // to compute subsequent volume filenames.
-        boolean isMultiPartRar = RAR_MULTIPART_RE.matcher(nameLower).matches()
-            || hasOldStyleRarSplits(archiveFile);
-
-        if (isMultiPartRar) {
-            IInStream inStream = callback.getStream(archiveFile.getAbsolutePath());
-            if (inStream == null) {
-                throw new IOException("Archiv konnte nicht geoeffnet werden: " + archiveFile.getAbsolutePath());
-            }
-            // Try RAR5 first (modern), then RAR4, then auto-detect
-            Exception lastError = null;
-            ArchiveFormat[] rarFormats = { ArchiveFormat.RAR5, ArchiveFormat.RAR, null };
-            for (ArchiveFormat fmt : rarFormats) {
-                try {
-                    inStream.seek(0L, 0);
-                    IInArchive archive = SevenZip.openInArchive(fmt, inStream, callback);
-                    return new SevenZipArchiveContext(archive, null, null, callback);
-                } catch (Exception e) {
-                    lastError = e;
-                }
-            }
-            callback.close();
-            throw lastError != null ? lastError : new IOException("Archiv konnte nicht geoeffnet werden");
-        }
-
-        // Single-file archives: open directly with auto-detection
         RandomAccessFile raf = new RandomAccessFile(archiveFile, "r");
         RandomAccessFileInStream stream = new RandomAccessFileInStream(raf);
         IInArchive archive = SevenZip.openInArchive(null, stream, callback);
         return new SevenZipArchiveContext(archive, stream, null, callback);
-    }
-
-    private static boolean hasOldStyleRarSplits(File archiveFile) {
-        // Old-style RAR splits: main.rar + main.r01, main.r02, ...
-        String name = archiveFile.getName();
-        if (!name.toLowerCase(Locale.ROOT).endsWith(".rar")) {
-            return false;
-        }
-        File parent = archiveFile.getParentFile();
-        if (parent == null || !parent.exists()) {
-            return false;
-        }
-        File[] siblings = parent.listFiles();
-        if (siblings == null) {
-            return false;
-        }
-        String stem = name.substring(0, name.length() - 4);
-        for (File sibling : siblings) {
-            if (!sibling.isFile()) {
-                continue;
-            }
-            String sibName = sibling.getName();
-            if (sibName.length() > stem.length() + 1 && sibName.substring(0, stem.length()).equalsIgnoreCase(stem)) {
-                String suffix = sibName.substring(stem.length());
-                if (RAR_OLDSPLIT_RE.matcher(suffix).matches() || suffix.toLowerCase(Locale.ROOT).matches("\\.r\\d{2,3}")) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private static boolean isWrongPassword(ZipException error, boolean encrypted) {
@@ -420,10 +356,7 @@ public final class JBindExtractorMain {
         if (!encrypted || result == null) {
             return false;
         }
-        // Only DATAERROR reliably indicates wrong password. CRCERROR can also mean
-        // a genuinely corrupt or incomplete archive, and 7z-JBinding sometimes
-        // falsely reports encrypted=true for non-encrypted RAR files.
-        return result == ExtractOperationResult.DATAERROR;
+        return result == ExtractOperationResult.CRCERROR || result == ExtractOperationResult.DATAERROR;
     }
 
     private static boolean looksLikeWrongPassword(Throwable error, boolean encrypted) {
@@ -434,9 +367,7 @@ public final class JBindExtractorMain {
         if (text.contains("wrong password") || text.contains("falsches passwort")) {
             return true;
         }
-        // Only "data error" suggests wrong password. CRC errors can also mean
-        // corrupt/incomplete archives, so we don't treat them as password failures.
-        return encrypted && text.contains("data error");
+        return encrypted && (text.contains("crc") || text.contains("data error") || text.contains("checksum"));
     }
 
     private static boolean shouldUseZip4j(File archiveFile) {
@@ -840,22 +771,20 @@ public final class JBindExtractorMain {
 
     private static final class SevenZipVolumeCallback implements IArchiveOpenCallback, IArchiveOpenVolumeCallback, ICryptoGetTextPassword, Closeable {
         private final File archiveDir;
+        private final String firstFileName;
         private final String password;
         private final Map<String, RandomAccessFile> openRafs = new HashMap<String, RandomAccessFile>();
-        // Must track the LAST opened volume name — 7z-JBinding queries this via
-        // getProperty(NAME) to compute the next volume filename.
-        private volatile String currentVolumeName;
 
         SevenZipVolumeCallback(File archiveFile, String password) {
             this.archiveDir = archiveFile.getAbsoluteFile().getParentFile();
-            this.currentVolumeName = archiveFile.getName();
+            this.firstFileName = archiveFile.getName();
             this.password = password == null ? "" : password;
         }
 
         @Override
         public Object getProperty(PropID propID) {
             if (propID == PropID.NAME) {
-                return currentVolumeName;
+                return firstFileName;
             }
             return null;
         }
@@ -874,9 +803,6 @@ public final class JBindExtractorMain {
                     openRafs.put(key, raf);
                 }
                 raf.seek(0L);
-                // Update current volume name so getProperty(NAME) returns the
-                // correct value when 7z-JBinding computes the next volume.
-                currentVolumeName = filename;
                 return new RandomAccessFileInStream(raf);
             } catch (IOException error) {
                 throw new SevenZipException("Volume konnte nicht geoffnet werden: " + filename, error);
