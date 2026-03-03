@@ -3597,10 +3597,8 @@ export class DownloadManager extends EventEmitter {
     this.lastReconnectMarkAt = 0;
 
     for (const active of this.activeTasks.values()) {
-      if (active.resumable) {
-        active.abortReason = "reconnect";
-        active.abortController.abort("reconnect");
-      }
+      active.abortReason = "reconnect";
+      active.abortController.abort("reconnect");
     }
 
     logger.warn(`Reconnect angefordert: ${reason} (consecutive=${this.consecutiveReconnects}, wait=${Math.ceil(cappedWaitMs / 1000)}s)`);
@@ -4332,20 +4330,17 @@ export class DownloadManager extends EventEmitter {
       let response: Response;
       const connectTimeoutMs = getDownloadConnectTimeoutMs();
       let connectTimer: NodeJS.Timeout | null = null;
+      const connectAbortController = new AbortController();
       try {
         if (connectTimeoutMs > 0) {
           connectTimer = setTimeout(() => {
-            if (active.abortController.signal.aborted) {
-              return;
-            }
-            active.abortReason = "stall";
-            active.abortController.abort("stall");
+            connectAbortController.abort("connect_timeout");
           }, connectTimeoutMs);
         }
         response = await fetch(directUrl, {
           method: "GET",
           headers,
-          signal: active.abortController.signal
+          signal: AbortSignal.any([active.abortController.signal, connectAbortController.signal])
         });
       } catch (error) {
         if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
@@ -4687,7 +4682,7 @@ export class DownloadManager extends EventEmitter {
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
               }
-              if (this.reconnectActive() && active.resumable) {
+              if (this.reconnectActive()) {
                 active.abortReason = "reconnect";
                 active.abortController.abort("reconnect");
                 throw new Error("aborted:reconnect");
@@ -4990,7 +4985,7 @@ export class DownloadManager extends EventEmitter {
     if (failed > 0) {
       pkg.status = "failed";
     } else if (cancelled > 0) {
-      pkg.status = success > 0 ? "failed" : "cancelled";
+      pkg.status = success > 0 ? "completed" : "cancelled";
     } else if (success > 0) {
       pkg.status = "completed";
     }
@@ -5014,13 +5009,17 @@ export class DownloadManager extends EventEmitter {
     const schedules = this.settings.bandwidthSchedules;
     if (schedules.length > 0) {
       const hour = new Date().getHours();
+      let allDayLimit: number | null = null;
       for (const entry of schedules) {
         if (!entry.enabled) {
           continue;
         }
         if (entry.startHour === entry.endHour) {
-          this.cachedSpeedLimitKbps = entry.speedLimitKbps;
-          return this.cachedSpeedLimitKbps;
+          // "All day" schedule — use as fallback, don't block more specific schedules
+          if (allDayLimit === null) {
+            allDayLimit = entry.speedLimitKbps;
+          }
+          continue;
         }
         const wraps = entry.startHour > entry.endHour;
         const inRange = wraps
@@ -5030,6 +5029,10 @@ export class DownloadManager extends EventEmitter {
           this.cachedSpeedLimitKbps = entry.speedLimitKbps;
           return this.cachedSpeedLimitKbps;
         }
+      }
+      if (allDayLimit !== null) {
+        this.cachedSpeedLimitKbps = allDayLimit;
+        return this.cachedSpeedLimitKbps;
       }
     }
     if (this.settings.speedLimitEnabled && this.settings.speedLimitKbps > 0) {
