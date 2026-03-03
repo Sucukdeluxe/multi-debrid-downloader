@@ -87,6 +87,7 @@ export interface ExtractOptions {
   skipPostCleanup?: boolean;
   packageId?: string;
   hybridMode?: boolean;
+  maxParallel?: number;
 }
 
 export interface ExtractProgressUpdate {
@@ -1905,12 +1906,15 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   emitProgress(extracted, "", "extracting");
 
-  for (const archivePath of pendingCandidates) {
-    if (options.signal?.aborted) {
+  const maxParallel = Math.max(1, options.maxParallel || 1);
+  let noExtractorEncountered = false;
+
+  const extractSingleArchive = async (archivePath: string): Promise<void> => {
+    if (options.signal?.aborted || noExtractorEncountered) {
       throw new Error("aborted:extract");
     }
-      const archiveName = path.basename(archivePath);
-      const archiveResumeKey = archiveNameKey(archiveName);
+    const archiveName = path.basename(archivePath);
+    const archiveResumeKey = archiveNameKey(archiveName);
     const archiveStartedAt = Date.now();
     let archivePercent = 0;
     emitProgress(extracted + failed, archiveName, "extracting", archivePercent, 0);
@@ -1930,7 +1934,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       const sig = await detectArchiveSignature(archivePath);
       if (!sig) {
         logger.info(`Generische Split-Datei übersprungen (keine Archiv-Signatur): ${archiveName}`);
-        continue;
+        clearInterval(pulseTimer);
+        return;
       }
       logger.info(`Generische Split-Datei verifiziert (Signatur: ${sig}): ${archiveName}`);
     }
@@ -1994,22 +1999,59 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       failed += 1;
       const errorText = String(error);
       if (isExtractAbortError(errorText)) {
-        throw new Error("aborted:extract");
+        throw error;
       }
       lastError = errorText;
       const errorCategory = classifyExtractionError(errorText);
       logger.error(`Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
       if (isNoExtractorError(errorText)) {
-        const remaining = candidates.length - (extracted + failed);
-        if (remaining > 0) {
-          failed += remaining;
-          emitProgress(candidates.length, archiveName, "extracting", 0, Date.now() - archiveStartedAt);
-        }
-        break;
+        noExtractorEncountered = true;
       }
     } finally {
       clearInterval(pulseTimer);
+    }
+  };
+
+  if (maxParallel <= 1) {
+    for (const archivePath of pendingCandidates) {
+      if (options.signal?.aborted || noExtractorEncountered) break;
+      await extractSingleArchive(archivePath);
+    }
+  } else {
+    // Parallel extraction pool: N workers pull from a shared queue
+    const queue = [...pendingCandidates];
+    let nextIdx = 0;
+    let abortError: Error | null = null;
+
+    const worker = async (): Promise<void> => {
+      while (nextIdx < queue.length && !abortError && !noExtractorEncountered) {
+        if (options.signal?.aborted) break;
+        const idx = nextIdx;
+        nextIdx += 1;
+        try {
+          await extractSingleArchive(queue[idx]);
+        } catch (error) {
+          if (isExtractAbortError(String(error))) {
+            abortError = error instanceof Error ? error : new Error(String(error));
+            break;
+          }
+          // Non-abort errors are already handled inside extractSingleArchive
+        }
+      }
+    };
+
+    const workerCount = Math.min(maxParallel, pendingCandidates.length);
+    logger.info(`Parallele Extraktion: ${workerCount} gleichzeitige Worker für ${pendingCandidates.length} Archive`);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    if (abortError) throw new Error("aborted:extract");
+    if (noExtractorEncountered) {
+      const remaining = candidates.length - (extracted + failed);
+      if (remaining > 0) {
+        failed += remaining;
+        emitProgress(candidates.length, "", "extracting", 0, 0);
+      }
     }
   }
 

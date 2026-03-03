@@ -5516,32 +5516,8 @@ export class DownloadManager extends EventEmitter {
       const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
         resolveArchiveItemsFromList(archiveName, completedItems);
 
-      // Only update items of the currently extracting archive, not all items
-      let currentArchiveItems: DownloadItem[] = [];
-      const updateExtractingStatus = (text: string): void => {
-        const normalized = String(text || "");
-        if (lastExtractStatusText === normalized) {
-          return;
-        }
-        lastExtractStatusText = normalized;
-        const updatedAt = nowMs();
-        for (const entry of currentArchiveItems) {
-          if (isExtractedLabel(entry.fullStatus)) {
-            continue;
-          }
-          if (entry.fullStatus === normalized) {
-            continue;
-          }
-          entry.fullStatus = normalized;
-          entry.updatedAt = updatedAt;
-        }
-      };
-
-      let lastExtractStatusText = "";
       let lastExtractEmitAt = 0;
-      let lastExtractArchiveName = "";
-      const emitExtractStatus = (text: string, force = false): void => {
-        updateExtractingStatus(text);
+      const emitExtractStatus = (_text: string, force = false): void => {
         const now = nowMs();
         if (!force && now - lastExtractEmitAt < EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
           return;
@@ -5586,6 +5562,9 @@ export class DownloadManager extends EventEmitter {
         }
       }, extractTimeoutMs);
       try {
+        // Track multiple active archives for parallel extraction
+        const activeArchiveItemsMap = new Map<string, DownloadItem[]>();
+
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
           targetDir: pkg.extractDir,
@@ -5596,33 +5575,69 @@ export class DownloadManager extends EventEmitter {
           passwordList: this.settings.archivePasswordList,
           signal: extractAbortController.signal,
           packageId,
+          maxParallel: this.settings.maxParallelExtract || 2,
           onProgress: (progress) => {
-            // When a new archive starts, mark the previous archive's items as done
-            if (progress.archiveName && progress.archiveName !== lastExtractArchiveName) {
-              if (lastExtractArchiveName && currentArchiveItems.length > 0) {
+            if (progress.phase === "done") {
+              // Mark all remaining active archives as done
+              for (const [, items] of activeArchiveItemsMap) {
                 const doneAt = nowMs();
-                for (const entry of currentArchiveItems) {
+                for (const entry of items) {
                   if (!isExtractedLabel(entry.fullStatus)) {
                     entry.fullStatus = "Entpackt - Done";
                     entry.updatedAt = doneAt;
                   }
                 }
               }
-              lastExtractArchiveName = progress.archiveName;
-              currentArchiveItems = resolveArchiveItems(progress.archiveName);
+              activeArchiveItemsMap.clear();
+              emitExtractStatus("Entpacken 100%", true);
+              return;
             }
-            const label = progress.phase === "done"
-              ? "Entpacken 100%"
-              : (() => {
+
+            if (progress.archiveName) {
+              // Resolve items for this archive if not yet tracked
+              if (!activeArchiveItemsMap.has(progress.archiveName)) {
+                activeArchiveItemsMap.set(progress.archiveName, resolveArchiveItems(progress.archiveName));
+              }
+              const archiveItems = activeArchiveItemsMap.get(progress.archiveName)!;
+
+              // If archive is at 100%, mark its items as done and remove from active
+              if (Number(progress.archivePercent ?? 0) >= 100) {
+                const doneAt = nowMs();
+                for (const entry of archiveItems) {
+                  if (!isExtractedLabel(entry.fullStatus)) {
+                    entry.fullStatus = "Entpackt - Done";
+                    entry.updatedAt = doneAt;
+                  }
+                }
+                activeArchiveItemsMap.delete(progress.archiveName);
+              } else {
+                // Update this archive's items with current progress
                 const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
                 const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
                   ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
                   : "";
                 const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
                 const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-                return `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
-              })();
-            emitExtractStatus(label);
+                const label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+                const updatedAt = nowMs();
+                for (const entry of archiveItems) {
+                  if (!isExtractedLabel(entry.fullStatus) && entry.fullStatus !== label) {
+                    entry.fullStatus = label;
+                    entry.updatedAt = updatedAt;
+                  }
+                }
+              }
+            }
+
+            // Emit overall status (throttled)
+            const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
+            const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
+              ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
+              : "";
+            const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+            const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+            const overallLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+            emitExtractStatus(overallLabel);
           }
         });
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
