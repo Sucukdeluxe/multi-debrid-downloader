@@ -19,7 +19,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot
 } from "../shared/types";
-import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE } from "./constants";
+import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
@@ -4700,7 +4700,8 @@ export class DownloadManager extends EventEmitter {
 
         const stream = fs.createWriteStream(effectiveTargetPath, {
           flags: preAllocated ? "r+" : writeMode,
-          start: preAllocated ? 0 : undefined
+          start: preAllocated ? 0 : undefined,
+          highWaterMark: STREAM_HIGH_WATER_MARK
         });
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
