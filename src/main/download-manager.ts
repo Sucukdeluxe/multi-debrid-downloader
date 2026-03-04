@@ -2982,6 +2982,9 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
+    // Set running early to prevent concurrent start() calls from passing the guard
+    // while we await recoverRetryableItems below.
+    this.session.running = true;
 
     const recoveredItems = await this.recoverRetryableItems("start");
 
@@ -3197,7 +3200,12 @@ export class DownloadManager extends EventEmitter {
     }
 
     for (const item of Object.values(this.session.items)) {
-      if (item.status === "completed" && /^Entpacken/i.test(item.fullStatus || "")) {
+      if (item.status !== "completed") continue;
+      const fs = item.fullStatus || "";
+      // Only relabel items with active extraction status (e.g. "Entpacken 45%", "Passwort prüfen")
+      // Skip items that were merely waiting ("Entpacken - Ausstehend", "Entpacken - Warten auf Parts")
+      // as they were never actively extracting and "abgebrochen" would be misleading.
+      if (/^Entpacken\b/i.test(fs) && !/Ausstehend/i.test(fs) && !/Warten/i.test(fs) && !isExtractedLabel(fs)) {
         item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
         item.updatedAt = nowMs();
         const pkg = this.session.packages[item.packageId];
@@ -3329,7 +3337,7 @@ export class DownloadManager extends EventEmitter {
         // Preserve extraction-related statuses (Ausstehend, Warten auf Parts, etc.)
         if (/^Entpacken\b/i.test(statusText) || isExtractedLabel(statusText) || /^Fertig\b/i.test(statusText)) {
           // keep as-is
-        } else if (statusText) {
+        } else {
           item.fullStatus = this.settings.autoExtract
             ? "Entpacken - Ausstehend"
             : `Fertig (${humanSize(item.downloadedBytes)})`;
@@ -5668,6 +5676,10 @@ export class DownloadManager extends EventEmitter {
               stream.end();
             });
           } catch (streamCloseError) {
+            // Ensure stream is destroyed before re-throwing to avoid file-handle leaks on Windows
+            if (!stream.destroyed) {
+              stream.destroy();
+            }
             if (!bodyError) {
               throw streamCloseError;
             }
@@ -6496,6 +6508,11 @@ export class DownloadManager extends EventEmitter {
           ? Math.max(10240, Math.floor(item.totalBytes * 0.5))
           : 10240;
         if (stat.size >= minSize) {
+          // Re-check: another task may have started this item during the await
+          if (this.activeTasks.has(item.id) || item.status === "downloading"
+            || item.status === "validating" || item.status === "integrity_check") {
+            continue;
+          }
           logger.info(`Item-Recovery: ${item.fileName} war "${item.status}" aber Datei existiert (${humanSize(stat.size)}), setze auf completed`);
           item.status = "completed";
           item.fullStatus = this.settings.autoExtract ? "Entpacken - Ausstehend" : `Fertig (${humanSize(stat.size)})`;
@@ -6720,8 +6737,8 @@ export class DownloadManager extends EventEmitter {
             // Preserve per-archive "Entpackt - Done (X.Xs)" labels for successfully extracted archives
             if (!isExtractedLabel(entry.fullStatus)) {
               entry.fullStatus = `Entpack-Fehler: ${reason}`;
+              entry.updatedAt = failAt;
             }
-            entry.updatedAt = failAt;
           }
           pkg.status = "failed";
         } else {
@@ -6743,8 +6760,8 @@ export class DownloadManager extends EventEmitter {
             // Preserve per-archive duration labels (e.g. "Entpackt - Done (5.3s)")
             if (!isExtractedLabel(entry.fullStatus)) {
               entry.fullStatus = finalStatusText;
+              entry.updatedAt = finalAt;
             }
-            entry.updatedAt = finalAt;
           }
           pkg.status = "completed";
         }
