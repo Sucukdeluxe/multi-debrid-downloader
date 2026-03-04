@@ -852,13 +852,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   public setSettings(next: AppSettings): void {
-    const prevCleanupPolicy = this.settings.completedCleanupPolicy;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     this.settings = next;
     this.debridService.setSettings(next);
     this.resolveExistingQueuedOpaqueFilenames();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
-    if (prevCleanupPolicy !== next.completedCleanupPolicy && next.completedCleanupPolicy !== "never") {
+    if (next.completedCleanupPolicy !== "never") {
       this.applyRetroactiveCleanupPolicy();
     }
     this.emitState();
