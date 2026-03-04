@@ -292,6 +292,10 @@ function registerIpcHandlers(): void {
     if (!Array.isArray(packageIds)) throw new Error("packageIds muss ein Array sein");
     return controller.startPackages(packageIds);
   });
+  ipcMain.handle(IPC_CHANNELS.START_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+    if (!Array.isArray(itemIds)) throw new Error("itemIds muss ein Array sein");
+    return controller.startItems(itemIds);
+  });
   ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());
   ipcMain.handle(IPC_CHANNELS.TOGGLE_PAUSE, () => controller.togglePause());
   ipcMain.handle(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
@@ -339,13 +343,29 @@ function registerIpcHandlers(): void {
     if (!Array.isArray(itemIds)) throw new Error("itemIds must be an array");
     return controller.skipItems(itemIds);
   });
+  ipcMain.handle(IPC_CHANNELS.RESET_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+    if (!Array.isArray(itemIds)) throw new Error("itemIds must be an array");
+    return controller.resetItems(itemIds);
+  });
   ipcMain.handle(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
   ipcMain.handle(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
   ipcMain.handle(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
     validateString(entryId, "entryId");
     return controller.removeHistoryEntry(entryId);
   });
-  ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, () => controller.exportQueue());
+  ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, async () => {
+    const options = {
+      defaultPath: `rd-queue-export.json`,
+      filters: [{ name: "Queue Export", extensions: ["json"] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) {
+      return { saved: false };
+    }
+    const json = controller.exportQueue();
+    await fs.promises.writeFile(result.filePath, json, "utf8");
+    return { saved: true };
+  });
   ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
     validateString(json, "json");
     const bytes = Buffer.byteLength(json, "utf8");

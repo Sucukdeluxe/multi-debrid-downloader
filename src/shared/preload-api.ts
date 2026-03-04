@@ -34,7 +34,7 @@ export interface ElectronApi {
   reorderPackages: (packageIds: string[]) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   togglePackage: (packageId: string) => Promise<void>;
-  exportQueue: () => Promise<string>;
+  exportQueue: () => Promise<{ saved: boolean }>;
   importQueue: (json: string) => Promise<{ addedPackages: number; addedLinks: number }>;
   toggleClipboard: () => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
@@ -54,6 +54,8 @@ export interface ElectronApi {
   removeHistoryEntry: (entryId: string) => Promise<void>;
   setPackagePriority: (packageId: string, priority: PackagePriority) => Promise<void>;
   skipItems: (itemIds: string[]) => Promise<void>;
+  resetItems: (itemIds: string[]) => Promise<void>;
+  startItems: (itemIds: string[]) => Promise<void>;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;
