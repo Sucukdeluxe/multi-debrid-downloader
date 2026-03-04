@@ -432,7 +432,7 @@ async function writeExtractResumeState(packageDir: string, completedArchives: Se
   }
 }
 
-async function clearExtractResumeState(packageDir: string, packageId?: string): Promise<void> {
+export async function clearExtractResumeState(packageDir: string, packageId?: string): Promise<void> {
   try {
     await fs.promises.rm(extractProgressFilePath(packageDir, packageId), { force: true });
   } catch {
