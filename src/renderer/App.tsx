@@ -3331,24 +3331,14 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                   </span>
                 </span>
               );
-              case "hoster": return (
-                <span key={col} className="pkg-col pkg-col-hoster" title={(() => {
-                  const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
-                  return hosters.join(", ");
-                })()}>{(() => {
-                  const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
-                  return hosters.length > 0 ? hosters.join(", ") : "";
-                })()}</span>
-              );
-              case "account": return (
-                <span key={col} className="pkg-col pkg-col-account" title={(() => {
-                  const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
-                  return providers.map((p) => providerLabels[p!] || p).join(", ");
-                })()}>{(() => {
-                  const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
-                  return providers.length > 0 ? providers.map((p) => providerLabels[p!] || p).join(", ") : "";
-                })()}</span>
-              );
+              case "hoster": {
+                const hosterText = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))].join(", ");
+                return <span key={col} className="pkg-col pkg-col-hoster" title={hosterText}>{hosterText}</span>;
+              }
+              case "account": {
+                const accountText = [...new Set(items.map((item) => item.provider).filter(Boolean))].map((p) => providerLabels[p!] || p).join(", ");
+                return <span key={col} className="pkg-col pkg-col-account" title={accountText}>{accountText}</span>;
+              }
               case "prio": return (
                 <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
               );

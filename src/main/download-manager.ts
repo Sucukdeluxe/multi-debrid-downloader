@@ -803,6 +803,10 @@ export class DownloadManager extends EventEmitter {
 
   public skipShutdownPersist = false;
 
+  /** Block ALL persistence (persistSoon + shutdown). Set after importBackup to prevent
+   *  the old in-memory session from overwriting the restored backup on disk. */
+  public blockAllPersistence = false;
+
   private debridService: DebridService;
 
   private invalidateMegaSessionFn?: () => void;
@@ -1083,7 +1087,7 @@ export class DownloadManager extends EventEmitter {
       seen.add(id);
       return true;
     });
-    const remaining = this.session.packageOrder.filter((id) => !valid.includes(id));
+    const remaining = this.session.packageOrder.filter((id) => !seen.has(id));
     this.session.packageOrder = [...valid, ...remaining];
     this.persistSoon();
     this.emitState(true);
@@ -3056,7 +3060,7 @@ export class DownloadManager extends EventEmitter {
       this.session.reconnectReason = "";
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
-    this.speedBytesPerPackage.clear();
+      this.speedBytesPerPackage.clear();
       this.speedEventsHead = 0;
       this.lastGlobalProgressBytes = 0;
       this.lastGlobalProgressAt = nowMs();
@@ -3116,6 +3120,7 @@ export class DownloadManager extends EventEmitter {
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
     this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.speedEvents = [];
@@ -3132,12 +3137,13 @@ export class DownloadManager extends EventEmitter {
       active.abortReason = "stop";
       active.abortController.abort("stop");
     }
-    // Reset all non-finished items to clean "Wartet" state
+    // Reset all non-finished items to clean "Wartet" / "Paket gestoppt" state
     for (const item of Object.values(this.session.items)) {
       if (!isFinishedStatus(item.status)) {
         item.status = "queued";
         item.speedBps = 0;
-        item.fullStatus = "Wartet";
+        const pkg = this.session.packages[item.packageId];
+        item.fullStatus = pkg && !pkg.enabled ? "Paket gestoppt" : "Wartet";
         item.updatedAt = nowMs();
       }
     }
@@ -3229,7 +3235,7 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = "";
     // Persist synchronously on shutdown to guarantee data is written before process exits
     // Skip if a backup was just imported — the restored session on disk must not be overwritten
-    if (!this.skipShutdownPersist) {
+    if (!this.skipShutdownPersist && !this.blockAllPersistence) {
       saveSession(this.storagePaths, this.session);
       saveSettings(this.storagePaths, this.settings);
     }
@@ -3494,7 +3500,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private persistSoon(): void {
-    if (this.persistTimer) {
+    if (this.persistTimer || this.blockAllPersistence) {
       return;
     }
 
@@ -6343,18 +6349,9 @@ export class DownloadManager extends EventEmitter {
         extractCpuPriority: this.settings.extractCpuPriority,
         onProgress: (progress) => {
           if (progress.phase === "done") {
-            // Mark all remaining active archives as done
-            for (const [archName, archItems] of activeHybridArchiveMap) {
-              const doneAt = nowMs();
-              const startedAt = hybridArchiveStartTimes.get(archName) || doneAt;
-              const doneLabel = formatExtractDone(doneAt - startedAt);
-              for (const entry of archItems) {
-                if (!isExtractedLabel(entry.fullStatus)) {
-                  entry.fullStatus = doneLabel;
-                  entry.updatedAt = doneAt;
-                }
-              }
-            }
+            // Do NOT mark remaining archives as "Done" here — some may have
+            // failed. The post-extraction code (result.failed check) will
+            // assign the correct label. Only clear the tracking maps.
             activeHybridArchiveMap.clear();
             hybridArchiveStartTimes.clear();
             return;
@@ -6639,18 +6636,9 @@ export class DownloadManager extends EventEmitter {
           extractCpuPriority: this.settings.extractCpuPriority,
           onProgress: (progress) => {
             if (progress.phase === "done") {
-              // Mark all remaining active archives as done
-              for (const [archName, items] of activeArchiveItemsMap) {
-                const doneAt = nowMs();
-                const startedAt = archiveStartTimes.get(archName) || doneAt;
-                const doneLabel = formatExtractDone(doneAt - startedAt);
-                for (const entry of items) {
-                  if (!isExtractedLabel(entry.fullStatus)) {
-                    entry.fullStatus = doneLabel;
-                    entry.updatedAt = doneAt;
-                  }
-                }
-              }
+              // Do NOT mark remaining archives as "Done" here — some may have
+              // failed. The post-extraction code (result.failed check) will
+              // assign the correct label. Only clear the tracking maps.
               activeArchiveItemsMap.clear();
               archiveStartTimes.clear();
               emitExtractStatus("Entpacken 100%", true);
@@ -6786,8 +6774,8 @@ export class DownloadManager extends EventEmitter {
             for (const entry of completedItems) {
               if (/^Entpacken/i.test(entry.fullStatus || "") || /^Passwort/i.test(entry.fullStatus || "")) {
                 entry.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
+                entry.updatedAt = nowMs();
               }
-              entry.updatedAt = nowMs();
             }
             pkg.status = (pkg.enabled && !this.session.paused) ? "queued" : "paused";
             pkg.updatedAt = nowMs();
@@ -6801,8 +6789,8 @@ export class DownloadManager extends EventEmitter {
           for (const entry of completedItems) {
             if (!isExtractedLabel(entry.fullStatus)) {
               entry.fullStatus = `Entpack-Fehler: ${reason}`;
+              entry.updatedAt = nowMs();
             }
-            entry.updatedAt = nowMs();
           }
           pkg.status = "failed";
         }

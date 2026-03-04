@@ -317,6 +317,9 @@ export class AppController {
     // Prevent prepareForShutdown from overwriting the restored session file
     // with the old in-memory session when the app quits after backup restore.
     this.manager.skipShutdownPersist = true;
+    // Block all persistence (including persistSoon from any IPC operations
+    // the user might trigger before restarting) to protect the restored backup.
+    this.manager.blockAllPersistence = true;
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }
 
