@@ -14,8 +14,32 @@ const DOWNLOAD_BODY_IDLE_TIMEOUT_MS = 45000;
 const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1500;
 const UPDATE_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
-const UPDATE_WEB_BASE = "https://codeberg.org";
-const UPDATE_API_BASE = "https://codeberg.org/api/v1";
+type UpdateSource = {
+  name: string;
+  webBase: string;
+  apiBase: string;
+};
+
+const UPDATE_SOURCES: UpdateSource[] = [
+  {
+    name: "git24",
+    webBase: "https://git.24-music.de",
+    apiBase: "https://git.24-music.de/api/v1"
+  },
+  {
+    name: "codeberg",
+    webBase: "https://codeberg.org",
+    apiBase: "https://codeberg.org/api/v1"
+  },
+  {
+    name: "github",
+    webBase: "https://github.com",
+    apiBase: "https://api.github.com"
+  }
+];
+const PRIMARY_UPDATE_SOURCE = UPDATE_SOURCES[0];
+const UPDATE_WEB_BASE = PRIMARY_UPDATE_SOURCE.webBase;
+const UPDATE_API_BASE = PRIMARY_UPDATE_SOURCE.apiBase;
 
 let activeUpdateAbortController: AbortController | null = null;
 
@@ -57,9 +81,9 @@ export function normalizeUpdateRepo(repo: string): string {
 
   const normalizeParts = (input: string): string => {
     const cleaned = input
-      .replace(/^https?:\/\/(?:www\.)?(?:codeberg\.org|github\.com)\//i, "")
-      .replace(/^(?:www\.)?(?:codeberg\.org|github\.com)\//i, "")
-      .replace(/^git@(?:codeberg\.org|github\.com):/i, "")
+      .replace(/^https?:\/\/(?:www\.)?(?:codeberg\.org|github\.com|git\.24-music\.de)\//i, "")
+      .replace(/^(?:www\.)?(?:codeberg\.org|github\.com|git\.24-music\.de)\//i, "")
+      .replace(/^git@(?:codeberg\.org|github\.com|git\.24-music\.de):/i, "")
       .replace(/\.git$/i, "")
       .replace(/^\/+|\/+$/g, "");
     const parts = cleaned.split("/").filter(Boolean);
@@ -76,7 +100,13 @@ export function normalizeUpdateRepo(repo: string): string {
   try {
     const url = new URL(raw);
     const host = url.hostname.toLowerCase();
-    if (host === "codeberg.org" || host === "www.codeberg.org" || host === "github.com" || host === "www.github.com") {
+    if (
+      host === "codeberg.org"
+      || host === "www.codeberg.org"
+      || host === "github.com"
+      || host === "www.github.com"
+      || host === "git.24-music.de"
+    ) {
       const normalized = normalizeParts(url.pathname);
       if (normalized) {
         return normalized;
