@@ -238,7 +238,7 @@ function registerIpcHandlers(): void {
     if (result.started) {
       setTimeout(() => {
         app.quit();
-      }, 800);
+      }, 2500);
     }
     return result;
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reorderPackageOrderByDrop, sortPackageOrderByName } from "../src/renderer/App";
+import { reorderPackageOrderByDrop, sortPackageOrderByName } from "../src/renderer/package-order";
 
 describe("reorderPackageOrderByDrop", () => {
   it("moves adjacent package down by one on drop", () => {

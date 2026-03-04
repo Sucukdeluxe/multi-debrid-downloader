@@ -86,6 +86,7 @@ export function defaultSettings(): AppSettings {
     totalDownloadedAllTime: 0,
     bandwidthSchedules: [],
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
-    extractCpuPriority: "high"
+    extractCpuPriority: "high",
+    autoExtractWhenStopped: true
   };
 }

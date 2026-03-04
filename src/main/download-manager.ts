@@ -898,6 +898,21 @@ export class DownloadManager extends EventEmitter {
     return this.summary;
   }
 
+  public isSessionRunning(): boolean {
+    return this.session.running;
+  }
+
+  /** Trigger pending extractions without starting the session (for autoExtractWhenStopped). */
+  public triggerIdleExtractions(): void {
+    if (this.session.running || !this.settings.autoExtract || !this.settings.autoExtractWhenStopped) {
+      return;
+    }
+    this.recoverPostProcessingOnStartup();
+    this.triggerPendingExtractions();
+    this.persistSoon();
+    this.emitState();
+  }
+
   public getSnapshot(): UiSnapshot {
     const now = nowMs();
     this.pruneSpeedEvents(now);
@@ -2924,6 +2939,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public stop(): void {
+    const keepExtraction = this.settings.autoExtractWhenStopped;
     this.session.running = false;
     this.session.paused = false;
     this.session.reconnectUntil = 0;
@@ -2935,10 +2951,12 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
-    this.abortPostProcessing("stop");
-    for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
-    this.packagePostProcessWaiters = [];
-    this.packagePostProcessActive = 0;
+    if (!keepExtraction) {
+      this.abortPostProcessing("stop");
+      for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
+      this.packagePostProcessWaiters = [];
+      this.packagePostProcessActive = 0;
+    }
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
       active.abortController.abort("stop");
@@ -2953,6 +2971,10 @@ export class DownloadManager extends EventEmitter {
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
+      if (keepExtraction && (pkg.status === "extracting" || pkg.status === "integrity_check")) {
+        // Keep extraction-related statuses when autoExtractWhenStopped
+        continue;
+      }
       if (pkg.status === "downloading" || pkg.status === "validating"
         || pkg.status === "extracting" || pkg.status === "integrity_check"
         || pkg.status === "paused" || pkg.status === "reconnect_wait") {
