@@ -22,7 +22,7 @@ import {
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
-import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
+import { clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
@@ -2476,7 +2476,13 @@ export class DownloadManager extends EventEmitter {
       postProcessController.abort("reset");
     }
 
-    // 3. Reset package state
+    // 3. Clean up extraction progress manifest (.rd_extract_progress.json)
+    if (pkg.outputDir) {
+      clearExtractResumeState(pkg.outputDir, packageId).catch(() => {});
+      clearExtractResumeState(pkg.outputDir).catch(() => {});
+    }
+
+    // 4. Reset package state
     pkg.status = "queued";
     pkg.cancelled = false;
     pkg.enabled = true;
@@ -3305,13 +3311,13 @@ export class DownloadManager extends EventEmitter {
     const itemCount = this.itemCount;
     const emitDelay = this.session.running
       ? itemCount >= 1500
-        ? 900
+        ? 700
         : itemCount >= 700
-          ? 650
+          ? 500
           : itemCount >= 250
-            ? 400
-            : 250
-      : 260;
+            ? 300
+            : 150
+      : 200;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
       this.lastStateEmitAt = nowMs();
@@ -3729,8 +3735,15 @@ export class DownloadManager extends EventEmitter {
     delete this.session.packages[packageId];
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
     // Keep packageId in runPackageIds so the "size > 0" guard still filters
-    // other packages. The deleted package has no items left, so the scheduler
-    // simply won't find anything for it. finishRun() clears runPackageIds.
+    // other packages. But prune ghost entries: if no real package remains in
+    // the set, clear it so the scheduler isn't permanently blocked.
+    if (this.runPackageIds.size > 0) {
+      for (const rpId of this.runPackageIds) {
+        if (!this.session.packages[rpId]) {
+          this.runPackageIds.delete(rpId);
+        }
+      }
+    }
     this.runCompletedPackages.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
     this.resetSessionTotalsIfQueueEmpty();
@@ -4920,12 +4933,12 @@ export class DownloadManager extends EventEmitter {
         let windowStarted = nowMs();
         const itemCount = this.itemCount;
         const uiUpdateIntervalMs = itemCount >= 1500
-          ? 650
+          ? 500
           : itemCount >= 700
-            ? 420
+            ? 350
             : itemCount >= 250
-              ? 280
-              : 170;
+              ? 220
+              : 120;
         let lastUiEmitAt = 0;
         const stallTimeoutMs = getDownloadStallTimeoutMs();
         const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));
@@ -5187,9 +5200,9 @@ export class DownloadManager extends EventEmitter {
                 throughputWindowBytes = 0;
               }
 
-              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.3);
+              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.2);
               const speed = windowBytes / elapsed;
-              if (elapsed >= 0.8) {
+              if (elapsed >= 0.5) {
                 windowStarted = nowMs();
                 windowBytes = 0;
               }
@@ -5882,13 +5895,12 @@ export class DownloadManager extends EventEmitter {
               activeHybridArchiveMap.delete(progress.archiveName);
               hybridArchiveStartTimes.delete(progress.archiveName);
             } else {
-              // Update this archive's items with current progress
-              const archive = ` · ${progress.archiveName}`;
+              // Update this archive's items with per-archive progress
+              const archiveLabel = ` · ${progress.archiveName}`;
               const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
                 ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
                 : "";
-              const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
-              const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+              const archivePct = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
               let label: string;
               if (progress.passwordFound) {
                 label = `Passwort gefunden · ${progress.archiveName}`;
@@ -5896,7 +5908,7 @@ export class DownloadManager extends EventEmitter {
                 const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
                 label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
               } else {
-                label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+                label = `Entpacken ${archivePct}%${archiveLabel}${elapsed}`;
               }
               const updatedAt = nowMs();
               for (const entry of archItems) {
@@ -5908,10 +5920,17 @@ export class DownloadManager extends EventEmitter {
             }
           }
 
-          // Throttled emit
+          // Throttled emit — also promote "Warten auf Parts" items that
+          // completed downloading in the meantime to "Ausstehend".
           const now = nowMs();
           if (now - hybridLastEmitAt >= EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
             hybridLastEmitAt = now;
+            for (const entry of items) {
+              if (entry.status === "completed" && entry.fullStatus === "Entpacken - Warten auf Parts") {
+                entry.fullStatus = "Entpacken - Ausstehend";
+                entry.updatedAt = now;
+              }
+            }
             this.emitState();
           }
         }
@@ -6144,13 +6163,12 @@ export class DownloadManager extends EventEmitter {
                 activeArchiveItemsMap.delete(progress.archiveName);
                 archiveStartTimes.delete(progress.archiveName);
               } else {
-                // Update this archive's items with current progress
-                const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
+                // Update this archive's items with per-archive progress
+                const archiveTag = progress.archiveName ? ` · ${progress.archiveName}` : "";
                 const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
                   ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
                   : "";
-                const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
-                const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+                const archivePct = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
                 let label: string;
                 if (progress.passwordFound) {
                   label = `Passwort gefunden · ${progress.archiveName}`;
@@ -6158,7 +6176,7 @@ export class DownloadManager extends EventEmitter {
                   const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
                   label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
                 } else {
-                  label = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
+                  label = `Entpacken ${archivePct}%${archiveTag}${elapsed}`;
                 }
                 const updatedAt = nowMs();
                 for (const entry of archiveItems) {

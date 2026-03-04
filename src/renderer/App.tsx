@@ -3082,7 +3082,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   // (prevents bar jumping from 100% to 50% when extraction starts)
   const allDownloaded = done + failed + cancelled >= total;
   const allExtracted = extracted >= total;
-  const useExtractSplit = extracting || pkg.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0);
+  const useExtractSplit = extracting || pkg.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0 && failed === 0 && cancelled === 0);
   // Include fractional progress from active downloads so the bar moves continuously
   const activeProgress = items.reduce((sum, item) => {
     if (item.status === "downloading" || (item.status === "queued" && (item.progressPercent || 0) > 0)) {
