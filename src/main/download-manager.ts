@@ -3728,7 +3728,9 @@ export class DownloadManager extends EventEmitter {
     }
     delete this.session.packages[packageId];
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
-    this.runPackageIds.delete(packageId);
+    // Keep packageId in runPackageIds so the "size > 0" guard still filters
+    // other packages. The deleted package has no items left, so the scheduler
+    // simply won't find anything for it. finishRun() clears runPackageIds.
     this.runCompletedPackages.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
     this.resetSessionTotalsIfQueueEmpty();
@@ -5716,9 +5718,11 @@ export class DownloadManager extends EventEmitter {
       if (!allMissingExistOnDisk) {
         continue;
       }
+      // Any non-completed item blocks extraction — cancelled/stopped items may
+      // have partial files on disk that would corrupt the extraction.
       const anyActivelyProcessing = missingParts.some((part) => {
         const status = pendingItemStatus.get(pathKey(part));
-        return status !== undefined && status !== "failed" && status !== "cancelled";
+        return status !== undefined && status !== "failed";
       });
       if (anyActivelyProcessing) {
         continue;
@@ -6007,6 +6011,11 @@ export class DownloadManager extends EventEmitter {
         pkg.status = (pkg.enabled && !this.session.paused) ? "queued" : "paused";
         pkg.updatedAt = nowMs();
         return;
+      }
+      // Immediately clean up extracted items if "Sofort" policy is active
+      this.applyPackageDoneCleanup(packageId);
+      if (!this.session.packages[packageId]) {
+        return;  // Package was fully cleaned up
       }
       pkg.status = (pkg.enabled && !this.session.paused) ? "downloading" : "paused";
       pkg.updatedAt = nowMs();
