@@ -1408,10 +1408,8 @@ export class DownloadManager extends EventEmitter {
           item.updatedAt = nowMs();
         }
 
-        if (!this.session.running) {
-          this.runItemIds.delete(itemId);
-          this.runOutcomes.delete(itemId);
-        }
+        this.runItemIds.delete(itemId);
+        this.runOutcomes.delete(itemId);
 
         this.retryAfterByItem.delete(itemId);
         this.retryStateByItem.delete(itemId);
@@ -1425,9 +1423,7 @@ export class DownloadManager extends EventEmitter {
       this.packagePostProcessTasks.delete(packageId);
       this.hybridExtractRequeue.delete(packageId);
 
-      if (!this.session.running) {
-        this.runPackageIds.delete(packageId);
-      }
+      this.runPackageIds.delete(packageId);
       this.runCompletedPackages.delete(packageId);
 
       const items = pkg.itemIds
@@ -2629,6 +2625,7 @@ export class DownloadManager extends EventEmitter {
       item.fullStatus = "Übersprungen";
       item.speedBps = 0;
       item.updatedAt = nowMs();
+      this.recordRunOutcome(itemId, "cancelled");
     }
     this.persistSoon();
     this.emitState();

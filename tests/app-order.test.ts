@@ -25,9 +25,9 @@ describe("sortPackageOrderByName", () => {
     const sorted = sortPackageOrderByName(
       ["pkg3", "pkg1", "pkg2"],
       {
-        pkg1: { id: "pkg1", name: "Alpha", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
-        pkg2: { id: "pkg2", name: "beta", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
-        pkg3: { id: "pkg3", name: "Gamma", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 }
+        pkg1: { id: "pkg1", name: "Alpha", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, priority: "normal", createdAt: 0, updatedAt: 0 },
+        pkg2: { id: "pkg2", name: "beta", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, priority: "normal", createdAt: 0, updatedAt: 0 },
+        pkg3: { id: "pkg3", name: "Gamma", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, priority: "normal", createdAt: 0, updatedAt: 0 }
       },
       false
     );
@@ -38,9 +38,9 @@ describe("sortPackageOrderByName", () => {
     const sorted = sortPackageOrderByName(
       ["pkg1", "pkg2", "pkg3"],
       {
-        pkg1: { id: "pkg1", name: "Alpha", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
-        pkg2: { id: "pkg2", name: "beta", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 },
-        pkg3: { id: "pkg3", name: "Gamma", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, createdAt: 0, updatedAt: 0 }
+        pkg1: { id: "pkg1", name: "Alpha", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, priority: "normal", createdAt: 0, updatedAt: 0 },
+        pkg2: { id: "pkg2", name: "beta", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, priority: "normal", createdAt: 0, updatedAt: 0 },
+        pkg3: { id: "pkg3", name: "Gamma", outputDir: "", extractDir: "", status: "queued", itemIds: [], cancelled: false, enabled: true, priority: "normal", createdAt: 0, updatedAt: 0 }
       },
       true
     );

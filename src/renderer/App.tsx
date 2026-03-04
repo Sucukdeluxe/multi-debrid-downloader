@@ -1027,13 +1027,14 @@ export function App(): ReactElement {
   };
 
   const onCheckUpdates = async (): Promise<void> => {
+    let updateResult: UpdateCheckResult | null = null;
     await performQuickAction(async () => {
       setUpdateInstallProgress(null);
-      const result = await window.rd.checkUpdates();
-      await handleUpdateResult(result, "manual");
+      updateResult = await window.rd.checkUpdates();
     }, (error) => {
       showToast(`Update-Check fehlgeschlagen: ${String(error)}`, 2800);
     });
+    if (updateResult) await handleUpdateResult(updateResult, "manual");
   };
 
   const persistDraftSettings = async (): Promise<AppSettings> => {
@@ -2547,8 +2548,8 @@ export function App(): ReactElement {
                   <span className="stat-value danger">{itemStatusCounts.failed}</span>
                 </div>
                 <div className="stat-item">
-                  <span className="stat-label">{snapshot.etaText.split(": ")[0]}</span>
-                  <span className="stat-value">{snapshot.etaText.split(": ")[1] || "--"}</span>
+                  <span className="stat-label">{snapshot.etaText.includes(": ") ? snapshot.etaText.slice(0, snapshot.etaText.indexOf(": ")) : snapshot.etaText}</span>
+                  <span className="stat-value">{snapshot.etaText.includes(": ") ? snapshot.etaText.slice(snapshot.etaText.indexOf(": ") + 2) : "--"}</span>
                 </div>
               </div>
             </article>

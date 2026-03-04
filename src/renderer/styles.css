@@ -1748,6 +1748,7 @@ td {
   font-weight: 600;
   pointer-events: none;
   backdrop-filter: blur(2px);
+  z-index: 200;
 }
 
 .modal-backdrop {
