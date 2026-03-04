@@ -17,7 +17,9 @@
     "test": "vitest run",
     "self-check": "tsx tests/self-check.ts",
     "release:win": "npm run build && electron-builder --publish never --win nsis portable",
-    "release:codeberg": "node scripts/release_codeberg.mjs"
+    "release:codeberg": "node scripts/release_codeberg.mjs",
+    "release:gitea": "node scripts/release_gitea.mjs",
+    "release:forgejo": "node scripts/release_gitea.mjs"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

@@ -65,18 +65,18 @@ Desktop downloader with fast queue management, automatic extraction, and robust 
 - Minimize-to-tray with tray menu controls.
 - Speed limits globally or per download.
 - Bandwidth schedules for time-based speed profiles.
-- Built-in auto-updater via Codeberg Releases.
+- Built-in auto-updater via `git.24-music.de` Releases.
 - Long path support (>260 characters) on Windows.
 
 ## Installation
 
 ### Option A: prebuilt releases (recommended)
 
-1. Download a release from the Codeberg Releases page.
+1. Download a release from the `git.24-music.de` Releases page.
 2. Run the installer or portable build.
 3. Add your debrid tokens in Settings.
 
-Releases: `https://codeberg.org/Sucukdeluxe/real-debrid-downloader/releases`
+Releases: `https://git.24-music.de/Administrator/real-debrid-downloader/releases`
 
 ### Option B: build from source
 
@@ -103,21 +103,34 @@ npm run dev
 | `npm test` | Runs Vitest unit tests |
 | `npm run self-check` | Runs integrated end-to-end self-checks |
 | `npm run release:win` | Creates Windows installer and portable build |
-| `npm run release:codeberg -- <version> [notes]` | One-command version bump + build + tag + Codeberg release upload |
+| `npm run release:gitea -- <version> [notes]` | One-command version bump + build + tag + release upload to `git.24-music.de` |
+| `npm run release:codeberg -- <version> [notes]` | Legacy path for old Codeberg workflow |
 
-### One-command Codeberg release
+### One-command git.24-music release
 
 ```bash
-npm run release:codeberg -- 1.4.42 "- Maintenance update"
+npm run release:gitea -- 1.6.31 "- Maintenance update"
 ```
 
 This command will:
 
 1. Bump `package.json` version.
 2. Build setup/portable artifacts (`npm run release:win`).
-3. Commit and push `main` to your Codeberg remote.
+3. Commit and push `main` to your `git.24-music.de` remote.
 4. Create and push tag `v<version>`.
-5. Create/update the Codeberg release and upload required assets.
+5. Create/update the Gitea release and upload required assets.
+
+Required once before release:
+
+```bash
+git remote add gitea https://git.24-music.de/<user>/<repo>.git
+```
+
+PowerShell token setup:
+
+```powershell
+$env:GITEA_TOKEN="<dein-token>"
+```
 
 ## Typical workflow
 
@@ -154,7 +167,7 @@ The app stores runtime files in Electron's `userData` directory, including:
 
 ## Changelog
 
-Release history is available on [Codeberg Releases](https://codeberg.org/Sucukdeluxe/real-debrid-downloader/releases).
+Release history is available on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
 
 ## License
 

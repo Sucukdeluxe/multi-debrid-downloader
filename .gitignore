@@ -28,3 +28,12 @@ coverage/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Forgejo deployment runtime files
+deploy/forgejo/.env
+deploy/forgejo/forgejo/
+deploy/forgejo/postgres/
+deploy/forgejo/caddy/data/
+deploy/forgejo/caddy/config/
+deploy/forgejo/caddy/logs/
+deploy/forgejo/backups/

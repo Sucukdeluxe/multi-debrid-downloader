@@ -35,7 +35,7 @@ export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;
 export const SPEED_WINDOW_SECONDS = 1;
 export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
 
-export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader";
+export const DEFAULT_UPDATE_REPO = "Administrator/real-debrid-downloader";
 
 export function defaultSettings(): AppSettings {
   const baseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
