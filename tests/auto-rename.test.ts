@@ -670,4 +670,22 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBe("Riviera.S02E02.GERMAN.DUBBED.DL.720p.WebHD.x264-TVP");
   });
+
+  it("renames Room 104 abbreviated source r104.de.dl.web.7p-s04e02", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Room.104.S04.GERMAN.DL.720p.WEBRiP.x264-LAW"],
+      "r104.de.dl.web.7p-s04e02",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Room.104.S04E02.GERMAN.DL.720p.WEBRiP.x264-LAW");
+  });
+
+  it("renames Room 104 wayne source with episode", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Room.104.S04.GERMAN.DL.720p.WEBRiP.x264-LAW"],
+      "room.104.s04e01.german.dl.720p.web.h264-wayne",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Room.104.S04E01.GERMAN.DL.720p.WEBRiP.x264-LAW");
+  });
 });
