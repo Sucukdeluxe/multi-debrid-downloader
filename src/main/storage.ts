@@ -453,7 +453,7 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
 }
 
 let asyncSettingsSaveRunning = false;
-let asyncSettingsSaveQueued: { paths: StoragePaths; payload: string } | null = null;
+let asyncSettingsSaveQueued: { paths: StoragePaths; settings: AppSettings } | null = null;
 
 async function writeSettingsPayload(paths: StoragePaths, payload: string): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
@@ -476,7 +476,7 @@ export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettin
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
   const payload = JSON.stringify(persisted, null, 2);
   if (asyncSettingsSaveRunning) {
-    asyncSettingsSaveQueued = { paths, payload };
+    asyncSettingsSaveQueued = { paths, settings };
     return;
   }
   asyncSettingsSaveRunning = true;
@@ -489,7 +489,7 @@ export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettin
     if (asyncSettingsSaveQueued) {
       const queued = asyncSettingsSaveQueued;
       asyncSettingsSaveQueued = null;
-      void writeSettingsPayload(queued.paths, queued.payload).catch((err) => logger.error(`Async Settings-Save (queued) fehlgeschlagen: ${String(err)}`));
+      void saveSettingsAsync(queued.paths, queued.settings);
     }
   }
 }
