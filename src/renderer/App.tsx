@@ -70,7 +70,7 @@ const emptySnapshot = (): UiSnapshot => ({
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, maxParallelExtract: 2, retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, autoSkipExtracted: false, confirmDeleteSelection: true,
     bandwidthSchedules: [], totalDownloadedAllTime: 0,
@@ -2043,14 +2043,20 @@ export function App(): ReactElement {
                   <input
                     type="text"
                     inputMode="decimal"
-                    value={formatMbpsInputFromKbps(settingsDraft.speedLimitKbps)}
+                    value={speedLimitInput}
                     onChange={(e) => {
-                      const parsed = parseMbpsInput(e.target.value);
-                      if (parsed !== null) {
-                        const kbps = Math.floor(parsed * 1024);
-                        setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));
-                        void window.rd.updateSettings({ speedLimitKbps: kbps });
+                      setSpeedLimitInput(e.target.value);
+                    }}
+                    onBlur={() => {
+                      const parsed = parseMbpsInput(speedLimitInput);
+                      if (parsed === null) {
+                        setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
+                        return;
                       }
+                      const kbps = Math.floor(parsed * 1024);
+                      setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));
+                      void window.rd.updateSettings({ speedLimitKbps: kbps });
+                      setSpeedLimitInput(formatMbpsInputFromKbps(kbps));
                     }}
                   />
                   <div className="menu-spinner-arrows">
@@ -2059,12 +2065,14 @@ export function App(): ReactElement {
                       const next = Math.floor((cur + 1) * 1024);
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
                       void window.rd.updateSettings({ speedLimitKbps: next });
+                      setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9650;</button>
                     <button onClick={() => {
                       const cur = (settingsDraft.speedLimitKbps || 0) / 1024;
                       const next = Math.max(0, Math.floor((cur - 1) * 1024));
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
                       void window.rd.updateSettings({ speedLimitKbps: next });
+                      setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9660;</button>
                   </div>
                 </div>
@@ -2625,7 +2633,7 @@ export function App(): ReactElement {
                       </div>
                     </div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(e) => setBool("autoReconnect", e.target.checked)} /> Automatischer Reconnect</label>
-                    <div><label>Reconnect-Wartezeit (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Number(e.target.value) || 45)} /></div>
+                    <div><label>Reconnect-Wartezeit (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Math.max(10, Math.min(600, Number(e.target.value) || 45)))} /></div>
                     <h4>Bandbreitenplanung</h4>
                     {schedules.map((s, i) => {
                       const scheduleKey = s.id || `schedule-${i}`;

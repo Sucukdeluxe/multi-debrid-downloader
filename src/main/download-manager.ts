@@ -242,7 +242,10 @@ function isUnrestrictFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("unrestrict") || text.includes("mega-web") || text.includes("mega-debrid")
     || text.includes("bestdebrid") || text.includes("alldebrid") || text.includes("kein debrid")
-    || text.includes("session") || text.includes("login");
+    || text.includes("session-cookie") || text.includes("session cookie") || text.includes("session blockiert")
+    || text.includes("session expired") || text.includes("invalid session")
+    || text.includes("login ungültig") || text.includes("login liefert")
+    || text.includes("login required") || text.includes("login failed");
 }
 
 function isProviderBusyUnrestrictError(errorText: string): boolean {
@@ -4864,6 +4867,8 @@ export class DownloadManager extends EventEmitter {
       }
 
       const acceptRanges = (response.headers.get("accept-ranges") || "").toLowerCase().includes("bytes");
+      let preAllocated = false;
+      let written = 0;
       try {
         if (existingBytes === 0) {
           const rawHeaderName = parseContentDispositionFilename(response.headers.get("content-disposition")).trim();
@@ -4919,7 +4924,6 @@ export class DownloadManager extends EventEmitter {
         await fs.promises.mkdir(path.dirname(effectiveTargetPath), { recursive: true });
 
         // Sparse file pre-allocation (Windows only, new files with known size)
-        let preAllocated = false;
         if (writeMode === "w" && item.totalBytes && item.totalBytes > 0 && process.platform === "win32") {
           try {
             const fd = await fs.promises.open(effectiveTargetPath, "w");
@@ -4934,7 +4938,7 @@ export class DownloadManager extends EventEmitter {
           start: preAllocated ? 0 : undefined,
           highWaterMark: STREAM_HIGH_WATER_MARK
         });
-        let written = writeMode === "a" ? existingBytes : 0;
+        written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
         let windowStarted = nowMs();
         const itemCount = this.itemCount;
@@ -5313,6 +5317,13 @@ export class DownloadManager extends EventEmitter {
         this.emitState();
         return { resumable };
       } catch (error) {
+        // Truncate pre-allocated sparse file to actual written bytes so that
+        // stat.size on the next retry reflects real data, not the pre-allocated size.
+        // Without this, the retry reads stat.size = totalBytes and either sends an
+        // impossible Range header (→ 416 → false complete) or appends to a zero-padded file.
+        if (preAllocated && item.totalBytes && written < item.totalBytes) {
+          try { await fs.promises.truncate(effectiveTargetPath, written); } catch { /* best-effort */ }
+        }
         if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
           throw error;
         }
