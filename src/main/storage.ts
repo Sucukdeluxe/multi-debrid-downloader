@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
@@ -12,6 +12,8 @@ const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
 const VALID_SPEED_MODES = new Set(["global", "per_download"]);
 const VALID_THEMES = new Set(["dark", "light"]);
+const VALID_EXTRACT_CPU_PRIORITIES = new Set(["high", "middle", "low"]);
+const VALID_PACKAGE_PRIORITIES = new Set<string>(["high", "normal", "low"]);
 const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
   "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
 ]);
@@ -65,6 +67,29 @@ function normalizeAbsoluteDir(value: unknown, fallback: string): string {
   return path.resolve(text);
 }
 
+const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
+const ALL_VALID_COLUMNS = new Set([...DEFAULT_COLUMN_ORDER, "added"]);
+
+function normalizeColumnOrder(raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [...DEFAULT_COLUMN_ORDER];
+  }
+  const valid = ALL_VALID_COLUMNS;
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const col of raw) {
+    if (typeof col === "string" && valid.has(col) && !seen.has(col)) {
+      seen.add(col);
+      result.push(col);
+    }
+  }
+  // "name" is mandatory — ensure it's always present
+  if (!seen.has("name")) {
+    result.unshift("name");
+  }
+  return result;
+}
+
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const normalized: AppSettings = {
@@ -112,7 +137,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
-    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules)
+    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
+    columnOrder: normalizeColumnOrder(settings.columnOrder),
+    extractCpuPriority: settings.extractCpuPriority
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
@@ -141,6 +168,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   }
   if (!VALID_SPEED_MODES.has(normalized.speedLimitMode)) {
     normalized.speedLimitMode = defaults.speedLimitMode;
+  }
+  if (!VALID_EXTRACT_CPU_PRIORITIES.has(normalized.extractCpuPriority)) {
+    normalized.extractCpuPriority = defaults.extractCpuPriority;
   }
 
   return normalized;
@@ -274,6 +304,7 @@ function normalizeLoadedSession(raw: unknown): SessionState {
         .filter((value) => value.length > 0),
       cancelled: Boolean(pkg.cancelled),
       enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
+      priority: VALID_PACKAGE_PRIORITIES.has(asText(pkg.priority)) ? asText(pkg.priority) as PackagePriority : "normal",
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };

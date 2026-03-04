@@ -72,6 +72,7 @@ const EXTRACTOR_RETRY_AFTER_MS = 30_000;
 const DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB = 256;
 const EXTRACTOR_PROBE_TIMEOUT_MS = 8_000;
 const DEFAULT_EXTRACT_CPU_BUDGET_PERCENT = 80;
+let currentExtractCpuPriority: string | undefined;
 
 export interface ExtractOptions {
   packageDir: string;
@@ -88,6 +89,7 @@ export interface ExtractOptions {
   packageId?: string;
   hybridMode?: boolean;
   maxParallel?: number;
+  extractCpuPriority?: string;
 }
 
 export interface ExtractProgressUpdate {
@@ -566,15 +568,30 @@ function shouldUseExtractorPerformanceFlags(): boolean {
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
-function extractCpuBudgetPercent(): number {
+function extractCpuBudgetFromPriority(priority?: string): number {
+  switch (priority) {
+    case "low": return 25;
+    case "middle": return 50;
+    default: return 80;
+  }
+}
+
+function extractOsPriority(priority?: string): number {
+  switch (priority) {
+    case "high": return os.constants.priority.PRIORITY_BELOW_NORMAL;
+    default: return os.constants.priority.PRIORITY_LOW;
+  }
+}
+
+function extractCpuBudgetPercent(priority?: string): number {
   const envValue = Number(process.env.RD_EXTRACT_CPU_BUDGET_PERCENT ?? NaN);
   if (Number.isFinite(envValue) && envValue >= 40 && envValue <= 95) {
     return Math.floor(envValue);
   }
-  return DEFAULT_EXTRACT_CPU_BUDGET_PERCENT;
+  return extractCpuBudgetFromPriority(priority);
 }
 
-function extractorThreadSwitch(hybridMode = false): string {
+function extractorThreadSwitch(hybridMode = false, priority?: string): string {
   if (hybridMode) {
     // 2 threads during hybrid extraction (download + extract simultaneously).
     // JDownloader 2 uses in-process 7-Zip-JBinding which naturally limits throughput
@@ -586,13 +603,13 @@ function extractorThreadSwitch(hybridMode = false): string {
     return `-mt${Math.floor(envValue)}`;
   }
   const cpuCount = Math.max(1, os.cpus().length || 1);
-  const budgetPercent = extractCpuBudgetPercent();
+  const budgetPercent = extractCpuBudgetPercent(priority);
   const budgetedThreads = Math.floor((cpuCount * budgetPercent) / 100);
   const threadCount = Math.max(1, Math.min(16, Math.max(1, budgetedThreads)));
   return `-mt${threadCount}`;
 }
 
-function lowerExtractProcessPriority(childPid: number | undefined): void {
+function lowerExtractProcessPriority(childPid: number | undefined, cpuPriority?: string): void {
   if (process.platform !== "win32") {
     return;
   }
@@ -601,9 +618,9 @@ function lowerExtractProcessPriority(childPid: number | undefined): void {
     return;
   }
   try {
-    // IDLE_PRIORITY_CLASS: lowers CPU scheduling priority so extraction
-    // doesn't starve other processes. I/O priority stays Normal (like JDownloader 2).
-    os.setPriority(pid, os.constants.priority.PRIORITY_LOW);
+    // Lowers CPU scheduling priority so extraction doesn't starve other processes.
+    // high → BELOW_NORMAL, middle/low → IDLE. I/O priority stays Normal (like JDownloader 2).
+    os.setPriority(pid, extractOsPriority(cpuPriority));
   } catch {
     // ignore: priority lowering is best-effort
   }
@@ -673,7 +690,7 @@ function runExtractCommand(
     let settled = false;
     let output = "";
     const child = spawn(command, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid);
+    lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
@@ -995,7 +1012,7 @@ function runJvmExtractCommand(
     let stderrBuffer = "";
 
     const child = spawn(layout.javaCommand, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid);
+    lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
 
     const flushLines = (rawChunk: string, fromStdErr = false): void => {
       if (!rawChunk) {
@@ -1174,7 +1191,7 @@ export function buildExternalExtractArgs(
     // On Windows (the target platform) this is less of a concern than on shared Unix systems.
     const pass = password ? `-p${password}` : "-p-";
     const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
-      ? ["-idc", extractorThreadSwitch(hybridMode)]
+      ? ["-idc", extractorThreadSwitch(hybridMode, currentExtractCpuPriority)]
       : [];
     return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
   }
@@ -1824,7 +1841,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   if (options.signal?.aborted) {
     throw new Error("aborted:extract");
   }
-
   const allCandidates = await findArchiveCandidates(options.packageDir);
   const candidates = options.onlyArchives
     ? allCandidates.filter((archivePath) => {
@@ -1972,6 +1988,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       ? (attempt: number, total: number) => { emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, { passwordAttempt: attempt, passwordTotal: total }); }
       : undefined;
     try {
+      // Set module-level priority before each extract call (race-safe: spawn is synchronous)
+      currentExtractCpuPriority = options.extractCpuPriority;
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
         const preferExternal = await shouldPreferExternalZip(archivePath);

@@ -19,7 +19,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot
 } from "../shared/types";
-import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
+import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
@@ -265,6 +265,14 @@ function isFinishedStatus(status: DownloadStatus): boolean {
 
 function isExtractedLabel(statusText: string): boolean {
   return /^entpackt\b/i.test(String(statusText || "").trim());
+}
+
+function formatExtractDone(elapsedMs: number): string {
+  if (elapsedMs < 1000) return "Entpackt - Done (<1s)";
+  const secs = elapsedMs / 1000;
+  return secs < 100
+    ? `Entpackt - Done (${secs.toFixed(1)}s)`
+    : `Entpackt - Done (${Math.round(secs)}s)`;
 }
 
 function providerLabel(provider: DownloadItem["provider"]): string {
@@ -2432,12 +2440,89 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
+  public resetItems(itemIds: string[]): void {
+    const affectedPackageIds = new Set<string>();
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+
+      affectedPackageIds.add(item.packageId);
+
+      const active = this.activeTasks.get(itemId);
+      if (active) {
+        active.abortReason = "cancel";
+        active.abortController.abort("cancel");
+      }
+
+      const targetPath = String(item.targetPath || "").trim();
+      if (targetPath) {
+        try { fs.rmSync(targetPath, { force: true }); } catch { /* ignore */ }
+        this.releaseTargetPath(itemId);
+      }
+
+      this.dropItemContribution(itemId);
+      this.runOutcomes.delete(itemId);
+      this.runItemIds.delete(itemId);
+      this.retryAfterByItem.delete(itemId);
+      this.retryStateByItem.delete(itemId);
+
+      item.status = "queued";
+      item.downloadedBytes = 0;
+      item.totalBytes = null;
+      item.progressPercent = 0;
+      item.speedBps = 0;
+      item.attempts = 0;
+      item.retries = 0;
+      item.lastError = "";
+      item.resumable = true;
+      item.targetPath = "";
+      item.provider = null;
+      item.fullStatus = "Wartet";
+      item.updatedAt = nowMs();
+    }
+
+    // Reset parent package status if it was completed/failed (now has queued items again)
+    for (const pkgId of affectedPackageIds) {
+      const pkg = this.session.packages[pkgId];
+      if (pkg && (pkg.status === "completed" || pkg.status === "failed" || pkg.status === "cancelled")) {
+        pkg.status = "queued";
+        pkg.cancelled = false;
+        pkg.updatedAt = nowMs();
+      }
+    }
+
+    logger.info(`${itemIds.length} Item(s) zurückgesetzt`);
+    this.persistSoon();
+    this.emitState(true);
+  }
+
   public setPackagePriority(packageId: string, priority: PackagePriority): void {
     const pkg = this.session.packages[packageId];
     if (!pkg) return;
     if (priority !== "high" && priority !== "normal" && priority !== "low") return;
     pkg.priority = priority;
     pkg.updatedAt = nowMs();
+
+    // Move high-priority packages to the top of packageOrder
+    if (priority === "high") {
+      const order = this.session.packageOrder;
+      const idx = order.indexOf(packageId);
+      if (idx > 0) {
+        order.splice(idx, 1);
+        // Insert after last existing high-priority package
+        let insertAt = 0;
+        for (let i = 0; i < order.length; i++) {
+          const p = this.session.packages[order[i]];
+          if (p && p.priority === "high") {
+            insertAt = i + 1;
+          } else {
+            break;
+          }
+        }
+        order.splice(insertAt, 0, packageId);
+      }
+    }
+
     this.persistSoon();
     this.emitState();
   }
@@ -4601,7 +4686,22 @@ export class DownloadManager extends EventEmitter {
         }
 
         await fs.promises.mkdir(path.dirname(effectiveTargetPath), { recursive: true });
-        const stream = fs.createWriteStream(effectiveTargetPath, { flags: writeMode });
+
+        // Sparse file pre-allocation (Windows only, new files with known size)
+        let preAllocated = false;
+        if (writeMode === "w" && item.totalBytes && item.totalBytes > 0 && process.platform === "win32") {
+          try {
+            const fd = await fs.promises.open(effectiveTargetPath, "w");
+            await fd.truncate(item.totalBytes);
+            await fd.close();
+            preAllocated = true;
+          } catch { /* best-effort */ }
+        }
+
+        const stream = fs.createWriteStream(effectiveTargetPath, {
+          flags: preAllocated ? "r+" : writeMode,
+          start: preAllocated ? 0 : undefined
+        });
         let written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
         let windowStarted = nowMs();
@@ -4693,6 +4793,28 @@ export class DownloadManager extends EventEmitter {
           stream.once("error", onError);
           active.abortController.signal.addEventListener("abort", onAbort, { once: true });
         });
+
+        // Write-buffer with 4KB NTFS alignment (JDownloader-style)
+        const writeBuf = Buffer.allocUnsafe(WRITE_BUFFER_SIZE);
+        let writeBufPos = 0;
+        let lastFlushAt = nowMs();
+
+        const alignedFlush = async (final = false): Promise<void> => {
+          if (writeBufPos === 0) return;
+          let toWrite = writeBufPos;
+          if (!final && toWrite > ALLOCATION_UNIT_SIZE) {
+            toWrite = toWrite - (toWrite % ALLOCATION_UNIT_SIZE);
+          }
+          const slice = Buffer.from(writeBuf.subarray(0, toWrite));
+          if (!stream.write(slice)) {
+            await waitDrain();
+          }
+          if (toWrite < writeBufPos) {
+            writeBuf.copy(writeBuf, 0, toWrite, writeBufPos);
+          }
+          writeBufPos -= toWrite;
+          lastFlushAt = nowMs();
+        };
 
         let bodyError: unknown = null;
         try {
@@ -4814,9 +4936,24 @@ export class DownloadManager extends EventEmitter {
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
               }
-              if (!stream.write(buffer)) {
-                await waitDrain();
+
+              // Buffer incoming data for aligned writes
+              let srcOffset = 0;
+              while (srcOffset < buffer.length) {
+                const space = WRITE_BUFFER_SIZE - writeBufPos;
+                const toCopy = Math.min(space, buffer.length - srcOffset);
+                buffer.copy(writeBuf, writeBufPos, srcOffset, srcOffset + toCopy);
+                writeBufPos += toCopy;
+                srcOffset += toCopy;
+                if (writeBufPos >= Math.floor(WRITE_BUFFER_SIZE * 0.80)) {
+                  await alignedFlush(false);
+                }
               }
+              // Time-based flush
+              if (writeBufPos > 0 && nowMs() - lastFlushAt >= WRITE_FLUSH_TIMEOUT_MS) {
+                await alignedFlush(false);
+              }
+
               written += buffer.length;
               windowBytes += buffer.length;
               this.session.totalDownloadedBytes += buffer.length;
@@ -4868,6 +5005,14 @@ export class DownloadManager extends EventEmitter {
           bodyError = error;
           throw error;
         } finally {
+          // Flush remaining buffered data before closing stream
+          try {
+            await alignedFlush(true);
+          } catch (flushError) {
+            if (!bodyError) {
+              bodyError = flushError;
+            }
+          }
           try {
             await new Promise<void>((resolve, reject) => {
               if (stream.closed || stream.destroyed) {
@@ -4918,6 +5063,14 @@ export class DownloadManager extends EventEmitter {
           item.downloadedBytes = 0;
           item.progressPercent = 0;
           throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);
+        }
+
+        // Truncate pre-allocated files to actual bytes written to prevent zero-padded tail
+        if (preAllocated && item.totalBytes && written < item.totalBytes) {
+          try {
+            await fs.promises.truncate(effectiveTargetPath, written);
+          } catch { /* best-effort */ }
+          logger.warn(`Pre-alloc underflow: erwartet=${item.totalBytes}, erhalten=${written} für ${item.fileName}`);
         }
 
         item.downloadedBytes = written;
@@ -5434,6 +5587,7 @@ export class DownloadManager extends EventEmitter {
 
     // Track multiple active archives for parallel hybrid extraction
     const activeHybridArchiveMap = new Map<string, DownloadItem[]>();
+    const hybridArchiveStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
 
     // Mark hybrid items as pending, others as waiting for parts
@@ -5470,19 +5624,23 @@ export class DownloadManager extends EventEmitter {
         packageId,
         hybridMode: true,
         maxParallel: this.settings.maxParallelExtract || 2,
+        extractCpuPriority: this.settings.extractCpuPriority,
         onProgress: (progress) => {
           if (progress.phase === "done") {
             // Mark all remaining active archives as done
-            for (const [, archItems] of activeHybridArchiveMap) {
+            for (const [archName, archItems] of activeHybridArchiveMap) {
               const doneAt = nowMs();
+              const startedAt = hybridArchiveStartTimes.get(archName) || doneAt;
+              const doneLabel = formatExtractDone(doneAt - startedAt);
               for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
-                  entry.fullStatus = "Entpackt - Done";
+                  entry.fullStatus = doneLabel;
                   entry.updatedAt = doneAt;
                 }
               }
             }
             activeHybridArchiveMap.clear();
+            hybridArchiveStartTimes.clear();
             return;
           }
 
@@ -5490,19 +5648,23 @@ export class DownloadManager extends EventEmitter {
             // Resolve items for this archive if not yet tracked
             if (!activeHybridArchiveMap.has(progress.archiveName)) {
               activeHybridArchiveMap.set(progress.archiveName, resolveArchiveItems(progress.archiveName));
+              hybridArchiveStartTimes.set(progress.archiveName, nowMs());
             }
             const archItems = activeHybridArchiveMap.get(progress.archiveName)!;
 
             // If archive is at 100%, mark its items as done and remove from active
             if (Number(progress.archivePercent ?? 0) >= 100) {
               const doneAt = nowMs();
+              const startedAt = hybridArchiveStartTimes.get(progress.archiveName) || doneAt;
+              const doneLabel = formatExtractDone(doneAt - startedAt);
               for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
-                  entry.fullStatus = "Entpackt - Done";
+                  entry.fullStatus = doneLabel;
                   entry.updatedAt = doneAt;
                 }
               }
               activeHybridArchiveMap.delete(progress.archiveName);
+              hybridArchiveStartTimes.delete(progress.archiveName);
             } else {
               // Update this archive's items with current progress
               const archive = ` · ${progress.archiveName}`;
@@ -5704,6 +5866,7 @@ export class DownloadManager extends EventEmitter {
       try {
         // Track multiple active archives for parallel extraction
         const activeArchiveItemsMap = new Map<string, DownloadItem[]>();
+        const archiveStartTimes = new Map<string, number>();
 
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
@@ -5716,19 +5879,23 @@ export class DownloadManager extends EventEmitter {
           signal: extractAbortController.signal,
           packageId,
           maxParallel: this.settings.maxParallelExtract || 2,
+          extractCpuPriority: this.settings.extractCpuPriority,
           onProgress: (progress) => {
             if (progress.phase === "done") {
               // Mark all remaining active archives as done
-              for (const [, items] of activeArchiveItemsMap) {
+              for (const [archName, items] of activeArchiveItemsMap) {
                 const doneAt = nowMs();
+                const startedAt = archiveStartTimes.get(archName) || doneAt;
+                const doneLabel = formatExtractDone(doneAt - startedAt);
                 for (const entry of items) {
                   if (!isExtractedLabel(entry.fullStatus)) {
-                    entry.fullStatus = "Entpackt - Done";
+                    entry.fullStatus = doneLabel;
                     entry.updatedAt = doneAt;
                   }
                 }
               }
               activeArchiveItemsMap.clear();
+              archiveStartTimes.clear();
               emitExtractStatus("Entpacken 100%", true);
               return;
             }
@@ -5737,19 +5904,23 @@ export class DownloadManager extends EventEmitter {
               // Resolve items for this archive if not yet tracked
               if (!activeArchiveItemsMap.has(progress.archiveName)) {
                 activeArchiveItemsMap.set(progress.archiveName, resolveArchiveItems(progress.archiveName));
+                archiveStartTimes.set(progress.archiveName, nowMs());
               }
               const archiveItems = activeArchiveItemsMap.get(progress.archiveName)!;
 
               // If archive is at 100%, mark its items as done and remove from active
               if (Number(progress.archivePercent ?? 0) >= 100) {
                 const doneAt = nowMs();
+                const startedAt = archiveStartTimes.get(progress.archiveName) || doneAt;
+                const doneLabel = formatExtractDone(doneAt - startedAt);
                 for (const entry of archiveItems) {
                   if (!isExtractedLabel(entry.fullStatus)) {
-                    entry.fullStatus = "Entpackt - Done";
+                    entry.fullStatus = doneLabel;
                     entry.updatedAt = doneAt;
                   }
                 }
                 activeArchiveItemsMap.delete(progress.archiveName);
+                archiveStartTimes.delete(progress.archiveName);
               } else {
                 // Update this archive's items with current progress
                 const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
@@ -5799,9 +5970,13 @@ export class DownloadManager extends EventEmitter {
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
+          const failAt = nowMs();
           for (const entry of completedItems) {
-            entry.fullStatus = `Entpack-Fehler: ${reason}`;
-            entry.updatedAt = nowMs();
+            // Preserve per-archive "Entpackt - Done (X.Xs)" labels for successfully extracted archives
+            if (!isExtractedLabel(entry.fullStatus)) {
+              entry.fullStatus = `Entpack-Fehler: ${reason}`;
+            }
+            entry.updatedAt = failAt;
           }
           pkg.status = "failed";
         } else {
@@ -5821,9 +5996,13 @@ export class DownloadManager extends EventEmitter {
             finalStatusText = "Entpackt (keine Archive)";
           }
 
+          const finalAt = nowMs();
           for (const entry of completedItems) {
-            entry.fullStatus = finalStatusText;
-            entry.updatedAt = nowMs();
+            // Preserve per-archive duration labels (e.g. "Entpackt - Done (5.3s)")
+            if (!isExtractedLabel(entry.fullStatus)) {
+              entry.fullStatus = finalStatusText;
+            }
+            entry.updatedAt = finalAt;
           }
           pkg.status = "completed";
         }
