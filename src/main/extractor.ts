@@ -2195,7 +2195,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         for (const nestedArchive of nestedCandidates) {
           if (options.signal?.aborted) throw new Error("aborted:extract");
           const nestedName = path.basename(nestedArchive);
-          const nestedKey = archiveNameKey(nestedName);
+          const nestedKey = archiveNameKey(`nested:${nestedName}`);
           if (resumeCompleted.has(nestedKey)) {
             logger.info(`Nested-Extraction übersprungen (bereits entpackt): ${nestedName}`);
             continue;
@@ -2258,7 +2258,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   }
 
   if (extracted > 0) {
-    const hasOutputAfter = await hasAnyEntries(options.targetDir);
+    const hasOutputAfter = await hasAnyFilesRecursive(options.targetDir);
     const hadResumeProgress = resumeCompletedAtStart > 0;
     if (!hasOutputAfter && conflictMode !== "skip" && !hadResumeProgress) {
       lastError = "Keine entpackten Dateien erkannt";
