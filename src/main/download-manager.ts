@@ -1462,6 +1462,7 @@ export class DownloadManager extends EventEmitter {
         this.runOutcomes.delete(itemId);
         this.itemContributedBytes.delete(itemId);
         this.retryAfterByItem.delete(itemId);
+        this.retryStateByItem.delete(itemId);
         if (this.session.running) {
           this.runItemIds.add(itemId);
         }
@@ -1555,7 +1556,6 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async checkRapidgatorLinks(itemIds: string[]): Promise<void> {
-    const checked = new Map<string, Awaited<ReturnType<typeof checkRapidgatorOnline>>>();
     const itemsToCheck: Array<{ itemId: string; url: string }> = [];
 
     for (const itemId of itemIds) {
@@ -2470,6 +2470,7 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.provider = null;
       item.fullStatus = "Wartet";
+      item.onlineStatus = undefined;
       item.updatedAt = nowMs();
     }
 
@@ -2534,6 +2535,7 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.provider = null;
       item.fullStatus = "Wartet";
+      item.onlineStatus = undefined;
       item.updatedAt = nowMs();
     }
 
@@ -2924,6 +2926,8 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
     this.abortPostProcessing("stop");
+    for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
+    this.packagePostProcessWaiters = [];
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
       active.abortController.abort("stop");
@@ -3576,7 +3580,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      if (this.settings.autoExtract && failed === 0 && success > 0) {
+      if (this.settings.autoExtract && failed === 0 && cancelled === 0 && success > 0) {
         const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
         if (needsExtraction) {
           pkg.status = "queued";
@@ -6048,7 +6052,11 @@ export class DownloadManager extends EventEmitter {
         return;
       }
       // Immediately clean up extracted items if "Sofort" policy is active
-      this.applyPackageDoneCleanup(packageId);
+      if (this.settings.completedCleanupPolicy === "immediate") {
+        for (const itemId of [...pkg.itemIds]) {
+          this.applyCompletedCleanupPolicy(packageId, itemId);
+        }
+      }
       if (!this.session.packages[packageId]) {
         return;  // Package was fully cleaned up
       }
@@ -6426,7 +6434,7 @@ export class DownloadManager extends EventEmitter {
             return;
           }
         }
-        this.removePackageFromSession(packageId, [...pkg.itemIds]);
+        this.removePackageFromSession(packageId, [...pkg.itemIds], "completed");
       }
     }
   }

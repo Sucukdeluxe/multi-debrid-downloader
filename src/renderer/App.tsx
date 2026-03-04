@@ -2706,7 +2706,13 @@ export function App(): ReactElement {
       {deleteConfirm && (() => {
         const itemCount = [...deleteConfirm.ids].filter((id) => snapshot.session.items[id]).length;
         const pkgCount = [...deleteConfirm.ids].filter((id) => snapshot.session.packages[id]).length;
-        const totalRemaining = Object.keys(snapshot.session.items).length + Object.keys(snapshot.session.packages).length - itemCount - pkgCount;
+        const removedItemIds = new Set<string>();
+        for (const id of deleteConfirm.ids) {
+          if (snapshot.session.items[id]) removedItemIds.add(id);
+          const pkg = snapshot.session.packages[id];
+          if (pkg) { for (const iid of pkg.itemIds) removedItemIds.add(iid); }
+        }
+        const totalRemaining = Object.keys(snapshot.session.items).length - removedItemIds.size;
         const parts: string[] = [];
         if (pkgCount > 0) parts.push(`${pkgCount} Paket(e)`);
         if (itemCount > 0) parts.push(`${itemCount} Link(s)`);
@@ -2991,7 +2997,8 @@ export function App(): ReactElement {
                 <div className="ctx-menu-sep" />
                 <button className="ctx-menu-item" onClick={() => {
                   const urls = contextEntry!.urls!;
-                  setLinkPopup({ title: contextEntry!.name, links: urls, isPackage: urls.length > 1 });
+                  const links = urls.map((u) => ({ name: u, url: u }));
+                  setLinkPopup({ title: contextEntry!.name, links, isPackage: links.length > 1 });
                   setHistoryCtxMenu(null);
                 }}>Linkadressen anzeigen</button>
               </>
