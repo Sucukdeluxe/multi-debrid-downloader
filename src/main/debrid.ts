@@ -650,7 +650,7 @@ class MegaDebridClient {
         await sleepWithSignal(retryDelay(attempt), signal);
       }
     }
-    throw new Error(lastError || "Mega-Web Unrestrict fehlgeschlagen");
+    throw new Error(String(lastError || "Mega-Web Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
   }
 }
 
@@ -954,7 +954,7 @@ class AllDebridClient {
       }
     }
 
-    throw new Error(lastError || "AllDebrid Unrestrict fehlgeschlagen");
+    throw new Error(String(lastError || "AllDebrid Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
   }
 }
 

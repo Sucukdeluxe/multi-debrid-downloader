@@ -1597,7 +1597,8 @@ async function extractZipArchive(archivePath: string, targetDir: string, conflic
       const limitMb = Math.ceil(memoryLimitBytes / (1024 * 1024));
       throw new Error(`ZIP-Eintrag zu groß für internen Entpacker (${entryMb} MB > ${limitMb} MB)`);
     }
-    if (data.length > Math.max(uncompressedSize, compressedSize) * 20) {
+    const maxDeclaredSize = Math.max(uncompressedSize, compressedSize);
+    if (maxDeclaredSize > 0 && data.length > maxDeclaredSize * 20) {
       throw new Error(`ZIP-Eintrag verdächtig groß nach Entpacken (${entry.entryName})`);
     }
     await fs.promises.writeFile(outputPath, data);

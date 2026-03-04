@@ -1369,10 +1369,18 @@ export function App(): ReactElement {
     pendingPackageOrderRef.current = [...order];
     pendingPackageOrderAtRef.current = Date.now();
     packageOrderRef.current = [...order];
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
+    });
     void window.rd.reorderPackages(order).catch((error) => {
       pendingPackageOrderRef.current = null;
       pendingPackageOrderAtRef.current = 0;
       packageOrderRef.current = serverPackageOrderRef.current;
+      setSnapshot((prev) => {
+        if (!prev) return prev;
+        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
+      });
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
   }, [showToast]);
@@ -1389,10 +1397,18 @@ export function App(): ReactElement {
     pendingPackageOrderRef.current = [...nextOrder];
     pendingPackageOrderAtRef.current = Date.now();
     packageOrderRef.current = [...nextOrder];
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      return { ...prev, session: { ...prev.session, packageOrder: [...nextOrder] } };
+    });
     void window.rd.reorderPackages(nextOrder).catch((error) => {
       pendingPackageOrderRef.current = null;
       pendingPackageOrderAtRef.current = 0;
       packageOrderRef.current = serverPackageOrderRef.current;
+      setSnapshot((prev) => {
+        if (!prev) return prev;
+        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
+      });
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
   }, [showToast]);
@@ -2375,10 +2391,18 @@ export function App(): ReactElement {
                       pendingPackageOrderRef.current = [...sorted];
                       pendingPackageOrderAtRef.current = Date.now();
                       packageOrderRef.current = sorted;
+                      setSnapshot((prev) => {
+                        if (!prev) return prev;
+                        return { ...prev, session: { ...prev.session, packageOrder: [...sorted] } };
+                      });
                       void window.rd.reorderPackages(sorted).catch((error) => {
                         pendingPackageOrderRef.current = null;
                         pendingPackageOrderAtRef.current = 0;
                         packageOrderRef.current = serverPackageOrderRef.current;
+                        setSnapshot((prev) => {
+                          if (!prev) return prev;
+                          return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
+                        });
                         showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
                       });
                     } : undefined}
@@ -2863,7 +2887,7 @@ export function App(): ReactElement {
                 <button className="btn" onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
                 <button className="btn danger" onClick={() => {
                   if (deleteConfirm.dontAsk) {
-                    setBool("confirmDeleteSelection", false);
+                    setSettingsDraft((prev) => ({ ...prev, confirmDeleteSelection: false }));
                     void window.rd.updateSettings({ confirmDeleteSelection: false }).catch(() => {});
                   }
                   executeDeleteSelection(deleteConfirm.ids);
@@ -3443,6 +3467,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     }
     if (a.id !== b.id
       || a.updatedAt !== b.updatedAt
+      || a.url !== b.url
       || a.status !== b.status
       || a.fileName !== b.fileName
       || a.progressPercent !== b.progressPercent
