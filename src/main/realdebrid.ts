@@ -196,6 +196,6 @@ export class RealDebridClient {
       }
     }
 
-    throw new Error(lastError || "Unrestrict fehlgeschlagen");
+    throw new Error(String(lastError || "Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
   }
 }

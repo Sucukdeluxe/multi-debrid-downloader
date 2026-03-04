@@ -1102,16 +1102,21 @@ export class DownloadManager extends EventEmitter {
       active.abortController.abort("cancel");
     }
     const pkg = this.session.packages[item.packageId];
+    let removedByPackageCleanup = false;
     if (pkg) {
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(item.packageId, [itemId]);
+        removedByPackageCleanup = true;
       } else {
         pkg.updatedAt = nowMs();
       }
     }
-    delete this.session.items[itemId];
-    this.itemCount = Math.max(0, this.itemCount - 1);
+    // removePackageFromSession already deletes the item and decrements itemCount
+    if (!removedByPackageCleanup) {
+      delete this.session.items[itemId];
+      this.itemCount = Math.max(0, this.itemCount - 1);
+    }
     this.retryAfterByItem.delete(itemId);
     this.retryStateByItem.delete(itemId);
     this.dropItemContribution(itemId);
@@ -1268,6 +1273,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
     this.hybridExtractRequeue.clear();
+    this.providerFailures.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.packagePostProcessActive = 0;
     for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
@@ -1885,7 +1891,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       for (const entry of entries) {
-        if (entry.isFile()) {
+        if (entry.isFile() && !isIgnorableEmptyDirFileName(entry.name)) {
           return true;
         }
         if (entry.isDirectory()) {
@@ -2739,6 +2745,7 @@ export class DownloadManager extends EventEmitter {
       item.updatedAt = nowMs();
       this.retryAfterByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
+      this.releaseTargetPath(itemId);
       this.recordRunOutcome(itemId, "cancelled");
       affectedPackageIds.add(item.packageId);
     }
@@ -2746,15 +2753,16 @@ export class DownloadManager extends EventEmitter {
       const pkg = this.session.packages[pkgId];
       if (pkg) this.refreshPackageStatus(pkg);
     }
-    // Trigger extraction if all items are now in a terminal state and some completed
+    // Trigger extraction if all items are now in a terminal state and some completed (no failures)
     if (this.settings.autoExtract) {
       for (const pkgId of affectedPackageIds) {
         const pkg = this.session.packages[pkgId];
         if (!pkg || pkg.cancelled || this.packagePostProcessTasks.has(pkgId)) continue;
         const pkgItems = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
         const hasPending = pkgItems.some((i) => i.status !== "completed" && i.status !== "failed" && i.status !== "cancelled");
+        const hasFailed = pkgItems.some((i) => i.status === "failed");
         const hasUnextracted = pkgItems.some((i) => i.status === "completed" && !isExtractedLabel(i.fullStatus || ""));
-        if (!hasPending && hasUnextracted) {
+        if (!hasPending && !hasFailed && hasUnextracted) {
           for (const it of pkgItems) {
             if (it.status === "completed" && !isExtractedLabel(it.fullStatus || "")) {
               it.fullStatus = "Entpacken - Ausstehend";
@@ -2935,6 +2943,9 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
     this.retryStateByItem.clear();
+    this.itemContributedBytes.clear();
+    this.reservedTargetPaths.clear();
+    this.claimedTargetPathByItem.clear();
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
