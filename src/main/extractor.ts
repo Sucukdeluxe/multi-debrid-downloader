@@ -2000,7 +2000,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         logger.info(`Generische Split-Datei übersprungen (keine Archiv-Signatur): ${archiveName}`);
         extracted += 1;
         resumeCompleted.add(archiveResumeKey);
-        extractedArchives.push(archivePath);
+        extractedArchives.add(archivePath);
         clearInterval(pulseTimer);
         return;
       }
