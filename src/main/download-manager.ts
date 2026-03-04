@@ -5828,17 +5828,19 @@ export class DownloadManager extends EventEmitter {
     const hybridArchiveStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
 
-    // Mark hybrid items as pending, others as waiting for parts
-    // If all items are completed, no item should show "Warten auf Parts"
-    const hybridItemIds = new Set(hybridItems.map((item) => item.id));
+    // Mark items based on whether their archive is actually ready for extraction.
+    // Only items whose archive is in readyArchives get "Ausstehend"; others keep
+    // "Warten auf Parts" to avoid flicker between hybrid runs.
     const allDownloaded = completedItems.length >= items.length;
     for (const entry of completedItems) {
       if (isExtractedLabel(entry.fullStatus)) {
         continue;
       }
-      if (hybridItemIds.has(entry.id)) {
+      if (allDownloaded) {
+        // Everything downloaded — all remaining items will be extracted
         entry.fullStatus = "Entpacken - Ausstehend";
-      } else if (allDownloaded) {
+      } else if (hybridFileNames.has((entry.fileName || "").toLowerCase()) ||
+                 (entry.targetPath && hybridFileNames.has(path.basename(entry.targetPath).toLowerCase()))) {
         entry.fullStatus = "Entpacken - Ausstehend";
       } else {
         entry.fullStatus = "Entpacken - Warten auf Parts";
