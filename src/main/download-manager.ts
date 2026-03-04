@@ -2627,6 +2627,101 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
+  public async startItems(itemIds: string[]): Promise<void> {
+    const targetSet = new Set(itemIds);
+
+    // Collect affected package IDs
+    const affectedPackageIds = new Set<string>();
+    for (const itemId of targetSet) {
+      const item = this.session.items[itemId];
+      if (item) affectedPackageIds.add(item.packageId);
+    }
+
+    // Enable affected packages if disabled
+    for (const pkgId of affectedPackageIds) {
+      const pkg = this.session.packages[pkgId];
+      if (pkg && !pkg.enabled) {
+        pkg.enabled = true;
+      }
+    }
+
+    // Recover stopped items
+    for (const itemId of targetSet) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+      if (item.status === "cancelled" && item.fullStatus === "Gestoppt") {
+        const pkg = this.session.packages[item.packageId];
+        if (pkg && !pkg.cancelled && pkg.enabled) {
+          item.status = "queued";
+          item.fullStatus = "Wartet";
+          item.lastError = "";
+          item.speedBps = 0;
+          item.updatedAt = nowMs();
+        }
+      }
+    }
+
+    // If already running, add items to scheduler
+    if (this.session.running) {
+      for (const itemId of targetSet) {
+        const item = this.session.items[itemId];
+        if (!item) continue;
+        if (item.status === "queued" || item.status === "reconnect_wait") {
+          this.runItemIds.add(item.id);
+          this.runPackageIds.add(item.packageId);
+        }
+      }
+      this.persistSoon();
+      this.emitState(true);
+      return;
+    }
+
+    // Not running: start with only specified items
+    const runItems = [...targetSet]
+      .map((id) => this.session.items[id])
+      .filter((item) => {
+        if (!item) return false;
+        if (item.status !== "queued" && item.status !== "reconnect_wait") return false;
+        const pkg = this.session.packages[item.packageId];
+        return Boolean(pkg && !pkg.cancelled && pkg.enabled);
+      });
+    if (runItems.length === 0) {
+      this.persistSoon();
+      this.emitState(true);
+      return;
+    }
+    this.runItemIds = new Set(runItems.map((item) => item.id));
+    this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.runOutcomes.clear();
+    this.runCompletedPackages.clear();
+    this.retryAfterByItem.clear();
+    this.session.running = true;
+    this.session.paused = false;
+    this.session.runStartedAt = nowMs();
+    this.session.totalDownloadedBytes = 0;
+    this.session.summaryText = "";
+    this.session.reconnectUntil = 0;
+    this.session.reconnectReason = "";
+    this.speedEvents = [];
+    this.speedBytesLastWindow = 0;
+    this.speedBytesPerPackage.clear();
+    this.speedEventsHead = 0;
+    this.lastGlobalProgressBytes = 0;
+    this.lastGlobalProgressAt = nowMs();
+    this.summary = null;
+    this.nonResumableActive = 0;
+    this.persistSoon();
+    this.emitState(true);
+    logger.info(`Start (nur Items: ${itemIds.length}): ${runItems.length} Items`);
+    void this.ensureScheduler().catch((error) => {
+      logger.error(`Scheduler abgestürzt: ${compactErrorText(error)}`);
+      this.session.running = false;
+      this.session.paused = false;
+      this.persistSoon();
+      this.emitState(true);
+    });
+  }
+
   public async start(): Promise<void> {
     if (this.session.running) {
       return;

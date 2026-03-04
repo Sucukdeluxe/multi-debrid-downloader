@@ -38,7 +38,7 @@ const api: ElectronApi = {
   reorderPackages: (packageIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REORDER_PACKAGES, packageIds),
   removeItem: (itemId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_ITEM, itemId),
   togglePackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_PACKAGE, packageId),
-  exportQueue: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_QUEUE),
+  exportQueue: (): Promise<{ saved: boolean }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_QUEUE),
   importQueue: (json: string): Promise<{ addedPackages: number; addedLinks: number }> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_QUEUE, json),
   toggleClipboard: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_CLIPBOARD),
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.PICK_FOLDER),
@@ -58,6 +58,8 @@ const api: ElectronApi = {
   removeHistoryEntry: (entryId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, entryId),
   setPackagePriority: (packageId: string, priority: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SET_PACKAGE_PRIORITY, packageId, priority),
   skipItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKIP_ITEMS, itemIds),
+  resetItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_ITEMS, itemIds),
+  startItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.START_ITEMS, itemIds),
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void): (() => void) => {
     const listener = (_event: unknown, snapshot: UiSnapshot): void => callback(snapshot);
     ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, listener);

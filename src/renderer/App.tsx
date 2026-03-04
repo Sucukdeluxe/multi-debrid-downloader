@@ -2833,10 +2833,13 @@ export function App(): ReactElement {
         const hasItems = [...selectedIds].some((id) => snapshot.session.items[id]);
         return (
         <div ref={ctxMenuRef} className="ctx-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
-          {(!contextMenu.itemId || multi) && hasPackages && (
+          {(hasPackages || hasItems) && (
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
-              void window.rd.startPackages(pkgIds); setContextMenu(null);
+              const itemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
+              if (pkgIds.length > 0) void window.rd.startPackages(pkgIds);
+              if (itemIds.length > 0) void window.rd.startItems(itemIds);
+              setContextMenu(null);
             }}>Ausgewählte Downloads starten{multi ? ` (${selectedIds.size})` : ""}</button>
           )}
           <button className="ctx-menu-item" onClick={() => { void window.rd.start(); setContextMenu(null); }}>Alle Downloads starten</button>

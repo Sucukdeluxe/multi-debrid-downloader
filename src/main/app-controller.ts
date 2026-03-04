@@ -210,6 +210,10 @@ export class AppController {
     await this.manager.startPackages(packageIds);
   }
 
+  public async startItems(itemIds: string[]): Promise<void> {
+    await this.manager.startItems(itemIds);
+  }
+
   public stop(): void {
     this.manager.stop();
   }
@@ -306,6 +310,18 @@ export class AppController {
 
   public clearHistory(): void {
     clearHistory(this.storagePaths);
+  }
+
+  public setPackagePriority(packageId: string, priority: string): void {
+    this.manager.setPackagePriority(packageId, priority as any);
+  }
+
+  public skipItems(itemIds: string[]): void {
+    this.manager.skipItems(itemIds);
+  }
+
+  public resetItems(itemIds: string[]): void {
+    this.manager.resetItems(itemIds);
   }
 
   public removeHistoryEntry(entryId: string): void {
