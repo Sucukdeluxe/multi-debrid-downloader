@@ -705,6 +705,23 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
     return sanitizeFilename(target);
   }
 
+  // Last-resort fallback: if no scene-group-suffix folder was found but a folder
+  // has a season token and the source has an episode token, inject the episode anyway.
+  // This handles user-renamed packages like "Mystery Road S02" where the folder has
+  // no scene group suffix but still contains enough info for a useful rename.
+  if (resolvedEpisode && forceEpisodeForSeasonFolder) {
+    for (const folderName of ordered) {
+      if (!SCENE_SEASON_ONLY_RE.test(folderName) || extractEpisodeToken(folderName)) {
+        continue;
+      }
+      let target = applyEpisodeTokenToFolderName(folderName, resolvedEpisode.token);
+      if (globalRepackHint) {
+        target = ensureRepackToken(removeRpTokens(target));
+      }
+      return sanitizeFilename(target);
+    }
+  }
+
   return null;
 }
 
@@ -2029,13 +2046,32 @@ export class DownloadManager extends EventEmitter {
     return next;
   }
 
-  private async autoRenameExtractedVideoFiles(extractDir: string): Promise<number> {
+  private async autoRenameExtractedVideoFiles(extractDir: string, pkg?: PackageEntry): Promise<number> {
     if (!this.settings.autoRename4sf4sj) {
       return 0;
     }
 
     const videoFiles = await this.collectVideoFiles(extractDir);
     let renamed = 0;
+
+    // Collect additional folder candidates from package metadata (outputDir, item filenames)
+    const packageExtraCandidates: string[] = [];
+    if (pkg) {
+      const outputBase = path.basename(pkg.outputDir || "");
+      if (outputBase) {
+        packageExtraCandidates.push(outputBase);
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (item?.fileName) {
+          const itemBase = path.basename(item.fileName, path.extname(item.fileName));
+          const stripped = itemBase.replace(/\.part\d+$/i, "").replace(/\.vol\d+[+\d]*$/i, "");
+          if (stripped) {
+            packageExtraCandidates.push(stripped);
+          }
+        }
+      }
+    }
 
     for (const sourcePath of videoFiles) {
       const sourceName = path.basename(sourcePath);
@@ -2050,6 +2086,14 @@ export class DownloadManager extends EventEmitter {
           break;
         }
         currentDir = parent;
+      }
+      // Append package-level candidates that aren't already present
+      const seen = new Set(folderCandidates.map(c => c.toLowerCase()));
+      for (const extra of packageExtraCandidates) {
+        if (!seen.has(extra.toLowerCase())) {
+          seen.add(extra.toLowerCase());
+          folderCandidates.push(extra);
+        }
       }
       const targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
         forceEpisodeForSeasonFolder: true
@@ -5871,7 +5915,7 @@ export class DownloadManager extends EventEmitter {
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       if (result.extracted > 0) {
-        await this.autoRenameExtractedVideoFiles(pkg.extractDir);
+        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
       }
       if (result.failed > 0) {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
@@ -6151,7 +6195,7 @@ export class DownloadManager extends EventEmitter {
         } else {
           const hasExtractedOutput = await this.directoryHasAnyFiles(pkg.extractDir);
           if (result.extracted > 0 || hasExtractedOutput) {
-            await this.autoRenameExtractedVideoFiles(pkg.extractDir);
+            await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
           }
           const sourceExists = await this.existsAsync(pkg.outputDir);
           let finalStatusText = "";

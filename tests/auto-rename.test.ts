@@ -620,4 +620,45 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBe("Mammon.S01E05E06.German.1080P.Bluray.x264-SMAHD");
   });
+
+  // Last-resort fallback: folder has season but no scene group suffix (user-renamed packages)
+  it("renames when folder has season but no scene group suffix (Mystery Road case)", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Mystery Road S02"],
+      "myst.road.de.dl.hdtv.7p-s02e05",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Mystery Road S02E05");
+  });
+
+  it("renames with season-only folder and custom name without dots", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Meine Serie S03"],
+      "meine-serie-s03e10-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Meine Serie S03E10");
+  });
+
+  it("prefers scene-group folder over season-only fallback", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Mystery Road S02",
+        "Mystery.Road.S02.GERMAN.DL.AC3.720p.HDTV.x264-hrs"
+      ],
+      "myst.road.de.dl.hdtv.7p-s02e05",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    // Should use the scene-group folder (hrs), not the custom one
+    expect(result).toBe("Mystery.Road.S02E05.GERMAN.DL.AC3.720p.HDTV.x264-hrs");
+  });
+
+  it("does not use season-only fallback when forceEpisodeForSeasonFolder is false", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Mystery Road S02"],
+      "myst.road.de.dl.hdtv.7p-s02e05",
+      { forceEpisodeForSeasonFolder: false }
+    );
+    expect(result).toBeNull();
+  });
 });
