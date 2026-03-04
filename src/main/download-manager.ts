@@ -2088,6 +2088,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     const videoFiles = await this.collectVideoFiles(extractDir);
+    logger.info(`Auto-Rename: ${videoFiles.length} Video-Dateien gefunden in ${extractDir}`);
     let renamed = 0;
 
     // Collect additional folder candidates from package metadata (outputDir, item filenames)
@@ -2135,6 +2136,7 @@ export class DownloadManager extends EventEmitter {
         forceEpisodeForSeasonFolder: true
       });
       if (!targetBaseName) {
+        logger.info(`Auto-Rename: kein Zielname für ${sourceName} (folders=${folderCandidates.join(", ")})`);
         continue;
       }
 
@@ -2171,6 +2173,7 @@ export class DownloadManager extends EventEmitter {
 
       try {
         await this.renamePathWithExdevFallback(sourcePath, targetPath);
+        logger.info(`Auto-Rename: ${sourceName} -> ${path.basename(targetPath)}`);
         renamed += 1;
       } catch (error) {
         if (this.isPathLengthRenameError(error)) {
