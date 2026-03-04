@@ -257,6 +257,9 @@ function normalizeLoadedSession(raw: unknown): SessionState {
     const status: DownloadStatus = VALID_DOWNLOAD_STATUSES.has(statusRaw) ? statusRaw : "queued";
     const providerRaw = asText(item.provider) as DebridProvider;
 
+    const onlineStatusRaw = asText(item.onlineStatus);
+    const validOnlineStatuses = new Set(["online", "offline", "checking"]);
+
     itemsById[id] = {
       id,
       packageId,
@@ -274,6 +277,7 @@ function normalizeLoadedSession(raw: unknown): SessionState {
       attempts: clampNumber(item.attempts, 0, 0, 10_000),
       lastError: asText(item.lastError),
       fullStatus: asText(item.fullStatus),
+      onlineStatus: validOnlineStatuses.has(onlineStatusRaw) ? onlineStatusRaw as "online" | "offline" | "checking" : undefined,
       createdAt: clampNumber(item.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(item.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };
