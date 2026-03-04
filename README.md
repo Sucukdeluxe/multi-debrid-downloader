@@ -1,6 +1,6 @@
 # Multi Debrid Downloader
 
-Desktop downloader for **Real-Debrid, Mega-Debrid, BestDebrid, and AllDebrid** with fast queue management, automatic extraction, and robust error handling.
+Desktop downloader with fast queue management, automatic extraction, and robust error handling.
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
 ![Electron](https://img.shields.io/badge/Electron-31.x-47848F)
