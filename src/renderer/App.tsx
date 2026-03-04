@@ -1474,6 +1474,38 @@ export function App(): ReactElement {
     movePackage(packageId, "down");
   }, [movePackage]);
 
+  const moveSelectedPackages = useCallback((direction: "up" | "down") => {
+    const currentOrder = packageOrderRef.current;
+    const selPkgs = new Set([...selectedIds].filter((id) => snapshot.session.packages[id]));
+    if (selPkgs.size === 0) return;
+    const order = [...currentOrder];
+    if (direction === "up") {
+      for (let i = 0; i < order.length; i++) {
+        if (selPkgs.has(order[i]) && i > 0 && !selPkgs.has(order[i - 1])) {
+          [order[i - 1], order[i]] = [order[i], order[i - 1]];
+        }
+      }
+    } else {
+      for (let i = order.length - 1; i >= 0; i--) {
+        if (selPkgs.has(order[i]) && i < order.length - 1 && !selPkgs.has(order[i + 1])) {
+          [order[i], order[i + 1]] = [order[i + 1], order[i]];
+        }
+      }
+    }
+    const unchanged = order.length === currentOrder.length && order.every((id, idx) => id === currentOrder[idx]);
+    if (unchanged) return;
+    setDownloadsSortDescending(false);
+    pendingPackageOrderRef.current = [...order];
+    pendingPackageOrderAtRef.current = Date.now();
+    packageOrderRef.current = [...order];
+    void window.rd.reorderPackages(order).catch((error) => {
+      pendingPackageOrderRef.current = null;
+      pendingPackageOrderAtRef.current = 0;
+      packageOrderRef.current = serverPackageOrderRef.current;
+      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [selectedIds, snapshot.session.packages, showToast]);
+
   const onPackageToggle = useCallback((packageId: string): void => {
     void window.rd.togglePackage(packageId).catch((error) => {
       showToast(`Paket-Umschalten fehlgeschlagen: ${String(error)}`, 2400);
@@ -2147,6 +2179,23 @@ export function App(): ReactElement {
             onClick={() => { void performQuickAction(() => window.rd.stop()); }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" /></svg>
+          </button>
+          <div className="ctrl-separator" />
+          <button
+            className="ctrl-icon-btn ctrl-move"
+            title="Ausgewählte nach oben"
+            disabled={tab !== "downloads" || [...selectedIds].filter((id) => snapshot.session.packages[id]).length === 0}
+            onClick={() => moveSelectedPackages("up")}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4l-7 7h4.5v9h5v-9H19z" fill="currentColor" /></svg>
+          </button>
+          <button
+            className="ctrl-icon-btn ctrl-move"
+            title="Ausgewählte nach unten"
+            disabled={tab !== "downloads" || [...selectedIds].filter((id) => snapshot.session.packages[id]).length === 0}
+            onClick={() => moveSelectedPackages("down")}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 20l7-7h-4.5V4h-5v9H5z" fill="currentColor" /></svg>
           </button>
         </div>
         {snapshot.reconnectSeconds > 0 && (
