@@ -130,7 +130,7 @@ function createTray(): void {
   const contextMenu = Menu.buildFromTemplate([
     { label: "Anzeigen", click: () => { mainWindow?.show(); mainWindow?.focus(); } },
     { type: "separator" },
-    { label: "Start", click: () => { controller.start(); } },
+    { label: "Start", click: () => { void controller.start().catch((err) => logger.warn(`Tray Start Fehler: ${String(err)}`)); } },
     { label: "Stop", click: () => { controller.stop(); } },
     { type: "separator" },
     { label: "Beenden", click: () => { app.quit(); } }
@@ -453,6 +453,11 @@ function registerIpcHandlers(): void {
       return { restored: false, message: "Abgebrochen" };
     }
     const filePath = result.filePaths[0];
+    const stat = await fs.promises.stat(filePath);
+    const BACKUP_MAX_BYTES = 50 * 1024 * 1024;
+    if (stat.size > BACKUP_MAX_BYTES) {
+      return { restored: false, message: `Backup-Datei zu groß (max 50 MB, Datei hat ${(stat.size / 1024 / 1024).toFixed(1)} MB)` };
+    }
     const json = await fs.promises.readFile(filePath, "utf8");
     return controller.importBackup(json);
   });
