@@ -5686,12 +5686,18 @@ export class DownloadManager extends EventEmitter {
       return ready;
     }
 
-    // Build lookup: pathKey → item status for pending items
+    // Build lookup: pathKey → item status for pending items.
+    // Also map by filename (resolved against outputDir) so items without
+    // targetPath (never started) are still found by the disk-fallback check.
     const pendingItemStatus = new Map<string, string>();
     for (const itemId of pkg.itemIds) {
       const item = this.session.items[itemId];
-      if (item && item.targetPath && item.status !== "completed") {
+      if (!item || item.status === "completed") continue;
+      if (item.targetPath) {
         pendingItemStatus.set(pathKey(item.targetPath), item.status);
+      }
+      if (item.fileName && pkg.outputDir) {
+        pendingItemStatus.set(pathKey(path.join(pkg.outputDir, item.fileName)), item.status);
       }
     }
 
@@ -5811,8 +5817,11 @@ export class DownloadManager extends EventEmitter {
     };
     const hybridItems = completedItems.filter(isHybridItem);
 
+    // Resolve archive items dynamically from ALL package items (not just
+    // the stale completedItems snapshot) so items that complete during
+    // extraction are included and get the correct "Done" label.
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
-      resolveArchiveItemsFromList(archiveName, hybridItems);
+      resolveArchiveItemsFromList(archiveName, items);
 
     // Track multiple active archives for parallel hybrid extraction
     const activeHybridArchiveMap = new Map<string, DownloadItem[]>();

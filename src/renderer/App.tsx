@@ -662,14 +662,14 @@ export function App(): ReactElement {
 
       const itemCount = Object.keys(state.session.items).length;
       let flushDelay = itemCount >= 1500
-        ? 1200
+        ? 900
         : itemCount >= 700
-          ? 920
+          ? 650
           : itemCount >= 250
-            ? 640
-            : 300;
+            ? 400
+            : 150;
       if (!state.session.running) {
-        flushDelay = Math.min(flushDelay, 320);
+        flushDelay = Math.min(flushDelay, 200);
       }
       if (activeTabRef.current !== "downloads") {
         flushDelay = Math.max(flushDelay, 800);
