@@ -21,7 +21,7 @@ import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 
@@ -309,7 +309,9 @@ export class AppController {
     // Cancel any deferred persist timer so the old in-memory session
     // does not overwrite the restored session file on disk.
     this.manager.clearPersistTimer();
-    const restoredSession = parsed.session as ReturnType<typeof loadSession>;
+    const restoredSession = normalizeLoadedSessionTransientFields(
+      normalizeLoadedSession(parsed.session)
+    );
     saveSession(this.storagePaths, restoredSession);
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }

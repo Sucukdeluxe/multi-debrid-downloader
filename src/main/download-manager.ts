@@ -2540,6 +2540,14 @@ export class DownloadManager extends EventEmitter {
     pkg.updatedAt = nowMs();
     this.historyRecordedPackages.delete(packageId);
 
+    // 5. Re-add to runItemIds/runPackageIds if session is running so outcomes are tracked
+    if (this.session.running) {
+      for (const itemId of itemIds) {
+        this.runItemIds.add(itemId);
+      }
+      this.runPackageIds.add(packageId);
+    }
+
     logger.info(`Paket "${pkg.name}" zurückgesetzt (${itemIds.length} Items)`);
     this.persistSoon();
     this.emitState(true);

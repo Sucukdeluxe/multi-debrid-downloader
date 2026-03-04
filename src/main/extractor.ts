@@ -1993,6 +1993,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       const sig = await detectArchiveSignature(archivePath);
       if (!sig) {
         logger.info(`Generische Split-Datei übersprungen (keine Archiv-Signatur): ${archiveName}`);
+        extracted += 1;
         clearInterval(pulseTimer);
         return;
       }
@@ -2200,10 +2201,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             resumeCompleted.add(nestedKey);
             await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
             logger.info(`Nested-Entpacken erfolgreich: ${nestedName}`);
-            if (options.cleanupMode === "delete") {
-              for (const part of collectArchiveCleanupTargets(nestedArchive)) {
-                try { await fs.promises.unlink(part); } catch { /* ignore */ }
-              }
+            if (options.cleanupMode !== "none") {
+              await cleanupArchives([nestedArchive], options.cleanupMode);
             }
           } catch (nestedErr) {
             const errText = String(nestedErr);
