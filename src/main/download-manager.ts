@@ -3525,6 +3525,13 @@ export class DownloadManager extends EventEmitter {
   }
 
   private releasePostProcessSlot(): void {
+    // Guard: stop() resets active to 0, but old tasks (aborted waiters) still
+    // call release in their finally blocks.  Without this guard, the counter
+    // goes negative, letting multiple packages through on the next session.
+    if (this.packagePostProcessActive <= 0) {
+      this.packagePostProcessActive = 0;
+      return;
+    }
     this.packagePostProcessActive -= 1;
     if (this.packagePostProcessWaiters.length === 0) return;
     // Pick the waiter whose package appears earliest in packageOrder
