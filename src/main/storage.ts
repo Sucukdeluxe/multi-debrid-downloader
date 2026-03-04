@@ -140,7 +140,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
     columnOrder: normalizeColumnOrder(settings.columnOrder),
-    extractCpuPriority: settings.extractCpuPriority
+    extractCpuPriority: settings.extractCpuPriority,
+    autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {

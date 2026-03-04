@@ -22,7 +22,7 @@ const JVM_EXTRACTOR_REQUIRED_LIBS = [
 ];
 
 // ── subst drive mapping for long paths on Windows ──
-const SUBST_THRESHOLD = 100;
+const SUBST_THRESHOLD = 200;
 const activeSubstDrives = new Set<string>();
 
 function findFreeSubstDrive(): string | null {
@@ -2118,7 +2118,12 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
       const workerCount = Math.min(maxParallel, parallelQueue.length);
       logger.info(`Parallele Extraktion: ${workerCount} gleichzeitige Worker für ${parallelQueue.length} Archive`);
+      // Snapshot passwordCandidates before parallel extraction to avoid concurrent mutation.
+      // Each worker reads the same promoted order from the serial password-discovery pass.
+      const frozenPasswords = [...passwordCandidates];
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      // Restore passwordCandidates from frozen snapshot (parallel mutations are discarded).
+      passwordCandidates = frozenPasswords;
 
       if (abortError) throw new Error("aborted:extract");
     }

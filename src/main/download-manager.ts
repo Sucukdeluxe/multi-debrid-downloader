@@ -2919,6 +2919,7 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
 
     this.session.running = true;
     this.session.paused = false;
