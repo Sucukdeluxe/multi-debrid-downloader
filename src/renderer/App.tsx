@@ -3078,6 +3078,11 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   const extracted = items.filter((item) => item.fullStatus?.startsWith("Entpackt")).length;
   const extracting = items.some((item) => item.fullStatus?.startsWith("Entpack"));
   const total = Math.max(1, items.length);
+  // Use 50/50 split when extraction is active OR package is in extracting state
+  // (prevents bar jumping from 100% to 50% when extraction starts)
+  const allDownloaded = done + failed + cancelled >= total;
+  const allExtracted = extracted >= total;
+  const useExtractSplit = extracting || pkg.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0);
   // Include fractional progress from active downloads so the bar moves continuously
   const activeProgress = items.reduce((sum, item) => {
     if (item.status === "downloading" || (item.status === "queued" && (item.progressPercent || 0) > 0)) {
@@ -3085,7 +3090,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     }
     return sum;
   }, 0);
-  const dlProgress = Math.floor(((done + activeProgress) / total) * (extracting ? 50 : 100));
+  const dlProgress = Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100));
   // Include fractional progress from items currently being extracted
   const extractingProgress = items.reduce((sum, item) => {
     const fs = item.fullStatus || "";
@@ -3095,7 +3100,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     return sum;
   }, 0);
   const exProgress = Math.floor(((extracted + extractingProgress) / total) * 50);
-  const combinedProgress = extracting ? dlProgress + exProgress : dlProgress;
+  const combinedProgress = useExtractSplit ? dlProgress + exProgress : dlProgress;
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
