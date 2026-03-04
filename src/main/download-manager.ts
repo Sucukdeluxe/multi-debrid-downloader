@@ -1019,6 +1019,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     this.session.totalDownloadedBytes = 0;
+    this.sessionDownloadedBytes = 0;
     this.session.runStartedAt = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
@@ -1483,8 +1484,8 @@ export class DownloadManager extends EventEmitter {
         }
         const active = this.activeTasks.get(itemId);
         if (active) {
-          active.abortReason = "cancel";
-          active.abortController.abort("cancel");
+          active.abortReason = "reset";
+          active.abortController.abort("reset");
         }
         this.releaseTargetPath(itemId);
         item.status = "queued";
@@ -1623,9 +1624,14 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      const result = await checkRapidgatorOnline(url);
-      checkedUrls.set(url, result);
-      this.applyRapidgatorCheckResult(item, result);
+      try {
+        const result = await checkRapidgatorOnline(url);
+        checkedUrls.set(url, result);
+        this.applyRapidgatorCheckResult(item, result);
+      } catch (err) {
+        logger.warn(`checkRapidgatorOnline Fehler für ${url}: ${compactErrorText(err)}`);
+        item.onlineStatus = undefined;
+      }
       this.emitState();
     }
 
@@ -3468,6 +3474,7 @@ export class DownloadManager extends EventEmitter {
     const contributed = this.itemContributedBytes.get(itemId) || 0;
     if (contributed > 0) {
       this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - contributed);
+      this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes - contributed);
     }
     this.itemContributedBytes.delete(itemId);
   }
@@ -6692,9 +6699,12 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "immediate") {
+      const item = this.session.items[itemId];
+      if (!item || item.status !== "completed") {
+        return;
+      }
       if (this.settings.autoExtract) {
-        const item = this.session.items[itemId];
-        const extracted = item ? isExtractedLabel(item.fullStatus || "") : false;
+        const extracted = isExtractedLabel(item.fullStatus || "");
         if (!extracted) {
           return;
         }
