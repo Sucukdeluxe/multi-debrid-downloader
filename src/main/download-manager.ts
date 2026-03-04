@@ -1284,8 +1284,6 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessWaiters = [];
     this.summary = null;
     this.nonResumableActive = 0;
-    this.retryAfterByItem.clear();
-    this.retryStateByItem.clear();
     this.resetSessionTotalsIfQueueEmpty();
     this.persistNow();
     this.emitState(true);
@@ -1540,10 +1538,11 @@ export class DownloadManager extends EventEmitter {
         item.attempts = 0;
         item.lastError = "";
         item.fullStatus = "Wartet";
+        item.provider = null;
         item.updatedAt = nowMs();
         this.assignItemTargetPath(item, path.join(pkg.outputDir, sanitizeFilename(item.fileName || filenameFromUrl(item.url))));
         this.runOutcomes.delete(itemId);
-        this.itemContributedBytes.delete(itemId);
+        this.dropItemContribution(itemId);
         this.retryAfterByItem.delete(itemId);
         this.retryStateByItem.delete(itemId);
         if (this.session.running) {
@@ -2823,6 +2822,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     // Not running: start with only items from specified packages
+    this.triggerPendingExtractions();
     const runItems = Object.values(this.session.items)
       .filter((item) => {
         if (!targetSet.has(item.packageId)) return false;
@@ -2928,6 +2928,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     // Not running: start with only specified items
+    this.triggerPendingExtractions();
     const runItems = [...targetSet]
       .map((id) => this.session.items[id])
       .filter((item) => {
@@ -3049,6 +3050,7 @@ export class DownloadManager extends EventEmitter {
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
+      this.retryStateByItem.clear();
       this.reservedTargetPaths.clear();
       this.claimedTargetPathByItem.clear();
       this.session.running = false;
@@ -3323,7 +3325,8 @@ export class DownloadManager extends EventEmitter {
         || item.status === "paused"
         || item.status === "reconnect_wait") {
         item.status = "queued";
-        item.fullStatus = "Wartet";
+        const itemPkg = this.session.packages[item.packageId];
+        item.fullStatus = (itemPkg && itemPkg.enabled === false) ? "Paket gestoppt" : "Wartet";
         item.speedBps = 0;
         item.updatedAt = nowMs();
       }
@@ -3837,7 +3840,7 @@ export class DownloadManager extends EventEmitter {
     let changed = false;
     for (const packageId of packageIds) {
       const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled) {
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
 
@@ -5714,6 +5717,7 @@ export class DownloadManager extends EventEmitter {
           try {
             await fs.promises.rm(effectiveTargetPath, { force: true });
           } catch { /* ignore */ }
+          this.releaseTargetPath(active.itemId);
           this.dropItemContribution(active.itemId);
           item.downloadedBytes = 0;
           item.progressPercent = 0;
@@ -6396,7 +6400,7 @@ export class DownloadManager extends EventEmitter {
               }
               const updatedAt = nowMs();
               for (const entry of archItems) {
-                if (!isExtractedLabel(entry.fullStatus)) {
+                if (!isExtractedLabel(entry.fullStatus) && entry.fullStatus !== label) {
                   entry.fullStatus = label;
                   entry.updatedAt = updatedAt;
                 }
@@ -6536,7 +6540,7 @@ export class DownloadManager extends EventEmitter {
     if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
       await this.runHybridExtraction(packageId, pkg, items, signal);
       if (signal?.aborted) {
-        pkg.status = (pkg.enabled && !this.session.paused) ? "queued" : "paused";
+        pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "queued" : "paused";
         pkg.updatedAt = nowMs();
         return;
       }
@@ -6764,8 +6768,8 @@ export class DownloadManager extends EventEmitter {
             for (const entry of completedItems) {
               if (!isExtractedLabel(entry.fullStatus)) {
                 entry.fullStatus = `Entpack-Fehler: ${timeoutReason}`;
+                entry.updatedAt = nowMs();
               }
-              entry.updatedAt = nowMs();
             }
             pkg.status = "failed";
             pkg.updatedAt = nowMs();

@@ -316,6 +316,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 
   useEffect(() => {
     const handleResize = () => {
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = requestAnimationFrame(drawChart);
     };
 
@@ -907,7 +908,7 @@ export function App(): ReactElement {
         return next;
       });
     }
-  }, [packages, snapshot.session.items]);
+  }, [packages, snapshot.session.items, collapsedPackages]);
 
   const allPackagesCollapsed = useMemo(() => (
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
@@ -1855,7 +1856,7 @@ export function App(): ReactElement {
         const target = e.target as HTMLElement;
         if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
           // Don't clear selection if an overlay is open — let the overlay close first
-          if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop") || document.querySelector(".link-popup-overlay")) return;
+          if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
           if (tabRef.current === "downloads") setSelectedIds(new Set());
           else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
         }
@@ -2869,7 +2870,7 @@ export function App(): ReactElement {
           const pkg = snapshot.session.packages[id];
           if (pkg) { for (const iid of pkg.itemIds) removedItemIds.add(iid); }
         }
-        const totalRemaining = Object.keys(snapshot.session.items).length - removedItemIds.size;
+        const totalRemaining = Math.max(0, Object.keys(snapshot.session.items).length - removedItemIds.size);
         const parts: string[] = [];
         if (pkgCount > 0) parts.push(`${pkgCount} Paket(e)`);
         if (itemCount > 0) parts.push(`${itemCount} Link(s)`);
@@ -3257,7 +3258,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     }
     return sum;
   }, 0);
-  const dlProgress = Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100));
+  const dlProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100)));
   // Include fractional progress from items currently being extracted
   const extractingProgress = items.reduce((sum, item) => {
     const fs = item.fullStatus || "";
@@ -3266,8 +3267,8 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     if (m) return sum + Number(m[1]) / 100;
     return sum;
   }, 0);
-  const exProgress = Math.floor(((extracted + extractingProgress) / total) * 50);
-  const combinedProgress = useExtractSplit ? dlProgress + exProgress : dlProgress;
+  const exProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
+  const combinedProgress = Math.min(100, useExtractSplit ? dlProgress + exProgress : dlProgress);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
@@ -3396,7 +3397,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                   ) : ""}
                 </span>
               );
-              case "hoster": return <span key={col} className="pkg-col pkg-col-hoster" title={extractHoster(item.url)}>{extractHoster(item.url) || ""}</span>;
+              case "hoster": { const h = extractHoster(item.url) || ""; return <span key={col} className="pkg-col pkg-col-hoster" title={h}>{h}</span>; }
               case "account": return <span key={col} className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : ""}</span>;
               case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
               case "status": return (

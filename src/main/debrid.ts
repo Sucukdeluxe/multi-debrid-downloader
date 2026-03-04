@@ -640,7 +640,7 @@ class MegaDebridClient {
         throw new Error("Mega-Web Antwort ohne Download-Link");
       }
       if (!lastError) {
-        lastError = web ? "Mega-Web Antwort ohne Download-Link" : "Mega-Web Antwort leer";
+        lastError = "Mega-Web Antwort leer";
       }
       // Don't retry permanent hoster errors (dead link, file removed, etc.)
       if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError)) {

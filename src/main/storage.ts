@@ -485,6 +485,7 @@ async function writeSettingsPayload(paths: StoragePaths, payload: string): Promi
       await fsp.copyFile(tempPath, paths.configFile);
       await fsp.rm(tempPath, { force: true }).catch(() => {});
     } else {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
       throw renameError;
     }
   }
@@ -605,6 +606,7 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
       await fsp.copyFile(tempPath, paths.sessionFile);
       await fsp.rm(tempPath, { force: true }).catch(() => {});
     } else {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
       throw renameError;
     }
   }
