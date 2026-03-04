@@ -3042,9 +3042,9 @@ export class DownloadManager extends EventEmitter {
     const wasPaused = this.session.paused;
     this.session.paused = !this.session.paused;
 
-    // When pausing: abort active extractions so they don't continue during pause
     if (!wasPaused && this.session.paused) {
-      this.abortPostProcessing("pause");
+      // Do NOT abort extraction on pause — extraction works on already-downloaded
+      // files and should continue while downloads are paused.
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
       this.speedBytesPerPackage.clear();
@@ -3129,8 +3129,13 @@ export class DownloadManager extends EventEmitter {
       }
       if (item.status === "completed") {
         const statusText = (item.fullStatus || "").trim();
-        if (statusText && !isExtractedLabel(statusText) && !/^Fertig\b/i.test(statusText)) {
-          item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
+        // Preserve extraction-related statuses (Ausstehend, Warten auf Parts, etc.)
+        if (/^Entpacken\b/i.test(statusText) || isExtractedLabel(statusText) || /^Fertig\b/i.test(statusText)) {
+          // keep as-is
+        } else if (statusText) {
+          item.fullStatus = this.settings.autoExtract
+            ? "Entpacken - Ausstehend"
+            : `Fertig (${humanSize(item.downloadedBytes)})`;
         }
       }
     }
@@ -3601,7 +3606,27 @@ export class DownloadManager extends EventEmitter {
       const success = items.filter((item) => item.status === "completed").length;
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
-      if (success + failed + cancelled < items.length) {
+      const allDone = success + failed + cancelled >= items.length;
+
+      // Hybrid extraction recovery: not all items done, but some completed
+      // with pending extraction status → re-label and trigger post-processing
+      // so extraction picks up where it left off.
+      if (!allDone && this.settings.autoExtract && this.settings.hybridExtract && success > 0 && failed === 0) {
+        const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
+        if (needsExtraction) {
+          for (const item of items) {
+            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+              item.fullStatus = "Entpacken - Ausstehend";
+              item.updatedAt = nowMs();
+            }
+          }
+          changed = true;
+          // Don't trigger extraction here — it will be triggered when the
+          // session starts via triggerPendingExtractions or item completions.
+        }
+      }
+
+      if (!allDone) {
         continue;
       }
 
@@ -3663,25 +3688,44 @@ export class DownloadManager extends EventEmitter {
       const success = items.filter((item) => item.status === "completed").length;
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
-      if (success + failed + cancelled < items.length || failed > 0 || cancelled > 0 || success === 0) {
+      const allDone = success + failed + cancelled >= items.length;
+
+      // Full extraction: all items done, no failures
+      if (allDone && failed === 0 && cancelled === 0 && success > 0) {
+        const needsExtraction = items.some((item) =>
+          item.status === "completed" && !isExtractedLabel(item.fullStatus)
+        );
+        if (needsExtraction) {
+          pkg.status = "queued";
+          pkg.updatedAt = nowMs();
+          for (const item of items) {
+            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+              item.fullStatus = "Entpacken - Ausstehend";
+              item.updatedAt = nowMs();
+            }
+          }
+          logger.info(`Entpacken via Start ausgelöst: pkg=${pkg.name}`);
+          void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (triggerPending): ${compactErrorText(err)}`));
+        }
         continue;
       }
-      const needsExtraction = items.some((item) =>
-        item.status === "completed" && !isExtractedLabel(item.fullStatus)
-      );
-      if (!needsExtraction) {
-        continue;
-      }
-      pkg.status = "queued";
-      pkg.updatedAt = nowMs();
-      for (const item of items) {
-        if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
-          item.fullStatus = "Entpacken - Ausstehend";
-          item.updatedAt = nowMs();
+
+      // Hybrid extraction: not all items done, but some completed and no failures
+      if (!allDone && this.settings.hybridExtract && success > 0 && failed === 0) {
+        const needsExtraction = items.some((item) =>
+          item.status === "completed" && !isExtractedLabel(item.fullStatus)
+        );
+        if (needsExtraction) {
+          for (const item of items) {
+            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+              item.fullStatus = "Entpacken - Ausstehend";
+              item.updatedAt = nowMs();
+            }
+          }
+          logger.info(`Hybrid-Entpacken via Start ausgelöst: pkg=${pkg.name}, completed=${success}/${items.length}`);
+          void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (triggerPendingHybrid): ${compactErrorText(err)}`));
         }
       }
-      logger.info(`Entpacken via Start ausgelöst: pkg=${pkg.name}`);
-      void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (triggerPending): ${compactErrorText(err)}`));
     }
   }
 
