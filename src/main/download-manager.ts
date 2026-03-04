@@ -902,6 +902,14 @@ export class DownloadManager extends EventEmitter {
     return this.session.running;
   }
 
+  /** Abort all running post-processing tasks (extractions). */
+  public abortAllPostProcessing(): void {
+    this.abortPostProcessing("external");
+    for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
+    this.packagePostProcessWaiters = [];
+    this.packagePostProcessActive = 0;
+  }
+
   /** Trigger pending extractions without starting the session (for autoExtractWhenStopped). */
   public triggerIdleExtractions(): void {
     if (this.session.running || !this.settings.autoExtract || !this.settings.autoExtractWhenStopped) {
@@ -6258,14 +6266,14 @@ export class DownloadManager extends EventEmitter {
       if (!this.session.packages[packageId]) {
         return;  // Package was fully cleaned up
       }
-      pkg.status = (pkg.enabled && !this.session.paused) ? "downloading" : "paused";
+      pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       pkg.updatedAt = nowMs();
       this.emitState();
       return;
     }
 
     if (!allDone) {
-      pkg.status = (pkg.enabled && !this.session.paused) ? "downloading" : "paused";
+      pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       logger.info(`Post-Processing verschoben: pkg=${pkg.name}, noch offene items`);
       return;
     }
