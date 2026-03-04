@@ -1680,6 +1680,9 @@ export class DownloadManager extends EventEmitter {
       item.lastError = "Datei nicht gefunden auf Rapidgator";
       item.onlineStatus = "offline";
       item.updatedAt = nowMs();
+      // Refresh package status since item was set to failed
+      const pkg = this.session.packages[item.packageId];
+      if (pkg) this.refreshPackageStatus(pkg);
     } else {
       if (result.fileName && looksLikeOpaqueFilename(item.fileName)) {
         item.fileName = sanitizeFilename(result.fileName);
@@ -5675,6 +5678,8 @@ export class DownloadManager extends EventEmitter {
         this.refreshPackageStatus(pkg);
       }
       logger.warn(`Auto-Retry-Recovery (${trigger}): ${recovered} Item(s) wieder in Queue gesetzt`);
+      this.persistSoon();
+      this.emitState();
     }
 
     return recovered;
