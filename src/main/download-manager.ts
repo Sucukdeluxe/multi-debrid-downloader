@@ -4191,7 +4191,11 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    this.consecutiveReconnects += 1;
+    // Only increment when not already inside an active reconnect window to avoid
+    // inflating the backoff counter when multiple parallel downloads hit 429/503.
+    if (this.session.reconnectUntil <= nowMs()) {
+      this.consecutiveReconnects += 1;
+    }
     const backoffMultiplier = Math.min(this.consecutiveReconnects, 5);
     const waitMs = this.settings.reconnectWaitSeconds * 1000 * backoffMultiplier;
     const maxWaitMs = this.settings.reconnectWaitSeconds * 2 * 1000;
@@ -5037,16 +5041,16 @@ export class DownloadManager extends EventEmitter {
         if (responseText && responseText !== "Unbekannter Fehler" && !/(^|\b)http\s*\d{3}\b/i.test(responseText)) {
           lastError = `HTTP ${response.status}: ${responseText}`;
         }
-        if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
-          this.requestReconnect(`HTTP ${response.status}`);
-          throw new Error(lastError);
-        }
         if (attempt < maxAttempts) {
           item.retries += 1;
           item.fullStatus = `Serverfehler ${response.status}, retry ${attempt}/${retryDisplayLimit}`;
           this.emitState();
           await sleep(retryDelayWithJitter(attempt, 250));
           continue;
+        }
+        if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
+          this.requestReconnect(`HTTP ${response.status}`);
+          throw new Error(lastError);
         }
         throw new Error(lastError);
       }
