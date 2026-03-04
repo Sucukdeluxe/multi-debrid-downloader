@@ -2576,8 +2576,6 @@ export class DownloadManager extends EventEmitter {
           const p = this.session.packages[order[i]];
           if (p && p.priority === "high") {
             insertAt = i + 1;
-          } else {
-            break;
           }
         }
         order.splice(insertAt, 0, packageId);
@@ -2890,6 +2888,7 @@ export class DownloadManager extends EventEmitter {
     // duration, average speed, and ETA are calculated relative to the current run, not cumulative.
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
+    this.sessionDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -3110,8 +3109,8 @@ export class DownloadManager extends EventEmitter {
       }
       // Clear stale transient status texts from previous session
       if (item.status === "queued") {
-        const fs = (item.fullStatus || "").trim();
-        if (fs !== "Wartet" && fs !== "Paket gestoppt" && fs !== "Online") {
+        const statusText = (item.fullStatus || "").trim();
+        if (statusText !== "Wartet" && statusText !== "Paket gestoppt" && statusText !== "Online") {
           item.fullStatus = "Wartet";
         }
       }
@@ -3120,8 +3119,8 @@ export class DownloadManager extends EventEmitter {
         item.onlineStatus = undefined;
       }
       if (item.status === "completed") {
-        const fs = (item.fullStatus || "").trim();
-        if (fs && !isExtractedLabel(fs) && !/^Fertig\b/i.test(fs)) {
+        const statusText = (item.fullStatus || "").trim();
+        if (statusText && !isExtractedLabel(statusText) && !/^Fertig\b/i.test(statusText)) {
           item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         }
       }
@@ -3165,7 +3164,7 @@ export class DownloadManager extends EventEmitter {
       if (failed > 0) {
         pkg.status = "failed";
       } else if (cancelled > 0) {
-        pkg.status = success > 0 ? "failed" : "cancelled";
+        pkg.status = success > 0 ? "completed" : "cancelled";
       } else if (success > 0) {
         pkg.status = "completed";
       }
@@ -4927,9 +4926,12 @@ export class DownloadManager extends EventEmitter {
         if (writeMode === "w" && item.totalBytes && item.totalBytes > 0 && process.platform === "win32") {
           try {
             const fd = await fs.promises.open(effectiveTargetPath, "w");
-            await fd.truncate(item.totalBytes);
-            await fd.close();
-            preAllocated = true;
+            try {
+              await fd.truncate(item.totalBytes);
+              preAllocated = true;
+            } finally {
+              await fd.close();
+            }
           } catch { /* best-effort */ }
         }
 
@@ -5280,6 +5282,11 @@ export class DownloadManager extends EventEmitter {
           // Ensure stream is fully destroyed before potential retry opens new handle
           if (!stream.destroyed) {
             stream.destroy();
+          }
+          // If the body read succeeded but the final flush or stream close failed,
+          // propagate the error so the download is retried instead of marked complete.
+          if (bodyError) {
+            throw bodyError;
           }
         }
 
@@ -6330,7 +6337,7 @@ export class DownloadManager extends EventEmitter {
     } else if (failed > 0) {
       pkg.status = "failed";
     } else if (cancelled > 0) {
-      pkg.status = success > 0 ? "failed" : "cancelled";
+      pkg.status = success > 0 ? "completed" : "cancelled";
     } else {
       pkg.status = "completed";
     }
@@ -6504,21 +6511,19 @@ export class DownloadManager extends EventEmitter {
       if (event) {
         bandwidthSamples.push({
           timestamp: event.at,
-          speedBps: event.bytes * 3
+          speedBps: Math.floor(event.bytes * (1000 / 120))
         });
       }
     }
 
     const paused = this.session.running && this.session.paused;
-    const currentSpeedBps = paused ? 0 : this.speedBytesLastWindow / 3;
+    const currentSpeedBps = paused ? 0 : this.speedBytesLastWindow / SPEED_WINDOW_SECONDS;
 
-    let totalBytes = 0;
     let maxSpeed = 0;
     for (let i = this.speedEventsHead; i < this.speedEvents.length; i += 1) {
       const event = this.speedEvents[i];
       if (event) {
-        totalBytes += event.bytes;
-        const speed = event.bytes * 3;
+        const speed = Math.floor(event.bytes * (1000 / 120));
         if (speed > maxSpeed) {
           maxSpeed = speed;
         }

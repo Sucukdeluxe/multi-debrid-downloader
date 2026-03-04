@@ -286,6 +286,9 @@ export class AppController {
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
+    // Stop the manager BEFORE saving the restored session to prevent
+    // the auto-save timer from overwriting it with the old in-memory session.
+    this.manager.stop();
     const restoredSession = parsed.session as ReturnType<typeof loadSession>;
     saveSession(this.storagePaths, restoredSession);
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
