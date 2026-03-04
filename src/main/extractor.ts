@@ -424,9 +424,12 @@ async function writeExtractResumeState(packageDir: string, completedArchives: Se
         .map((name) => archiveNameKey(name))
         .sort((a, b) => a.localeCompare(b))
     };
-    const tmpPath = progressPath + ".tmp";
+    const tmpPath = progressPath + "." + Date.now() + "." + Math.random().toString(36).slice(2, 8) + ".tmp";
     await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
-    await fs.promises.rename(tmpPath, progressPath);
+    await fs.promises.rename(tmpPath, progressPath).catch(async () => {
+      // rename may fail if another writer renamed tmpPath first (parallel workers)
+      await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+    });
   } catch (error) {
     logger.warn(`ExtractResumeState schreiben fehlgeschlagen: ${String(error)}`);
   }
@@ -896,6 +899,8 @@ function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
   }) || "";
 
   if (!javaCommand) {
+    cachedJvmLayout = null;
+    cachedJvmLayoutNullSince = Date.now();
     return null;
   }
 

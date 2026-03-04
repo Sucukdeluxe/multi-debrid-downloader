@@ -482,6 +482,7 @@ export function App(): ReactElement {
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onImportDlcRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [dragOver, setDragOver] = useState(false);
   const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -1198,6 +1199,8 @@ export function App(): ReactElement {
       showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
     });
   };
+
+  onImportDlcRef.current = onImportDlc;
 
   const onDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
     event.preventDefault();
@@ -1929,7 +1932,7 @@ export function App(): ReactElement {
           if (inInput) return;
           e.preventDefault();
           setOpenMenu(null);
-          void onImportDlc();
+          void onImportDlcRef.current();
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "a") {
