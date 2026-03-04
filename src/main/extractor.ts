@@ -1637,6 +1637,8 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   if (multipartRar) {
     const prefix = escapeRegex(multipartRar[1]);
     addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i"));
+    // RAR5 recovery volumes: prefix.partN.rev AND legacy prefix.rev
+    addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rev$`, "i"));
     addMatching(new RegExp(`^${prefix}\\.rev$`, "i"));
     return Array.from(targets);
   }

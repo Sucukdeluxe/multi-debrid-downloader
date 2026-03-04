@@ -314,6 +314,9 @@ export class AppController {
       normalizeLoadedSession(parsed.session)
     );
     saveSession(this.storagePaths, restoredSession);
+    // Prevent prepareForShutdown from overwriting the restored session file
+    // with the old in-memory session when the app quits after backup restore.
+    this.manager.skipShutdownPersist = true;
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }
 
