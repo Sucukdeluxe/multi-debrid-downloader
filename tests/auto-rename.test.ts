@@ -661,4 +661,13 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBeNull();
   });
+
+  it("renames Riviera S02 with single-digit episode s02e2", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Riviera.S02.GERMAN.DUBBED.DL.720p.WebHD.x264-TVP"],
+      "tvp-riviera-s02e2-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Riviera.S02E02.GERMAN.DUBBED.DL.720p.WebHD.x264-TVP");
+  });
 });
