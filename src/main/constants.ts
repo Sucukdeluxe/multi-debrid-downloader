@@ -16,6 +16,10 @@ export const DLC_AES_IV = Buffer.from("9bc24cb995cb8db3", "utf8");
 export const REQUEST_RETRIES = 3;
 export const CHUNK_SIZE = 512 * 1024;
 
+export const WRITE_BUFFER_SIZE = 512 * 1024;       // 512 KB write buffer (JDownloader: 500 KB)
+export const WRITE_FLUSH_TIMEOUT_MS = 2000;         // 2s flush timeout
+export const ALLOCATION_UNIT_SIZE = 4096;           // 4 KB NTFS alignment
+
 export const SAMPLE_DIR_NAMES = new Set(["sample", "samples"]);
 export const SAMPLE_VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".m2ts", ".webm"]);
 export const LINK_ARTIFACT_EXTENSIONS = new Set([".url", ".webloc", ".dlc", ".rsdf", ".ccf"]);
@@ -78,6 +82,8 @@ export function defaultSettings(): AppSettings {
     autoSkipExtracted: false,
     confirmDeleteSelection: true,
     totalDownloadedAllTime: 0,
-    bandwidthSchedules: []
+    bandwidthSchedules: [],
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+    extractCpuPriority: "high"
   };
 }

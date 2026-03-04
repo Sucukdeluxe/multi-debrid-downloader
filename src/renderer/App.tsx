@@ -15,6 +15,7 @@ import type {
   UpdateCheckResult,
   UpdateInstallProgress
 } from "../shared/types";
+import { reorderPackageOrderByDrop, sortPackageOrderByName } from "./package-order";
 
 type Tab = "collector" | "downloads" | "history" | "statistics" | "settings";
 type SettingsSubTab = "allgemein" | "accounts" | "entpacken" | "geschwindigkeit" | "bereinigung" | "updates";
@@ -72,7 +73,8 @@ const emptySnapshot = (): UiSnapshot => ({
     maxParallel: 4, maxParallelExtract: 2, retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, autoSkipExtracted: false, confirmDeleteSelection: true,
-    bandwidthSchedules: [], totalDownloadedAllTime: 0
+    bandwidthSchedules: [], totalDownloadedAllTime: 0,
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"]
   },
   session: {
     version: 2, packageOrder: [], packages: {}, items: {}, runStartedAt: 0,
@@ -92,6 +94,16 @@ const AUTO_RENDER_PACKAGE_LIMIT = 260;
 const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid"
 };
+
+function formatDateTime(ts: number): string {
+  const d = new Date(ts);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}.${mm}.${yyyy} - ${hh}:${min}`;
+}
 
 function extractHoster(url: string): string {
   try {
@@ -230,7 +242,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
       ctx.font = "13px 'Manrope', sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(running ? (paused ? "Pausiert" : "Sammle Daten...") : "Download starten fur Statistiken", width / 2, height / 2);
+      ctx.fillText(running ? (paused ? "Pausiert" : "Sammle Daten...") : "Download starten für Statistiken", width / 2, height / 2);
       return;
     }
 
@@ -276,13 +288,17 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   }, [drawChart]);
 
   useEffect(() => {
+    // Only record samples while the session is running and not paused
+    if (!running || paused) return;
+
     const now = Date.now();
-    const totalSpeed = Object.values(items)
-      .filter((item) => item.status === "downloading")
-      .reduce((sum, item) => sum + (item.speedBps || 0), 0);
+    const activeItems = Object.values(items).filter((item) => item.status === "downloading");
+    if (activeItems.length === 0) return;
+
+    const totalSpeed = activeItems.reduce((sum, item) => sum + (item.speedBps || 0), 0);
 
     const history = speedHistoryRef.current;
-    history.push({ time: now, speed: paused ? 0 : totalSpeed });
+    history.push({ time: now, speed: totalSpeed });
 
     const cutoff = now - 60000;
     let trimIndex = 0;
@@ -294,7 +310,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     }
 
     lastUpdateRef.current = now;
-  }, [items, paused]);
+  }, [items, paused, running]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -327,29 +343,6 @@ function createScheduleId(): string {
   return `schedule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function reorderPackageOrderByDrop(order: string[], draggedPackageId: string, targetPackageId: string): string[] {
-  const fromIndex = order.indexOf(draggedPackageId);
-  const toIndex = order.indexOf(targetPackageId);
-  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
-    return order;
-  }
-  const next = [...order];
-  const [dragged] = next.splice(fromIndex, 1);
-  const insertIndex = Math.max(0, Math.min(next.length, toIndex));
-  next.splice(insertIndex, 0, dragged);
-  return next;
-}
-
-export function sortPackageOrderByName(order: string[], packages: Record<string, PackageEntry>, descending: boolean): string[] {
-  const sorted = [...order];
-  sorted.sort((a, b) => {
-    const nameA = (packages[a]?.name ?? "").toLowerCase();
-    const nameB = (packages[b]?.name ?? "").toLowerCase();
-    const cmp = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: "base" });
-    return descending ? -cmp : cmp;
-  });
-  return sorted;
-}
 
 function sortPackageOrderBySize(order: string[], packages: Record<string, PackageEntry>, items: Record<string, DownloadItem>, descending: boolean): string[] {
   const sorted = [...order];
@@ -400,6 +393,20 @@ function computePackageProgress(pkg: PackageEntry | undefined, items: Record<str
 }
 
 type PkgSortColumn = "name" | "size" | "hoster" | "progress";
+
+const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
+const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "added"];
+const COLUMN_DEFS: Record<string, { label: string; width: string; sortable?: PkgSortColumn }> = {
+  name:     { label: "Name",            width: "1fr",   sortable: "name" },
+  size:     { label: "Geladen / Größe", width: "160px", sortable: "size" },
+  progress: { label: "Fortschritt",     width: "80px",  sortable: "progress" },
+  hoster:   { label: "Hoster",          width: "110px", sortable: "hoster" },
+  account:  { label: "Service",         width: "110px" },
+  prio:     { label: "Priorität",       width: "70px" },
+  status:   { label: "Status",          width: "160px" },
+  speed:    { label: "Geschwindigkeit", width: "90px" },
+  added:    { label: "Hinzugefügt am",  width: "155px" },
+};
 
 function sameStringArray(a: string[], b: string[]): boolean {
   if (a.length !== b.length) {
@@ -511,6 +518,12 @@ export function App(): ReactElement {
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
+  const [columnOrder, setColumnOrder] = useState<string[]>(() => DEFAULT_COLUMN_ORDER);
+  const [dragColId, setDragColId] = useState<string | null>(null);
+  const [dropTargetCol, setDropTargetCol] = useState<string | null>(null);
+  const [colHeaderCtx, setColHeaderCtx] = useState<{ x: number; y: number } | null>(null);
+  const colHeaderCtxRef = useRef<HTMLDivElement>(null);
+  const colHeaderBarRef = useRef<HTMLDivElement>(null);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const historyEntriesRef = useRef<HistoryEntry[]>([]);
   const [historyCollapsed, setHistoryCollapsed] = useState<Record<string, boolean>>({});
@@ -536,6 +549,16 @@ export function App(): ReactElement {
   }, [tab]);
 
   useEffect(() => { historyEntriesRef.current = historyEntries; }, [historyEntries]);
+
+  // Sync column order from settings (value-based comparison to avoid reference issues)
+  const columnOrderJson = JSON.stringify(snapshot.settings.columnOrder);
+  useEffect(() => {
+    const order = snapshot.settings.columnOrder;
+    if (order && order.length > 0) {
+      setColumnOrder(order);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columnOrderJson]);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -615,6 +638,9 @@ export function App(): ReactElement {
         return;
       }
       setSnapshot(state);
+      if (state.settings.columnOrder?.length > 0) {
+        setColumnOrder(state.settings.columnOrder);
+      }
       setSettingsDraft(state.settings);
       settingsDirtyRef.current = false;
       setSettingsDirty(false);
@@ -654,6 +680,9 @@ export function App(): ReactElement {
         if (latestStateRef.current) {
           const next = latestStateRef.current;
           setSnapshot(next);
+          if (next.settings.columnOrder?.length > 0) {
+            setColumnOrder(next.settings.columnOrder);
+          }
           if (!settingsDirtyRef.current) {
             setSettingsDraft(next.settings);
           }
@@ -706,6 +735,7 @@ export function App(): ReactElement {
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
   const downloadSearchQuery = deferredDownloadSearch.trim().toLowerCase();
   const downloadSearchActive = downloadSearchQuery.length > 0;
+  const gridTemplate = useMemo(() => columnOrder.map((col) => COLUMN_DEFS[col]?.width ?? "100px").join(" "), [columnOrder]);
   const totalPackageCount = snapshot.session.packageOrder.length;
   const shouldLimitPackageRendering = downloadsTabActive
     && snapshot.session.running
@@ -1188,18 +1218,10 @@ export function App(): ReactElement {
 
   const onExportQueue = async (): Promise<void> => {
     await performQuickAction(async () => {
-      const json = await window.rd.exportQueue();
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "rd-queue-export.json";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      showToast("Queue exportiert");
+      const result = await window.rd.exportQueue();
+      if (result.saved) {
+        showToast("Queue exportiert");
+      }
     }, (error) => {
       showToast(`Export fehlgeschlagen: ${String(error)}`, 2600);
     });
@@ -1669,6 +1691,32 @@ export function App(): ReactElement {
       el.style.left = `${Math.max(0, contextMenu.x - rect.width)}px`;
     }
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (!colHeaderCtx) return;
+    const close = (e: MouseEvent): void => {
+      // Don't close if click is inside the menu or on the header bar (re-position instead)
+      if (colHeaderCtxRef.current && colHeaderCtxRef.current.contains(e.target as Node)) return;
+      if (colHeaderBarRef.current && colHeaderBarRef.current.contains(e.target as Node)) return;
+      setColHeaderCtx(null);
+    };
+    window.addEventListener("mousedown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+    };
+  }, [colHeaderCtx]);
+
+  useLayoutEffect(() => {
+    if (!colHeaderCtx || !colHeaderCtxRef.current) return;
+    const el = colHeaderCtxRef.current;
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight) {
+      el.style.top = `${Math.max(0, colHeaderCtx.y - rect.height)}px`;
+    }
+    if (rect.right > window.innerWidth) {
+      el.style.left = `${Math.max(0, colHeaderCtx.x - rect.width)}px`;
+    }
+  }, [colHeaderCtx]);
 
   useEffect(() => {
     if (!historyCtxMenu) return;
@@ -2150,65 +2198,47 @@ export function App(): ReactElement {
                 {snapshot.session.reconnectReason && <span> ({snapshot.session.reconnectReason})</span>}
               </div>
             )}
-            <div className="downloads-action-bar">
-              <button
-                className="btn tab-action-btn"
-                onClick={() => {
-                  setCollapsedPackages((prev) => {
-                    const next: Record<string, boolean> = { ...prev };
-                    const targetState = !allPackagesCollapsed;
-                    for (const pkg of packages) {
-                      next[pkg.id] = targetState;
-                    }
-                    return next;
-                  });
-                }}
-              >
-                {allPackagesCollapsed ? "Alles ausklappen" : "Alles einklappen"}
-              </button>
-              <button
-                className="btn tab-action-btn"
-                disabled={actionBusy}
-                onClick={() => {
-                  void performQuickAction(async () => {
-                    const confirmed = await askConfirmPrompt({
-                      title: "Queue löschen",
-                      message: "Wirklich alle Einträge aus der Queue löschen?",
-                      confirmLabel: "Alles löschen",
-                      danger: true
-                    });
-                    if (!confirmed) {
-                      return;
-                    }
-                    await window.rd.clearAll();
-                  });
-                }}
-              >
-                Alles leeren
-              </button>
-              <button className={`btn tab-action-btn${snapshot.clipboardActive ? " btn-active" : ""}`} disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
-                Clipboard: {snapshot.clipboardActive ? "An" : "Aus"}
-              </button>
-            </div>
-            <div className="pkg-column-header">
-              {(["name", "size", "progress", "hoster"] as PkgSortColumn[]).flatMap((col) => {
-                const labels: Record<PkgSortColumn, string> = { name: "Name", progress: "Fortschritt", size: "Geladen / Größe", hoster: "Hoster" };
-                const isActive = downloadsSortColumn === col;
-                return [
+            {/* Action buttons moved to footer */}
+            <div ref={colHeaderBarRef} className="pkg-column-header" style={{ gridTemplateColumns: gridTemplate }} onContextMenu={(e) => { e.preventDefault(); setColHeaderCtx({ x: e.clientX, y: e.clientY }); }}>
+              {columnOrder.map((col) => {
+                const def = COLUMN_DEFS[col];
+                if (!def) return null;
+                const sortCol = def.sortable;
+                const isActive = sortCol ? downloadsSortColumn === sortCol : false;
+                return (
                   <span
                     key={col}
-                    className={`pkg-col pkg-col-${col} sortable${isActive ? " sort-active" : ""}`}
-                    onClick={() => {
+                    className={`pkg-col pkg-col-${col}${sortCol ? " sortable" : ""}${isActive ? " sort-active" : ""}${dragColId === col ? " pkg-col-dragging" : ""}${dropTargetCol === col ? " pkg-col-drop-target" : ""}`}
+                    draggable
+                    onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDragColId(col); }}
+                    onDragOver={(e) => { if (dragColId && dragColId !== col) { e.preventDefault(); setDropTargetCol(col); } }}
+                    onDragLeave={() => { if (dropTargetCol === col) setDropTargetCol(null); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDropTargetCol(null);
+                      if (!dragColId || dragColId === col) return;
+                      const newOrder = [...columnOrder];
+                      const fromIdx = newOrder.indexOf(dragColId);
+                      const toIdx = newOrder.indexOf(col);
+                      if (fromIdx < 0 || toIdx < 0) return;
+                      newOrder.splice(fromIdx, 1);
+                      newOrder.splice(toIdx, 0, dragColId);
+                      setColumnOrder(newOrder);
+                      setDragColId(null);
+                      void window.rd.updateSettings({ columnOrder: newOrder });
+                    }}
+                    onDragEnd={() => { setDragColId(null); setDropTargetCol(null); }}
+                    onClick={sortCol ? () => {
                       const nextDesc = isActive ? !downloadsSortDescending : false;
-                      setDownloadsSortColumn(col);
+                      setDownloadsSortColumn(sortCol);
                       setDownloadsSortDescending(nextDesc);
                       const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
                       let sorted: string[];
-                      if (col === "progress") {
+                      if (sortCol === "progress") {
                         sorted = sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
-                      } else if (col === "size") {
+                      } else if (sortCol === "size") {
                         sorted = sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
-                      } else if (col === "hoster") {
+                      } else if (sortCol === "hoster") {
                         sorted = sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
                       } else {
                         sorted = sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDesc);
@@ -2222,16 +2252,12 @@ export function App(): ReactElement {
                         packageOrderRef.current = serverPackageOrderRef.current;
                         showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
                       });
-                    }}
+                    } : undefined}
                   >
-                    {labels[col]} {isActive ? (downloadsSortDescending ? "\u25BC" : "\u25B2") : ""}
-                  </span>,
-                ];
+                    {def.label} {isActive ? (downloadsSortDescending ? "\u25BC" : "\u25B2") : ""}
+                  </span>
+                );
               })}
-              <span className="pkg-col pkg-col-account">Service</span>
-              <span className="pkg-col pkg-col-prio">Priorität</span>
-              <span className="pkg-col pkg-col-status">Status</span>
-              <span className="pkg-col pkg-col-speed">Geschwindigkeit</span>
             </div>
             {totalPackageCount === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
             {totalPackageCount > 0 && packages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
@@ -2253,6 +2279,8 @@ export function App(): ReactElement {
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}
                 selectedIds={selectedIds}
+                columnOrder={columnOrder}
+                gridTemplate={gridTemplate}
                 onSelect={onSelectId}
                 onSelectMouseDown={onSelectMouseDown}
                 onSelectMouseEnter={onSelectMouseEnter}
@@ -2321,28 +2349,38 @@ export function App(): ReactElement {
                   }}
                 >
                   <header onClick={(e) => { if (e.ctrlKey) return; setHistoryCollapsed((prev) => ({ ...prev, [entry.id]: !collapsed })); }} style={{ cursor: "pointer" }}>
-                    <div className="pkg-columns">
-                      <div className="pkg-col pkg-col-name">
-                        <button className="pkg-toggle" title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
-                        <h4>{entry.name}</h4>
-                      </div>
-                      <span className="pkg-col pkg-col-size">{(() => {
-                        const pct = entry.totalBytes > 0 ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100)) : 0;
-                        const label = `${humanSize(entry.downloadedBytes)} / ${humanSize(entry.totalBytes)}`;
-                        return entry.totalBytes > 0 ? (
-                          <span className="progress-size">
-                            <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                            <span className="progress-size-text">{label}</span>
-                            <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-                          </span>
-                        ) : "-";
-                      })()}</span>
-                      <span className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : "-"}</span>
-                      <span className="pkg-col pkg-col-hoster">-</span>
-                      <span className="pkg-col pkg-col-account">{entry.provider ? providerLabels[entry.provider] : "-"}</span>
-                      <span className="pkg-col pkg-col-prio"></span>
-                      <span className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
-                      <span className="pkg-col pkg-col-speed">-</span>
+                    <div className="pkg-columns" style={{ gridTemplateColumns: gridTemplate }}>
+                      {columnOrder.map((col) => {
+                        switch (col) {
+                          case "name": return (
+                            <div key={col} className="pkg-col pkg-col-name">
+                              <button className="pkg-toggle" title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
+                              <h4>{entry.name}</h4>
+                            </div>
+                          );
+                          case "size": return (
+                            <span key={col} className="pkg-col pkg-col-size">{(() => {
+                              const pct = entry.totalBytes > 0 ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100)) : 0;
+                              const label = `${humanSize(entry.downloadedBytes)} / ${humanSize(entry.totalBytes)}`;
+                              return entry.totalBytes > 0 ? (
+                                <span className="progress-size">
+                                  <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                                  <span className="progress-size-text">{label}</span>
+                                  <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
+                                </span>
+                              ) : "";
+                            })()}</span>
+                          );
+                          case "progress": return <span key={col} className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : ""}</span>;
+                          case "hoster": return <span key={col} className="pkg-col pkg-col-hoster"></span>;
+                          case "account": return <span key={col} className="pkg-col pkg-col-account">{entry.provider ? providerLabels[entry.provider] : ""}</span>;
+                          case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
+                          case "status": return <span key={col} className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>;
+                          case "speed": return <span key={col} className="pkg-col pkg-col-speed"></span>;
+                          case "added": return <span key={col} className="pkg-col pkg-col-added">{formatDateTime(entry.completedAt)}</span>;
+                          default: return null;
+                        }
+                      })}
                     </div>
                   </header>
                   <div className="progress"><div className="progress-dl" style={{ width: entry.status === "completed" ? "100%" : "0%" }} /></div>
@@ -2360,11 +2398,11 @@ export function App(): ReactElement {
                         <span className="history-label">Dauer</span>
                         <span>{entry.durationSeconds >= 3600 ? `${Math.floor(entry.durationSeconds / 3600)}h ${Math.floor((entry.durationSeconds % 3600) / 60)}min` : entry.durationSeconds >= 60 ? `${Math.floor(entry.durationSeconds / 60)}min ${entry.durationSeconds % 60}s` : `${entry.durationSeconds}s`}</span>
                         <span className="history-label">Durchschnitt</span>
-                        <span>{entry.durationSeconds > 0 ? formatSpeedMbps(Math.round(entry.downloadedBytes / entry.durationSeconds)) : "-"}</span>
+                        <span>{entry.durationSeconds > 0 ? formatSpeedMbps(Math.round(entry.downloadedBytes / entry.durationSeconds)) : ""}</span>
                         <span className="history-label">Provider</span>
-                        <span>{entry.provider ? providerLabels[entry.provider] : "-"}</span>
+                        <span>{entry.provider ? providerLabels[entry.provider] : ""}</span>
                         <span className="history-label">Zielordner</span>
-                        <span className="history-path" title={entry.outputDir}>{entry.outputDir || "-"}</span>
+                        <span className="history-path" title={entry.outputDir}>{entry.outputDir || ""}</span>
                         <span className="history-label">Status</span>
                         <span>{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
                       </div>
@@ -2554,6 +2592,11 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
                     <div><label>Parallele Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /></div>
+                    <div><label>Extraktions-Priorität</label><select value={settingsDraft.extractCpuPriority} onChange={(e) => setText("extractCpuPriority", e.target.value)}>
+                      <option value="high">Hoch (80% CPU)</option>
+                      <option value="middle">Mittel (50% CPU)</option>
+                      <option value="low">Niedrig (25% CPU)</option>
+                    </select></div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> MKV nach Paketabschluss in Sammelordner verschieben (flach)</label>
                     <label>MKV-Sammelordner</label>
                     <div className="input-row">
@@ -2739,6 +2782,31 @@ export function App(): ReactElement {
         <span>Hoster: {configuredProviders.length}</span>
         <span>{snapshot.speedText}</span>
         <span>{snapshot.etaText}</span>
+        <span className="footer-spacer" />
+        {totalPackageCount > 0 && (
+          <button className="btn footer-btn" title={allPackagesCollapsed ? "Alle Pakete in der Liste ausklappen und Details anzeigen" : "Alle Pakete in der Liste einklappen und nur die Kopfzeilen anzeigen"} onClick={() => {
+            setCollapsedPackages((prev) => {
+              const next: Record<string, boolean> = { ...prev };
+              const targetState = !allPackagesCollapsed;
+              for (const pkg of packages) { next[pkg.id] = targetState; }
+              return next;
+            });
+          }}>{allPackagesCollapsed ? "Ausklappen" : "Einklappen"}</button>
+        )}
+        {totalPackageCount > 0 && (
+          <button className="btn footer-btn" title="Alle Pakete und Links aus der Download-Queue entfernen" disabled={actionBusy} onClick={() => {
+            void performQuickAction(async () => {
+              const confirmed = await askConfirmPrompt({ title: "Queue löschen", message: "Wirklich alle Einträge aus der Queue löschen?", confirmLabel: "Alles löschen", danger: true });
+              if (!confirmed) return;
+              await window.rd.clearAll();
+            });
+          }}>Leeren</button>
+        )}
+        {snapshot.clipboardActive && (
+          <button className="btn footer-btn btn-active" title="Zwischenablage-Überwachung ist aktiv — kopierte Links werden automatisch erkannt und zur Queue hinzugefügt. Zum Deaktivieren: Einstellungen → Zwischenablage überwachen" disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
+            Clipboard: An
+          </button>
+        )}
       </footer>
 
       {updateInstallProgress && (
@@ -2806,6 +2874,15 @@ export function App(): ReactElement {
               setContextMenu(null);
             }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : ""}</button>
           )}
+          {contextMenu.itemId && (
+            <button className="ctx-menu-item" onClick={() => {
+              const itemIds = multi
+                ? [...selectedIds].filter((id) => snapshot.session.items[id])
+                : [contextMenu.itemId!];
+              void window.rd.resetItems(itemIds);
+              setContextMenu(null);
+            }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.items[id]).length})` : ""}</button>
+          )}
           {hasPackages && !multi && (() => {
             const pkg = snapshot.session.packages[contextMenu.packageId];
             const items = pkg?.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean) || [];
@@ -2847,6 +2924,46 @@ export function App(): ReactElement {
         </div>
         );
       })()}
+      {colHeaderCtx && (
+        <div ref={colHeaderCtxRef} className="ctx-menu" style={{ left: colHeaderCtx.x, top: colHeaderCtx.y }} onClick={(e) => e.stopPropagation()}>
+          {ALL_COLUMN_KEYS.map((col) => {
+            const def = COLUMN_DEFS[col];
+            if (!def) return null;
+            const isVisible = columnOrder.includes(col);
+            const isRequired = col === "name";
+            return (
+              <button
+                key={col}
+                className={`ctx-menu-item${isRequired ? " ctx-menu-disabled" : ""}${isVisible ? " ctx-menu-active" : ""}`}
+                disabled={isRequired}
+                onClick={() => {
+                  if (isRequired) return;
+                  let newOrder: string[];
+                  if (isVisible) {
+                    newOrder = columnOrder.filter((c) => c !== col);
+                  } else {
+                    // Insert at original default position relative to existing columns
+                    newOrder = [...columnOrder];
+                    const defaultIdx = ALL_COLUMN_KEYS.indexOf(col);
+                    let insertAt = newOrder.length;
+                    for (let i = 0; i < newOrder.length; i++) {
+                      if (ALL_COLUMN_KEYS.indexOf(newOrder[i]) > defaultIdx) {
+                        insertAt = i;
+                        break;
+                      }
+                    }
+                    newOrder.splice(insertAt, 0, col);
+                  }
+                  setColumnOrder(newOrder);
+                  void window.rd.updateSettings({ columnOrder: newOrder });
+                }}
+              >
+                {isVisible ? "\u2713 " : "\u2003 "}{def.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {historyCtxMenu && (() => {
         const multi = selectedHistoryIds.size > 1;
         const contextEntry = historyEntries.find(e => e.id === historyCtxMenu.entryId);
@@ -2929,6 +3046,8 @@ interface PackageCardProps {
   editingName: string;
   collapsed: boolean;
   selectedIds: Set<string>;
+  columnOrder: string[];
+  gridTemplate: string;
   onSelect: (id: string, ctrlKey: boolean) => void;
   onSelectMouseDown: (id: string, e: React.MouseEvent) => void;
   onSelectMouseEnter: (id: string) => void;
@@ -2947,7 +3066,7 @@ interface PackageCardProps {
   onDragEnd: () => void;
 }
 
-const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, selectedIds, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
@@ -2997,53 +3116,77 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
         if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT") return;
         onToggleCollapse(pkg.id);
       }} style={{ cursor: "pointer" }}>
-        <div className="pkg-columns">
-          <div className="pkg-col pkg-col-name">
-            <button className="pkg-toggle" onClick={() => onToggleCollapse(pkg.id)} title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
-            <input type="checkbox" checked={pkg.enabled} onChange={() => onToggle(pkg.id)} title={pkg.enabled ? "Paket aktiv" : "Paket deaktiviert"} />
-            {isEditing ? (
-              <input className="rename-input" value={editingName} onChange={(e) => onEditChange(e.target.value)} onBlur={() => onFinishEdit(pkg.id, pkg.name, editingName)} onKeyDown={onKeyDown} autoFocus />
-            ) : (
-              <h4 onClick={(e) => { e.stopPropagation(); onStartEdit(pkg.id, pkg.name); }} title="Klicken zum Umbenennen">{pkg.name}</h4>
-            )}
-          </div>
-          <span className="pkg-col pkg-col-size">{(() => {
-            const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
-            const dlBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
-            const pct = totalBytes > 0 ? Math.min(100, Math.round((dlBytes / totalBytes) * 100)) : 0;
-            const label = `${humanSize(dlBytes)} / ${humanSize(totalBytes)}`;
-            return totalBytes > 0 ? (
-              <span className="progress-size">
-                <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                <span className="progress-size-text">{label}</span>
-                <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-              </span>
-            ) : "-";
-          })()}</span>
-          <span className="pkg-col pkg-col-progress">
-            <span className="progress-inline">
-              <span className="progress-inline-bar" style={{ width: `${combinedProgress}%` }} />
-              <span className="progress-inline-text">{combinedProgress}%</span>
-              <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - combinedProgress}% 0 0)` }}>{combinedProgress}%</span>
-            </span>
-          </span>
-          <span className="pkg-col pkg-col-hoster" title={(() => {
-            const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
-            return hosters.join(", ");
-          })()}>{(() => {
-            const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
-            return hosters.length > 0 ? hosters.join(", ") : "-";
-          })()}</span>
-          <span className="pkg-col pkg-col-account" title={(() => {
-            const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
-            return providers.map((p) => providerLabels[p!] || p).join(", ");
-          })()}>{(() => {
-            const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
-            return providers.length > 0 ? providers.map((p) => providerLabels[p!] || p).join(", ") : "-";
-          })()}</span>
-          <span className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : "-"}</span>
-          <span className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]</span>
-          <span className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : "-"}</span>
+        <div className="pkg-columns" style={{ gridTemplateColumns: gridTemplate }}>
+          {columnOrder.map((col) => {
+            switch (col) {
+              case "name": return (
+                <div key={col} className="pkg-col pkg-col-name">
+                  <button className="pkg-toggle" onClick={() => onToggleCollapse(pkg.id)} title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
+                  <input type="checkbox" checked={pkg.enabled} onChange={() => onToggle(pkg.id)} title={pkg.enabled ? "Paket aktiv" : "Paket deaktiviert"} />
+                  {isEditing ? (
+                    <input className="rename-input" value={editingName} onChange={(e) => onEditChange(e.target.value)} onBlur={() => onFinishEdit(pkg.id, pkg.name, editingName)} onKeyDown={onKeyDown} autoFocus />
+                  ) : (
+                    <h4 onClick={(e) => { e.stopPropagation(); onStartEdit(pkg.id, pkg.name); }} title="Klicken zum Umbenennen">{pkg.name}</h4>
+                  )}
+                </div>
+              );
+              case "size": return (
+                <span key={col} className="pkg-col pkg-col-size">{(() => {
+                  const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
+                  const dlBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+                  const pct = totalBytes > 0 ? Math.min(100, Math.round((dlBytes / totalBytes) * 100)) : 0;
+                  const label = `${humanSize(dlBytes)} / ${humanSize(totalBytes)}`;
+                  return totalBytes > 0 ? (
+                    <span className="progress-size">
+                      <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                      <span className="progress-size-text">{label}</span>
+                      <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
+                    </span>
+                  ) : "";
+                })()}</span>
+              );
+              case "progress": return (
+                <span key={col} className="pkg-col pkg-col-progress">
+                  <span className="progress-inline">
+                    <span className="progress-inline-bar" style={{ width: `${combinedProgress}%` }} />
+                    <span className="progress-inline-text">{combinedProgress}%</span>
+                    <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - combinedProgress}% 0 0)` }}>{combinedProgress}%</span>
+                  </span>
+                </span>
+              );
+              case "hoster": return (
+                <span key={col} className="pkg-col pkg-col-hoster" title={(() => {
+                  const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
+                  return hosters.join(", ");
+                })()}>{(() => {
+                  const hosters = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))];
+                  return hosters.length > 0 ? hosters.join(", ") : "";
+                })()}</span>
+              );
+              case "account": return (
+                <span key={col} className="pkg-col pkg-col-account" title={(() => {
+                  const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
+                  return providers.map((p) => providerLabels[p!] || p).join(", ");
+                })()}>{(() => {
+                  const providers = [...new Set(items.map((item) => item.provider).filter(Boolean))];
+                  return providers.length > 0 ? providers.map((p) => providerLabels[p!] || p).join(", ") : "";
+                })()}</span>
+              );
+              case "prio": return (
+                <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
+              );
+              case "status": return (
+                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]</span>
+              );
+              case "speed": return (
+                <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>
+              );
+              case "added": return (
+                <span key={col} className="pkg-col pkg-col-added">{formatDateTime(pkg.createdAt)}</span>
+              );
+              default: return null;
+            }
+          })}
         </div>
       </header>
       <div className="progress">
@@ -3051,40 +3194,54 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
         {extracting && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
       </div>
       {!collapsed && items.map((item) => (
-        <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
-          <span className="pkg-col pkg-col-name item-indent" title={item.fileName}>
-            {item.onlineStatus && <span className={`link-status-dot ${item.onlineStatus}`} title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : "Wird geprüft..."} />}
-            {item.fileName}
-          </span>
-          <span className="pkg-col pkg-col-size">{(() => {
-            const total = item.totalBytes || item.downloadedBytes || 0;
-            const dl = item.downloadedBytes || 0;
-            const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
-            const label = `${humanSize(dl)} / ${humanSize(total)}`;
-            return total > 0 ? (
-              <span className="progress-size progress-size-small">
-                <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                <span className="progress-size-text">{label}</span>
-                <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-              </span>
-            ) : "-";
-          })()}</span>
-          <span className="pkg-col pkg-col-progress">
-            {item.totalBytes > 0 ? (
-              <span className="progress-inline progress-inline-small">
-                <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
-                <span className="progress-inline-text">{item.progressPercent}%</span>
-                <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
-              </span>
-            ) : "-"}
-          </span>
-          <span className="pkg-col pkg-col-hoster" title={extractHoster(item.url)}>{extractHoster(item.url) || "-"}</span>
-          <span className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : "-"}</span>
-          <span className="pkg-col pkg-col-prio"></span>
-          <span className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
-            {item.fullStatus}
-          </span>
-          <span className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : "-"}</span>
+        <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} style={{ gridTemplateColumns: gridTemplate }} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
+          {columnOrder.map((col) => {
+            switch (col) {
+              case "name": return (
+                <span key={col} className="pkg-col pkg-col-name item-indent" title={item.fileName}>
+                  {item.onlineStatus && <span className={`link-status-dot ${item.onlineStatus}`} title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : "Wird geprüft..."} />}
+                  {item.fileName}
+                </span>
+              );
+              case "size": return (
+                <span key={col} className="pkg-col pkg-col-size">{(() => {
+                  const total = item.totalBytes || item.downloadedBytes || 0;
+                  const dl = item.downloadedBytes || 0;
+                  const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
+                  const label = `${humanSize(dl)} / ${humanSize(total)}`;
+                  return total > 0 ? (
+                    <span className="progress-size progress-size-small">
+                      <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                      <span className="progress-size-text">{label}</span>
+                      <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
+                    </span>
+                  ) : "";
+                })()}</span>
+              );
+              case "progress": return (
+                <span key={col} className="pkg-col pkg-col-progress">
+                  {item.totalBytes > 0 ? (
+                    <span className="progress-inline progress-inline-small">
+                      <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
+                      <span className="progress-inline-text">{item.progressPercent}%</span>
+                      <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
+                    </span>
+                  ) : ""}
+                </span>
+              );
+              case "hoster": return <span key={col} className="pkg-col pkg-col-hoster" title={extractHoster(item.url)}>{extractHoster(item.url) || ""}</span>;
+              case "account": return <span key={col} className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : ""}</span>;
+              case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
+              case "status": return (
+                <span key={col} className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
+                  {item.fullStatus}
+                </span>
+              );
+              case "speed": return <span key={col} className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
+              case "added": return <span key={col} className="pkg-col pkg-col-added">{formatDateTime(item.createdAt)}</span>;
+              default: return null;
+            }
+          })}
         </div>
       ))}
     </article>
@@ -3104,7 +3261,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     || prev.isLast !== next.isLast
     || prev.isEditing !== next.isEditing
     || prev.collapsed !== next.collapsed
-    || prev.selectedIds !== next.selectedIds) {
+    || prev.selectedIds !== next.selectedIds
+    || prev.columnOrder !== next.columnOrder
+    || prev.gridTemplate !== next.gridTemplate) {
     return false;
   }
   if ((prev.isEditing || next.isEditing) && prev.editingName !== next.editingName) {

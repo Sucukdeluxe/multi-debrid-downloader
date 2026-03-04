@@ -18,6 +18,7 @@ export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "allde
 export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
 export type PackagePriority = "high" | "normal" | "low";
+export type ExtractCpuPriority = "high" | "middle" | "low";
 
 export interface BandwidthScheduleEntry {
   id: string;
@@ -81,6 +82,8 @@ export interface AppSettings {
   confirmDeleteSelection: boolean;
   totalDownloadedAllTime: number;
   bandwidthSchedules: BandwidthScheduleEntry[];
+  columnOrder: string[];
+  extractCpuPriority: ExtractCpuPriority;
 }
 
 export interface DownloadItem {
