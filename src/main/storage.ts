@@ -188,8 +188,7 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
     megaLogin: "",
     megaPassword: "",
     bestToken: "",
-    allDebridToken: "",
-    archivePasswordList: ""
+    allDebridToken: ""
   };
 }
 
@@ -233,7 +232,7 @@ function readSettingsFile(filePath: string): AppSettings | null {
   }
 }
 
-function normalizeLoadedSession(raw: unknown): SessionState {
+export function normalizeLoadedSession(raw: unknown): SessionState {
   const fallback = emptySession();
   const parsed = asRecord(raw);
   if (!parsed) {
@@ -412,7 +411,7 @@ function sessionBackupPath(sessionFile: string): string {
   return `${sessionFile}.bak`;
 }
 
-function normalizeLoadedSessionTransientFields(session: SessionState): SessionState {
+export function normalizeLoadedSessionTransientFields(session: SessionState): SessionState {
   // Reset transient fields that may be stale from a previous crash
   const ACTIVE_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
   for (const item of Object.values(session.items)) {

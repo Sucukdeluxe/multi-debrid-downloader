@@ -1813,9 +1813,12 @@ export function App(): ReactElement {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
-        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") setSelectedIds(new Set());
+        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
+          if (tabRef.current === "downloads") setSelectedIds(new Set());
+          else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
+        }
       }
-      if (e.key === "Delete" && selectedIds.size > 0) {
+      if (e.key === "Delete" && tabRef.current === "downloads" && selectedIds.size > 0) {
         const target = e.target as HTMLElement;
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
         e.preventDefault();
@@ -1824,7 +1827,7 @@ export function App(): ReactElement {
     };
     const onDown = (e: MouseEvent): void => {
       const target = e.target as HTMLElement;
-      if (target.closest(".package-card") || target.closest(".ctx-menu")) return;
+      if (target.closest(".package-card") || target.closest(".ctx-menu") || target.closest(".modal-backdrop") || target.closest(".modal-card")) return;
       setSelectedIds(new Set());
     };
     window.addEventListener("keydown", onKey);
@@ -3368,7 +3371,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   if (prev.pkg.updatedAt !== next.pkg.updatedAt
     || prev.pkg.status !== next.pkg.status
     || prev.pkg.enabled !== next.pkg.enabled
-    || prev.pkg.name !== next.pkg.name) {
+    || prev.pkg.name !== next.pkg.name
+    || prev.pkg.priority !== next.pkg.priority
+    || prev.pkg.createdAt !== next.pkg.createdAt) {
     return false;
   }
   if (prev.packageSpeed !== next.packageSpeed
@@ -3410,7 +3415,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       || a.retries !== b.retries
       || a.provider !== b.provider
       || a.fullStatus !== b.fullStatus
-      || a.onlineStatus !== b.onlineStatus) {
+      || a.onlineStatus !== b.onlineStatus
+      || a.downloadedBytes !== b.downloadedBytes
+      || a.totalBytes !== b.totalBytes) {
       return false;
     }
   }
