@@ -117,7 +117,7 @@ function formatHoster(item: DownloadItem): string {
   const hoster = extractHoster(item.url);
   const label = hoster || "-";
   if (item.provider) {
-    return `${label} via. ${providerLabels[item.provider]}`;
+    return `${label} via ${providerLabels[item.provider]}`;
   }
   return label;
 }
@@ -2010,20 +2010,23 @@ export function App(): ReactElement {
                     value={settingsDraft.maxParallel}
                     onChange={(e) => {
                       const val = Math.max(1, Math.min(50, Number(e.target.value) || 1));
+                      settingsDirtyRef.current = true;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { settingsDirtyRef.current = false; });
                     }}
                   />
                   <div className="menu-spinner-arrows">
                     <button onClick={() => {
                       const val = Math.min(50, settingsDraft.maxParallel + 1);
+                      settingsDirtyRef.current = true;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { settingsDirtyRef.current = false; });
                     }}>&#9650;</button>
                     <button onClick={() => {
                       const val = Math.max(1, settingsDraft.maxParallel - 1);
+                      settingsDirtyRef.current = true;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { settingsDirtyRef.current = false; });
                     }}>&#9660;</button>
                   </div>
                 </div>
@@ -2035,8 +2038,9 @@ export function App(): ReactElement {
                   checked={settingsDraft.speedLimitEnabled}
                   onChange={(e) => {
                     const next = e.target.checked;
+                    settingsDirtyRef.current = true;
                     setSettingsDraft((prev) => ({ ...prev, speedLimitEnabled: next }));
-                    void window.rd.updateSettings({ speedLimitEnabled: next });
+                    void window.rd.updateSettings({ speedLimitEnabled: next }).finally(() => { settingsDirtyRef.current = false; });
                   }}
                 />
                 <div className={`menu-spinner${!settingsDraft.speedLimitEnabled ? " disabled" : ""}`}>
@@ -2054,8 +2058,9 @@ export function App(): ReactElement {
                         return;
                       }
                       const kbps = Math.floor(parsed * 1024);
+                      settingsDirtyRef.current = true;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));
-                      void window.rd.updateSettings({ speedLimitKbps: kbps });
+                      void window.rd.updateSettings({ speedLimitKbps: kbps }).finally(() => { settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(kbps));
                     }}
                   />
@@ -2063,15 +2068,17 @@ export function App(): ReactElement {
                     <button onClick={() => {
                       const cur = (settingsDraft.speedLimitKbps || 0) / 1024;
                       const next = Math.floor((cur + 1) * 1024);
+                      settingsDirtyRef.current = true;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
-                      void window.rd.updateSettings({ speedLimitKbps: next });
+                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9650;</button>
                     <button onClick={() => {
                       const cur = (settingsDraft.speedLimitKbps || 0) / 1024;
                       const next = Math.max(0, Math.floor((cur - 1) * 1024));
+                      settingsDirtyRef.current = true;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
-                      void window.rd.updateSettings({ speedLimitKbps: next });
+                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9660;</button>
                   </div>
@@ -2324,6 +2331,8 @@ export function App(): ReactElement {
                   void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
                     setHistoryEntries((prev) => prev.filter((e) => !idSet.has(e.id)));
                     setSelectedHistoryIds(new Set());
+                  }).catch(() => {
+                    void window.rd.getHistory().then((entries) => { setHistoryEntries(entries); setSelectedHistoryIds(new Set()); }).catch(() => {});
                   });
                 }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
               )}
@@ -2992,6 +3001,8 @@ export function App(): ReactElement {
           void Promise.all(ids.map(id => window.rd.removeHistoryEntry(id))).then(() => {
             setHistoryEntries((prev) => prev.filter((e) => !selectedHistoryIds.has(e.id)));
             setSelectedHistoryIds(new Set());
+          }).catch(() => {
+            void window.rd.getHistory().then((entries) => { setHistoryEntries(entries); setSelectedHistoryIds(new Set()); }).catch(() => {});
           });
           setHistoryCtxMenu(null);
         };
@@ -3216,7 +3227,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       </header>
       <div className="progress">
         <div className="progress-dl" style={{ width: `${dlProgress}%` }} />
-        {extracting && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
+        {useExtractSplit && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
       </div>
       {!collapsed && items.map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} style={{ gridTemplateColumns: gridTemplate }} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
