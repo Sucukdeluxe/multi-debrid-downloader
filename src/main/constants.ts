@@ -31,7 +31,7 @@ export const RAR_SPLIT_RE = /\.r\d{2,3}$/i;
 
 export const MAX_MANIFEST_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;
-export const SPEED_WINDOW_SECONDS = 3;
+export const SPEED_WINDOW_SECONDS = 2;
 export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
 
 export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/real-debrid-downloader";
