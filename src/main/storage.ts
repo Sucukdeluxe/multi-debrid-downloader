@@ -424,6 +424,18 @@ export function normalizeLoadedSessionTransientFields(session: SessionState): Se
     item.speedBps = 0;
   }
 
+  // Reset package-level active statuses to queued (mirrors item reset above)
+  const ACTIVE_PKG_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
+  for (const pkg of Object.values(session.packages)) {
+    if (ACTIVE_PKG_STATUSES.has(pkg.status)) {
+      pkg.status = "queued";
+    }
+  }
+
+  // Clear stale session-level running/paused flags
+  session.running = false;
+  session.paused = false;
+
   return session;
 }
 

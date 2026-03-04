@@ -801,6 +801,8 @@ export class DownloadManager extends EventEmitter {
 
   private storagePaths: StoragePaths;
 
+  public skipShutdownPersist = false;
+
   private debridService: DebridService;
 
   private invalidateMegaSessionFn?: () => void;
@@ -2390,7 +2392,8 @@ export class DownloadManager extends EventEmitter {
     const baseName = sanitizeFilename(parsed.name || "video");
 
     let index = 1;
-    while (true) {
+    const MAX_ATTEMPTS = 10000;
+    while (index <= MAX_ATTEMPTS) {
       const candidateName = index <= 1
         ? `${baseName}${extension}`
         : `${baseName} (${index})${extension}`;
@@ -2406,6 +2409,11 @@ export class DownloadManager extends EventEmitter {
       }
       index += 1;
     }
+    // Fallback: use timestamp-based name to guarantee termination
+    const fallbackName = `${baseName} (${Date.now()})${extension}`;
+    const fallbackPath = path.join(targetDir, fallbackName);
+    reserved.add(pathKey(fallbackPath));
+    return fallbackPath;
   }
 
   private async collectMkvFilesToLibrary(packageId: string, pkg: PackageEntry): Promise<void> {
@@ -2821,6 +2829,9 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
     this.retryStateByItem.clear();
+    this.itemContributedBytes.clear();
+    this.reservedTargetPaths.clear();
+    this.claimedTargetPathByItem.clear();
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
@@ -3047,6 +3058,9 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
     this.retryStateByItem.clear();
+    this.itemContributedBytes.clear();
+    this.reservedTargetPaths.clear();
+    this.claimedTargetPathByItem.clear();
 
     this.session.running = true;
     this.session.paused = false;
@@ -3195,8 +3209,11 @@ export class DownloadManager extends EventEmitter {
     this.nonResumableActive = 0;
     this.session.summaryText = "";
     // Persist synchronously on shutdown to guarantee data is written before process exits
-    saveSession(this.storagePaths, this.session);
-    saveSettings(this.storagePaths, this.settings);
+    // Skip if a backup was just imported — the restored session on disk must not be overwritten
+    if (!this.skipShutdownPersist) {
+      saveSession(this.storagePaths, this.session);
+      saveSettings(this.storagePaths, this.settings);
+    }
     this.emitState(true);
     logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
   }
@@ -6056,8 +6073,16 @@ export class DownloadManager extends EventEmitter {
       }
       if (item.status === "completed" && item.targetPath) {
         completedPaths.add(pathKey(item.targetPath));
-      } else if (item.targetPath) {
-        pendingPaths.add(pathKey(item.targetPath));
+      } else {
+        if (item.targetPath) {
+          pendingPaths.add(pathKey(item.targetPath));
+        }
+        // Items that haven't started yet have no targetPath but may have a fileName.
+        // Include their projected path so the archive-readiness check doesn't
+        // prematurely trigger extraction while parts are still queued.
+        if (item.fileName && pkg.outputDir) {
+          pendingPaths.add(pathKey(path.join(pkg.outputDir, item.fileName)));
+        }
       }
     }
     if (completedPaths.size === 0) {
@@ -6408,13 +6433,21 @@ export class DownloadManager extends EventEmitter {
       const errorText = String(error || "");
       if (errorText.includes("aborted:extract")) {
         logger.info(`Hybrid-Extract abgebrochen: pkg=${pkg.name}`);
+        const abortAt = nowMs();
+        for (const entry of hybridItems) {
+          if (isExtractedLabel(entry.fullStatus || "")) continue;
+          if (/^Entpacken\b/i.test(entry.fullStatus || "") || /^Passwort\b/i.test(entry.fullStatus || "")) {
+            entry.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
+            entry.updatedAt = abortAt;
+          }
+        }
         return;
       }
       logger.warn(`Hybrid-Extract Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
       const errorAt = nowMs();
       for (const entry of hybridItems) {
         if (isExtractedLabel(entry.fullStatus || "")) continue;
-        if (/^Entpacken\b/i.test(entry.fullStatus || "") || /^Passwort\b/i.test(entry.fullStatus || "") || entry.fullStatus === "Entpacken - Ausstehend" || entry.fullStatus === "Entpacken - Warten auf Parts") {
+        if (/^Entpacken\b/i.test(entry.fullStatus || "") || /^Passwort\b/i.test(entry.fullStatus || "")) {
           entry.fullStatus = `Entpacken - Error`;
           entry.updatedAt = errorAt;
         }
@@ -6892,6 +6925,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private finishRun(): void {
+    const runStartedAt = this.session.runStartedAt;
     this.session.running = false;
     this.session.paused = false;
     this.session.runStartedAt = 0;
@@ -6901,7 +6935,7 @@ export class DownloadManager extends EventEmitter {
     const failed = outcomes.filter((status) => status === "failed").length;
     const cancelled = outcomes.filter((status) => status === "cancelled").length;
     const extracted = this.runCompletedPackages.size;
-    const duration = this.session.runStartedAt > 0 ? Math.max(1, Math.floor((nowMs() - this.session.runStartedAt) / 1000)) : 1;
+    const duration = runStartedAt > 0 ? Math.max(1, Math.floor((nowMs() - runStartedAt) / 1000)) : 1;
     const avgSpeed = Math.floor(this.session.totalDownloadedBytes / duration);
     this.summary = {
       total,
