@@ -1498,10 +1498,21 @@ export function App(): ReactElement {
     pendingPackageOrderRef.current = [...order];
     pendingPackageOrderAtRef.current = Date.now();
     packageOrderRef.current = [...order];
+    // Optimistic UI update — apply the new order immediately so the user
+    // sees the change without waiting for the backend round-trip.
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
+    });
     void window.rd.reorderPackages(order).catch((error) => {
       pendingPackageOrderRef.current = null;
       pendingPackageOrderAtRef.current = 0;
       packageOrderRef.current = serverPackageOrderRef.current;
+      // Rollback: restore original order from server
+      setSnapshot((prev) => {
+        if (!prev) return prev;
+        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
+      });
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
   }, [selectedIds, snapshot.session.packages, showToast]);
