@@ -339,7 +339,8 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       return true;
     });
   for (const packageId of Object.keys(packagesById)) {
-    if (!packageOrder.includes(packageId)) {
+    if (!seenOrder.has(packageId)) {
+      seenOrder.add(packageId);
       packageOrder.push(packageId);
     }
   }
@@ -604,6 +605,11 @@ async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Pr
       void saveSessionPayloadAsync(queued.paths, queued.payload);
     }
   }
+}
+
+export function cancelPendingAsyncSaves(): void {
+  asyncSaveQueued = null;
+  asyncSettingsSaveQueued = null;
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
