@@ -829,6 +829,8 @@ export class DownloadManager extends EventEmitter {
 
   private runCompletedPackages = new Set<string>();
 
+  private historyRecordedPackages = new Set<string>();
+
   private itemCount = 0;
 
   private lastSchedulerHeartbeatAt = 0;
@@ -1220,6 +1222,7 @@ export class DownloadManager extends EventEmitter {
     this.runPackageIds.clear();
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
+    this.historyRecordedPackages.clear();
     this.retryAfterByItem.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
@@ -3819,12 +3822,42 @@ export class DownloadManager extends EventEmitter {
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
   }
 
+  private recordPackageHistory(packageId: string, pkg: PackageEntry, items: DownloadItem[]): void {
+    if (!this.onHistoryEntryCallback || this.historyRecordedPackages.has(packageId)) {
+      return;
+    }
+    const completedItems = items.filter(item => item.status === "completed");
+    if (completedItems.length === 0) {
+      return;
+    }
+    this.historyRecordedPackages.add(packageId);
+    const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+    const durationSeconds = pkg.createdAt > 0 ? Math.max(1, Math.floor((nowMs() - pkg.createdAt) / 1000)) : 1;
+    const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
+    const provider = providers.size === 1 ? [...providers][0] : null;
+    const entry: HistoryEntry = {
+      id: generateHistoryId(),
+      name: pkg.name,
+      totalBytes,
+      downloadedBytes: totalBytes,
+      fileCount: completedItems.length,
+      provider,
+      completedAt: nowMs(),
+      durationSeconds,
+      status: "completed",
+      outputDir: pkg.outputDir,
+      urls: completedItems.map(item => item.url).filter(Boolean),
+    };
+    this.onHistoryEntryCallback(entry);
+  }
+
   private removePackageFromSession(packageId: string, itemIds: string[], reason: "completed" | "deleted" = "deleted"): void {
     const pkg = this.session.packages[packageId];
-    if (pkg && this.onHistoryEntryCallback) {
+    // Only create history here for deletions — completions are handled by recordPackageHistory
+    if (pkg && this.onHistoryEntryCallback && reason === "deleted" && !this.historyRecordedPackages.has(packageId)) {
       const completedItems = itemIds.map(id => this.session.items[id]).filter(Boolean) as DownloadItem[];
       const completedCount = completedItems.filter(item => item.status === "completed").length;
-      if (completedCount > 0 && (reason === "completed" || pkg.status === "completed")) {
+      if (completedCount > 0) {
         const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
         const durationSeconds = pkg.createdAt > 0 ? Math.max(1, Math.floor((nowMs() - pkg.createdAt) / 1000)) : 1;
         const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
@@ -3838,13 +3871,14 @@ export class DownloadManager extends EventEmitter {
           provider,
           completedAt: nowMs(),
           durationSeconds,
-          status: reason === "completed" ? "completed" : "deleted",
+          status: "deleted",
           outputDir: pkg.outputDir,
           urls: completedItems.map(item => item.url).filter(Boolean),
         };
         this.onHistoryEntryCallback(entry);
       }
     }
+    this.historyRecordedPackages.delete(packageId);
     const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
     if (postProcessController && !postProcessController.signal.aborted) {
       postProcessController.abort("package_removed");
@@ -6528,6 +6562,15 @@ export class DownloadManager extends EventEmitter {
       pkg.status = success > 0 ? "completed" : "cancelled";
     } else {
       pkg.status = "completed";
+    }
+
+    // Emit state immediately after status change so UI reflects completion
+    // before potentially slow rename/MKV-collection steps.
+    this.emitState();
+
+    // Record history entry when package completes (regardless of cleanup policy)
+    if (pkg.status === "completed" || (pkg.status === "failed" && success > 0)) {
+      this.recordPackageHistory(packageId, pkg, items);
     }
 
     if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
