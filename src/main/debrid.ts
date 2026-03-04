@@ -449,7 +449,7 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
       return "";
     } catch (error) {
       const errorText = compactErrorText(error);
-      if (/aborted/i.test(errorText)) {
+      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
         throw error;
       }
       if (attempt >= REQUEST_RETRIES + 2 || !isRetryableErrorText(errorText)) {
@@ -530,7 +530,7 @@ export async function checkRapidgatorOnline(
       break;
     } catch (error) {
       const errorText = compactErrorText(error);
-      if (/aborted/i.test(errorText)) throw error;
+      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
       if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
         break; // fall through to GET
       }
@@ -583,7 +583,7 @@ export async function checkRapidgatorOnline(
       return { online: true, fileName, fileSize };
     } catch (error) {
       const errorText = compactErrorText(error);
-      if (/aborted/i.test(errorText)) throw error;
+      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
       if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
         return null;
       }
@@ -734,7 +734,7 @@ class BestDebridClient {
         throw new Error("BestDebrid Antwort ohne Download-Link");
       } catch (error) {
         lastError = compactErrorText(error);
-        if (signal?.aborted || /aborted/i.test(lastError)) {
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
           break;
         }
         if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
@@ -828,7 +828,7 @@ class AllDebridClient {
           break;
         } catch (error) {
           const errorText = compactErrorText(error);
-          if (signal?.aborted || /aborted/i.test(errorText)) {
+          if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
             throw error;
           }
           if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
@@ -940,7 +940,7 @@ class AllDebridClient {
         };
       } catch (error) {
         lastError = compactErrorText(error);
-        if (signal?.aborted || /aborted/i.test(lastError)) {
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
           break;
         }
         if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
@@ -1002,7 +1002,7 @@ export class DebridService {
         }
       } catch (error) {
         const errorText = compactErrorText(error);
-        if (signal?.aborted || /aborted/i.test(errorText)) {
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
         // ignore and continue with host page fallback
@@ -1077,7 +1077,7 @@ export class DebridService {
         };
       } catch (error) {
         const errorText = compactErrorText(error);
-        if (signal?.aborted || /aborted/i.test(errorText)) {
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
         attempts.push(`${PROVIDER_LABELS[provider]}: ${compactErrorText(error)}`);

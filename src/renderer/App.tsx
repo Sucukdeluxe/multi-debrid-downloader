@@ -1397,17 +1397,18 @@ export function App(): ReactElement {
   };
 
   const removeCollectorTab = (id: string): void => {
+    let fallbackId = "";
     setCollectorTabs((prev) => {
       if (prev.length <= 1) return prev;
       const index = prev.findIndex((tabEntry) => tabEntry.id === id);
       if (index < 0) return prev;
       const next = prev.filter((tabEntry) => tabEntry.id !== id);
       if (activeCollectorTabRef.current === id) {
-        const fallbackId = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
-        if (fallbackId) setTimeout(() => setActiveCollectorTab(fallbackId), 0);
+        fallbackId = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
       }
       return next;
     });
+    if (fallbackId) setActiveCollectorTab(fallbackId);
   };
 
   const onPackageDragStart = useCallback((packageId: string) => {
@@ -2362,14 +2363,14 @@ export function App(): ReactElement {
                 <button className="btn" onClick={() => setShowAllPackages(true)}>Alle trotzdem anzeigen</button>
               </div>
             )}
-            {visiblePackages.map((pkg) => (
+            {visiblePackages.map((pkg, idx) => (
               <PackageCard
                 key={pkg.id}
                 pkg={pkg}
                 items={itemsByPackage.get(pkg.id) ?? []}
                 packageSpeed={packageSpeedMap.get(pkg.id) ?? 0}
-                isFirst={(packagePosition.get(pkg.id) ?? -1) === 0}
-                isLast={(packagePosition.get(pkg.id) ?? -1) === snapshot.session.packageOrder.length - 1}
+                isFirst={idx === 0}
+                isLast={idx === visiblePackages.length - 1}
                 isEditing={editingPackageId === pkg.id}
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}

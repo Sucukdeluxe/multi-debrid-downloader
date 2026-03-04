@@ -176,7 +176,7 @@ export class RealDebridClient {
         };
       } catch (error) {
         lastError = compactErrorText(error);
-        if (signal?.aborted || /aborted/i.test(lastError)) {
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
           break;
         }
         if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
