@@ -2006,6 +2006,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         extracted += 1;
         resumeCompleted.add(archiveResumeKey);
         extractedArchives.add(archivePath);
+        await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
         clearInterval(pulseTimer);
         return;
       }

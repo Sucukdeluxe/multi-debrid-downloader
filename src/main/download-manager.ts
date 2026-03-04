@@ -1103,7 +1103,7 @@ export class DownloadManager extends EventEmitter {
     if (pkg) {
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       if (pkg.itemIds.length === 0) {
-        this.removePackageFromSession(item.packageId, []);
+        this.removePackageFromSession(item.packageId, [itemId]);
       } else {
         pkg.updatedAt = nowMs();
       }
@@ -2659,6 +2659,17 @@ export class DownloadManager extends EventEmitter {
 
     // Reset parent package status if it was completed/failed (now has queued items again)
     for (const pkgId of affectedPackageIds) {
+      // Abort active post-processing for this package
+      const postProcessController = this.packagePostProcessAbortControllers.get(pkgId);
+      if (postProcessController && !postProcessController.signal.aborted) {
+        postProcessController.abort("reset");
+      }
+      this.packagePostProcessAbortControllers.delete(pkgId);
+      this.packagePostProcessTasks.delete(pkgId);
+      this.hybridExtractRequeue.delete(pkgId);
+      this.runCompletedPackages.delete(pkgId);
+      this.historyRecordedPackages.delete(pkgId);
+
       const pkg = this.session.packages[pkgId];
       if (pkg && (pkg.status === "completed" || pkg.status === "failed" || pkg.status === "cancelled")) {
         pkg.status = "queued";
@@ -3822,7 +3833,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      if (this.settings.autoExtract && failed === 0 && cancelled === 0 && success > 0) {
+      if (this.settings.autoExtract && failed === 0 && success > 0) {
         const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
         if (needsExtraction) {
           pkg.status = "queued";
@@ -3883,7 +3894,7 @@ export class DownloadManager extends EventEmitter {
       const allDone = success + failed + cancelled >= items.length;
 
       // Full extraction: all items done, no failures
-      if (allDone && failed === 0 && cancelled === 0 && success > 0) {
+      if (allDone && failed === 0 && success > 0) {
         const needsExtraction = items.some((item) =>
           item.status === "completed" && !isExtractedLabel(item.fullStatus)
         );
@@ -4944,22 +4955,8 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
-          // Shelve check for non-stall errors
-          const totalNonStallFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
-          if (totalNonStallFailures >= 15) {
-            item.retries += 1;
-            active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
-            active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
-            active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
-            logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}`);
-            this.queueRetry(item, active, 300000, `Viele Fehler (${totalNonStallFailures}x), Pause 5 min`);
-            item.lastError = errorText;
-            this.persistSoon();
-            this.emitState();
-            return;
-          }
-
           // Permanent link errors (dead link, file removed, hoster unavailable) → fail immediately
+          // Check BEFORE shelve to avoid 5-min pause on dead links
           if (isPermanentLinkError(errorText)) {
             logger.error(`Link permanent ungültig: item=${item.fileName || item.id}, error=${errorText}, link=${item.url.slice(0, 80)}`);
             item.status = "failed";
@@ -4969,6 +4966,21 @@ export class DownloadManager extends EventEmitter {
             item.speedBps = 0;
             item.updatedAt = nowMs();
             this.retryStateByItem.delete(item.id);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          // Shelve check for non-stall errors (after permanent link error check)
+          const totalNonStallFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
+          if (totalNonStallFailures >= 15) {
+            item.retries += 1;
+            active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
+            active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
+            active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
+            logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}`);
+            this.queueRetry(item, active, 300000, `Viele Fehler (${totalNonStallFailures}x), Pause 5 min`);
+            item.lastError = errorText;
             this.persistSoon();
             this.emitState();
             return;
@@ -5031,6 +5043,9 @@ export class DownloadManager extends EventEmitter {
         }
         item.speedBps = 0;
         item.updatedAt = nowMs();
+        // Refresh package status so it reflects "failed" when all items are done
+        const failPkg = this.session.packages[item.packageId];
+        if (failPkg) this.refreshPackageStatus(failPkg);
         this.persistSoon();
         this.emitState();
         return;
@@ -6379,7 +6394,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         const status = entry.fullStatus || "";
-        if (/^Entpacken\b/i.test(status)) {
+        if (/^Entpacken\b/i.test(status) || /^Passwort\b/i.test(status)) {
           if (result.failed > 0) {
             entry.fullStatus = "Entpacken - Error";
           } else if (result.extracted > 0) {
@@ -6399,7 +6414,7 @@ export class DownloadManager extends EventEmitter {
       const errorAt = nowMs();
       for (const entry of hybridItems) {
         if (isExtractedLabel(entry.fullStatus || "")) continue;
-        if (/^Entpacken\b/i.test(entry.fullStatus || "") || entry.fullStatus === "Entpacken - Ausstehend" || entry.fullStatus === "Entpacken - Warten auf Parts") {
+        if (/^Entpacken\b/i.test(entry.fullStatus || "") || /^Passwort\b/i.test(entry.fullStatus || "") || entry.fullStatus === "Entpacken - Ausstehend" || entry.fullStatus === "Entpacken - Warten auf Parts") {
           entry.fullStatus = `Entpacken - Error`;
           entry.updatedAt = errorAt;
         }
@@ -6708,7 +6723,7 @@ export class DownloadManager extends EventEmitter {
             timeoutHandled = true;
           } else {
             for (const entry of completedItems) {
-              if (/^Entpacken/i.test(entry.fullStatus || "")) {
+              if (/^Entpacken/i.test(entry.fullStatus || "") || /^Passwort/i.test(entry.fullStatus || "")) {
                 entry.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
               }
               entry.updatedAt = nowMs();
@@ -6879,6 +6894,7 @@ export class DownloadManager extends EventEmitter {
   private finishRun(): void {
     this.session.running = false;
     this.session.paused = false;
+    this.session.runStartedAt = 0;
     const total = this.runItemIds.size;
     const outcomes = Array.from(this.runOutcomes.values());
     const success = outcomes.filter((status) => status === "completed").length;

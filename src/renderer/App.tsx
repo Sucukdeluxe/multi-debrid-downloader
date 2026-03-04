@@ -360,8 +360,8 @@ function sortPackageOrderBySize(order: string[], packages: Record<string, Packag
 function sortPackageOrderByHoster(order: string[], packages: Record<string, PackageEntry>, items: Record<string, DownloadItem>, descending: boolean): string[] {
   const sorted = [...order];
   sorted.sort((a, b) => {
-    const hosterA = [...new Set((packages[a]?.itemIds ?? []).map((id) => items[id]?.provider).filter(Boolean))].join(",").toLowerCase();
-    const hosterB = [...new Set((packages[b]?.itemIds ?? []).map((id) => items[id]?.provider).filter(Boolean))].join(",").toLowerCase();
+    const hosterA = [...new Set((packages[a]?.itemIds ?? []).map((id) => extractHoster(items[id]?.url ?? "")).filter(Boolean))].join(",").toLowerCase();
+    const hosterB = [...new Set((packages[b]?.itemIds ?? []).map((id) => extractHoster(items[id]?.url ?? "")).filter(Boolean))].join(",").toLowerCase();
     const cmp = hosterA.localeCompare(hosterB);
     return descending ? -cmp : cmp;
   });

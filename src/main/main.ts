@@ -295,7 +295,7 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.START_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
     validateStringArray(itemIds ?? [], "itemIds");
-    return controller.startItems(itemIds);
+    return controller.startItems(itemIds ?? []);
   });
   ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());
   ipcMain.handle(IPC_CHANNELS.TOGGLE_PAUSE, () => controller.togglePause());

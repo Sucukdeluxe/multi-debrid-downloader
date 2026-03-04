@@ -1051,7 +1051,11 @@ export class DebridService {
           providerLabel: PROVIDER_LABELS[primary]
         };
       } catch (error) {
-        throw new Error(`Unrestrict fehlgeschlagen: ${PROVIDER_LABELS[primary]}: ${compactErrorText(error)}`);
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        throw new Error(`Unrestrict fehlgeschlagen: ${PROVIDER_LABELS[primary]}: ${errorText}`);
       }
     }
 
