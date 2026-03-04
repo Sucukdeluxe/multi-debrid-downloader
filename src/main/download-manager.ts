@@ -3546,15 +3546,28 @@ export class DownloadManager extends EventEmitter {
     const task = (async () => {
       await this.acquirePostProcessSlot(packageId);
       try {
-        await this.handlePackagePostProcessing(packageId, abortController.signal);
-      } catch (error) {
-        logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
+        // Loop while requeue requests arrive — keep the slot so the same
+        // package can immediately re-run hybrid extraction without waiting
+        // behind other packages that may be queued for the slot.
+        do {
+          this.hybridExtractRequeue.delete(packageId);
+          try {
+            await this.handlePackagePostProcessing(packageId, abortController.signal);
+          } catch (error) {
+            logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
+          }
+          this.persistSoon();
+          this.emitState();
+        } while (this.hybridExtractRequeue.has(packageId));
       } finally {
         this.releasePostProcessSlot();
         this.packagePostProcessTasks.delete(packageId);
         this.packagePostProcessAbortControllers.delete(packageId);
         this.persistSoon();
         this.emitState();
+        // Fallback: if an item completed between the while-check and task
+        // deletion, the requeue flag is still set — spawn a new task so it
+        // is not lost.  The new task will acquire the slot normally.
         if (this.hybridExtractRequeue.delete(packageId)) {
           void this.runPackagePostProcessing(packageId).catch((err) =>
             logger.warn(`runPackagePostProcessing Fehler (hybridRequeue): ${compactErrorText(err)}`)
@@ -5856,6 +5869,36 @@ export class DownloadManager extends EventEmitter {
       return false;
     };
     const hybridItems = completedItems.filter(isHybridItem);
+
+    // If all items belonging to ready archives are already extracted from
+    // a previous hybrid round, there is nothing new to extract.
+    if (hybridItems.length > 0 && hybridItems.every((item) => isExtractedLabel(item.fullStatus))) {
+      logger.info(`Hybrid-Extract: pkg=${pkg.name}, alle ${hybridItems.length} Items bereits entpackt, überspringe`);
+      return;
+    }
+
+    // Filter out archives whose items are ALL already extracted so we don't
+    // re-extract them.  Build per-archive item map first.
+    for (const archiveKey of [...readyArchives]) {
+      const archiveParts = collectArchiveCleanupTargets(archiveKey, dirFiles);
+      const archivePartNames = new Set<string>();
+      archivePartNames.add(path.basename(archiveKey).toLowerCase());
+      for (const part of archiveParts) {
+        archivePartNames.add(path.basename(part).toLowerCase());
+      }
+      const archiveItems = completedItems.filter((item) => {
+        const targetName = item.targetPath ? path.basename(item.targetPath).toLowerCase() : "";
+        const fileName = (item.fileName || "").toLowerCase();
+        return archivePartNames.has(targetName) || archivePartNames.has(fileName);
+      });
+      if (archiveItems.length > 0 && archiveItems.every((item) => isExtractedLabel(item.fullStatus))) {
+        readyArchives.delete(archiveKey);
+      }
+    }
+    if (readyArchives.size === 0) {
+      logger.info(`Hybrid-Extract: pkg=${pkg.name}, alle fertigen Archive bereits entpackt`);
+      return;
+    }
 
     // Resolve archive items dynamically from ALL package items (not just
     // the stale completedItems snapshot) so items that complete during
