@@ -466,7 +466,7 @@ export function classifyExtractionError(errorText: string): ExtractErrorCategory
 
 function isExtractAbortError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
-  return text.includes("aborted:extract") || text.includes("extract_aborted");
+  return text.includes("aborted:extract") || text.includes("extract_aborted") || text.includes("noextractor:skipped");
 }
 
 export function archiveFilenamePasswords(archiveName: string): string[] {
@@ -872,10 +872,17 @@ function resolveJvmExtractorRootCandidates(): string[] {
 }
 
 let cachedJvmLayout: JvmExtractorLayout | null | undefined;
+let cachedJvmLayoutNullSince = 0;
+const JVM_LAYOUT_NULL_TTL_MS = 5 * 60 * 1000;
 
 function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
   if (cachedJvmLayout !== undefined) {
-    return cachedJvmLayout;
+    // Don't cache null permanently — retry after TTL in case Java was installed
+    if (cachedJvmLayout === null && Date.now() - cachedJvmLayoutNullSince > JVM_LAYOUT_NULL_TTL_MS) {
+      cachedJvmLayout = undefined;
+    } else {
+      return cachedJvmLayout;
+    }
   }
   const javaCandidates = resolveJavaCommandCandidates();
   const javaCommand = javaCandidates.find((candidate) => {
@@ -908,6 +915,7 @@ function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
   }
 
   cachedJvmLayout = null;
+  cachedJvmLayoutNullSince = Date.now();
   return null;
 }
 
@@ -1958,8 +1966,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let noExtractorEncountered = false;
 
   const extractSingleArchive = async (archivePath: string): Promise<void> => {
-    if (options.signal?.aborted || noExtractorEncountered) {
+    if (options.signal?.aborted) {
       throw new Error("aborted:extract");
+    }
+    if (noExtractorEncountered) {
+      throw new Error("noextractor:skipped");
     }
     const archiveName = path.basename(archivePath);
     const archiveResumeKey = archiveNameKey(archiveName);
@@ -2057,11 +2068,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
       }
     } catch (error) {
-      failed += 1;
       const errorText = String(error);
       if (isExtractAbortError(errorText)) {
         throw error;
       }
+      failed += 1;
       lastError = errorText;
       const errorCategory = classifyExtractionError(errorText);
       logger.error(`Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);

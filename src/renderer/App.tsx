@@ -97,6 +97,7 @@ const providerLabels: Record<DebridProvider, string> = {
 };
 
 function formatDateTime(ts: number): string {
+  if (!ts) return "";
   const d = new Date(ts);
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -1163,7 +1164,7 @@ export function App(): ReactElement {
       const active = collectorTabsRef.current.find((t) => t.id === activeId) ?? collectorTabsRef.current[0];
       const rawText = active?.text ?? "";
       const persisted = await persistDraftSettings();
-      const existingIds = new Set(Object.keys(snapshot.session.packages));
+      const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
       const result = await window.rd.addLinks({ rawText, packageName: persisted.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
@@ -1182,7 +1183,7 @@ export function App(): ReactElement {
       const files = await window.rd.pickContainers();
       if (files.length === 0) { return; }
       await persistDraftSettings();
-      const existingIds = new Set(Object.keys(snapshot.session.packages));
+      const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
       const result = await window.rd.addContainers(files);
       if (result.addedLinks > 0) {
         showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
@@ -1209,7 +1210,7 @@ export function App(): ReactElement {
     if (dlc.length > 0) {
       await performQuickAction(async () => {
         await persistDraftSettings();
-        const existingIds = new Set(Object.keys(snapshot.session.packages));
+        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
         const result = await window.rd.addContainers(dlc);
         if (result.addedLinks > 0) {
           showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
@@ -3408,7 +3409,8 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       || a.speedBps !== b.speedBps
       || a.retries !== b.retries
       || a.provider !== b.provider
-      || a.fullStatus !== b.fullStatus) {
+      || a.fullStatus !== b.fullStatus
+      || a.onlineStatus !== b.onlineStatus) {
       return false;
     }
   }
