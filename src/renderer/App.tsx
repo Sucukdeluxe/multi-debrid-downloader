@@ -476,6 +476,7 @@ export function App(): ReactElement {
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const tabRef = useRef(tab);
+  const autoExpandedPkgsRef = useRef(new Set<string>());
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -875,14 +876,25 @@ export function App(): ReactElement {
     }
   }, [snapshot.session.running]);
 
-  // Auto-expand packages that are currently extracting
+  // Auto-expand packages that are currently extracting (only once per extraction cycle)
   useEffect(() => {
     const extractingPkgIds: string[] = [];
+    const currentlyExtracting = new Set<string>();
     for (const pkg of packages) {
-      if (collapsedPackages[pkg.id]) {
-        const items = (pkg.itemIds ?? []).map((id) => snapshot.session.items[id]).filter(Boolean);
-        const isExtracting = items.some((item) => item.fullStatus?.startsWith("Entpacken -") && !item.fullStatus?.includes("Done"));
-        if (isExtracting) extractingPkgIds.push(pkg.id);
+      const items = (pkg.itemIds ?? []).map((id) => snapshot.session.items[id]).filter(Boolean);
+      const isExtracting = items.some((item) => item.fullStatus?.startsWith("Entpacken -") && !item.fullStatus?.includes("Done"));
+      if (isExtracting) {
+        currentlyExtracting.add(pkg.id);
+        if (collapsedPackages[pkg.id] && !autoExpandedPkgsRef.current.has(pkg.id)) {
+          extractingPkgIds.push(pkg.id);
+          autoExpandedPkgsRef.current.add(pkg.id);
+        }
+      }
+    }
+    // Reset tracking for packages no longer extracting
+    for (const id of autoExpandedPkgsRef.current) {
+      if (!currentlyExtracting.has(id)) {
+        autoExpandedPkgsRef.current.delete(id);
       }
     }
     if (extractingPkgIds.length > 0) {

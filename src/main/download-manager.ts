@@ -4054,7 +4054,9 @@ export class DownloadManager extends EventEmitter {
 
         this.runGlobalStallWatchdog(now);
 
-        if (this.activeTasks.size === 0 && !this.hasQueuedItems() && !this.hasDelayedQueuedItems() && this.packagePostProcessTasks.size === 0) {
+        const downloadsComplete = this.activeTasks.size === 0 && !this.hasQueuedItems() && !this.hasDelayedQueuedItems();
+        const postProcessComplete = this.packagePostProcessTasks.size === 0;
+        if (downloadsComplete && (postProcessComplete || this.settings.autoExtractWhenStopped)) {
           this.finishRun();
           break;
         }
