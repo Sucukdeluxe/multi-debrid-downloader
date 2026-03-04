@@ -473,6 +473,7 @@ export function App(): ReactElement {
   const [settingsDirty, setSettingsDirty] = useState(false);
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
+  const panelDirtyRevisionRef = useRef(0);
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
@@ -645,6 +646,7 @@ export function App(): ReactElement {
       }
       setSettingsDraft(state.settings);
       settingsDirtyRef.current = false;
+      panelDirtyRevisionRef.current = 0;
       setSettingsDirty(false);
       applyTheme(state.settings.theme);
       if (state.settings.autoUpdateCheck) {
@@ -1044,6 +1046,7 @@ export function App(): ReactElement {
     if (settingsDraftRevisionRef.current === revisionAtStart) {
       setSettingsDraft(result);
       settingsDirtyRef.current = false;
+      panelDirtyRevisionRef.current = 0;
       setSettingsDirty(false);
     }
     return result;
@@ -1290,18 +1293,21 @@ export function App(): ReactElement {
 
   const setBool = (key: keyof AppSettings, value: boolean): void => {
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setText = (key: keyof AppSettings, value: string): void => {
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setNum = (key: keyof AppSettings, value: number): void => {
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
@@ -1309,6 +1315,7 @@ export function App(): ReactElement {
   const setSpeedLimitMbps = (value: number): void => {
     const mbps = Number.isFinite(value) ? Math.max(0, value) : 0;
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
@@ -1434,16 +1441,20 @@ export function App(): ReactElement {
   }, []);
 
   const onPackageFinishEdit = useCallback((packageId: string, currentName: string, nextName: string): void => {
+    let shouldRename = false;
     setEditingPackageId((prev) => {
       if (prev !== packageId) return prev; // already finished (e.g. blur after Enter key)
+      shouldRename = true;
+      return null;
+    });
+    if (shouldRename) {
       const normalized = nextName.trim();
       if (normalized && normalized !== currentName.trim()) {
         void window.rd.renamePackage(packageId, normalized).catch((error) => {
           showToast(`Umbenennen fehlgeschlagen: ${String(error)}`, 2400);
         });
       }
-      return null;
-    });
+    }
   }, [showToast]);
 
   const onPackageToggleCollapse = useCallback((packageId: string): void => {
@@ -1691,6 +1702,7 @@ export function App(): ReactElement {
 
   const addSchedule = (): void => {
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({
@@ -1700,6 +1712,7 @@ export function App(): ReactElement {
   };
   const removeSchedule = (idx: number): void => {
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({
@@ -1709,6 +1722,7 @@ export function App(): ReactElement {
   };
   const updateSchedule = (idx: number, field: keyof BandwidthScheduleEntry, value: number | boolean): void => {
     settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsDraft((prev) => ({
@@ -2086,7 +2100,7 @@ export function App(): ReactElement {
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                     }}
                   />
                   <div className="menu-spinner-arrows">
@@ -2095,14 +2109,14 @@ export function App(): ReactElement {
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                     }}>&#9650;</button>
                     <button onClick={() => {
                       const val = Math.max(1, settingsDraft.maxParallel - 1);
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                     }}>&#9660;</button>
                   </div>
                 </div>
@@ -2117,7 +2131,7 @@ export function App(): ReactElement {
                     settingsDirtyRef.current = true;
                     const rev = ++settingsDraftRevisionRef.current;
                     setSettingsDraft((prev) => ({ ...prev, speedLimitEnabled: next }));
-                    void window.rd.updateSettings({ speedLimitEnabled: next }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                    void window.rd.updateSettings({ speedLimitEnabled: next }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                   }}
                 />
                 <div className={`menu-spinner${!settingsDraft.speedLimitEnabled ? " disabled" : ""}`}>
@@ -2138,7 +2152,7 @@ export function App(): ReactElement {
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));
-                      void window.rd.updateSettings({ speedLimitKbps: kbps }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ speedLimitKbps: kbps }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(kbps));
                     }}
                   />
@@ -2149,7 +2163,7 @@ export function App(): ReactElement {
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
-                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9650;</button>
                     <button onClick={() => {
@@ -2158,7 +2172,7 @@ export function App(): ReactElement {
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
-                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { if (settingsDraftRevisionRef.current === rev && panelDirtyRevisionRef.current === 0) settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9660;</button>
                   </div>
@@ -2534,7 +2548,7 @@ export function App(): ReactElement {
         {tab === "statistics" && (
           <section className="statistics-view">
             <article className="card stats-overview">
-              <h3>Session-Ubersicht</h3>
+              <h3>Session-Übersicht</h3>
               <div className="stats-grid">
                 <div className="stat-item">
                   <span className="stat-label">Aktuelle Geschwindigkeit</span>
@@ -2648,6 +2662,7 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
                       const next = e.target.checked ? "light" : "dark";
                       settingsDraftRevisionRef.current += 1;
+                      panelDirtyRevisionRef.current += 1;
                       settingsDirtyRef.current = true;
                       setSettingsDirty(true);
                       setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));

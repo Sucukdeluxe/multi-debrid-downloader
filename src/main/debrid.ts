@@ -317,7 +317,7 @@ async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (i
   let index = 0;
   let firstError: unknown = null;
   const next = (): T | undefined => {
-    if (index >= items.length) {
+    if (firstError || index >= items.length) {
       return undefined;
     }
     const item = items[index];

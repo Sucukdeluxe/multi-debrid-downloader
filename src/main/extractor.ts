@@ -1674,6 +1674,11 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     return Array.from(targets);
   }
 
+  // Tar compound archives (.tar.gz, .tar.bz2, .tar.xz, .tgz, .tbz2, .txz)
+  if (/\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i.test(fileName)) {
+    return Array.from(targets);
+  }
+
   // Generic .NNN split files (HJSplit etc.)
   const genericSplit = fileName.match(/^(.*)\.(\d{3})$/i);
   if (genericSplit) {
@@ -1994,6 +1999,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       if (!sig) {
         logger.info(`Generische Split-Datei übersprungen (keine Archiv-Signatur): ${archiveName}`);
         extracted += 1;
+        resumeCompleted.add(archiveResumeKey);
+        extractedArchives.push(archivePath);
         clearInterval(pulseTimer);
         return;
       }
@@ -2127,8 +2134,12 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           try {
             await extractSingleArchive(queue[idx]);
           } catch (error) {
-            if (isExtractAbortError(String(error))) {
-              abortError = error instanceof Error ? error : new Error(String(error));
+            const errText = String(error);
+            if (errText.includes("noextractor:skipped")) {
+              break; // handled by noExtractorEncountered flag after the pool
+            }
+            if (isExtractAbortError(errText)) {
+              abortError = error instanceof Error ? error : new Error(errText);
               break;
             }
             // Non-abort errors are already handled inside extractSingleArchive

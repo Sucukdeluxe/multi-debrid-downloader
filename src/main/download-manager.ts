@@ -2669,6 +2669,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public skipItems(itemIds: string[]): void {
+    const affectedPackageIds = new Set<string>();
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item) continue;
@@ -2680,6 +2681,11 @@ export class DownloadManager extends EventEmitter {
       this.retryAfterByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
       this.recordRunOutcome(itemId, "cancelled");
+      affectedPackageIds.add(item.packageId);
+    }
+    for (const pkgId of affectedPackageIds) {
+      const pkg = this.session.packages[pkgId];
+      if (pkg) this.refreshPackageStatus(pkg);
     }
     this.persistSoon();
     this.emitState();
@@ -3328,13 +3334,17 @@ export class DownloadManager extends EventEmitter {
           pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
           this.releaseTargetPath(itemId);
           this.dropItemContribution(itemId);
-          delete this.session.items[itemId];
-          this.itemCount = Math.max(0, this.itemCount - 1);
           this.retryAfterByItem.delete(itemId);
+          this.retryStateByItem.delete(itemId);
           removed += 1;
         }
         if (pkg.itemIds.length === 0) {
-          this.removePackageFromSession(pkgId, []);
+          this.removePackageFromSession(pkgId, completedItemIds);
+        } else {
+          for (const itemId of completedItemIds) {
+            delete this.session.items[itemId];
+            this.itemCount = Math.max(0, this.itemCount - 1);
+          }
         }
       } else if (policy === "package_done" || policy === "on_start") {
         const allCompleted = pkg.itemIds.every((id) => {
@@ -6301,7 +6311,8 @@ export class DownloadManager extends EventEmitter {
       logger.warn(`Hybrid-Extract Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
       const errorAt = nowMs();
       for (const entry of hybridItems) {
-        if (entry.fullStatus === "Entpacken - Ausstehend" || entry.fullStatus === "Entpacken - Warten auf Parts") {
+        if (isExtractedLabel(entry.fullStatus || "")) continue;
+        if (/^Entpacken\b/i.test(entry.fullStatus || "") || entry.fullStatus === "Entpacken - Ausstehend" || entry.fullStatus === "Entpacken - Warten auf Parts") {
           entry.fullStatus = `Entpacken - Error`;
           entry.updatedAt = errorAt;
         }
@@ -6838,7 +6849,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     const paused = this.session.running && this.session.paused;
-    const currentSpeedBps = paused ? 0 : this.speedBytesLastWindow / SPEED_WINDOW_SECONDS;
+    const currentSpeedBps = !this.session.running || paused ? 0 : this.speedBytesLastWindow / SPEED_WINDOW_SECONDS;
 
     let maxSpeed = 0;
     for (let i = this.speedEventsHead; i < this.speedEvents.length; i += 1) {
