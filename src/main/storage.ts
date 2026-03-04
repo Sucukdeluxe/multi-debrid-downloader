@@ -548,6 +548,7 @@ export function loadSession(paths: StoragePaths): SessionState {
 }
 
 export function saveSession(paths: StoragePaths, session: SessionState): void {
+  syncSaveGeneration += 1;
   ensureBaseDir(paths.baseDir);
   if (fs.existsSync(paths.sessionFile)) {
     try {
@@ -569,16 +570,26 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
 
 let asyncSaveRunning = false;
 let asyncSaveQueued: { paths: StoragePaths; payload: string } | null = null;
+let syncSaveGeneration = 0;
 
-async function writeSessionPayload(paths: StoragePaths, payload: string): Promise<void> {
+async function writeSessionPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
   await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
   const tempPath = sessionTempPath(paths.sessionFile, "async");
   await fsp.writeFile(tempPath, payload, "utf8");
+  // If a synchronous save occurred after this async save started, discard the stale write
+  if (generation < syncSaveGeneration) {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
+    return;
+  }
   try {
     await fsp.rename(tempPath, paths.sessionFile);
   } catch (renameError: unknown) {
     if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      if (generation < syncSaveGeneration) {
+        await fsp.rm(tempPath, { force: true }).catch(() => {});
+        return;
+      }
       await fsp.copyFile(tempPath, paths.sessionFile);
       await fsp.rm(tempPath, { force: true }).catch(() => {});
     } else {
@@ -593,8 +604,9 @@ async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Pr
     return;
   }
   asyncSaveRunning = true;
+  const gen = syncSaveGeneration;
   try {
-    await writeSessionPayload(paths, payload);
+    await writeSessionPayload(paths, payload, gen);
   } catch (error) {
     logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
   } finally {
@@ -610,6 +622,7 @@ async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Pr
 export function cancelPendingAsyncSaves(): void {
   asyncSaveQueued = null;
   asyncSettingsSaveQueued = null;
+  syncSaveGeneration += 1;
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
@@ -637,7 +650,8 @@ function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry | null
     completedAt: clampNumber(entry.completedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     durationSeconds: clampNumber(entry.durationSeconds, 0, 0, Number.MAX_SAFE_INTEGER),
     status: entry.status === "deleted" ? "deleted" : "completed",
-    outputDir: asText(entry.outputDir)
+    outputDir: asText(entry.outputDir),
+    urls: Array.isArray(entry.urls) ? (entry.urls as unknown[]).map(String).filter(Boolean) : undefined
   };
 }
 
