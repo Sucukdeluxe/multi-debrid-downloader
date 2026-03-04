@@ -112,6 +112,9 @@ export class AppController {
         this.autoResumePending = false;
         void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
         logger.info("Auto-Resume beim Start aktiviert");
+      } else {
+        // Trigger pending extractions without starting the session
+        this.manager.triggerIdleExtractions();
       }
     }
   }
@@ -158,6 +161,11 @@ export class AppController {
   }
 
   public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
+    // Stop active downloads/extractions before installing to avoid data corruption
+    if (this.manager.isSessionRunning()) {
+      this.manager.stop();
+    }
+
     const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
     const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000
       ? this.lastUpdateCheck

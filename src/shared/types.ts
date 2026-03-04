@@ -84,6 +84,7 @@ export interface AppSettings {
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   extractCpuPriority: ExtractCpuPriority;
+  autoExtractWhenStopped: boolean;
 }
 
 export interface DownloadItem {

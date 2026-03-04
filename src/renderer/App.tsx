@@ -74,7 +74,8 @@ const emptySnapshot = (): UiSnapshot => ({
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, autoSkipExtracted: false, confirmDeleteSelection: true,
     bandwidthSchedules: [], totalDownloadedAllTime: 0,
-    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"]
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+    autoExtractWhenStopped: true
   },
   session: {
     version: 2, packageOrder: [], packages: {}, items: {}, runStartedAt: 0,
@@ -2668,6 +2669,7 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (Beta)</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped ?? true} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Session (bei Stopp / Programmstart)</label>
                     <div><label>Parallele Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /></div>
                     <div><label>Extraktions-Priorität</label><select value={settingsDraft.extractCpuPriority} onChange={(e) => setText("extractCpuPriority", e.target.value)}>
                       <option value="high">Hoch (80% CPU)</option>
