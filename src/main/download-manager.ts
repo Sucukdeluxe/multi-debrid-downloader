@@ -32,7 +32,7 @@ type ActiveTask = {
   itemId: string;
   packageId: string;
   abortController: AbortController;
-  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "none";
+  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "reset" | "none";
   resumable: boolean;
   nonResumableCounted: boolean;
   freshRetryUsed?: boolean;
@@ -1509,10 +1509,14 @@ export class DownloadManager extends EventEmitter {
         }
       }
       this.runCompletedPackages.delete(packageId);
+      if (this.session.running) {
+        this.runPackageIds.add(packageId);
+      }
       pkg.status = "queued";
       pkg.updatedAt = nowMs();
       this.persistSoon();
       this.emitState(true);
+      void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (resolveStartConflict): ${compactErrorText(err)}`));
       return { skipped: false, overwritten: true };
     }
 
@@ -2557,6 +2561,9 @@ export class DownloadManager extends EventEmitter {
     logger.info(`Paket "${pkg.name}" zurückgesetzt (${itemIds.length} Items)`);
     this.persistSoon();
     this.emitState(true);
+    if (this.session.running) {
+      void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (resetPackage): ${compactErrorText(err)}`));
+    }
   }
 
   public resetItems(itemIds: string[]): void {
@@ -2615,11 +2622,18 @@ export class DownloadManager extends EventEmitter {
         pkg.cancelled = false;
         pkg.updatedAt = nowMs();
       }
+      // Re-add package to runPackageIds so scheduler picks up the reset items
+      if (this.session.running) {
+        this.runPackageIds.add(pkgId);
+      }
     }
 
     logger.info(`${itemIds.length} Item(s) zurückgesetzt`);
     this.persistSoon();
     this.emitState(true);
+    if (this.session.running) {
+      void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (resetItems): ${compactErrorText(err)}`));
+    }
   }
 
   public setPackagePriority(packageId: string, priority: PackagePriority): void {
@@ -2660,6 +2674,8 @@ export class DownloadManager extends EventEmitter {
       item.fullStatus = "Übersprungen";
       item.speedBps = 0;
       item.updatedAt = nowMs();
+      this.retryAfterByItem.delete(itemId);
+      this.retryStateByItem.delete(itemId);
       this.recordRunOutcome(itemId, "cancelled");
     }
     this.persistSoon();
@@ -3099,8 +3115,9 @@ export class DownloadManager extends EventEmitter {
     this.retryAfterByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
-    this.lastSettingsPersistAt = 0; // force settings save on shutdown
-    this.persistNow();
+    // Persist synchronously on shutdown to guarantee data is written before process exits
+    saveSession(this.storagePaths, this.session);
+    saveSettings(this.storagePaths, this.settings);
     this.emitState(true);
     logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
   }
@@ -3272,6 +3289,10 @@ export class DownloadManager extends EventEmitter {
           return false;
         }
         if (item.status === "completed") {
+          // With autoExtract: keep items that haven't been extracted yet
+          if (this.settings.autoExtract && !isExtractedLabel(item.fullStatus || "")) {
+            return true;
+          }
           delete this.session.items[itemId];
           this.itemCount = Math.max(0, this.itemCount - 1);
           return false;
@@ -3279,8 +3300,7 @@ export class DownloadManager extends EventEmitter {
         return true;
       });
       if (pkg.itemIds.length === 0) {
-        delete this.session.packages[pkgId];
-        this.session.packageOrder = this.session.packageOrder.filter((id) => id !== pkgId);
+        this.removePackageFromSession(pkgId, []);
       }
     }
   }
@@ -3744,7 +3764,7 @@ export class DownloadManager extends EventEmitter {
       const targetStatus = failed > 0
         ? "failed"
         : cancelled > 0
-          ? (success > 0 ? "failed" : "cancelled")
+          ? (success > 0 ? "completed" : "cancelled")
           : "completed";
       if (pkg.status !== targetStatus) {
         pkg.status = targetStatus;
@@ -3897,8 +3917,9 @@ export class DownloadManager extends EventEmitter {
     const pkg = this.session.packages[packageId];
     // Only create history here for deletions — completions are handled by recordPackageHistory
     if (pkg && this.onHistoryEntryCallback && reason === "deleted" && !this.historyRecordedPackages.has(packageId)) {
-      const completedItems = itemIds.map(id => this.session.items[id]).filter(Boolean) as DownloadItem[];
-      const completedCount = completedItems.filter(item => item.status === "completed").length;
+      const allItems = itemIds.map(id => this.session.items[id]).filter(Boolean) as DownloadItem[];
+      const completedItems = allItems.filter(item => item.status === "completed");
+      const completedCount = completedItems.length;
       if (completedCount > 0) {
         const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
         const durationSeconds = pkg.createdAt > 0 ? Math.max(1, Math.floor((nowMs() - pkg.createdAt) / 1000)) : 1;
@@ -5118,6 +5139,7 @@ export class DownloadManager extends EventEmitter {
           const previouslyContributed = this.itemContributedBytes.get(active.itemId) || 0;
           if (previouslyContributed > 0) {
             this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - previouslyContributed);
+            this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes - previouslyContributed);
             this.itemContributedBytes.set(active.itemId, 0);
           }
           if (existingBytes > 0) {
@@ -6673,11 +6695,13 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // With autoExtract: only remove once ALL items are extracted, not just downloaded
+    // With autoExtract: only remove once all completed items are extracted (failed/cancelled don't need extraction)
     if (this.settings.autoExtract) {
       const allExtracted = pkg.itemIds.every((itemId) => {
         const item = this.session.items[itemId];
-        return !item || isExtractedLabel(item.fullStatus || "");
+        if (!item) return true;
+        if (item.status === "failed" || item.status === "cancelled") return true;
+        return isExtractedLabel(item.fullStatus || "");
       });
       if (!allExtracted) {
         return;
@@ -6727,11 +6751,13 @@ export class DownloadManager extends EventEmitter {
         return item != null && item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed";
       });
       if (!hasOpen) {
-        // With autoExtract: only remove once ALL items are extracted, not just downloaded
+        // With autoExtract: only remove once completed items are extracted (failed/cancelled don't need extraction)
         if (this.settings.autoExtract) {
           const allExtracted = pkg.itemIds.every((id) => {
             const item = this.session.items[id];
-            return !item || isExtractedLabel(item.fullStatus || "");
+            if (!item) return true;
+            if (item.status === "failed" || item.status === "cancelled") return true;
+            return isExtractedLabel(item.fullStatus || "");
           });
           if (!allExtracted) {
             return;

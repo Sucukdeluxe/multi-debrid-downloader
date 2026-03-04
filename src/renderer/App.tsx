@@ -1169,7 +1169,7 @@ export function App(): ReactElement {
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
         setCollectorTabs((prev) => prev.map((t) => t.id === activeId ? { ...t, text: "" } : t));
-        if (snapshot.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
+        if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
       } else {
         showToast("Keine gültigen Links gefunden");
       }
@@ -1187,7 +1187,7 @@ export function App(): ReactElement {
       const result = await window.rd.addContainers(files);
       if (result.addedLinks > 0) {
         showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-        if (snapshot.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
+        if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
       } else {
         showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
       }
@@ -1214,7 +1214,7 @@ export function App(): ReactElement {
         const result = await window.rd.addContainers(dlc);
         if (result.addedLinks > 0) {
           showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-          if (snapshot.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
+          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
         } else {
           showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
         }
@@ -1434,13 +1434,16 @@ export function App(): ReactElement {
   }, []);
 
   const onPackageFinishEdit = useCallback((packageId: string, currentName: string, nextName: string): void => {
-    setEditingPackageId(null);
-    const normalized = nextName.trim();
-    if (normalized && normalized !== currentName.trim()) {
-      void window.rd.renamePackage(packageId, normalized).catch((error) => {
-        showToast(`Umbenennen fehlgeschlagen: ${String(error)}`, 2400);
-      });
-    }
+    setEditingPackageId((prev) => {
+      if (prev !== packageId) return prev; // already finished (e.g. blur after Enter key)
+      const normalized = nextName.trim();
+      if (normalized && normalized !== currentName.trim()) {
+        void window.rd.renamePackage(packageId, normalized).catch((error) => {
+          showToast(`Umbenennen fehlgeschlagen: ${String(error)}`, 2400);
+        });
+      }
+      return null;
+    });
   }, [showToast]);
 
   const onPackageToggleCollapse = useCallback((packageId: string): void => {
@@ -1599,6 +1602,7 @@ export function App(): ReactElement {
     const onUp = (): void => {
       dragSelectRef.current = false;
       dragAnchorRef.current = null;
+      dragDidMoveRef.current = false;
       window.removeEventListener("mouseup", onUp);
     };
     window.addEventListener("mouseup", onUp);
@@ -1619,18 +1623,20 @@ export function App(): ReactElement {
 
   const showLinksPopup = useCallback((packageId: string, itemId?: string): void => {
     const sel = selectedIds;
+    const currentPackages = snapshotRef.current.session.packages;
+    const currentItems = snapshotRef.current.session.items;
     // Multi-select: collect links from all selected packages/items
     if (sel.size > 1) {
       const allLinks: { name: string; url: string }[] = [];
       for (const id of sel) {
-        const pkg = snapshot.session.packages[id];
+        const pkg = currentPackages[id];
         if (pkg) {
           for (const iid of pkg.itemIds) {
-            const item = snapshot.session.items[iid];
+            const item = currentItems[iid];
             if (item) allLinks.push({ name: item.fileName, url: item.url });
           }
         } else {
-          const item = snapshot.session.items[id];
+          const item = currentItems[id];
           if (item) allLinks.push({ name: item.fileName, url: item.url });
         }
       }
@@ -1638,22 +1644,22 @@ export function App(): ReactElement {
       setContextMenu(null);
       return;
     }
-    const pkg = snapshot.session.packages[packageId];
+    const pkg = currentPackages[packageId];
     if (!pkg) { return; }
     if (itemId) {
-      const item = snapshot.session.items[itemId];
+      const item = currentItems[itemId];
       if (item) {
         setLinkPopup({ title: item.fileName, links: [{ name: item.fileName, url: item.url }], isPackage: false });
       }
     } else {
       const links = pkg.itemIds
-        .map((id) => snapshot.session.items[id])
+        .map((id) => currentItems[id])
         .filter(Boolean)
         .map((item) => ({ name: item.fileName, url: item.url }));
       setLinkPopup({ title: pkg.name, links, isPackage: true });
     }
     setContextMenu(null);
-  }, [snapshot.session.packages, snapshot.session.items, selectedIds]);
+  }, [selectedIds]);
 
   const schedules = settingsDraft.bandwidthSchedules ?? [];
 
@@ -1815,6 +1821,8 @@ export function App(): ReactElement {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
         if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
+          // Don't clear selection if an overlay is open — let the overlay close first
+          if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop") || document.querySelector(".link-popup-overlay")) return;
           if (tabRef.current === "downloads") setSelectedIds(new Set());
           else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
         }
@@ -1875,35 +1883,43 @@ export function App(): ReactElement {
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent): void => {
       if (e.ctrlKey && !e.altKey && !e.metaKey) {
+        const target = e.target as HTMLElement;
+        const inInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
         if (e.shiftKey && e.key.toLowerCase() === "r") {
+          if (inInput) return;
           e.preventDefault();
           void window.rd.restart();
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "q") {
+          if (inInput) return;
           e.preventDefault();
           void window.rd.quit();
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "l") {
+          if (inInput) return;
           e.preventDefault();
           setTab("collector");
           setOpenMenu(null);
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "p") {
+          if (inInput) return;
           e.preventDefault();
           setTab("settings");
           setOpenMenu(null);
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "o") {
+          if (inInput) return;
           e.preventDefault();
           setOpenMenu(null);
           void onImportDlc();
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "a") {
+          if (inInput) return;
           if (tabRef.current === "downloads") {
             e.preventDefault();
             setSelectedIds(new Set(Object.keys(snapshotRef.current.session.packages)));

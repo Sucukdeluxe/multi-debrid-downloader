@@ -669,7 +669,11 @@ class BestDebridClient {
       try {
         return await this.tryRequest(request, link, signal);
       } catch (error) {
-        lastError = compactErrorText(error);
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        lastError = errorText;
       }
     }
 

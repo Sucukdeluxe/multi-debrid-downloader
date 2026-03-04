@@ -21,7 +21,7 @@ import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 
@@ -306,9 +306,10 @@ export class AppController {
     // so no extraction tasks from it should keep running.
     this.manager.stop();
     this.manager.abortAllPostProcessing();
-    // Cancel any deferred persist timer so the old in-memory session
-    // does not overwrite the restored session file on disk.
+    // Cancel any deferred persist timer and queued async writes so the old
+    // in-memory session does not overwrite the restored session file on disk.
     this.manager.clearPersistTimer();
+    cancelPendingAsyncSaves();
     const restoredSession = normalizeLoadedSessionTransientFields(
       normalizeLoadedSession(parsed.session)
     );

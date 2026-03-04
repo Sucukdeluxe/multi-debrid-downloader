@@ -2091,6 +2091,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       if (options.signal?.aborted || noExtractorEncountered) break;
       await extractSingleArchive(archivePath);
     }
+    // Count remaining archives as failed when no extractor was found
+    if (noExtractorEncountered) {
+      const remaining = candidates.length - (extracted + failed);
+      if (remaining > 0) {
+        failed += remaining;
+        emitProgress(candidates.length, "", "extracting", 0, 0);
+      }
+    }
   } else {
     // Password discovery: extract first archive serially to find the correct password,
     // then run remaining archives in parallel with the promoted password order.

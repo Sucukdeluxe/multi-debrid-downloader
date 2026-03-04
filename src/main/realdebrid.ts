@@ -62,7 +62,8 @@ function isRetryableErrorText(text: string): boolean {
     || lower.includes("aborted")
     || lower.includes("econnreset")
     || lower.includes("enotfound")
-    || lower.includes("etimedout");
+    || lower.includes("etimedout")
+    || lower.includes("html statt json");
 }
 
 function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
@@ -164,6 +165,15 @@ export class RealDebridClient {
         const directUrl = String(payload.download || payload.link || "").trim();
         if (!directUrl) {
           throw new Error("Unrestrict ohne Download-URL");
+        }
+        try {
+          const parsedUrl = new URL(directUrl);
+          if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+            throw new Error(`Ungültiges Download-URL-Protokoll (${parsedUrl.protocol})`);
+          }
+        } catch (urlError) {
+          if (urlError instanceof Error && urlError.message.includes("Protokoll")) throw urlError;
+          throw new Error("Real-Debrid Antwort enthält keine gültige Download-URL");
         }
 
         const fileName = String(payload.filename || "download.bin").trim() || "download.bin";
