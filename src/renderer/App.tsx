@@ -233,9 +233,9 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText("0s", padding.left, height - padding.bottom + 8);
+    ctx.fillText("60s", padding.left, height - padding.bottom + 8);
     ctx.fillText("30s", padding.left + chartWidth / 2, height - padding.bottom + 8);
-    ctx.fillText("60s", width - padding.right, height - padding.bottom + 8);
+    ctx.fillText("0s", width - padding.right, height - padding.bottom + 8);
 
     if (history.length < 2) {
       ctx.fillStyle = textColor;
@@ -2320,9 +2320,9 @@ export function App(): ReactElement {
               </span>
               {selectedHistoryIds.size > 0 && (
                 <button className="btn btn-danger" onClick={() => {
-                  const ids = [...selectedHistoryIds];
-                  void Promise.all(ids.map(id => window.rd.removeHistoryEntry(id))).then(() => {
-                    setHistoryEntries((prev) => prev.filter((e) => !selectedHistoryIds.has(e.id)));
+                  const idSet = new Set(selectedHistoryIds);
+                  void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
+                    setHistoryEntries((prev) => prev.filter((e) => !idSet.has(e.id)));
                     setSelectedHistoryIds(new Set());
                   });
                 }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
@@ -3091,7 +3091,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
   const extracted = items.filter((item) => item.fullStatus?.startsWith("Entpackt")).length;
-  const extracting = items.some((item) => item.fullStatus?.startsWith("Entpack"));
+  const extracting = items.some((item) => item.fullStatus?.startsWith("Entpacken"));
   const total = Math.max(1, items.length);
   // Use 50/50 split when extraction is active OR package is in extracting state
   // (prevents bar jumping from 100% to 50% when extraction starts)
