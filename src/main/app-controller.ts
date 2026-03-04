@@ -161,7 +161,8 @@ export class AppController {
   }
 
   public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
-    // Stop active downloads/extractions before installing to avoid data corruption
+    // Stop active downloads before installing. Extractions may continue briefly
+    // until prepareForShutdown() is called during app quit.
     if (this.manager.isSessionRunning()) {
       this.manager.stop();
     }
@@ -294,9 +295,10 @@ export class AppController {
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
-    // Stop the manager BEFORE saving the restored session to prevent
-    // the auto-save timer from overwriting it with the old in-memory session.
+    // Full stop including extraction abort — the old session is being replaced,
+    // so no extraction tasks from it should keep running.
     this.manager.stop();
+    this.manager.abortAllPostProcessing();
     const restoredSession = parsed.session as ReturnType<typeof loadSession>;
     saveSession(this.storagePaths, restoredSession);
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
