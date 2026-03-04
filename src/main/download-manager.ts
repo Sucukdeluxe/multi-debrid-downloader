@@ -2527,6 +2527,7 @@ export class DownloadManager extends EventEmitter {
     pkg.cancelled = false;
     pkg.enabled = true;
     pkg.updatedAt = nowMs();
+    this.historyRecordedPackages.delete(packageId);
 
     logger.info(`Paket "${pkg.name}" zurückgesetzt (${itemIds.length} Items)`);
     this.persistSoon();
@@ -3302,7 +3303,7 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private clearPersistTimer(): void {
+  public clearPersistTimer(): void {
     if (!this.persistTimer) {
       return;
     }
@@ -3557,7 +3558,11 @@ export class DownloadManager extends EventEmitter {
     await new Promise<void>((resolve) => {
       this.packagePostProcessWaiters.push({ packageId, resolve });
     });
-    this.packagePostProcessActive += 1;
+    // Guard: stop() may have reset the counter to 0 while we were waiting.
+    // Only increment if below max to avoid phantom slot usage.
+    if (this.packagePostProcessActive < maxConcurrent) {
+      this.packagePostProcessActive += 1;
+    }
   }
 
   private releasePostProcessSlot(): void {
@@ -6715,9 +6720,14 @@ export class DownloadManager extends EventEmitter {
     };
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
     this.runItemIds.clear();
-    this.runPackageIds.clear();
     this.runOutcomes.clear();
-    this.runCompletedPackages.clear();
+    // Keep runPackageIds and runCompletedPackages alive when post-processing tasks
+    // are still running (autoExtractWhenStopped) so handlePackagePostProcessing()
+    // can still update runCompletedPackages.  They are cleared by the next start().
+    if (this.packagePostProcessTasks.size === 0) {
+      this.runPackageIds.clear();
+      this.runCompletedPackages.clear();
+    }
     this.retryAfterByItem.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();

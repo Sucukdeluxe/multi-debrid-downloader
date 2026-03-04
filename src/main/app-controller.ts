@@ -81,8 +81,15 @@ export class AppController {
         void this.manager.getStartConflicts().then((conflicts) => {
           const hasConflicts = conflicts.length > 0;
           if (this.hasAnyProviderToken(this.settings) && !hasConflicts) {
-            this.autoResumePending = true;
-            logger.info("Auto-Resume beim Start vorgemerkt");
+            // If the onState handler is already set (renderer connected), start immediately.
+            // Otherwise mark as pending so the onState setter triggers the start.
+            if (this.onStateHandler) {
+              logger.info("Auto-Resume beim Start aktiviert (nach Konflikt-Check)");
+              void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
+            } else {
+              this.autoResumePending = true;
+              logger.info("Auto-Resume beim Start vorgemerkt");
+            }
           } else if (hasConflicts) {
             logger.info("Auto-Resume übersprungen: Start-Konflikte erkannt");
           }
@@ -299,6 +306,9 @@ export class AppController {
     // so no extraction tasks from it should keep running.
     this.manager.stop();
     this.manager.abortAllPostProcessing();
+    // Cancel any deferred persist timer so the old in-memory session
+    // does not overwrite the restored session file on disk.
+    this.manager.clearPersistTimer();
     const restoredSession = parsed.session as ReturnType<typeof loadSession>;
     saveSession(this.storagePaths, restoredSession);
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };

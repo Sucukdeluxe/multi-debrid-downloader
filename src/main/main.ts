@@ -50,6 +50,7 @@ process.on("unhandledRejection", (reason) => {
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let clipboardTimer: ReturnType<typeof setInterval> | null = null;
+let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
 let lastClipboardText = "";
 const controller = new AppController();
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
@@ -236,7 +237,7 @@ function registerIpcHandlers(): void {
       mainWindow.webContents.send(IPC_CHANNELS.UPDATE_INSTALL_PROGRESS, progress);
     });
     if (result.started) {
-      setTimeout(() => {
+      updateQuitTimer = setTimeout(() => {
         app.quit();
       }, 2500);
     }
@@ -289,8 +290,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
   ipcMain.handle(IPC_CHANNELS.START, () => controller.start());
   ipcMain.handle(IPC_CHANNELS.START_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
-    if (!Array.isArray(packageIds)) throw new Error("packageIds muss ein Array sein");
-    return controller.startPackages(packageIds);
+    validateStringArray(packageIds ?? [], "packageIds");
+    return controller.startPackages(packageIds ?? []);
   });
   ipcMain.handle(IPC_CHANNELS.START_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
     validateStringArray(itemIds ?? [], "itemIds");
@@ -337,15 +338,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SET_PACKAGE_PRIORITY, (_event: IpcMainInvokeEvent, packageId: string, priority: string) => {
     validateString(packageId, "packageId");
     validateString(priority, "priority");
-    return controller.setPackagePriority(packageId, priority as any);
+    if (priority !== "high" && priority !== "normal" && priority !== "low") {
+      throw new Error("priority muss 'high', 'normal' oder 'low' sein");
+    }
+    return controller.setPackagePriority(packageId, priority);
   });
   ipcMain.handle(IPC_CHANNELS.SKIP_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
-    if (!Array.isArray(itemIds)) throw new Error("itemIds must be an array");
-    return controller.skipItems(itemIds);
+    validateStringArray(itemIds ?? [], "itemIds");
+    return controller.skipItems(itemIds ?? []);
   });
   ipcMain.handle(IPC_CHANNELS.RESET_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
-    if (!Array.isArray(itemIds)) throw new Error("itemIds must be an array");
-    return controller.resetItems(itemIds);
+    validateStringArray(itemIds ?? [], "itemIds");
+    return controller.resetItems(itemIds ?? []);
   });
   ipcMain.handle(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
   ipcMain.handle(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
@@ -493,6 +497,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
   stopClipboardWatcher();
   destroyTray();
   try {
