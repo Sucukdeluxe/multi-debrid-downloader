@@ -471,7 +471,10 @@ function extractCompactEpisodeToken(fileName: string, seasonHint: number | null)
   }
 
   const code = match[1];
-  if (code === "2160" || code === "1080" || code === "0720" || code === "720" || code === "0576" || code === "576") {
+  if (code === "4320" || code === "2160" || code === "1440" || code === "1080"
+    || code === "0720" || code === "720" || code === "0576" || code === "576"
+    || code === "0540" || code === "540" || code === "0480" || code === "480"
+    || code === "0360" || code === "360") {
     return null;
   }
 
@@ -3084,10 +3087,14 @@ export class DownloadManager extends EventEmitter {
         item.speedBps = 0;
         continue;
       }
-      if (item.status === "downloading"
+      if (item.status === "extracting" || item.status === "integrity_check") {
+        // These items have already been fully downloaded — mark as completed
+        // so recoverPostProcessingOnStartup() can re-trigger extraction.
+        item.status = "completed";
+        item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
+        item.speedBps = 0;
+      } else if (item.status === "downloading"
         || item.status === "validating"
-        || item.status === "extracting"
-        || item.status === "integrity_check"
         || item.status === "paused"
         || item.status === "reconnect_wait") {
         item.status = "queued";
