@@ -522,7 +522,6 @@ function winRarCandidates(): string[] {
 
   const installed = [
     path.join(programFiles, "WinRAR", "UnRAR.exe"),
-    path.join(programFilesX86, "WinRAR", "UnRAR.exe"),
     path.join(programFilesX86, "WinRAR", "UnRAR.exe")
   ];
 
