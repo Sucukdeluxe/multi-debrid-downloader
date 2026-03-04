@@ -2935,7 +2935,7 @@ export function App(): ReactElement {
           {(hasPackages || hasStartableItems) && (
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
-              const itemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
+              const itemIds = [...selectedIds].filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
               if (pkgIds.length > 0) void window.rd.startPackages(pkgIds);
               if (itemIds.length > 0) void window.rd.startItems(itemIds);
               setContextMenu(null);
@@ -3071,9 +3071,9 @@ export function App(): ReactElement {
         const contextEntry = historyEntries.find(e => e.id === historyCtxMenu.entryId);
         const hasUrls = (contextEntry?.urls?.length ?? 0) > 0;
         const removeSelected = (): void => {
-          const ids = [...selectedHistoryIds];
-          void Promise.all(ids.map(id => window.rd.removeHistoryEntry(id))).then(() => {
-            setHistoryEntries((prev) => prev.filter((e) => !selectedHistoryIds.has(e.id)));
+          const idSet = new Set(selectedHistoryIds);
+          void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
+            setHistoryEntries((prev) => prev.filter((e) => !idSet.has(e.id)));
             setSelectedHistoryIds(new Set());
           }).catch(() => {
             void window.rd.getHistory().then((entries) => { setHistoryEntries(entries); setSelectedHistoryIds(new Set()); }).catch(() => {});
