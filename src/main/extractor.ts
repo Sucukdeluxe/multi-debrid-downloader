@@ -2122,7 +2122,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     if (passwordCandidates.length > 1 && pendingCandidates.length > 1) {
       logger.info(`Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
       const first = pendingCandidates[0];
-      await extractSingleArchive(first);
+      try {
+        await extractSingleArchive(first);
+      } catch (err) {
+        const errText = String(err);
+        if (/aborted:extract/i.test(errText)) throw err;
+        // noextractor:skipped — handled by noExtractorEncountered flag below
+      }
       parallelQueue = pendingCandidates.slice(1);
       if (parallelQueue.length > 0) {
         logger.info(`Passwort-Discovery abgeschlossen, starte parallele Extraktion für ${parallelQueue.length} verbleibende Archive`);
