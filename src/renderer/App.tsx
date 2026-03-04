@@ -539,7 +539,6 @@ export function App(): ReactElement {
     const loadHistory = async (): Promise<void> => {
       try {
         const entries = await window.rd.getHistory();
-        console.log("History loaded:", entries);
         if (mountedRef.current && entries) {
           setHistoryEntries(entries);
         }
@@ -1396,24 +1395,17 @@ export function App(): ReactElement {
   };
 
   const removeCollectorTab = (id: string): void => {
-    let fallbackId = "";
     setCollectorTabs((prev) => {
-      if (prev.length <= 1) {
-        return prev;
-      }
+      if (prev.length <= 1) return prev;
       const index = prev.findIndex((tabEntry) => tabEntry.id === id);
-      if (index < 0) {
-        return prev;
-      }
+      if (index < 0) return prev;
       const next = prev.filter((tabEntry) => tabEntry.id !== id);
       if (activeCollectorTabRef.current === id) {
-        fallbackId = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
+        const fallbackId = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
+        if (fallbackId) setTimeout(() => setActiveCollectorTab(fallbackId), 0);
       }
       return next;
     });
-    if (fallbackId) {
-      setActiveCollectorTab(fallbackId);
-    }
   };
 
   const onPackageDragStart = useCallback((packageId: string) => {
@@ -1817,7 +1809,10 @@ export function App(): ReactElement {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setSelectedIds(new Set());
+      if (e.key === "Escape") {
+        const target = e.target as HTMLElement;
+        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") setSelectedIds(new Set());
+      }
       if (e.key === "Delete" && selectedIds.size > 0) {
         const target = e.target as HTMLElement;
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
@@ -2067,22 +2062,25 @@ export function App(): ReactElement {
                     onChange={(e) => {
                       const val = Math.max(1, Math.min(50, Number(e.target.value) || 1));
                       settingsDirtyRef.current = true;
+                      const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                     }}
                   />
                   <div className="menu-spinner-arrows">
                     <button onClick={() => {
                       const val = Math.min(50, settingsDraft.maxParallel + 1);
                       settingsDirtyRef.current = true;
+                      const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                     }}>&#9650;</button>
                     <button onClick={() => {
                       const val = Math.max(1, settingsDraft.maxParallel - 1);
                       settingsDirtyRef.current = true;
+                      const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, maxParallel: val }));
-                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ maxParallel: val }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                     }}>&#9660;</button>
                   </div>
                 </div>
@@ -2095,8 +2093,9 @@ export function App(): ReactElement {
                   onChange={(e) => {
                     const next = e.target.checked;
                     settingsDirtyRef.current = true;
+                    const rev = ++settingsDraftRevisionRef.current;
                     setSettingsDraft((prev) => ({ ...prev, speedLimitEnabled: next }));
-                    void window.rd.updateSettings({ speedLimitEnabled: next }).finally(() => { settingsDirtyRef.current = false; });
+                    void window.rd.updateSettings({ speedLimitEnabled: next }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                   }}
                 />
                 <div className={`menu-spinner${!settingsDraft.speedLimitEnabled ? " disabled" : ""}`}>
@@ -2115,8 +2114,9 @@ export function App(): ReactElement {
                       }
                       const kbps = Math.floor(parsed * 1024);
                       settingsDirtyRef.current = true;
+                      const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));
-                      void window.rd.updateSettings({ speedLimitKbps: kbps }).finally(() => { settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ speedLimitKbps: kbps }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(kbps));
                     }}
                   />
@@ -2125,16 +2125,18 @@ export function App(): ReactElement {
                       const cur = (settingsDraft.speedLimitKbps || 0) / 1024;
                       const next = Math.floor((cur + 1) * 1024);
                       settingsDirtyRef.current = true;
+                      const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
-                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9650;</button>
                     <button onClick={() => {
                       const cur = (settingsDraft.speedLimitKbps || 0) / 1024;
                       const next = Math.max(0, Math.floor((cur - 1) * 1024));
                       settingsDirtyRef.current = true;
+                      const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: next }));
-                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { settingsDirtyRef.current = false; });
+                      void window.rd.updateSettings({ speedLimitKbps: next }).finally(() => { if (settingsDraftRevisionRef.current === rev) settingsDirtyRef.current = false; });
                       setSpeedLimitInput(formatMbpsInputFromKbps(next));
                     }}>&#9660;</button>
                   </div>
@@ -2613,7 +2615,7 @@ export function App(): ReactElement {
                     <label>Paketname (optional)</label>
                     <input value={settingsDraft.packageName} onChange={(e) => setText("packageName", e.target.value)} />
                     <div className="field-grid two">
-                      <div><label>Max. Downloads</label><input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(e) => setNum("maxParallel", Number(e.target.value) || 1)} /></div>
+                      <div><label>Max. Downloads</label><input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(e) => setNum("maxParallel", Math.max(1, Math.min(50, Number(e.target.value) || 1)))} /></div>
                       <div><label>Auto-Retry Limit (0 = inf)</label><input type="number" min={0} max={99} value={settingsDraft.retryLimit} onChange={(e) => setNum("retryLimit", Math.max(0, Math.min(99, Number(e.target.value) || 0)))} /></div>
                     </div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Auto-Resume beim Start</label>
