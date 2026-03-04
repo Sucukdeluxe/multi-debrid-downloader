@@ -19,7 +19,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot
 } from "../shared/types";
-import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK } from "./constants";
+import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
@@ -852,11 +852,15 @@ export class DownloadManager extends EventEmitter {
   }
 
   public setSettings(next: AppSettings): void {
+    const prevCleanupPolicy = this.settings.completedCleanupPolicy;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     this.settings = next;
     this.debridService.setSettings(next);
     this.resolveExistingQueuedOpaqueFilenames();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
+    if (prevCleanupPolicy !== next.completedCleanupPolicy && next.completedCleanupPolicy !== "never") {
+      this.applyRetroactiveCleanupPolicy();
+    }
     this.emitState();
   }
 
@@ -876,7 +880,7 @@ export class DownloadManager extends EventEmitter {
     const now = nowMs();
     this.pruneSpeedEvents(now);
     const paused = this.session.running && this.session.paused;
-    const speedBps = paused ? 0 : this.speedBytesLastWindow / 3;
+    const speedBps = !this.session.running || paused ? 0 : this.speedBytesLastWindow / SPEED_WINDOW_SECONDS;
 
     let totalItems = 0;
     let doneItems = 0;
@@ -926,8 +930,8 @@ export class DownloadManager extends EventEmitter {
       canPause: this.session.running,
       clipboardActive: this.settings.clipboardWatch,
       reconnectSeconds: Math.ceil(reconnectMs / 1000),
-      packageSpeedBps: paused ? {} : Object.fromEntries(
-        [...this.speedBytesPerPackage].map(([pid, bytes]) => [pid, Math.floor(bytes / 3)])
+      packageSpeedBps: !this.session.running || paused ? {} : Object.fromEntries(
+        [...this.speedBytesPerPackage].map(([pid, bytes]) => [pid, Math.floor(bytes / SPEED_WINDOW_SECONDS)])
       )
     };
   }
@@ -2863,6 +2867,10 @@ export class DownloadManager extends EventEmitter {
     this.retryAfterByItem.clear();
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
+    this.speedEvents = [];
+    this.speedBytesLastWindow = 0;
+    this.speedBytesPerPackage.clear();
+    this.speedEventsHead = 0;
     this.abortPostProcessing("stop");
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
@@ -2970,6 +2978,10 @@ export class DownloadManager extends EventEmitter {
     // When pausing: abort active extractions so they don't continue during pause
     if (!wasPaused && this.session.paused) {
       this.abortPostProcessing("pause");
+      this.speedEvents = [];
+      this.speedBytesLastWindow = 0;
+      this.speedBytesPerPackage.clear();
+      this.speedEventsHead = 0;
     }
 
     // When unpausing: clear all retry delays so stuck queued items restart immediately,
@@ -3127,6 +3139,57 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private applyRetroactiveCleanupPolicy(): void {
+    const policy = this.settings.completedCleanupPolicy;
+    if (policy === "never") return;
+
+    let removed = 0;
+    for (const pkgId of [...this.session.packageOrder]) {
+      const pkg = this.session.packages[pkgId];
+      if (!pkg) continue;
+
+      if (policy === "immediate") {
+        const completedItemIds = pkg.itemIds.filter((itemId) => {
+          const item = this.session.items[itemId];
+          if (!item || item.status !== "completed") return false;
+          if (this.settings.autoExtract) return isExtractedLabel(item.fullStatus || "");
+          return true;
+        });
+        for (const itemId of completedItemIds) {
+          pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
+          this.releaseTargetPath(itemId);
+          this.dropItemContribution(itemId);
+          delete this.session.items[itemId];
+          this.itemCount = Math.max(0, this.itemCount - 1);
+          this.retryAfterByItem.delete(itemId);
+          removed += 1;
+        }
+        if (pkg.itemIds.length === 0) {
+          this.removePackageFromSession(pkgId, []);
+        }
+      } else if (policy === "package_done" || policy === "on_start") {
+        const allCompleted = pkg.itemIds.every((id) => {
+          const item = this.session.items[id];
+          return !item || item.status === "completed";
+        });
+        if (!allCompleted) continue;
+        if (this.settings.autoExtract) {
+          const allExtracted = pkg.itemIds.every((id) => {
+            const item = this.session.items[id];
+            return !item || isExtractedLabel(item.fullStatus || "");
+          });
+          if (!allExtracted) continue;
+        }
+        removed += pkg.itemIds.length;
+        this.removePackageFromSession(pkgId, [...pkg.itemIds], "completed");
+      }
+    }
+    if (removed > 0) {
+      logger.info(`Retroaktive Bereinigung: ${removed} fertige Items entfernt (policy=${policy})`);
+      this.persistSoon();
+    }
+  }
+
   private clearPersistTimer(): void {
     if (!this.persistTimer) {
       return;
@@ -3199,12 +3262,12 @@ export class DownloadManager extends EventEmitter {
     const itemCount = this.itemCount;
     const emitDelay = this.session.running
       ? itemCount >= 1500
-        ? 1200
+        ? 900
         : itemCount >= 700
-          ? 900
+          ? 650
           : itemCount >= 250
-            ? 560
-            : 320
+            ? 400
+            : 250
       : 260;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
@@ -3217,7 +3280,7 @@ export class DownloadManager extends EventEmitter {
   private speedBytesPerPackage = new Map<string, number>();
 
   private pruneSpeedEvents(now: number): void {
-    const cutoff = now - 3000;
+    const cutoff = now - SPEED_WINDOW_SECONDS * 1000;
     while (this.speedEventsHead < this.speedEvents.length && this.speedEvents[this.speedEventsHead].at < cutoff) {
       const ev = this.speedEvents[this.speedEventsHead];
       this.speedBytesLastWindow = Math.max(0, this.speedBytesLastWindow - ev.bytes);
@@ -3458,9 +3521,8 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (this.settings.autoExtract && failed === 0 && success > 0) {
-        const needsPostProcess = pkg.status !== "completed"
-          || items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
-        if (needsPostProcess) {
+        const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
+        if (needsExtraction) {
           pkg.status = "queued";
           pkg.updatedAt = nowMs();
           for (const item of items) {
@@ -5080,9 +5142,9 @@ export class DownloadManager extends EventEmitter {
                 throughputWindowBytes = 0;
               }
 
-              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.5);
+              const elapsed = Math.max((nowMs() - windowStarted) / 1000, 0.3);
               const speed = windowBytes / elapsed;
-              if (elapsed >= 1.2) {
+              if (elapsed >= 0.8) {
                 windowStarted = nowMs();
                 windowBytes = 0;
               }
@@ -5659,6 +5721,7 @@ export class DownloadManager extends EventEmitter {
     logger.info(`Hybrid-Extract Start: pkg=${pkg.name}, readyArchives=${readyArchives.size}`);
     pkg.status = "extracting";
     this.emitState();
+    const hybridExtractStartMs = nowMs();
 
     const completedItems = items.filter((item) => item.status === "completed");
 
@@ -5825,7 +5888,7 @@ export class DownloadManager extends EventEmitter {
         const status = entry.fullStatus || "";
         if (/^Entpacken\b/i.test(status) || /^Fertig\b/i.test(status)) {
           if (result.extracted > 0 && result.failed === 0) {
-            entry.fullStatus = "Entpackt - Done";
+            entry.fullStatus = formatExtractDone(nowMs() - hybridExtractStartMs);
           } else {
             entry.fullStatus = "Entpacken - Error";
           }
@@ -5920,6 +5983,7 @@ export class DownloadManager extends EventEmitter {
     if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
       pkg.status = "extracting";
       this.emitState();
+      const extractionStartMs = nowMs();
 
       const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
         resolveArchiveItemsFromList(archiveName, completedItems);
@@ -6094,7 +6158,7 @@ export class DownloadManager extends EventEmitter {
           let finalStatusText = "";
 
           if (result.extracted > 0 || hasExtractedOutput) {
-            finalStatusText = "Entpackt - Done";
+            finalStatusText = formatExtractDone(nowMs() - extractionStartMs);
           } else if (!sourceExists) {
             finalStatusText = "Entpackt (Quelle fehlt)";
             logger.warn(`Post-Processing ohne Quellordner: pkg=${pkg.name}, outputDir fehlt`);
