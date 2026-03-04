@@ -1945,6 +1945,15 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   emitProgress(extracted, "", "extracting");
 
+  // Emit "done" progress for archives already completed via resume state
+  // so the caller's onProgress handler can mark their items as "Done" immediately
+  // rather than leaving them as "Entpacken - Ausstehend" until all extraction finishes.
+  for (const archivePath of candidates) {
+    if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
+      emitProgress(extracted, path.basename(archivePath), "extracting", 100, 0);
+    }
+  }
+
   const maxParallel = Math.max(1, options.maxParallel || 1);
   let noExtractorEncountered = false;
 

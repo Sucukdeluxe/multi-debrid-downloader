@@ -3495,9 +3495,15 @@ export class DownloadManager extends EventEmitter {
         if (!item || item.status !== "completed") {
           continue;
         }
-        if (/^Entpacken/i.test(item.fullStatus || "")) {
-          item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
-          item.updatedAt = nowMs();
+        const ft = (item.fullStatus || "").trim();
+        if (/^Entpacken/i.test(ft)) {
+          // Only mark items with active extraction progress as "abgebrochen".
+          // Items that were just pending ("Ausstehend", "Warten auf Parts") weren't
+          // actively being extracted, so keep their label as-is.
+          if (ft !== "Entpacken - Ausstehend" && ft !== "Entpacken - Warten auf Parts") {
+            item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
+            item.updatedAt = nowMs();
+          }
         }
       }
     }
@@ -3614,6 +3620,8 @@ export class DownloadManager extends EventEmitter {
       if (!allDone && this.settings.autoExtract && this.settings.hybridExtract && success > 0 && failed === 0) {
         const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
         if (needsExtraction) {
+          pkg.status = "queued";
+          pkg.updatedAt = nowMs();
           for (const item of items) {
             if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
@@ -3716,6 +3724,8 @@ export class DownloadManager extends EventEmitter {
           item.status === "completed" && !isExtractedLabel(item.fullStatus)
         );
         if (needsExtraction) {
+          pkg.status = "queued";
+          pkg.updatedAt = nowMs();
           for (const item of items) {
             if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
