@@ -209,7 +209,7 @@ function archiveSortKey(filePath: string): string {
     .replace(/\.zip\.\d{3}$/i, "")
     .replace(/\.7z\.\d{3}$/i, "")
     .replace(/\.\d{3}$/i, "")
-    .replace(/\.tar\.(gz|bz2|xz)$/i, "")
+    .replace(/\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i, "")
     .replace(/\.rar$/i, "")
     .replace(/\.zip$/i, "")
     .replace(/\.7z$/i, "")
@@ -230,7 +230,7 @@ function archiveTypeRank(filePath: string): number {
   if (/\.7z(?:\.\d{3})?$/i.test(fileName)) {
     return 3;
   }
-  if (/\.tar\.(gz|bz2|xz)$/i.test(fileName)) {
+  if (/\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i.test(fileName)) {
     return 4;
   }
   if (/\.\d{3}$/i.test(fileName)) {
@@ -281,7 +281,7 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
     }
     return !fileNamesLower.has(`${fileName}.001`.toLowerCase());
   });
-  const tarCompressed = files.filter((filePath) => /\.tar\.(gz|bz2|xz)$/i.test(filePath));
+  const tarCompressed = files.filter((filePath) => /\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i.test(filePath));
   // Generic .001 splits (HJSplit etc.) — exclude already-recognized .zip.001 and .7z.001
   const genericSplit = files.filter((filePath) => {
     const fileName = path.basename(filePath).toLowerCase();
@@ -477,7 +477,7 @@ export function archiveFilenamePasswords(archiveName: string): string[] {
     .replace(/\.zip\.\d{3}$/i, "")
     .replace(/\.7z\.\d{3}$/i, "")
     .replace(/\.\d{3}$/i, "")
-    .replace(/\.tar\.(gz|bz2|xz)$/i, "")
+    .replace(/\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i, "")
     .replace(/\.(rar|zip|7z|tar|gz|bz2|xz)$/i, "");
   if (!stem) return [];
   const candidates = [stem];
@@ -1345,7 +1345,7 @@ async function runExternalExtract(
 
     // subst only needed for legacy UnRAR/7z (MAX_PATH limit)
     subst = createSubstMapping(targetDir);
-    const effectiveTargetDir = subst ? `${subst.drive}:` : targetDir;
+    const effectiveTargetDir = subst ? `${subst.drive}:\\` : targetDir;
 
     const command = await resolveExtractorCommand();
     const password = await runExternalExtractInner(

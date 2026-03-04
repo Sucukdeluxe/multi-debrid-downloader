@@ -751,6 +751,36 @@ function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[])
       return pattern.test(name);
     });
   }
+  // Split ZIP (e.g., movie.zip.001, movie.zip.002)
+  const zipSplitMatch = entryLower.match(/^(.*)\.zip\.001$/);
+  if (zipSplitMatch) {
+    const stem = zipSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^${stem}\\.zip(\\.\\d+)?$`, "i");
+    return items.filter((item) => {
+      const name = path.basename(item.targetPath || item.fileName || "");
+      return pattern.test(name);
+    });
+  }
+  // Split 7z (e.g., movie.7z.001, movie.7z.002)
+  const sevenSplitMatch = entryLower.match(/^(.*)\.7z\.001$/);
+  if (sevenSplitMatch) {
+    const stem = sevenSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^${stem}\\.7z(\\.\\d+)?$`, "i");
+    return items.filter((item) => {
+      const name = path.basename(item.targetPath || item.fileName || "");
+      return pattern.test(name);
+    });
+  }
+  // Generic .NNN splits (e.g., movie.001, movie.002)
+  const genericSplitMatch = entryLower.match(/^(.*)\.001$/);
+  if (genericSplitMatch && !/\.(zip|7z)\.001$/.test(entryLower)) {
+    const stem = genericSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^${stem}\\.\\d{3}$`, "i");
+    return items.filter((item) => {
+      const name = path.basename(item.targetPath || item.fileName || "");
+      return pattern.test(name);
+    });
+  }
   return items.filter((item) => {
     const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
     return name === entryLower;
@@ -1680,6 +1710,9 @@ export class DownloadManager extends EventEmitter {
       item.lastError = "Datei nicht gefunden auf Rapidgator";
       item.onlineStatus = "offline";
       item.updatedAt = nowMs();
+      if (this.runItemIds.has(itemId)) {
+        this.recordRunOutcome(itemId, "failed");
+      }
       // Refresh package status since item was set to failed
       const pkg = this.session.packages[item.packageId];
       if (pkg) this.refreshPackageStatus(pkg);
@@ -2460,7 +2493,10 @@ export class DownloadManager extends EventEmitter {
       if (!item) {
         continue;
       }
-      this.recordRunOutcome(itemId, "cancelled");
+      // Only overwrite outcome for non-completed items to preserve correct summary stats
+      if (item.status !== "completed") {
+        this.recordRunOutcome(itemId, "cancelled");
+      }
       const active = this.activeTasks.get(itemId);
       if (active) {
         active.abortReason = "cancel";
@@ -2686,6 +2722,25 @@ export class DownloadManager extends EventEmitter {
     for (const pkgId of affectedPackageIds) {
       const pkg = this.session.packages[pkgId];
       if (pkg) this.refreshPackageStatus(pkg);
+    }
+    // Trigger extraction if all items are now in a terminal state and some completed
+    if (this.settings.autoExtract) {
+      for (const pkgId of affectedPackageIds) {
+        const pkg = this.session.packages[pkgId];
+        if (!pkg || pkg.cancelled || this.packagePostProcessTasks.has(pkgId)) continue;
+        const pkgItems = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+        const hasPending = pkgItems.some((i) => i.status !== "completed" && i.status !== "failed" && i.status !== "cancelled");
+        const hasUnextracted = pkgItems.some((i) => i.status === "completed" && !isExtractedLabel(i.fullStatus || ""));
+        if (!hasPending && hasUnextracted) {
+          for (const it of pkgItems) {
+            if (it.status === "completed" && !isExtractedLabel(it.fullStatus || "")) {
+              it.fullStatus = "Entpacken - Ausstehend";
+              it.updatedAt = nowMs();
+            }
+          }
+          void this.runPackagePostProcessing(pkgId).catch((err) => logger.warn(`Post-processing nach Skip: ${compactErrorText(err)}`));
+        }
+      }
     }
     this.persistSoon();
     this.emitState();
@@ -3196,6 +3251,7 @@ export class DownloadManager extends EventEmitter {
         item.fullStatus = "Wartet";
         item.lastError = "";
         item.speedBps = 0;
+        item.updatedAt = nowMs();
         continue;
       }
       if (item.status === "extracting" || item.status === "integrity_check") {
@@ -3204,6 +3260,7 @@ export class DownloadManager extends EventEmitter {
         item.status = "completed";
         item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         item.speedBps = 0;
+        item.updatedAt = nowMs();
       } else if (item.status === "downloading"
         || item.status === "validating"
         || item.status === "paused"
@@ -3211,6 +3268,7 @@ export class DownloadManager extends EventEmitter {
         item.status = "queued";
         item.fullStatus = "Wartet";
         item.speedBps = 0;
+        item.updatedAt = nowMs();
       }
       // Clear stale transient status texts from previous session
       if (item.status === "queued") {
@@ -3292,6 +3350,7 @@ export class DownloadManager extends EventEmitter {
       if (!pkg) {
         continue;
       }
+      const completedItemIds: string[] = [];
       pkg.itemIds = pkg.itemIds.filter((itemId) => {
         const item = this.session.items[itemId];
         if (!item) {
@@ -3302,14 +3361,18 @@ export class DownloadManager extends EventEmitter {
           if (this.settings.autoExtract && !isExtractedLabel(item.fullStatus || "")) {
             return true;
           }
-          delete this.session.items[itemId];
-          this.itemCount = Math.max(0, this.itemCount - 1);
+          completedItemIds.push(itemId);
           return false;
         }
         return true;
       });
       if (pkg.itemIds.length === 0) {
-        this.removePackageFromSession(pkgId, []);
+        this.removePackageFromSession(pkgId, completedItemIds);
+      } else {
+        for (const itemId of completedItemIds) {
+          delete this.session.items[itemId];
+          this.itemCount = Math.max(0, this.itemCount - 1);
+        }
       }
     }
   }
@@ -3349,7 +3412,7 @@ export class DownloadManager extends EventEmitter {
       } else if (policy === "package_done" || policy === "on_start") {
         const allCompleted = pkg.itemIds.every((id) => {
           const item = this.session.items[id];
-          return !item || item.status === "completed";
+          return !item || item.status === "completed" || item.status === "failed" || item.status === "cancelled";
         });
         if (!allCompleted) continue;
         if (this.settings.autoExtract) {
@@ -4624,6 +4687,7 @@ export class DownloadManager extends EventEmitter {
               if (item.attempts < maxAttempts) {
                 item.status = "integrity_check";
                 item.progressPercent = 0;
+                this.dropItemContribution(item.id);
                 item.downloadedBytes = 0;
                 item.totalBytes = unrestricted.fileSize;
                 this.emitState();
@@ -4991,6 +5055,15 @@ export class DownloadManager extends EventEmitter {
         existingBytes = stat.size;
       } catch {
         // file does not exist
+      }
+      // Guard against pre-allocated sparse files from a crashed session:
+      // if file size exceeds persisted downloadedBytes by >1MB, the file was
+      // likely pre-allocated but only partially written before a hard crash.
+      if (existingBytes > 0 && item.downloadedBytes > 0 && existingBytes > item.downloadedBytes + 1048576) {
+        try {
+          await fs.promises.truncate(effectiveTargetPath, item.downloadedBytes);
+          existingBytes = item.downloadedBytes;
+        } catch { /* best-effort */ }
       }
       const headers: Record<string, string> = {};
       if (existingBytes > 0) {
@@ -6071,6 +6144,12 @@ export class DownloadManager extends EventEmitter {
       const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`^${escaped}\\.7z(\\.\\d+)?$`, "i").test(fileName);
     }
+    // Generic .NNN splits (e.g., movie.001, movie.002)
+    if (/\.001$/i.test(entryPointName) && !/\.(zip|7z)\.001$/i.test(entryPointName)) {
+      const stem = entryPointName.replace(/\.001$/i, "").toLowerCase();
+      const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`^${escaped}\\.\\d{3}$`, "i").test(fileName);
+    }
     return false;
   }
 
@@ -6755,6 +6834,7 @@ export class DownloadManager extends EventEmitter {
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
       this.retryAfterByItem.delete(itemId);
+      this.retryStateByItem.delete(itemId);
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(packageId, []);
       }
