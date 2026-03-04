@@ -3734,16 +3734,11 @@ export class DownloadManager extends EventEmitter {
     }
     delete this.session.packages[packageId];
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
-    // Keep packageId in runPackageIds so the "size > 0" guard still filters
-    // other packages. But prune ghost entries: if no real package remains in
-    // the set, clear it so the scheduler isn't permanently blocked.
-    if (this.runPackageIds.size > 0) {
-      for (const rpId of this.runPackageIds) {
-        if (!this.session.packages[rpId]) {
-          this.runPackageIds.delete(rpId);
-        }
-      }
-    }
+    // Keep runPackageIds intact — ghost entries (deleted packages) are harmless:
+    // findNextQueuedItem() won't find items for them, so the scheduler naturally
+    // terminates via finishRun() which clears runPackageIds. Pruning them here
+    // would make runPackageIds empty, disabling the "size > 0" filter guard and
+    // causing "Start Selected" to continue with ALL packages after cleanup.
     this.runCompletedPackages.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
     this.resetSessionTotalsIfQueueEmpty();
@@ -5955,10 +5950,13 @@ export class DownloadManager extends EventEmitter {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
       }
 
-      // Mark hybrid items with final status
+      // Mark hybrid items with final status — only items whose archives were
+      // actually in the extraction set (hybridItems), NOT all completedItems.
+      // Using completedItems here would falsely mark items whose archives
+      // weren't ready yet (e.g. part2 of an episode where part1 is still
+      // downloading) as "Done".
       const updatedAt = nowMs();
-      const targetItems = result.extracted > 0 && result.failed === 0 ? completedItems : hybridItems;
-      for (const entry of targetItems) {
+      for (const entry of hybridItems) {
         if (isExtractedLabel(entry.fullStatus)) {
           continue;
         }
