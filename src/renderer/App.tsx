@@ -132,7 +132,7 @@ const settingsSubTabs: { key: SettingsSubTab; label: string }[] = [
 ];
 
 function formatSpeedMbps(speedBps: number): string {
-  const mbps = Math.max(0, speedBps) / (1024 * 1024);
+  const mbps = Math.max(0, speedBps || 0) / (1024 * 1024);
   return `${mbps.toFixed(2)} MB/s`;
 }
 
