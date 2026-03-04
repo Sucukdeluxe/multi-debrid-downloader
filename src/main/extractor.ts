@@ -1219,9 +1219,10 @@ async function resolveExtractorCommandInternal(): Promise<string> {
     if (isAbsoluteCommand(command) && !fs.existsSync(command)) {
       continue;
     }
-    const probeArgs = command.toLowerCase().includes("winrar") ? ["-?"] : ["?"];
+    const lower = command.toLowerCase();
+    const probeArgs = (lower.includes("winrar") || lower.includes("unrar")) ? ["-?"] : ["?"];
     const probe = await runExtractCommand(command, probeArgs, undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
-    if (probe.ok) {
+    if (probe.ok || (!probe.missingCommand && !probe.timedOut)) {
       resolvedExtractorCommand = command;
       resolveFailureReason = "";
       resolveFailureAt = 0;

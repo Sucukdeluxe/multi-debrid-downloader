@@ -417,6 +417,7 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
         signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
       });
       if (!response.ok) {
+        try { await response.body?.cancel(); } catch { /* drain socket */ }
         if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES + 2) {
           await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
           continue;
@@ -432,9 +433,11 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
         && !contentType.includes("text/plain")
         && !contentType.includes("text/xml")
         && !contentType.includes("application/xml")) {
+        try { await response.body?.cancel(); } catch { /* drain socket */ }
         return "";
       }
       if (!contentType && Number.isFinite(contentLength) && contentLength > RAPIDGATOR_SCAN_MAX_BYTES) {
+        try { await response.body?.cancel(); } catch { /* drain socket */ }
         return "";
       }
 
@@ -548,10 +551,12 @@ export async function checkRapidgatorOnline(
       });
 
       if (response.status === 404) {
+        try { await response.body?.cancel(); } catch { /* drain socket */ }
         return { online: false, fileName: "", fileSize: null };
       }
 
       if (!response.ok) {
+        try { await response.body?.cancel(); } catch { /* drain socket */ }
         if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
           await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
           continue;
@@ -561,6 +566,7 @@ export async function checkRapidgatorOnline(
 
       const finalUrl = response.url || link;
       if (!finalUrl.includes(fileId)) {
+        try { await response.body?.cancel(); } catch { /* drain socket */ }
         return { online: false, fileName: "", fileSize: null };
       }
 

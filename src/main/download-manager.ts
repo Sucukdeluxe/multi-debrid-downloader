@@ -1648,6 +1648,10 @@ export class DownloadManager extends EventEmitter {
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "queued") continue;
       if (item.onlineStatus) continue; // already checked
+      try {
+        const host = new URL(item.url).hostname.toLowerCase();
+        if (host !== "rapidgator.net" && !host.endsWith(".rapidgator.net") && host !== "rg.to" && !host.endsWith(".rg.to")) continue;
+      } catch { continue; }
       uncheckedIds.push(item.id);
     }
     if (uncheckedIds.length > 0) {
@@ -2659,10 +2663,12 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
+    this.sessionDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -2760,10 +2766,12 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.retryStateByItem.clear();
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
+    this.sessionDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -2930,6 +2938,7 @@ export class DownloadManager extends EventEmitter {
     this.abortPostProcessing("stop");
     for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
     this.packagePostProcessWaiters = [];
+    this.packagePostProcessActive = 0;
     for (const active of this.activeTasks.values()) {
       active.abortReason = "stop";
       active.abortController.abort("stop");
@@ -3428,9 +3437,10 @@ export class DownloadManager extends EventEmitter {
       }
     }
     logger.error(`claimTargetPath: Limit erreicht für ${preferredPath}`);
-    this.reservedTargetPaths.set(pathKey(preferredPath), itemId);
-    this.claimedTargetPathByItem.set(itemId, preferredPath);
-    return preferredPath;
+    const fallbackPath = path.join(parsed.dir, `${parsed.name} (${Date.now()})${parsed.ext}`);
+    this.reservedTargetPaths.set(pathKey(fallbackPath), itemId);
+    this.claimedTargetPathByItem.set(itemId, fallbackPath);
+    return fallbackPath;
   }
 
   private releaseTargetPath(itemId: string): void {
@@ -4433,6 +4443,7 @@ export class DownloadManager extends EventEmitter {
               // ignore
             }
             this.releaseTargetPath(item.id);
+            this.dropItemContribution(item.id);
             item.downloadedBytes = 0;
             item.progressPercent = 0;
             item.totalBytes = (item.totalBytes || 0) > 0 ? item.totalBytes : null;
@@ -4594,10 +4605,12 @@ export class DownloadManager extends EventEmitter {
           const shouldFreshRetry = !active.freshRetryUsed && isFetchFailure(errorText);
           const isHttp416 = /(^|\D)416(\D|$)/.test(errorText);
           if (isHttp416) {
-            try {
-              fs.rmSync(item.targetPath, { force: true });
-            } catch {
-              // ignore
+            if (claimedTargetPath) {
+              try {
+                fs.rmSync(claimedTargetPath, { force: true });
+              } catch {
+                // ignore
+              }
             }
             this.releaseTargetPath(item.id);
             item.downloadedBytes = 0;
@@ -4619,10 +4632,12 @@ export class DownloadManager extends EventEmitter {
             active.freshRetryUsed = true;
             item.retries += 1;
             logger.warn(`Netzwerkfehler: item=${item.fileName || item.id}, fresh retry, error=${errorText}, provider=${item.provider || "?"}`);
-            try {
-              fs.rmSync(item.targetPath, { force: true });
-            } catch {
-              // ignore
+            if (claimedTargetPath) {
+              try {
+                fs.rmSync(claimedTargetPath, { force: true });
+              } catch {
+                // ignore
+              }
             }
             this.releaseTargetPath(item.id);
             this.queueRetry(item, active, 300, "Netzwerkfehler erkannt, frischer Retry");
@@ -4854,6 +4869,7 @@ export class DownloadManager extends EventEmitter {
         }
         if (this.settings.autoReconnect && [429, 503].includes(response.status)) {
           this.requestReconnect(`HTTP ${response.status}`);
+          throw new Error(lastError);
         }
         if (attempt < maxAttempts) {
           item.retries += 1;
@@ -5990,7 +6006,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         const status = entry.fullStatus || "";
-        if (/^Entpacken\b/i.test(status) || /^Fertig\b/i.test(status)) {
+        if (/^Entpacken\b/i.test(status)) {
           if (result.extracted > 0 && result.failed === 0) {
             entry.fullStatus = formatExtractDone(nowMs() - hybridExtractStartMs);
           } else {
@@ -6006,6 +6022,13 @@ export class DownloadManager extends EventEmitter {
         return;
       }
       logger.warn(`Hybrid-Extract Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
+      const errorAt = nowMs();
+      for (const entry of hybridItems) {
+        if (entry.fullStatus === "Entpacken - Ausstehend" || entry.fullStatus === "Entpacken - Warten auf Parts") {
+          entry.fullStatus = `Entpacken - Error`;
+          entry.updatedAt = errorAt;
+        }
+      }
     }
   }
 
@@ -6383,11 +6406,11 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const allCompleted = pkg.itemIds.every((itemId) => {
+    const allDone = pkg.itemIds.every((itemId) => {
       const item = this.session.items[itemId];
-      return !item || item.status === "completed";
+      return !item || item.status === "completed" || item.status === "cancelled" || item.status === "failed";
     });
-    if (!allCompleted) {
+    if (!allDone) {
       return;
     }
 
@@ -6439,7 +6462,7 @@ export class DownloadManager extends EventEmitter {
     if (policy === "package_done") {
       const hasOpen = pkg.itemIds.some((id) => {
         const item = this.session.items[id];
-        return item != null && item.status !== "completed";
+        return item != null && item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed";
       });
       if (!hasOpen) {
         // With autoExtract: only remove once ALL items are extracted, not just downloaded
@@ -6550,9 +6573,9 @@ export class DownloadManager extends EventEmitter {
         completedDownloads += 1;
       } else if (item.status === "failed") {
         failedDownloads += 1;
-      } else if (item.status === "downloading" || item.status === "validating") {
+      } else if (item.status === "downloading" || item.status === "validating" || item.status === "integrity_check") {
         activeDownloads += 1;
-      } else if (item.status === "queued" || item.status === "reconnect_wait") {
+      } else if (item.status === "queued" || item.status === "reconnect_wait" || item.status === "paused") {
         queuedDownloads += 1;
       }
     }
