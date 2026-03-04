@@ -19,6 +19,7 @@ export const CHUNK_SIZE = 512 * 1024;
 export const WRITE_BUFFER_SIZE = 512 * 1024;       // 512 KB write buffer (JDownloader: 500 KB)
 export const WRITE_FLUSH_TIMEOUT_MS = 2000;         // 2s flush timeout
 export const ALLOCATION_UNIT_SIZE = 4096;           // 4 KB NTFS alignment
+export const STREAM_HIGH_WATER_MARK = 2 * 1024 * 1024;  // 2 MB stream buffer (JDownloader: Java NIO FileChannel default ~8 MB)
 
 export const SAMPLE_DIR_NAMES = new Set(["sample", "samples"]);
 export const SAMPLE_VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".m2ts", ".webm"]);
