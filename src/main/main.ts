@@ -293,7 +293,7 @@ function registerIpcHandlers(): void {
     return controller.startPackages(packageIds);
   });
   ipcMain.handle(IPC_CHANNELS.START_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
-    if (!Array.isArray(itemIds)) throw new Error("itemIds muss ein Array sein");
+    validateStringArray(itemIds ?? [], "itemIds");
     return controller.startItems(itemIds);
   });
   ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());

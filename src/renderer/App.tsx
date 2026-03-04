@@ -2830,10 +2830,12 @@ export function App(): ReactElement {
       {contextMenu && (() => {
         const multi = selectedIds.size > 1;
         const hasPackages = [...selectedIds].some((id) => snapshot.session.packages[id]);
+        const startableStatuses = new Set(["queued", "cancelled", "reconnect_wait"]);
+        const hasStartableItems = [...selectedIds].some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
         const hasItems = [...selectedIds].some((id) => snapshot.session.items[id]);
         return (
         <div ref={ctxMenuRef} className="ctx-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
-          {(hasPackages || hasItems) && (
+          {(hasPackages || hasStartableItems) && (
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
               const itemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);

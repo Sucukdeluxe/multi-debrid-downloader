@@ -2544,10 +2544,10 @@ export class DownloadManager extends EventEmitter {
   public async startPackages(packageIds: string[]): Promise<void> {
     const targetSet = new Set(packageIds);
 
-    // Enable specified packages if disabled
+    // Enable specified packages if disabled (only non-cancelled)
     for (const pkgId of targetSet) {
       const pkg = this.session.packages[pkgId];
-      if (pkg && !pkg.enabled) {
+      if (pkg && !pkg.cancelled && !pkg.enabled) {
         pkg.enabled = true;
       }
     }
@@ -2613,6 +2613,10 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
+    this.lastReconnectMarkAt = 0;
+    this.consecutiveReconnects = 0;
+    this.globalSpeedLimitQueue = Promise.resolve();
+    this.globalSpeedLimitNextAt = 0;
     this.summary = null;
     this.nonResumableActive = 0;
     this.persistSoon();
@@ -2637,10 +2641,10 @@ export class DownloadManager extends EventEmitter {
       if (item) affectedPackageIds.add(item.packageId);
     }
 
-    // Enable affected packages if disabled
+    // Enable affected packages if disabled (only non-cancelled)
     for (const pkgId of affectedPackageIds) {
       const pkg = this.session.packages[pkgId];
-      if (pkg && !pkg.enabled) {
+      if (pkg && !pkg.cancelled && !pkg.enabled) {
         pkg.enabled = true;
       }
     }
@@ -2666,6 +2670,8 @@ export class DownloadManager extends EventEmitter {
       for (const itemId of targetSet) {
         const item = this.session.items[itemId];
         if (!item) continue;
+        const pkg = this.session.packages[item.packageId];
+        if (!pkg || pkg.cancelled || !pkg.enabled) continue;
         if (item.status === "queued" || item.status === "reconnect_wait") {
           this.runItemIds.add(item.id);
           this.runPackageIds.add(item.packageId);
@@ -2708,6 +2714,10 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
+    this.lastReconnectMarkAt = 0;
+    this.consecutiveReconnects = 0;
+    this.globalSpeedLimitQueue = Promise.resolve();
+    this.globalSpeedLimitNextAt = 0;
     this.summary = null;
     this.nonResumableActive = 0;
     this.persistSoon();
