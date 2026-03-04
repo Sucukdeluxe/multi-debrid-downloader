@@ -1437,6 +1437,21 @@ export class DownloadManager extends EventEmitter {
 
       this.persistSoon();
       this.emitState(true);
+
+      // Fix async race: processItem catch with "package_toggle" overwrites fullStatus
+      // after we already set it to "Wartet". Re-fix on next microtask.
+      const pkgItemIds = [...pkg.itemIds];
+      queueMicrotask(() => {
+        for (const iid of pkgItemIds) {
+          const it = this.session.items[iid];
+          if (it && it.status === "queued" && it.fullStatus === "Paket gestoppt") {
+            it.fullStatus = "Wartet";
+            it.updatedAt = nowMs();
+          }
+        }
+        this.emitState(true);
+      });
+
       return { skipped: true, overwritten: false };
     }
 
@@ -2472,8 +2487,8 @@ export class DownloadManager extends EventEmitter {
 
       const active = this.activeTasks.get(itemId);
       if (active) {
-        active.abortReason = "cancel";
-        active.abortController.abort("cancel");
+        active.abortReason = "reset";
+        active.abortController.abort("reset");
       }
 
       // Delete partial download file
@@ -2540,8 +2555,8 @@ export class DownloadManager extends EventEmitter {
 
       const active = this.activeTasks.get(itemId);
       if (active) {
-        active.abortReason = "cancel";
-        active.abortController.abort("cancel");
+        active.abortReason = "reset";
+        active.abortController.abort("reset");
       }
 
       const targetPath = String(item.targetPath || "").trim();
@@ -2552,7 +2567,6 @@ export class DownloadManager extends EventEmitter {
 
       this.dropItemContribution(itemId);
       this.runOutcomes.delete(itemId);
-      this.runItemIds.delete(itemId);
       this.retryAfterByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
 
@@ -2570,6 +2584,13 @@ export class DownloadManager extends EventEmitter {
       item.fullStatus = "Wartet";
       item.onlineStatus = undefined;
       item.updatedAt = nowMs();
+
+      // Re-add to runItemIds if session is running so outcome is tracked in summary
+      if (this.session.running) {
+        this.runItemIds.add(itemId);
+      } else {
+        this.runItemIds.delete(itemId);
+      }
     }
 
     // Reset parent package status if it was completed/failed (now has queued items again)
@@ -4678,6 +4699,9 @@ export class DownloadManager extends EventEmitter {
             genericErrorRetries: Number(active.genericErrorRetries || 0),
             unrestrictRetries: Number(active.unrestrictRetries || 0)
           });
+        } else if (reason === "reset") {
+          // Item was reset externally by resetItems/resetPackage — state already set, do nothing
+          this.retryStateByItem.delete(item.id);
         } else if (reason === "package_toggle") {
           item.status = "queued";
           item.speedBps = 0;

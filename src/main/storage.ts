@@ -449,8 +449,13 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
   const payload = JSON.stringify(persisted, null, 2);
   const tempPath = `${paths.configFile}.tmp`;
-  fs.writeFileSync(tempPath, payload, "utf8");
-  syncRenameWithExdevFallback(tempPath, paths.configFile);
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, paths.configFile);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
+    throw error;
+  }
 }
 
 let asyncSettingsSaveRunning = false;
@@ -553,8 +558,13 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
   }
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
   const tempPath = sessionTempPath(paths.sessionFile, "sync");
-  fs.writeFileSync(tempPath, payload, "utf8");
-  syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
+    throw error;
+  }
 }
 
 let asyncSaveRunning = false;
@@ -652,8 +662,13 @@ export function saveHistory(paths: StoragePaths, entries: HistoryEntry[]): void 
   const trimmed = entries.slice(0, MAX_HISTORY_ENTRIES);
   const payload = JSON.stringify(trimmed, null, 2);
   const tempPath = `${paths.historyFile}.tmp`;
-  fs.writeFileSync(tempPath, payload, "utf8");
-  syncRenameWithExdevFallback(tempPath, paths.historyFile);
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, paths.historyFile);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
+    throw error;
+  }
 }
 
 export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry): HistoryEntry[] {

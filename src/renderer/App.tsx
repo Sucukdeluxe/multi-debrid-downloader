@@ -2726,9 +2726,9 @@ export function App(): ReactElement {
                       const speedInput = scheduleSpeedInputs[scheduleKey] ?? formatMbpsInputFromKbps(s.speedLimitKbps);
                       return (
                         <div key={scheduleKey} className="schedule-row">
-                          <input type="number" min={0} max={23} value={s.startHour} onChange={(e) => updateSchedule(i, "startHour", Number(e.target.value))} title="Von (Stunde)" />
+                          <input type="number" min={0} max={23} value={s.startHour} onChange={(e) => { const v = Number(e.target.value); if (!Number.isNaN(v)) updateSchedule(i, "startHour", Math.max(0, Math.min(23, v))); }} title="Von (Stunde)" />
                           <span>-</span>
-                          <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => updateSchedule(i, "endHour", Number(e.target.value))} title="Bis (Stunde)" />
+                          <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => { const v = Number(e.target.value); if (!Number.isNaN(v)) updateSchedule(i, "endHour", Math.max(0, Math.min(23, v))); }} title="Bis (Stunde)" />
                           <span>Uhr</span>
                           <input type="number" min={0} step={0.1} value={speedInput} onChange={(event) => { setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: event.target.value })); }} onBlur={(event) => { const parsed = parseMbpsInput(event.target.value); if (parsed === null) { setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: formatMbpsInputFromKbps(s.speedLimitKbps) })); return; } const nextKbps = Math.floor(parsed * 1024); setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: formatMbpsInputFromKbps(nextKbps) })); updateSchedule(i, "speedLimitKbps", nextKbps); }} title="MB/s (0=unbegrenzt)" />
                           <span>MB/s</span>
@@ -2825,6 +2825,7 @@ export function App(): ReactElement {
                 <button className="btn danger" onClick={() => {
                   if (deleteConfirm.dontAsk) {
                     setBool("confirmDeleteSelection", false);
+                    void window.rd.updateSettings({ confirmDeleteSelection: false }).catch(() => {});
                   }
                   executeDeleteSelection(deleteConfirm.ids);
                   setDeleteConfirm(null);
