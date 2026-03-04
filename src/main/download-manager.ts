@@ -19,7 +19,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot
 } from "../shared/types";
-import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK } from "./constants";
+import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS } from "./constants";
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
@@ -4984,6 +4984,7 @@ export class DownloadManager extends EventEmitter {
         const stallTimeoutMs = getDownloadStallTimeoutMs();
         const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));
         let lastDiskBusyEmitAt = 0;
+        let diskBusySince = 0;  // timestamp when writableLength first became > 0
 
         const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
           if (active.abortController.signal.aborted) {
@@ -5221,6 +5222,29 @@ export class DownloadManager extends EventEmitter {
                 await alignedFlush(false);
               }
 
+              // Proactive disk-busy detection: if the stream's internal buffer
+              // hasn't drained for DISK_BUSY_THRESHOLD_MS, the OS write calls are
+              // lagging — typically because the physical disk can't keep up.  Show
+              // "Warte auf Festplatte" immediately instead of waiting for full
+              // backpressure (stream.write returning false).
+              if (stream.writableLength > 0) {
+                if (diskBusySince === 0) diskBusySince = nowMs();
+                const busyMs = nowMs() - diskBusySince;
+                if (busyMs >= DISK_BUSY_THRESHOLD_MS && item.status !== "paused" && !this.session.paused) {
+                  const nowTick = nowMs();
+                  if (nowTick - lastDiskBusyEmitAt >= 1200) {
+                    item.status = "downloading";
+                    item.speedBps = 0;
+                    item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+                    item.updatedAt = nowTick;
+                    this.emitState();
+                    lastDiskBusyEmitAt = nowTick;
+                  }
+                }
+              } else {
+                diskBusySince = 0;
+              }
+
               written += buffer.length;
               windowBytes += buffer.length;
               this.session.totalDownloadedBytes += buffer.length;
@@ -5249,10 +5273,17 @@ export class DownloadManager extends EventEmitter {
               }
 
               item.status = "downloading";
-              item.speedBps = Math.max(0, Math.floor(speed));
               item.downloadedBytes = written;
               item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
-              item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+              // Keep "Warte auf Festplatte" label if disk is busy; otherwise show normal status
+              const diskBusy = diskBusySince > 0 && nowMs() - diskBusySince >= DISK_BUSY_THRESHOLD_MS;
+              if (diskBusy) {
+                item.speedBps = 0;
+                item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+              } else {
+                item.speedBps = Math.max(0, Math.floor(speed));
+                item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+              }
               const nowTick = nowMs();
               if (nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
                 item.updatedAt = nowTick;
