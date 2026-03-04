@@ -6219,6 +6219,12 @@ export class DownloadManager extends EventEmitter {
           }
         });
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
+
+        // Auto-rename even when some archives failed — successfully extracted files still need renaming
+        if (result.extracted > 0) {
+          await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
+        }
+
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
           const failAt = nowMs();
@@ -6232,9 +6238,6 @@ export class DownloadManager extends EventEmitter {
           pkg.status = "failed";
         } else {
           const hasExtractedOutput = await this.directoryHasAnyFiles(pkg.extractDir);
-          if (result.extracted > 0 || hasExtractedOutput) {
-            await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
-          }
           const sourceExists = await this.existsAsync(pkg.outputDir);
           let finalStatusText = "";
 
@@ -6319,7 +6322,7 @@ export class DownloadManager extends EventEmitter {
       await this.collectMkvFilesToLibrary(packageId, pkg);
     }
     if (this.runPackageIds.has(packageId)) {
-      if (pkg.status === "completed") {
+      if (pkg.status === "completed" || pkg.status === "failed") {
         this.runCompletedPackages.add(packageId);
       } else {
         this.runCompletedPackages.delete(packageId);
@@ -6338,7 +6341,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     const pkg = this.session.packages[packageId];
-    if (!pkg || pkg.status !== "completed") {
+    if (!pkg || (pkg.status !== "completed" && pkg.status !== "failed")) {
       return;
     }
 
