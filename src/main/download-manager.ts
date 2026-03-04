@@ -1710,8 +1710,8 @@ export class DownloadManager extends EventEmitter {
       item.lastError = "Datei nicht gefunden auf Rapidgator";
       item.onlineStatus = "offline";
       item.updatedAt = nowMs();
-      if (this.runItemIds.has(itemId)) {
-        this.recordRunOutcome(itemId, "failed");
+      if (this.runItemIds.has(item.id)) {
+        this.recordRunOutcome(item.id, "failed");
       }
       // Refresh package status since item was set to failed
       const pkg = this.session.packages[item.packageId];
@@ -2575,6 +2575,10 @@ export class DownloadManager extends EventEmitter {
     if (postProcessController && !postProcessController.signal.aborted) {
       postProcessController.abort("reset");
     }
+    this.packagePostProcessAbortControllers.delete(packageId);
+    this.packagePostProcessTasks.delete(packageId);
+    this.hybridExtractRequeue.delete(packageId);
+    this.runCompletedPackages.delete(packageId);
 
     // 3. Clean up extraction progress manifest (.rd_extract_progress.json)
     if (pkg.outputDir) {
@@ -3418,7 +3422,9 @@ export class DownloadManager extends EventEmitter {
         if (this.settings.autoExtract) {
           const allExtracted = pkg.itemIds.every((id) => {
             const item = this.session.items[id];
-            return !item || isExtractedLabel(item.fullStatus || "");
+            if (!item) return true;
+            if (item.status === "failed" || item.status === "cancelled") return true;
+            return isExtractedLabel(item.fullStatus || "");
           });
           if (!allExtracted) continue;
         }
@@ -4927,6 +4933,7 @@ export class DownloadManager extends EventEmitter {
               }
             }
             this.releaseTargetPath(item.id);
+            this.dropItemContribution(item.id);
             this.queueRetry(item, active, 300, "Netzwerkfehler erkannt, frischer Retry");
             item.lastError = "";
             item.downloadedBytes = 0;
@@ -6373,11 +6380,12 @@ export class DownloadManager extends EventEmitter {
         }
         const status = entry.fullStatus || "";
         if (/^Entpacken\b/i.test(status)) {
-          if (result.extracted > 0 && result.failed === 0) {
-            entry.fullStatus = formatExtractDone(nowMs() - hybridExtractStartMs);
-          } else {
+          if (result.failed > 0) {
             entry.fullStatus = "Entpacken - Error";
+          } else if (result.extracted > 0) {
+            entry.fullStatus = formatExtractDone(nowMs() - hybridExtractStartMs);
           }
+          // extracted === 0 && failed === 0: keep current status (no archives to process)
           entry.updatedAt = updatedAt;
         }
       }
@@ -6690,7 +6698,9 @@ export class DownloadManager extends EventEmitter {
             const timeoutReason = `Entpacken Timeout nach ${Math.ceil(extractTimeoutMs / 1000)}s`;
             logger.error(`Post-Processing Entpacken Timeout: pkg=${pkg.name}`);
             for (const entry of completedItems) {
-              entry.fullStatus = `Entpack-Fehler: ${timeoutReason}`;
+              if (!isExtractedLabel(entry.fullStatus)) {
+                entry.fullStatus = `Entpack-Fehler: ${timeoutReason}`;
+              }
               entry.updatedAt = nowMs();
             }
             pkg.status = "failed";
@@ -6713,7 +6723,9 @@ export class DownloadManager extends EventEmitter {
           const reason = compactErrorText(error);
           logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
           for (const entry of completedItems) {
-            entry.fullStatus = `Entpack-Fehler: ${reason}`;
+            if (!isExtractedLabel(entry.fullStatus)) {
+              entry.fullStatus = `Entpack-Fehler: ${reason}`;
+            }
             entry.updatedAt = nowMs();
           }
           pkg.status = "failed";
