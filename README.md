@@ -169,6 +169,12 @@ The app stores runtime files in Electron's `userData` directory, including:
 
 Release history is available on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
 
+### v1.6.60 (2026-03-05)
+
+- Added package-scoped password cache for extraction: once the first archive in a package is solved, following archives in the same package reuse that password first.
+- Kept fallback behavior intact (`""` and other candidates are still tested), but moved empty-password probing behind the learned password to reduce per-archive delays.
+- Added cache invalidation on real `wrong_password` failures so stale passwords are automatically discarded.
+
 ### v1.6.59 (2026-03-05)
 
 - Switched default extraction backend to native tools (`legacy`) for more stable archive-to-archive flow.

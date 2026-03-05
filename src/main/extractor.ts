@@ -135,6 +135,8 @@ const EXTRACT_MAX_TIMEOUT_MS = 120 * 60 * 1000;
 const ARCHIVE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const DISK_SPACE_SAFETY_FACTOR = 1.1;
 const NESTED_EXTRACT_BLACKLIST_RE = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
+const PACKAGE_PASSWORD_CACHE_LIMIT = 256;
+const packageLearnedPasswords = new Map<string, string>();
 
 export type ArchiveSignature = "rar" | "7z" | "zip" | "gzip" | "bzip2" | "xz" | null;
 
@@ -146,6 +148,54 @@ const ARCHIVE_SIGNATURES: { prefix: string; type: ArchiveSignature }[] = [
   { prefix: "425a68", type: "bzip2" },
   { prefix: "fd377a585a00", type: "xz" },
 ];
+
+function packagePasswordCacheKey(packageDir: string, packageId?: string): string {
+  const normalizedPackageId = String(packageId || "").trim();
+  if (normalizedPackageId) {
+    return `pkg:${normalizedPackageId}`;
+  }
+  return `dir:${pathSetKey(path.resolve(packageDir))}`;
+}
+
+function packagePasswordCacheLabel(packageDir: string, packageId?: string): string {
+  const normalizedPackageId = String(packageId || "").trim();
+  if (normalizedPackageId) {
+    return `packageId=${normalizedPackageId.slice(0, 8)}`;
+  }
+  return `packageDir=${path.basename(path.resolve(packageDir))}`;
+}
+
+function readCachedPackagePassword(cacheKey: string): string {
+  const cached = packageLearnedPasswords.get(cacheKey);
+  if (!cached) {
+    return "";
+  }
+  // Refresh insertion order to keep recently used package caches alive.
+  packageLearnedPasswords.delete(cacheKey);
+  packageLearnedPasswords.set(cacheKey, cached);
+  return cached;
+}
+
+function writeCachedPackagePassword(cacheKey: string, password: string): void {
+  const normalized = String(password || "").trim();
+  if (!normalized) {
+    return;
+  }
+  if (packageLearnedPasswords.has(cacheKey)) {
+    packageLearnedPasswords.delete(cacheKey);
+  }
+  packageLearnedPasswords.set(cacheKey, normalized);
+  if (packageLearnedPasswords.size > PACKAGE_PASSWORD_CACHE_LIMIT) {
+    const oldestKey = packageLearnedPasswords.keys().next().value as string | undefined;
+    if (oldestKey) {
+      packageLearnedPasswords.delete(oldestKey);
+    }
+  }
+}
+
+function clearCachedPackagePassword(cacheKey: string): void {
+  packageLearnedPasswords.delete(cacheKey);
+}
 
 export async function detectArchiveSignature(filePath: string): Promise<ArchiveSignature> {
   let fd: fs.promises.FileHandle | null = null;
@@ -1040,6 +1090,9 @@ interface DaemonRequest {
   signal?: AbortSignal;
   timeoutMs?: number;
   parseState: { bestPercent: number; usedPassword: string; backend: string; reportedError: string };
+  archiveName: string;
+  startedAt: number;
+  passwordCount: number;
 }
 
 let daemonProcess: ChildProcess | null = null;
@@ -1102,6 +1155,11 @@ function handleDaemonLine(line: string): void {
     const code = parseInt(trimmed.slice("RD_REQUEST_DONE ".length).trim(), 10);
     const req = daemonCurrentRequest;
     if (!req) return;
+    const elapsedMs = Date.now() - req.startedAt;
+    logger.info(
+      `JVM Daemon Request Ende: archive=${req.archiveName}, code=${code}, ms=${elapsedMs}, pwCandidates=${req.passwordCount}, ` +
+      `bestPercent=${req.parseState.bestPercent}, backend=${req.parseState.backend || "unknown"}, usedPassword=${req.parseState.usedPassword ? "yes" : "no"}`
+    );
 
     if (code === 0) {
       req.onArchiveProgress?.(100);
@@ -1254,10 +1312,21 @@ function sendDaemonRequest(
   return new Promise((resolve) => {
     const mode = effectiveConflictMode(conflictMode);
     const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    const archiveName = path.basename(archivePath);
 
     daemonBusy = true;
     daemonOutput = "";
-    daemonCurrentRequest = { resolve, onArchiveProgress, signal, timeoutMs, parseState };
+    daemonCurrentRequest = {
+      resolve,
+      onArchiveProgress,
+      signal,
+      timeoutMs,
+      parseState,
+      archiveName,
+      startedAt: Date.now(),
+      passwordCount: passwordCandidates.length
+    };
+    logger.info(`JVM Daemon Request Start: archive=${archiveName}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs || 0}, conflict=${mode}`);
 
     // Set up timeout
     if (timeoutMs && timeoutMs > 0) {
@@ -1341,20 +1410,22 @@ async function runJvmExtractCommand(
 
   // Try persistent daemon first — saves ~5s JVM boot per archive
   if (isDaemonAvailable(layout)) {
-    logger.info(`JVM Daemon: Sende Request für ${path.basename(archivePath)}`);
+    logger.info(`JVM Daemon: Sofort verfügbar, sende Request für ${path.basename(archivePath)} (pwCandidates=${passwordCandidates.length})`);
     return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
   }
 
   // Daemon exists but is still booting or busy — wait up to 15s for it
   if (daemonProcess) {
     const reason = !daemonReady ? "booting" : "busy";
+    const waitStartedAt = Date.now();
     logger.info(`JVM Daemon: Warte auf ${reason} Daemon für ${path.basename(archivePath)}...`);
     const ready = await waitForDaemonReady(15_000, signal);
+    const waitedMs = Date.now() - waitStartedAt;
     if (ready) {
-      logger.info(`JVM Daemon: Bereit — sende Request für ${path.basename(archivePath)}`);
+      logger.info(`JVM Daemon: Bereit nach ${waitedMs}ms — sende Request für ${path.basename(archivePath)}`);
       return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
     }
-    logger.warn(`JVM Daemon: Timeout beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
+    logger.warn(`JVM Daemon: Timeout nach ${waitedMs}ms beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
   }
 
   // Fallback: spawn a new JVM process (daemon not available after waiting)
@@ -1655,7 +1726,11 @@ async function runExternalExtract(
 ): Promise<string> {
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
   const backendMode = extractorBackendMode();
+  const archiveName = path.basename(archivePath);
+  const totalStartedAt = Date.now();
   let jvmFailureReason = "";
+  let fallbackFromJvm = false;
+  logger.info(`Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
 
   await fs.promises.mkdir(targetDir, { recursive: true });
 
@@ -1676,7 +1751,8 @@ async function runExternalExtract(
         logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
       } else {
         const quotedPasswords = passwordCandidates.map((p) => p === "" ? '""' : `"${p}"`);
-        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${path.basename(archivePath)}, ${passwordCandidates.length} Passwörter: [${quotedPasswords.join(", ")}]`);
+        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${archiveName}, ${passwordCandidates.length} Passwörter: [${quotedPasswords.join(", ")}]`);
+        const jvmStartedAt = Date.now();
         const jvmResult = await runJvmExtractCommand(
           layout,
           archivePath,
@@ -1687,9 +1763,12 @@ async function runExternalExtract(
           signal,
           timeoutMs
         );
+        const jvmMs = Date.now() - jvmStartedAt;
+        logger.info(`JVM-Extractor Ergebnis: archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
 
         if (jvmResult.ok) {
-          logger.info(`Entpackt via ${jvmResult.backend || "jvm"}: ${path.basename(archivePath)}`);
+          logger.info(`Entpackt via ${jvmResult.backend || "jvm"}: ${archiveName}`);
+          logger.info(`Extract-Backend Ende: archive=${archiveName}, backend=${jvmResult.backend || "jvm"}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, fallbackFromJvm=false, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
           return jvmResult.usedPassword;
         }
         if (jvmResult.aborted) {
@@ -1700,6 +1779,7 @@ async function runExternalExtract(
         }
 
         jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
+        fallbackFromJvm = true;
         const jvmFailureLower = jvmFailureReason.toLowerCase();
         const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
         const isCodecError = jvmFailureLower.includes("registered codecs")
@@ -1728,6 +1808,7 @@ async function runExternalExtract(
     const effectiveTargetDir = subst ? `${subst.drive}:\\` : targetDir;
 
     const command = await resolveExtractorCommand();
+    const legacyStartedAt = Date.now();
     const password = await runExternalExtractInner(
       command,
       archivePath,
@@ -1740,12 +1821,14 @@ async function runExternalExtract(
       hybridMode,
       onPasswordAttempt
     );
+    const legacyMs = Date.now() - legacyStartedAt;
     const extractorName = path.basename(command).replace(/\.exe$/i, "");
     if (jvmFailureReason) {
-      logger.info(`Entpackt via legacy/${extractorName} (nach JVM-Fehler): ${path.basename(archivePath)}`);
+      logger.info(`Entpackt via legacy/${extractorName} (nach JVM-Fehler): ${archiveName}`);
     } else {
-      logger.info(`Entpackt via legacy/${extractorName}: ${path.basename(archivePath)}`);
+      logger.info(`Entpackt via legacy/${extractorName}: ${archiveName}`);
     }
+    logger.info(`Extract-Backend Ende: archive=${archiveName}, backend=legacy/${extractorName}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, legacyMs=${legacyMs}, fallbackFromJvm=${fallbackFromJvm}, usedPassword=${password ? "yes" : "no"}`);
     return password;
   } finally {
     if (subst) removeSubstMapping(subst);
@@ -1784,6 +1867,7 @@ async function runExternalExtractInner(
       onArchiveProgress?.(0);
     }
     passwordAttempt += 1;
+    const attemptStartedAt = Date.now();
     const quotedPw = password === "" ? '""' : `"${password}"`;
     logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
     if (passwords.length > 1) {
@@ -1819,6 +1903,11 @@ async function runExternalExtractInner(
         }
       }, signal, timeoutMs);
     }
+
+    logger.info(
+      `Legacy-Passwort-Versuch Ergebnis: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, ` +
+      `ms=${Date.now() - attemptStartedAt}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`
+    );
 
     if (result.ok) {
       onArchiveProgress?.(100);
@@ -2287,7 +2376,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   if (options.conflictMode === "ask") {
     logger.warn("Extract-ConflictMode 'ask' wird ohne Prompt als 'skip' behandelt");
   }
+  const passwordCacheKey = packagePasswordCacheKey(options.packageDir, options.packageId);
+  const passwordCacheLabel = packagePasswordCacheLabel(options.packageDir, options.packageId);
   let passwordCandidates = archivePasswords(options.passwordList || "");
+  const cachedPackagePassword = readCachedPackagePassword(passwordCacheKey);
+  if (cachedPackagePassword) {
+    passwordCandidates = prioritizePassword(passwordCandidates, cachedPackagePassword);
+    logger.info(`Passwort-Cache Treffer: ${passwordCacheLabel}, bekanntes Passwort wird zuerst getestet`);
+  }
   const resumeCompleted = await readExtractResumeState(options.packageDir, options.packageId);
   const resumeCompletedAtStart = resumeCompleted.size;
   const allCandidateNames = new Set(allCandidates.map((archivePath) => archiveNameKey(path.basename(archivePath))));
@@ -2306,13 +2402,27 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let extracted = candidates.length - pendingCandidates.length;
   let failed = 0;
   let lastError = "";
-  let learnedPassword = "";
+  let learnedPassword = cachedPackagePassword;
   const extractedArchives = new Set<string>();
   for (const archivePath of candidates) {
     if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
       extractedArchives.add(archivePath);
     }
   }
+
+  const rememberLearnedPassword = (password: string): void => {
+    const normalized = String(password || "").trim();
+    if (!normalized) {
+      return;
+    }
+    const changed = normalized !== learnedPassword;
+    learnedPassword = normalized;
+    passwordCandidates = prioritizePassword(passwordCandidates, normalized);
+    writeCachedPackagePassword(passwordCacheKey, normalized);
+    if (changed) {
+      logger.info(`Passwort-Cache Update: ${passwordCacheLabel}, neues Passwort gelernt`);
+    }
+  };
 
   const emitProgress = (
     current: number,
@@ -2366,6 +2476,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   const maxParallel = Math.max(1, options.maxParallel || 1);
   let noExtractorEncountered = false;
+  let lastArchiveFinishedAt: number | null = null;
 
   const extractSingleArchive = async (archivePath: string): Promise<void> => {
     if (options.signal?.aborted) {
@@ -2377,7 +2488,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     const archiveName = path.basename(archivePath);
     const archiveResumeKey = archiveNameKey(archiveName);
     const archiveStartedAt = Date.now();
+    const startedCurrent = extracted + failed;
+    if (lastArchiveFinishedAt !== null) {
+      logger.info(`Extract-Trace Gap: before=${archiveName}, prevDoneToStartMs=${archiveStartedAt - lastArchiveFinishedAt}, progress=${startedCurrent}/${candidates.length}`);
+    }
     let archivePercent = 0;
+    let reached99At: number | null = null;
+    let archiveOutcome: "success" | "failed" | "skipped" = "failed";
     emitProgress(extracted + failed, archiveName, "extracting", archivePercent, 0);
     const pulseTimer = setInterval(() => {
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
@@ -2390,7 +2507,17 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     const orderedNonEmpty = learnedPassword
       ? [learnedPassword, ...nonEmptyBasePasswords.filter((p) => p !== learnedPassword), ...filenamePasswords]
       : [...filenamePasswords, ...nonEmptyBasePasswords];
-    const archivePasswordCandidates = Array.from(new Set(["", ...orderedNonEmpty]));
+    const archivePasswordCandidates = learnedPassword
+      ? Array.from(new Set([...orderedNonEmpty, ""]))
+      : Array.from(new Set(["", ...orderedNonEmpty]));
+    const reportArchiveProgress = (value: number): void => {
+      archivePercent = nextArchivePercent(archivePercent, value);
+      if (reached99At === null && archivePercent >= 99) {
+        reached99At = Date.now();
+        logger.info(`Extract-Trace 99%: archive=${archiveName}, elapsedMs=${reached99At - archiveStartedAt}`);
+      }
+      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+    };
 
     // Validate generic .001 splits via file signature before attempting extraction
     const isGenericSplit = /\.\d{3}$/i.test(archiveName) && !/\.(zip|7z)\.\d{3}$/i.test(archiveName);
@@ -2403,6 +2530,10 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         extractedArchives.add(archivePath);
         await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
         clearInterval(pulseTimer);
+        archiveOutcome = "skipped";
+        const skippedAt = Date.now();
+        lastArchiveFinishedAt = skippedAt;
+        logger.info(`Extract-Trace Archiv Übersprungen: archive=${archiveName}, ms=${skippedAt - archiveStartedAt}, reason=no-signature`);
         return;
       }
       logger.info(`Generische Split-Datei verifiziert (Signatur: ${sig}): ${archiveName}`);
@@ -2425,13 +2556,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         if (preferExternal) {
           try {
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
-              archivePercent = nextArchivePercent(archivePercent, value);
-              emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+              reportArchiveProgress(value);
             }, options.signal, hybrid, onPwAttempt);
-            if (usedPassword) {
-              learnedPassword = usedPassword;
-            }
-            passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
+            rememberLearnedPassword(usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
               await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal);
@@ -2449,13 +2576,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             }
             try {
               const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
-                archivePercent = nextArchivePercent(archivePercent, value);
-                emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+                reportArchiveProgress(value);
               }, options.signal, hybrid, onPwAttempt);
-              if (usedPassword) {
-                learnedPassword = usedPassword;
-              }
-              passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
+              rememberLearnedPassword(usedPassword);
             } catch (externalError) {
               if (isNoExtractorError(String(externalError)) || isUnsupportedArchiveFormatError(String(externalError))) {
                 throw error;
@@ -2466,19 +2589,20 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         }
       } else {
         const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
-          archivePercent = nextArchivePercent(archivePercent, value);
-          emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
+          reportArchiveProgress(value);
         }, options.signal, hybrid, onPwAttempt);
-        if (usedPassword) {
-          learnedPassword = usedPassword;
-        }
-        passwordCandidates = prioritizePassword(passwordCandidates, usedPassword);
+        rememberLearnedPassword(usedPassword);
       }
       extracted += 1;
       extractedArchives.add(archivePath);
       resumeCompleted.add(archiveResumeKey);
       await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
+      archiveOutcome = "success";
+      const successAt = Date.now();
+      const tailAfter99Ms = reached99At ? (successAt - reached99At) : -1;
+      logger.info(`Extract-Trace Archiv Erfolg: archive=${archiveName}, totalMs=${successAt - archiveStartedAt}, tailAfter99Ms=${tailAfter99Ms >= 0 ? tailAfter99Ms : "n/a"}, pwCandidates=${archivePasswordCandidates.length}`);
+      lastArchiveFinishedAt = successAt;
       archivePercent = 100;
       if (hasManyPasswords) {
         emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, { passwordFound: true }, { archiveDone: true, archiveSuccess: true });
@@ -2494,12 +2618,25 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       lastError = errorText;
       const errorCategory = classifyExtractionError(errorText);
       logger.error(`Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
+      if (errorCategory === "wrong_password" && learnedPassword) {
+        learnedPassword = "";
+        clearCachedPackagePassword(passwordCacheKey);
+        logger.warn(`Passwort-Cache verworfen: ${passwordCacheLabel} (wrong_password)`);
+      }
+      const failedAt = Date.now();
+      const tailAfter99Ms = reached99At ? (failedAt - reached99At) : -1;
+      logger.warn(`Extract-Trace Archiv Fehler: archive=${archiveName}, totalMs=${failedAt - archiveStartedAt}, tailAfter99Ms=${tailAfter99Ms >= 0 ? tailAfter99Ms : "n/a"}, category=${errorCategory}`);
+      lastArchiveFinishedAt = failedAt;
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, undefined, { archiveDone: true, archiveSuccess: false });
       if (isNoExtractorError(errorText)) {
         noExtractorEncountered = true;
       }
     } finally {
       clearInterval(pulseTimer);
+      if (lastArchiveFinishedAt === null || lastArchiveFinishedAt < archiveStartedAt) {
+        lastArchiveFinishedAt = Date.now();
+      }
+      logger.info(`Extract-Trace Archiv Ende: archive=${archiveName}, outcome=${archiveOutcome}, elapsedMs=${lastArchiveFinishedAt - archiveStartedAt}, percent=${archivePercent}`);
     }
   };
 
@@ -2624,11 +2761,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               } catch (zipErr) {
                 if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;
                 const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid);
-                passwordCandidates = prioritizePassword(passwordCandidates, usedPw);
+                rememberLearnedPassword(usedPw);
               }
             } else {
               const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid);
-              passwordCandidates = prioritizePassword(passwordCandidates, usedPw);
+              rememberLearnedPassword(usedPw);
             }
             extracted += 1;
             nestedExtracted += 1;
