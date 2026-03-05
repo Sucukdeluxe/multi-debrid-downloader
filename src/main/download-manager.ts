@@ -6377,6 +6377,11 @@ export class DownloadManager extends EventEmitter {
         maxParallel: this.settings.maxParallelExtract || 2,
         extractCpuPriority: this.settings.extractCpuPriority,
         onProgress: (progress) => {
+          if (progress.phase === "preparing") {
+            pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
+            this.emitState();
+            return;
+          }
           if (progress.phase === "done") {
             // Do NOT mark remaining archives as "Done" here — some may have
             // failed. The post-extraction code (result.failed check) will
@@ -6577,7 +6582,8 @@ export class DownloadManager extends EventEmitter {
     const allDone = success + failed + cancelled >= items.length;
 
     if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
-      pkg.postProcessLabel = "Entpacken...";
+      pkg.postProcessLabel = "Entpacken vorbereiten...";
+      this.emitState();
       await this.runHybridExtraction(packageId, pkg, items, signal);
       if (signal?.aborted) {
         pkg.postProcessLabel = undefined;
@@ -6612,7 +6618,7 @@ export class DownloadManager extends EventEmitter {
     const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => isExtractedLabel(item.fullStatus));
 
     if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
-      pkg.postProcessLabel = "Entpacken...";
+      pkg.postProcessLabel = "Entpacken vorbereiten...";
       pkg.status = "extracting";
       this.emitState();
       const extractionStartMs = nowMs();
@@ -6684,6 +6690,11 @@ export class DownloadManager extends EventEmitter {
           maxParallel: this.settings.maxParallelExtract || 2,
           extractCpuPriority: this.settings.extractCpuPriority,
           onProgress: (progress) => {
+            if (progress.phase === "preparing") {
+              pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
+              this.emitState();
+              return;
+            }
             if (progress.phase === "done") {
               // Do NOT mark remaining archives as "Done" here — some may have
               // failed. The post-extraction code (result.failed check) will
