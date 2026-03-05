@@ -6396,6 +6396,7 @@ export class DownloadManager extends EventEmitter {
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
     const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
+    let hybridLastProgressCurrent: number | null = null;
 
     // Mark items based on whether their archive is actually ready for extraction.
     // Only items whose archive is in readyArchives get "Ausstehend"; others keep
@@ -6443,8 +6444,14 @@ export class DownloadManager extends EventEmitter {
           if (progress.phase === "done") {
             hybridResolvedItems.clear();
             hybridStartTimes.clear();
+            hybridLastProgressCurrent = null;
             return;
           }
+
+          const currentCount = Math.max(0, Number(progress.current ?? 0));
+          const archiveFinished = progress.archiveDone === true
+            || (hybridLastProgressCurrent !== null && currentCount > hybridLastProgressCurrent);
+          hybridLastProgressCurrent = currentCount;
 
           if (progress.archiveName) {
             // Resolve items for this archive if not yet tracked
@@ -6470,11 +6477,14 @@ export class DownloadManager extends EventEmitter {
             }
             const archItems = hybridResolvedItems.get(progress.archiveName) || [];
 
-            // If archive is at 100%, mark its items as done and remove from active
-            if (Number(progress.archivePercent ?? 0) >= 100) {
+            // Only mark as finished on explicit archive-done signal (or real current increment),
+            // never on raw 100% archivePercent, because password retries can report 100% mid-run.
+            if (archiveFinished) {
               const doneAt = nowMs();
               const startedAt = hybridStartTimes.get(progress.archiveName) || doneAt;
-              const doneLabel = formatExtractDone(doneAt - startedAt);
+              const doneLabel = progress.archiveSuccess === false
+                ? "Entpacken - Error"
+                : formatExtractDone(doneAt - startedAt);
               for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
                   entry.fullStatus = doneLabel;
@@ -6484,7 +6494,7 @@ export class DownloadManager extends EventEmitter {
               hybridResolvedItems.delete(progress.archiveName);
               hybridStartTimes.delete(progress.archiveName);
               // Show transitional label while next archive initializes
-              const done = progress.current + 1;
+              const done = currentCount;
               if (done < progress.total) {
                 pkg.postProcessLabel = `Entpacken (${done}/${progress.total}) - Naechstes Archiv...`;
                 this.emitState();
@@ -6516,7 +6526,7 @@ export class DownloadManager extends EventEmitter {
           }
 
           // Update package-level label with overall extraction progress
-          const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+          const activeArchive = !archiveFinished && Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
           const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
           if (progress.passwordFound) {
             pkg.postProcessLabel = `Passwort gefunden · ${progress.archiveName || ""}`;
@@ -6777,6 +6787,7 @@ export class DownloadManager extends EventEmitter {
         // Track archives for parallel extraction progress
         const fullResolvedItems = new Map<string, DownloadItem[]>();
         const fullStartTimes = new Map<string, number>();
+        let fullLastProgressCurrent: number | null = null;
 
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
@@ -6802,9 +6813,15 @@ export class DownloadManager extends EventEmitter {
             if (progress.phase === "done") {
               fullResolvedItems.clear();
               fullStartTimes.clear();
+              fullLastProgressCurrent = null;
               emitExtractStatus("Entpacken 100%", true);
               return;
             }
+
+            const currentCount = Math.max(0, Number(progress.current ?? 0));
+            const archiveFinished = progress.archiveDone === true
+              || (fullLastProgressCurrent !== null && currentCount > fullLastProgressCurrent);
+            fullLastProgressCurrent = currentCount;
 
             if (progress.archiveName) {
               // Resolve items for this archive if not yet tracked
@@ -6829,11 +6846,14 @@ export class DownloadManager extends EventEmitter {
               }
               const archiveItems = fullResolvedItems.get(progress.archiveName) || [];
 
-              // If archive is at 100%, mark its items as done and remove from active
-              if (Number(progress.archivePercent ?? 0) >= 100) {
+              // Only finalize on explicit archive completion (or real current increment),
+              // not on plain 100% archivePercent.
+              if (archiveFinished) {
                 const doneAt = nowMs();
                 const startedAt = fullStartTimes.get(progress.archiveName) || doneAt;
-                const doneLabel = formatExtractDone(doneAt - startedAt);
+                const doneLabel = progress.archiveSuccess === false
+                  ? "Entpacken - Error"
+                  : formatExtractDone(doneAt - startedAt);
                 for (const entry of archiveItems) {
                   if (!isExtractedLabel(entry.fullStatus)) {
                     entry.fullStatus = doneLabel;
@@ -6843,7 +6863,7 @@ export class DownloadManager extends EventEmitter {
                 fullResolvedItems.delete(progress.archiveName);
                 fullStartTimes.delete(progress.archiveName);
                 // Show transitional label while next archive initializes
-                const done = progress.current + 1;
+                const done = currentCount;
                 if (done < progress.total) {
                   emitExtractStatus(`Entpacken (${done}/${progress.total}) - Naechstes Archiv...`, true);
                 }
@@ -6878,7 +6898,7 @@ export class DownloadManager extends EventEmitter {
             const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
               ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
               : "";
-            const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+            const activeArchive = !archiveFinished && Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
             const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
             let overallLabel: string;
             if (progress.passwordFound) {
