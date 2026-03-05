@@ -5,8 +5,8 @@ import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, Down
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
-const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload"]);
-const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload"]);
+const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier"]);
+const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
@@ -17,7 +17,7 @@ const VALID_PACKAGE_PRIORITIES = new Set<string>(["high", "normal", "low"]);
 const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
   "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
 ]);
-const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload"]);
+const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier"]);
 const VALID_ONLINE_STATUSES = new Set(["online", "offline", "checking"]);
 
 function asText(value: unknown): string {
@@ -113,6 +113,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     allDebridToken: asText(settings.allDebridToken),
     ddownloadLogin: asText(settings.ddownloadLogin),
     ddownloadPassword: asText(settings.ddownloadPassword),
+    oneFichierApiKey: asText(settings.oneFichierApiKey),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
     providerPrimary: settings.providerPrimary,
@@ -204,7 +205,8 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
     bestToken: "",
     allDebridToken: "",
     ddownloadLogin: "",
-    ddownloadPassword: ""
+    ddownloadPassword: "",
+    oneFichierApiKey: ""
   };
 }
 

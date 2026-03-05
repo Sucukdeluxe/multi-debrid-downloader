@@ -11,12 +11,16 @@ const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
 const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
 
+const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
+const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
+
 const PROVIDER_LABELS: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
-  ddownload: "DDownload"
+  ddownload: "DDownload",
+  onefichier: "1Fichier"
 };
 
 interface ProviderUnrestrictedLink extends UnrestrictedLink {
@@ -959,6 +963,66 @@ class AllDebridClient {
   }
 }
 
+// ── 1Fichier Client ──
+
+class OneFichierClient {
+  private apiKey: string;
+
+  public constructor(apiKey: string) {
+    this.apiKey = apiKey;
+  }
+
+  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+    if (!ONEFICHIER_URL_RE.test(link)) {
+      throw new Error("Kein 1Fichier-Link");
+    }
+
+    let lastError = "";
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+      try {
+        const res = await fetch(`${ONEFICHIER_API_BASE}/download/get_token.cgi`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`
+          },
+          body: JSON.stringify({ url: link, pretty: 1 }),
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+
+        const json = await res.json() as Record<string, unknown>;
+
+        if (json.status === "KO" || json.error) {
+          const msg = String(json.message || json.error || "Unbekannter 1Fichier-Fehler");
+          throw new Error(msg);
+        }
+
+        const directUrl = String(json.url || "");
+        if (!directUrl) {
+          throw new Error("1Fichier: Keine Download-URL in Antwort");
+        }
+
+        return {
+          fileName: filenameFromUrl(directUrl) || filenameFromUrl(link),
+          directUrl,
+          fileSize: null,
+          retriesUsed: attempt - 1
+        };
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+          throw error;
+        }
+        if (attempt < REQUEST_RETRIES) {
+          await sleep(retryDelay(attempt), signal);
+        }
+      }
+    }
+    throw new Error(`1Fichier-Unrestrict fehlgeschlagen: ${lastError}`);
+  }
+}
+
 const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]+)/i;
 const DDOWNLOAD_WEB_BASE = "https://ddownload.com";
 const DDOWNLOAD_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
@@ -1229,6 +1293,25 @@ export class DebridService {
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
+    // 1Fichier is a direct file hoster. If the link is a 1fichier.com URL
+    // and the API key is configured, use 1Fichier directly before debrid providers.
+    if (ONEFICHIER_URL_RE.test(link) && this.isProviderConfiguredFor(settings, "onefichier")) {
+      try {
+        const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
+        return {
+          ...result,
+          provider: "onefichier",
+          providerLabel: PROVIDER_LABELS["onefichier"]
+        };
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        // Fall through to normal provider chain
+      }
+    }
+
     // DDownload is a direct file hoster, not a debrid service.
     // If the link is a ddownload.com/ddl.to URL and the account is configured,
     // use DDownload directly before trying any debrid providers.
@@ -1337,6 +1420,9 @@ export class DebridService {
     if (provider === "ddownload") {
       return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
     }
+    if (provider === "onefichier") {
+      return Boolean(settings.oneFichierApiKey.trim());
+    }
     return Boolean(settings.bestToken.trim());
   }
 
@@ -1352,6 +1438,9 @@ export class DebridService {
     }
     if (provider === "ddownload") {
       return this.getDdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
+    }
+    if (provider === "onefichier") {
+      return new OneFichierClient(settings.oneFichierApiKey).unrestrictLink(link, signal);
     }
     return new BestDebridClient(settings.bestToken).unrestrictLink(link, signal);
   }

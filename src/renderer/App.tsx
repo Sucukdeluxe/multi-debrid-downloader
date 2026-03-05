@@ -62,7 +62,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", ddownloadLogin: "", ddownloadPassword: "",
+    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -94,7 +94,7 @@ const cleanupLabels: Record<string, string> = {
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 const providerLabels: Record<DebridProvider, string> = {
-  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload"
+  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier"
 };
 
 function formatDateTime(ts: number): string {
@@ -930,7 +930,11 @@ export function App(): ReactElement {
     Boolean((settingsDraft.ddownloadLogin || "").trim() && (settingsDraft.ddownloadPassword || "").trim()),
   [settingsDraft.ddownloadLogin, settingsDraft.ddownloadPassword]);
 
-  const totalConfiguredAccounts = configuredProviders.length + (hasDdownloadAccount ? 1 : 0);
+  const hasOneFichierAccount = useMemo(() =>
+    Boolean((settingsDraft.oneFichierApiKey || "").trim()),
+  [settingsDraft.oneFichierApiKey]);
+
+  const totalConfiguredAccounts = configuredProviders.length + (hasDdownloadAccount ? 1 : 0) + (hasOneFichierAccount ? 1 : 0);
 
   const primaryProviderValue: DebridProvider = useMemo(() => {
     if (configuredProviders.includes(settingsDraft.providerPrimary)) {
@@ -2744,6 +2748,8 @@ export function App(): ReactElement {
                     <input value={settingsDraft.ddownloadLogin || ""} onChange={(e) => setText("ddownloadLogin", e.target.value)} />
                     <label>DDownload Passwort</label>
                     <input type="password" value={settingsDraft.ddownloadPassword || ""} onChange={(e) => setText("ddownloadPassword", e.target.value)} />
+                    <label>1Fichier API Key</label>
+                    <input type="password" value={settingsDraft.oneFichierApiKey || ""} onChange={(e) => setText("oneFichierApiKey", e.target.value)} />
                     {configuredProviders.length === 0 && (
                       <div className="hint">Füge mindestens einen Account hinzu, dann erscheint die Hoster-Auswahl.</div>
                     )}
