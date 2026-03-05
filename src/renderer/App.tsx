@@ -36,6 +36,7 @@ interface ConfirmPromptState {
   message: string;
   confirmLabel: string;
   danger?: boolean;
+  details?: string;
 }
 
 interface ContextMenuState {
@@ -990,45 +991,36 @@ export function App(): ReactElement {
       if (source === "manual") { showToast(`Kein Update verfügbar (v${result.currentVersion})`, 2000); }
       return;
     }
-    let changelogBlock = "";
+    let changelogText = "";
     if (result.releaseNotes) {
-      // Build compact changelog: only top-level list items, no sub-items or long descriptions
       const lines = result.releaseNotes.split("\n");
       const compactLines: string[] = [];
       for (const line of lines) {
-        // Skip indented sub-items (2+ spaces before dash)
         if (/^\s{2,}[-*]/.test(line)) continue;
-        // Skip heading markers
         if (/^#{1,6}\s/.test(line)) continue;
-        // Skip empty lines
         if (!line.trim()) continue;
-        // Strip markdown: **bold**, *italic*, `code`
         let clean = line
           .replace(/\*\*([^*]+)\*\*/g, "$1")
           .replace(/\*([^*]+)\*/g, "$1")
           .replace(/`([^`]+)`/g, "$1")
           .replace(/^\s*[-*]\s+/, "- ")
           .trim();
-        // Truncate long lines after the first colon/sentence
         const colonIdx = clean.indexOf(":");
         if (colonIdx > 0 && colonIdx < clean.length - 1) {
           const afterColon = clean.slice(colonIdx + 1).trim();
-          // Keep short descriptions, cut long ones
           if (afterColon.length > 60) {
             clean = clean.slice(0, colonIdx + 1).trim();
           }
         }
         if (clean) compactLines.push(clean);
       }
-      const notes = compactLines.join("\n");
-      if (notes) {
-        changelogBlock = `\n\n--- Changelog ---\n${notes}`;
-      }
+      changelogText = compactLines.join("\n");
     }
     const approved = await askConfirmPrompt({
       title: "Update verfügbar",
-      message: `${result.latestTag} (aktuell v${result.currentVersion})${changelogBlock}\n\nJetzt automatisch herunterladen und installieren?`,
-      confirmLabel: "Jetzt installieren"
+      message: `${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`,
+      confirmLabel: "Jetzt installieren",
+      details: changelogText || undefined
     });
     if (!mountedRef.current) {
       return;
@@ -2889,6 +2881,12 @@ export function App(): ReactElement {
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <h3>{confirmPrompt.title}</h3>
             <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
+            {confirmPrompt.details && (
+              <details className="modal-details">
+                <summary>Changelog anzeigen</summary>
+                <pre>{confirmPrompt.details}</pre>
+              </details>
+            )}
             <div className="modal-actions">
               <button className="btn" onClick={() => closeConfirmPrompt(false)}>Abbrechen</button>
               <button
