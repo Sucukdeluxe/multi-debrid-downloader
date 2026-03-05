@@ -1764,6 +1764,8 @@ td {
 
 .modal-card {
   width: min(560px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--card) 98%, transparent), color-mix(in srgb, var(--surface) 98%, transparent));
@@ -1779,6 +1781,34 @@ td {
 
 .modal-card p {
   margin: 0;
+  color: var(--muted);
+}
+
+.modal-details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0;
+}
+.modal-details summary {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  user-select: none;
+}
+.modal-details summary:hover {
+  color: var(--text);
+}
+.modal-details pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
   color: var(--muted);
 }
 
