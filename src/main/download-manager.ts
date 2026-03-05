@@ -4717,7 +4717,7 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             this.emitState();
           }
-          const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes);
+          const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes, unrestricted.skipTlsVerify);
           active.resumable = result.resumable;
           if (!active.resumable && !active.nonResumableCounted) {
             active.nonResumableCounted = true;
@@ -5102,7 +5102,8 @@ export class DownloadManager extends EventEmitter {
     active: ActiveTask,
     directUrl: string,
     targetPath: string,
-    knownTotal: number | null
+    knownTotal: number | null,
+    skipTlsVerify?: boolean
   ): Promise<{ resumable: boolean }> {
     const item = this.session.items[active.itemId];
     if (!item) {
@@ -5148,11 +5149,15 @@ export class DownloadManager extends EventEmitter {
       const connectTimeoutMs = getDownloadConnectTimeoutMs();
       let connectTimer: NodeJS.Timeout | null = null;
       const connectAbortController = new AbortController();
+      const prevTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
       try {
         if (connectTimeoutMs > 0) {
           connectTimer = setTimeout(() => {
             connectAbortController.abort("connect_timeout");
           }, connectTimeoutMs);
+        }
+        if (skipTlsVerify) {
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
         }
         response = await fetch(directUrl, {
           method: "GET",
@@ -5173,6 +5178,10 @@ export class DownloadManager extends EventEmitter {
         }
         throw error;
       } finally {
+        if (skipTlsVerify) {
+          if (prevTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+          else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTlsReject;
+        }
         if (connectTimer) {
           clearTimeout(connectTimer);
         }

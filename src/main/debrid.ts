@@ -1053,7 +1053,8 @@ class DdownloadClient {
               fileName: filenameFromUrl(directUrl) || filenameFromUrl(link),
               directUrl,
               fileSize: null,
-              retriesUsed: attempt - 1
+              retriesUsed: attempt - 1,
+              skipTlsVerify: true
             };
           }
         }
@@ -1102,7 +1103,8 @@ class DdownloadClient {
               fileName: fileName || filenameFromUrl(directUrl),
               directUrl,
               fileSize: null,
-              retriesUsed: attempt - 1
+              retriesUsed: attempt - 1,
+              skipTlsVerify: true
             };
           }
         }
@@ -1115,7 +1117,8 @@ class DdownloadClient {
             fileName,
             directUrl: directMatch[0],
             fileSize: null,
-            retriesUsed: attempt - 1
+            retriesUsed: attempt - 1,
+            skipTlsVerify: true
           };
         }
 
