@@ -160,7 +160,7 @@ The app stores runtime files in Electron's `userData` directory, including:
 ## Troubleshooting
 
 - Download does not start: verify token and selected provider in Settings.
-- Extraction fails: check archive passwords, JVM runtime (`resources/extractor-jvm`), or force legacy mode with `RD_EXTRACT_BACKEND=legacy`.
+- Extraction fails: check archive passwords and native extractor installation (7-Zip/WinRAR). Optional JVM extractor can be forced with `RD_EXTRACT_BACKEND=jvm`.
 - Very slow downloads: check active speed limit and bandwidth schedules.
 - Unexpected interruptions: enable reconnect and fallback providers.
 - Stalled downloads: the app auto-detects stalls within 10 seconds and retries automatically.
@@ -168,6 +168,12 @@ The app stores runtime files in Electron's `userData` directory, including:
 ## Changelog
 
 Release history is available on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
+
+### v1.6.59 (2026-03-05)
+
+- Switched default extraction backend to native tools (`legacy`) for more stable archive-to-archive flow.
+- Prioritized 7-Zip as primary native extractor, with WinRAR/UnRAR as fallback.
+- JVM extractor remains available as opt-in via `RD_EXTRACT_BACKEND=jvm`.
 
 ### v1.6.58 (2026-03-05)
 
