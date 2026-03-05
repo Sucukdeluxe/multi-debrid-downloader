@@ -1212,6 +1212,27 @@ export class DebridService {
 
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
+
+    // DDownload is a direct file hoster, not a debrid service.
+    // If the link is a ddownload.com/ddl.to URL and the account is configured,
+    // use DDownload directly before trying any debrid providers.
+    if (DDOWNLOAD_URL_RE.test(link) && this.isProviderConfiguredFor(settings, "ddownload")) {
+      try {
+        const result = await this.unrestrictViaProvider(settings, "ddownload", link, signal);
+        return {
+          ...result,
+          provider: "ddownload",
+          providerLabel: PROVIDER_LABELS["ddownload"]
+        };
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        // Fall through to normal provider chain (debrid services may also support ddownload links)
+      }
+    }
+
     const order = toProviderOrder(
       settings.providerPrimary,
       settings.providerSecondary,

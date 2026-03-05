@@ -928,11 +928,17 @@ export function App(): ReactElement {
     if (settingsDraft.allDebridToken.trim()) {
       list.push("alldebrid");
     }
-    if ((settingsDraft.ddownloadLogin || "").trim() && (settingsDraft.ddownloadPassword || "").trim()) {
-      list.push("ddownload");
-    }
     return list;
-  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken, settingsDraft.ddownloadLogin, settingsDraft.ddownloadPassword]);
+  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken]);
+
+  // DDownload is a direct file hoster (not a debrid service) and is used automatically
+  // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
+  // appear in the primary/secondary/tertiary provider dropdowns.
+  const hasDdownloadAccount = useMemo(() =>
+    Boolean((settingsDraft.ddownloadLogin || "").trim() && (settingsDraft.ddownloadPassword || "").trim()),
+  [settingsDraft.ddownloadLogin, settingsDraft.ddownloadPassword]);
+
+  const totalConfiguredAccounts = configuredProviders.length + (hasDdownloadAccount ? 1 : 0);
 
   const primaryProviderValue: DebridProvider = useMemo(() => {
     if (configuredProviders.includes(settingsDraft.providerPrimary)) {
@@ -1112,7 +1118,7 @@ export function App(): ReactElement {
 
   const onStartDownloads = async (): Promise<void> => {
     await performQuickAction(async () => {
-      if (configuredProviders.length === 0) {
+      if (totalConfiguredAccounts === 0) {
         setTab("settings");
         showToast("Bitte zuerst mindestens einen Hoster-Account eintragen", 3000);
         return;
@@ -2956,7 +2962,7 @@ export function App(): ReactElement {
         <span>Links: {Object.keys(snapshot.session.items).length}</span>
         <span>Session: {humanSize(snapshot.stats.totalDownloaded)}</span>
         <span>Gesamt: {humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
-        <span>Hoster: {configuredProviders.length}</span>
+        <span>Hoster: {totalConfiguredAccounts}</span>
         <span>{snapshot.speedText}</span>
         <span>{snapshot.etaText}</span>
         <span className="footer-spacer" />
