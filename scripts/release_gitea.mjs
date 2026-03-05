@@ -2,7 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const NPM_EXECUTABLE = process.platform === "win32" ? "npm.cmd" : "npm";
+const NPM_RELEASE_WIN = process.platform === "win32"
+  ? {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", "npm run release:win"]
+    }
+  : {
+      command: "npm",
+      args: ["run", "release:win"]
+    };
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -325,7 +333,7 @@ async function main() {
   updatePackageVersion(rootDir, version);
 
   process.stdout.write(`Building release artifacts for ${tag}...\n`);
-  run(NPM_EXECUTABLE, ["run", "release:win"]);
+  run(NPM_RELEASE_WIN.command, NPM_RELEASE_WIN.args);
   const assets = ensureAssetsExist(rootDir, version);
 
   run("git", ["add", "package.json"]);
