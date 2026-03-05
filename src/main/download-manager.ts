@@ -3815,18 +3815,26 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessAbortControllers.set(packageId, abortController);
 
     const task = (async () => {
+      const slotWaitStart = nowMs();
       await this.acquirePostProcessSlot(packageId);
+      const slotWaitMs = nowMs() - slotWaitStart;
+      if (slotWaitMs > 100) {
+        logger.info(`Post-Process Slot erhalten nach ${(slotWaitMs / 1000).toFixed(1)}s Wartezeit: pkg=${packageId.slice(0, 8)}`);
+      }
       try {
-        // Loop while requeue requests arrive — keep the slot so the same
-        // package can immediately re-run hybrid extraction without waiting
-        // behind other packages that may be queued for the slot.
+        let round = 0;
         do {
+          round += 1;
+          const hadRequeue = this.hybridExtractRequeue.has(packageId);
           this.hybridExtractRequeue.delete(packageId);
+          const roundStart = nowMs();
           try {
             await this.handlePackagePostProcessing(packageId, abortController.signal);
           } catch (error) {
             logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
           }
+          const roundMs = nowMs() - roundStart;
+          logger.info(`Post-Process Runde ${round} fertig in ${(roundMs / 1000).toFixed(1)}s (requeue=${hadRequeue}, nextRequeue=${this.hybridExtractRequeue.has(packageId)}): pkg=${packageId.slice(0, 8)}`);
           this.persistSoon();
           this.emitState();
         } while (this.hybridExtractRequeue.has(packageId));
@@ -6257,7 +6265,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<number> {
+    const findReadyStart = nowMs();
     const readyArchives = await this.findReadyArchiveSets(pkg);
+    const findReadyMs = nowMs() - findReadyStart;
+    if (findReadyMs > 200) {
+      logger.info(`findReadyArchiveSets dauerte ${(findReadyMs / 1000).toFixed(1)}s: pkg=${pkg.name}, found=${readyArchives.size}`);
+    }
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
       // Relabel completed items that are part of incomplete multi-part archives
@@ -6485,9 +6498,20 @@ export class DownloadManager extends EventEmitter {
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       if (result.extracted > 0) {
-        void this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg).catch((err) =>
-          logger.warn(`Hybrid Auto-Rename Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`)
-        );
+        // Fire-and-forget: rename then collect MKVs in background so the
+        // slot is not blocked and the next archive set can start immediately.
+        void (async () => {
+          try {
+            await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
+          } catch (err) {
+            logger.warn(`Hybrid Auto-Rename Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
+          }
+          try {
+            await this.collectMkvFilesToLibrary(packageId, pkg);
+          } catch (err) {
+            logger.warn(`Hybrid MKV-Collection Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
+          }
+        })();
       }
       if (result.failed > 0) {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
@@ -6543,6 +6567,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async handlePackagePostProcessing(packageId: string, signal?: AbortSignal): Promise<void> {
+    const handleStart = nowMs();
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) {
       return;
@@ -6554,6 +6579,7 @@ export class DownloadManager extends EventEmitter {
 
     // Recover items whose file exists on disk but status was never set to "completed".
     // Only recover items in idle states (queued/paused), never active ones (downloading/validating).
+    const recoveryStart = nowMs();
     for (const item of items) {
       if (isFinishedStatus(item.status)) {
         continue;
@@ -6593,10 +6619,12 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    const recoveryMs = nowMs() - recoveryStart;
     const success = items.filter((item) => item.status === "completed").length;
     const failed = items.filter((item) => item.status === "failed").length;
     const cancelled = items.filter((item) => item.status === "cancelled").length;
-    logger.info(`Post-Processing Start: pkg=${pkg.name}, success=${success}, failed=${failed}, cancelled=${cancelled}, autoExtract=${this.settings.autoExtract}`);
+    const setupMs = nowMs() - handleStart;
+    logger.info(`Post-Processing Start: pkg=${pkg.name}, success=${success}, failed=${failed}, cancelled=${cancelled}, autoExtract=${this.settings.autoExtract}, setupMs=${setupMs}, recoveryMs=${recoveryMs}`);
 
     const allDone = success + failed + cancelled >= items.length;
 
