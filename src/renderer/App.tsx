@@ -2502,7 +2502,7 @@ export function App(): ReactElement {
                   : `${historyEntries.length} Paket${historyEntries.length !== 1 ? "e" : ""} im Verlauf`}
               </span>
               {selectedHistoryIds.size > 0 && (
-                <button className="btn btn-danger" onClick={() => {
+                <button className="btn danger" onClick={() => {
                   const idSet = new Set(selectedHistoryIds);
                   void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
                     setHistoryEntries((prev) => prev.filter((e) => !idSet.has(e.id)));
@@ -2513,7 +2513,7 @@ export function App(): ReactElement {
                 }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
               )}
               {historyEntries.length > 0 && (
-                <button className="btn btn-danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {}); }}>Verlauf leeren</button>
+                <button className="btn danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {}); }}>Verlauf leeren</button>
               )}
             </div>
             {historyEntries.length === 0 && <div className="empty">Noch keine abgeschlossenen Pakete im Verlauf.</div>}
