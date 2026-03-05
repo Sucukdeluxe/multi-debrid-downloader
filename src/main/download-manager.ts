@@ -4842,6 +4842,7 @@ export class DownloadManager extends EventEmitter {
         item.updatedAt = nowMs();
         pkg.updatedAt = nowMs();
         this.recordRunOutcome(item.id, "completed");
+        logger.info(`Download fertig: ${item.fileName} (${humanSize(item.downloadedBytes)}), pkg=${pkg.name}`);
 
         if (this.session.running && !active.abortController.signal.aborted) {
           void this.runPackagePostProcessing(pkg.id).catch((err) => {
