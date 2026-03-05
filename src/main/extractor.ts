@@ -10,7 +10,7 @@ import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import crypto from "node:crypto";
 
 const DEFAULT_ARCHIVE_PASSWORDS = ["", "serienfans.org", "serienjunkies.org"];
-const NO_EXTRACTOR_MESSAGE = "WinRAR/UnRAR nicht gefunden. Bitte WinRAR installieren.";
+const NO_EXTRACTOR_MESSAGE = "Kein nativer Entpacker gefunden (7-Zip/WinRAR). Bitte 7-Zip oder WinRAR installieren.";
 const NO_JVM_EXTRACTOR_MESSAGE = "7-Zip-JBinding Runtime nicht gefunden. Bitte resources/extractor-jvm prüfen.";
 const JVM_EXTRACTOR_MAIN_CLASS = "com.sucukdeluxe.extractor.JBindExtractorMain";
 const JVM_EXTRACTOR_CLASSES_SUBDIR = "classes";
@@ -549,23 +549,51 @@ function prioritizePassword(passwords: string[], successful: string): string[] {
   return next;
 }
 
-function winRarCandidates(): string[] {
+function nativeExtractorCandidates(): string[] {
   const programFiles = process.env.ProgramFiles || "C:\\Program Files";
   const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const localAppData = process.env.LOCALAPPDATA || "";
 
-  const installed = [
+  const sevenZipInstalled = [
+    process.env.RD_7Z_BIN || "",
+    path.join(programFiles, "7-Zip", "7z.exe"),
+    path.join(programFilesX86, "7-Zip", "7z.exe")
+  ];
+  if (localAppData) {
+    sevenZipInstalled.push(path.join(localAppData, "Programs", "7-Zip", "7z.exe"));
+  }
+
+  const winRarInstalled = [
     path.join(programFiles, "WinRAR", "UnRAR.exe"),
     path.join(programFilesX86, "WinRAR", "UnRAR.exe")
   ];
 
   if (localAppData) {
-    installed.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
+    winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
   }
 
   const ordered = resolvedExtractorCommand
-    ? [resolvedExtractorCommand, ...installed, "UnRAR.exe", "unrar"]
-    : [...installed, "UnRAR.exe", "unrar"];
+    ? [
+      resolvedExtractorCommand,
+      ...sevenZipInstalled,
+      "7z.exe",
+      "7z",
+      "7za.exe",
+      "7za",
+      ...winRarInstalled,
+      "UnRAR.exe",
+      "unrar"
+    ]
+    : [
+      ...sevenZipInstalled,
+      "7z.exe",
+      "7z",
+      "7za.exe",
+      "7za",
+      ...winRarInstalled,
+      "UnRAR.exe",
+      "unrar"
+    ];
   return Array.from(new Set(ordered.filter(Boolean)));
 }
 
@@ -860,7 +888,7 @@ type JvmExtractResult = {
 };
 
 function extractorBackendMode(): ExtractBackendMode {
-  const defaultMode = process.env.VITEST ? "legacy" : "jvm";
+  const defaultMode = "legacy";
   const raw = String(process.env.RD_EXTRACT_BACKEND || defaultMode).trim().toLowerCase();
   if (raw === "legacy") {
     return "legacy";
@@ -1574,7 +1602,7 @@ async function resolveExtractorCommandInternal(): Promise<string> {
     resolveFailureAt = 0;
   }
 
-  const candidates = winRarCandidates();
+  const candidates = nativeExtractorCandidates();
   for (const command of candidates) {
     if (isAbsoluteCommand(command) && !fs.existsSync(command)) {
       continue;
