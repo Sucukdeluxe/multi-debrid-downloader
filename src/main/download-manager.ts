@@ -6366,9 +6366,11 @@ export class DownloadManager extends EventEmitter {
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, items);
 
-    // Track multiple active archives for parallel hybrid extraction
-    const activeHybridArchiveMap = new Map<string, DownloadItem[]>();
-    const hybridArchiveStartTimes = new Map<string, number>();
+    // Track multiple active archives for parallel hybrid extraction.
+    // Using plain object instead of Map — Map.has() was mysteriously
+    // returning false despite Map.set() being called with the same key.
+    const resolvedItemsCache: Record<string, DownloadItem[]> = Object.create(null);
+    const archiveStartTimesCache: Record<string, number> = Object.create(null);
     let hybridLastEmitAt = 0;
 
     // Mark items based on whether their archive is actually ready for extraction.
@@ -6417,18 +6419,18 @@ export class DownloadManager extends EventEmitter {
           if (progress.phase === "done") {
             // Do NOT mark remaining archives as "Done" here — some may have
             // failed. The post-extraction code (result.failed check) will
-            // assign the correct label. Only clear the tracking maps.
-            activeHybridArchiveMap.clear();
-            hybridArchiveStartTimes.clear();
+            // assign the correct label. Only clear the tracking caches.
+            for (const key of Object.keys(resolvedItemsCache)) delete resolvedItemsCache[key];
+            for (const key of Object.keys(archiveStartTimesCache)) delete archiveStartTimesCache[key];
             return;
           }
 
           if (progress.archiveName) {
             // Resolve items for this archive if not yet tracked
-            if (!activeHybridArchiveMap.has(progress.archiveName)) {
+            if (!(progress.archiveName in resolvedItemsCache)) {
               const resolved = resolveArchiveItems(progress.archiveName);
-              activeHybridArchiveMap.set(progress.archiveName, resolved);
-              hybridArchiveStartTimes.set(progress.archiveName, nowMs());
+              resolvedItemsCache[progress.archiveName] = resolved;
+              archiveStartTimesCache[progress.archiveName] = nowMs();
               if (resolved.length === 0) {
                 logger.warn(`resolveArchiveItems (hybrid): KEINE Items gefunden für archiveName="${progress.archiveName}", items.length=${items.length}, itemNames=[${items.slice(0, 5).map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
               } else {
@@ -6447,12 +6449,12 @@ export class DownloadManager extends EventEmitter {
                 this.emitState(true);
               }
             }
-            const archItems = activeHybridArchiveMap.get(progress.archiveName)!;
+            const archItems = resolvedItemsCache[progress.archiveName] || [];
 
             // If archive is at 100%, mark its items as done and remove from active
             if (Number(progress.archivePercent ?? 0) >= 100) {
               const doneAt = nowMs();
-              const startedAt = hybridArchiveStartTimes.get(progress.archiveName) || doneAt;
+              const startedAt = archiveStartTimesCache[progress.archiveName] || doneAt;
               const doneLabel = formatExtractDone(doneAt - startedAt);
               for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
@@ -6460,8 +6462,8 @@ export class DownloadManager extends EventEmitter {
                   entry.updatedAt = doneAt;
                 }
               }
-              activeHybridArchiveMap.delete(progress.archiveName);
-              hybridArchiveStartTimes.delete(progress.archiveName);
+              delete resolvedItemsCache[progress.archiveName];
+              delete archiveStartTimesCache[progress.archiveName];
               // Show transitional label while next archive initializes
               const done = progress.current + 1;
               if (done < progress.total) {
@@ -6753,9 +6755,10 @@ export class DownloadManager extends EventEmitter {
         }
       }, extractTimeoutMs);
       try {
-        // Track multiple active archives for parallel extraction
-        const activeArchiveItemsMap = new Map<string, DownloadItem[]>();
-        const archiveStartTimes = new Map<string, number>();
+        // Track multiple active archives for parallel extraction.
+        // Using plain object — Map.has() had a mysterious caching failure.
+        const fullResolvedCache: Record<string, DownloadItem[]> = Object.create(null);
+        const fullStartTimesCache: Record<string, number> = Object.create(null);
 
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
@@ -6781,19 +6784,19 @@ export class DownloadManager extends EventEmitter {
             if (progress.phase === "done") {
               // Do NOT mark remaining archives as "Done" here — some may have
               // failed. The post-extraction code (result.failed check) will
-              // assign the correct label. Only clear the tracking maps.
-              activeArchiveItemsMap.clear();
-              archiveStartTimes.clear();
+              // assign the correct label. Only clear the tracking caches.
+              for (const key of Object.keys(fullResolvedCache)) delete fullResolvedCache[key];
+              for (const key of Object.keys(fullStartTimesCache)) delete fullStartTimesCache[key];
               emitExtractStatus("Entpacken 100%", true);
               return;
             }
 
             if (progress.archiveName) {
               // Resolve items for this archive if not yet tracked
-              if (!activeArchiveItemsMap.has(progress.archiveName)) {
+              if (!(progress.archiveName in fullResolvedCache)) {
                 const resolved = resolveArchiveItems(progress.archiveName);
-                activeArchiveItemsMap.set(progress.archiveName, resolved);
-                archiveStartTimes.set(progress.archiveName, nowMs());
+                fullResolvedCache[progress.archiveName] = resolved;
+                fullStartTimesCache[progress.archiveName] = nowMs();
                 if (resolved.length === 0) {
                   logger.warn(`resolveArchiveItems (full): KEINE Items für archiveName="${progress.archiveName}", completedItems=${completedItems.length}, names=[${completedItems.slice(0, 5).map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
                 } else {
@@ -6810,12 +6813,12 @@ export class DownloadManager extends EventEmitter {
                   emitExtractStatus(`Entpacken ${progress.percent}% · ${progress.archiveName}`, true);
                 }
               }
-              const archiveItems = activeArchiveItemsMap.get(progress.archiveName)!;
+              const archiveItems = fullResolvedCache[progress.archiveName] || [];
 
               // If archive is at 100%, mark its items as done and remove from active
               if (Number(progress.archivePercent ?? 0) >= 100) {
                 const doneAt = nowMs();
-                const startedAt = archiveStartTimes.get(progress.archiveName) || doneAt;
+                const startedAt = fullStartTimesCache[progress.archiveName] || doneAt;
                 const doneLabel = formatExtractDone(doneAt - startedAt);
                 for (const entry of archiveItems) {
                   if (!isExtractedLabel(entry.fullStatus)) {
@@ -6823,8 +6826,8 @@ export class DownloadManager extends EventEmitter {
                     entry.updatedAt = doneAt;
                   }
                 }
-                activeArchiveItemsMap.delete(progress.archiveName);
-                archiveStartTimes.delete(progress.archiveName);
+                delete fullResolvedCache[progress.archiveName];
+                delete fullStartTimesCache[progress.archiveName];
                 // Show transitional label while next archive initializes
                 const done = progress.current + 1;
                 if (done < progress.total) {
