@@ -169,6 +169,12 @@ The app stores runtime files in Electron's `userData` directory, including:
 
 Release history is available on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
 
+### v1.6.57 (2026-03-05)
+
+- Fixed extraction flow so archives are marked done only on real completion, not on temporary `100%` progress spikes.
+- Improved password handling: after the first successful archive, the discovered password is prioritized for subsequent archives.
+- Fixed progress parsing for password retries (reset/restart handling), reducing visible and real gaps between archive extractions.
+
 ## License
 
 MIT - see `LICENSE`.
