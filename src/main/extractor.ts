@@ -1718,7 +1718,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   return Array.from(targets);
 }
 
-async function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): Promise<number> {
+export async function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): Promise<number> {
   if (cleanupMode === "none") {
     return 0;
   }
@@ -1789,7 +1789,7 @@ async function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode):
   return removed;
 }
 
-async function hasAnyFilesRecursive(rootDir: string): Promise<boolean> {
+export async function hasAnyFilesRecursive(rootDir: string): Promise<boolean> {
   const rootExists = await fs.promises.access(rootDir).then(() => true, () => false);
   if (!rootExists) {
     return false;
@@ -1837,7 +1837,7 @@ async function hasAnyEntries(rootDir: string): Promise<boolean> {
   }
 }
 
-async function removeEmptyDirectoryTree(rootDir: string): Promise<number> {
+export async function removeEmptyDirectoryTree(rootDir: string): Promise<number> {
   const rootExists = await fs.promises.access(rootDir).then(() => true, () => false);
   if (!rootExists) {
     return 0;
