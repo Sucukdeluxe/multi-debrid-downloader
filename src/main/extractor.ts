@@ -1019,8 +1019,8 @@ function runJvmExtractCommand(
   const args = [
     "-Dfile.encoding=UTF-8",
     `-Djava.io.tmpdir=${jvmTmpDir}`,
-    "-Xms64m",
-    "-Xmx1g",
+    "-Xms512m",
+    "-Xmx8g",
     "-XX:+UseSerialGC",
     "-cp",
     layout.classPath,
