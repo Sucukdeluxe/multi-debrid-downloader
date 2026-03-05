@@ -6419,8 +6419,26 @@ export class DownloadManager extends EventEmitter {
           if (progress.archiveName) {
             // Resolve items for this archive if not yet tracked
             if (!activeHybridArchiveMap.has(progress.archiveName)) {
-              activeHybridArchiveMap.set(progress.archiveName, resolveArchiveItems(progress.archiveName));
+              const resolved = resolveArchiveItems(progress.archiveName);
+              activeHybridArchiveMap.set(progress.archiveName, resolved);
               hybridArchiveStartTimes.set(progress.archiveName, nowMs());
+              if (resolved.length === 0) {
+                logger.warn(`resolveArchiveItems (hybrid): KEINE Items gefunden für archiveName="${progress.archiveName}", items.length=${items.length}, itemNames=[${items.slice(0, 5).map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
+              } else {
+                logger.info(`resolveArchiveItems (hybrid): ${resolved.length} Items für archiveName="${progress.archiveName}"`);
+                // Immediately label the matched items and force emit so the UI
+                // transitions from "Ausstehend" to the extraction label right away.
+                const initLabel = `Entpacken 0% · ${progress.archiveName}`;
+                const initAt = nowMs();
+                for (const entry of resolved) {
+                  if (!isExtractedLabel(entry.fullStatus)) {
+                    entry.fullStatus = initLabel;
+                    entry.updatedAt = initAt;
+                  }
+                }
+                hybridLastEmitAt = initAt;
+                this.emitState(true);
+              }
             }
             const archItems = activeHybridArchiveMap.get(progress.archiveName)!;
 
@@ -6744,7 +6762,9 @@ export class DownloadManager extends EventEmitter {
           packageId,
           skipPostCleanup: true,
           maxParallel: this.settings.maxParallelExtract || 2,
-          extractCpuPriority: this.settings.extractCpuPriority,
+          // All downloads finished — use highest configured priority so extraction
+          // isn't starved. "high" maps to BELOW_NORMAL instead of the default IDLE.
+          extractCpuPriority: "high",
           onProgress: (progress) => {
             if (progress.phase === "preparing") {
               pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
@@ -6764,8 +6784,24 @@ export class DownloadManager extends EventEmitter {
             if (progress.archiveName) {
               // Resolve items for this archive if not yet tracked
               if (!activeArchiveItemsMap.has(progress.archiveName)) {
-                activeArchiveItemsMap.set(progress.archiveName, resolveArchiveItems(progress.archiveName));
+                const resolved = resolveArchiveItems(progress.archiveName);
+                activeArchiveItemsMap.set(progress.archiveName, resolved);
                 archiveStartTimes.set(progress.archiveName, nowMs());
+                if (resolved.length === 0) {
+                  logger.warn(`resolveArchiveItems (full): KEINE Items für archiveName="${progress.archiveName}", completedItems=${completedItems.length}, names=[${completedItems.slice(0, 5).map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
+                } else {
+                  logger.info(`resolveArchiveItems (full): ${resolved.length} Items für archiveName="${progress.archiveName}"`);
+                  // Immediately label items and force emit for instant UI feedback
+                  const initLabel = `Entpacken 0% · ${progress.archiveName}`;
+                  const initAt = nowMs();
+                  for (const entry of resolved) {
+                    if (!isExtractedLabel(entry.fullStatus)) {
+                      entry.fullStatus = initLabel;
+                      entry.updatedAt = initAt;
+                    }
+                  }
+                  emitExtractStatus(`Entpacken ${progress.percent}% · ${progress.archiveName}`, true);
+                }
               }
               const archiveItems = activeArchiveItemsMap.get(progress.archiveName)!;
 
