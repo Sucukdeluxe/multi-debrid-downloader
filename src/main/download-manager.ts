@@ -7039,7 +7039,7 @@ export class DownloadManager extends EventEmitter {
   ): Promise<void> {
     try {
       // ── Nested extraction: extract archives found inside the extracted output ──
-      if (extractedCount > 0 && failed === 0 && this.settings.autoExtract) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.autoExtract) {
         const nestedBlacklist = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
         const nestedCandidates = (await findArchiveCandidates(pkg.extractDir))
           .filter((p) => !nestedBlacklist.test(p));
@@ -7066,14 +7066,16 @@ export class DownloadManager extends EventEmitter {
       }
 
       // ── Auto-Rename ──
-      if (extractedCount > 0) {
+      if (extractedCount > 0 || alreadyMarkedExtracted) {
         pkg.postProcessLabel = "Renaming...";
         this.emitState();
         await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
       }
 
       // ── Archive cleanup (source archives in outputDir) ──
-      if (extractedCount > 0 && failed === 0 && this.settings.cleanupMode !== "none") {
+      // Also run when hybrid extraction already handled everything (extractedCount=0
+      // but alreadyMarkedExtracted=true) so archives are still cleaned up.
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none") {
         pkg.postProcessLabel = "Aufräumen...";
         this.emitState();
         const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
@@ -7097,7 +7099,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       // ── Link/Sample artifact removal ──
-      if (extractedCount > 0 && failed === 0) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
         if (this.settings.removeLinkFilesAfterExtract) {
           const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir);
           if (removedLinks > 0) {
@@ -7113,14 +7115,14 @@ export class DownloadManager extends EventEmitter {
       }
 
       // ── Resume state cleanup ──
-      if (extractedCount > 0 && failed === 0) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
         await clearExtractResumeState(pkg.outputDir, packageId);
         // Backward compatibility: older versions used .rd_extract_progress.json without package suffix.
         await clearExtractResumeState(pkg.outputDir);
       }
 
       // ── Empty directory tree removal ──
-      if (extractedCount > 0 && failed === 0 && this.settings.cleanupMode === "delete") {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode === "delete") {
         if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
           const removedDirs = await removeEmptyDirectoryTree(pkg.outputDir);
           if (removedDirs > 0) {
