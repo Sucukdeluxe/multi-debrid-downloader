@@ -751,60 +751,86 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
   return null;
 }
 
-function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
+export function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
   const entryLower = archiveName.toLowerCase();
+
+  // Helper: get item basename (try targetPath first, then fileName)
+  const itemBaseName = (item: DownloadItem): string =>
+    path.basename(item.targetPath || item.fileName || "");
+
+  // Try pattern-based matching first (for multipart archives)
+  let pattern: RegExp | null = null;
   const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
   if (multipartMatch) {
     const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
-    return items.filter((item) => {
-      const name = path.basename(item.targetPath || item.fileName || "");
-      return pattern.test(name);
-    });
+    pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
   }
-  const rarMatch = entryLower.match(/^(.*)\.rar$/);
-  if (rarMatch) {
-    const stem = rarMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
-    return items.filter((item) => {
-      const name = path.basename(item.targetPath || item.fileName || "");
-      return pattern.test(name);
-    });
+  if (!pattern) {
+    const rarMatch = entryLower.match(/^(.*)\.rar$/);
+    if (rarMatch) {
+      const stem = rarMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
+    }
   }
-  // Split ZIP (e.g., movie.zip.001, movie.zip.002)
-  const zipSplitMatch = entryLower.match(/^(.*)\.zip\.001$/);
-  if (zipSplitMatch) {
-    const stem = zipSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^${stem}\\.zip(\\.\\d+)?$`, "i");
-    return items.filter((item) => {
-      const name = path.basename(item.targetPath || item.fileName || "");
-      return pattern.test(name);
-    });
+  if (!pattern) {
+    const zipSplitMatch = entryLower.match(/^(.*)\.zip\.001$/);
+    if (zipSplitMatch) {
+      const stem = zipSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pattern = new RegExp(`^${stem}\\.zip(\\.\\d+)?$`, "i");
+    }
   }
-  // Split 7z (e.g., movie.7z.001, movie.7z.002)
-  const sevenSplitMatch = entryLower.match(/^(.*)\.7z\.001$/);
-  if (sevenSplitMatch) {
-    const stem = sevenSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^${stem}\\.7z(\\.\\d+)?$`, "i");
-    return items.filter((item) => {
-      const name = path.basename(item.targetPath || item.fileName || "");
-      return pattern.test(name);
-    });
+  if (!pattern) {
+    const sevenSplitMatch = entryLower.match(/^(.*)\.7z\.001$/);
+    if (sevenSplitMatch) {
+      const stem = sevenSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pattern = new RegExp(`^${stem}\\.7z(\\.\\d+)?$`, "i");
+    }
   }
-  // Generic .NNN splits (e.g., movie.001, movie.002)
-  const genericSplitMatch = entryLower.match(/^(.*)\.001$/);
-  if (genericSplitMatch && !/\.(zip|7z)\.001$/.test(entryLower)) {
-    const stem = genericSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`^${stem}\\.\\d{3}$`, "i");
-    return items.filter((item) => {
-      const name = path.basename(item.targetPath || item.fileName || "");
-      return pattern.test(name);
-    });
+  if (!pattern && /^(.*)\.001$/.test(entryLower) && !/\.(zip|7z)\.001$/.test(entryLower)) {
+    const genericSplitMatch = entryLower.match(/^(.*)\.001$/);
+    if (genericSplitMatch) {
+      const stem = genericSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pattern = new RegExp(`^${stem}\\.\\d{3}$`, "i");
+    }
   }
-  return items.filter((item) => {
-    const name = path.basename(item.targetPath || item.fileName || "").toLowerCase();
-    return name === entryLower;
-  });
+
+  // Attempt 1: Pattern match (handles multipart archives)
+  if (pattern) {
+    const matched = items.filter((item) => pattern!.test(itemBaseName(item)));
+    if (matched.length > 0) return matched;
+  }
+
+  // Attempt 2: Exact filename match (case-insensitive)
+  const exactMatch = items.filter((item) => itemBaseName(item).toLowerCase() === entryLower);
+  if (exactMatch.length > 0) return exactMatch;
+
+  // Attempt 3: Stem-based fuzzy match — strip archive extensions and compare stems.
+  // Handles cases where debrid services modify filenames slightly.
+  const archiveStem = entryLower
+    .replace(/\.part\d+\.rar$/i, "")
+    .replace(/\.r\d{2,3}$/i, "")
+    .replace(/\.rar$/i, "")
+    .replace(/\.(zip|7z)\.\d{3}$/i, "")
+    .replace(/\.\d{3}$/i, "")
+    .replace(/\.(zip|7z)$/i, "");
+  if (archiveStem.length > 3) {
+    const stemMatch = items.filter((item) => {
+      const name = itemBaseName(item).toLowerCase();
+      return name.startsWith(archiveStem) && /\.(rar|r\d{2,3}|zip|7z|\d{3})$/i.test(name);
+    });
+    if (stemMatch.length > 0) return stemMatch;
+  }
+
+  // Attempt 4: If only one item in the list and one archive — return it as a best-effort match.
+  // This handles single-file packages where the filename may have been modified.
+  if (items.length === 1) {
+    const singleName = itemBaseName(items[0]).toLowerCase();
+    if (/\.(rar|zip|7z|\d{3})$/i.test(singleName)) {
+      return items;
+    }
+  }
+
+  return [];
 }
 
 function retryDelayWithJitter(attempt: number, baseMs: number): number {
@@ -6366,48 +6392,10 @@ export class DownloadManager extends EventEmitter {
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, items);
 
-    // Track multiple active archives for parallel hybrid extraction.
-    // Using plain object instead of Map — Map.has() was mysteriously
-    // returning false despite Map.set() being called with the same key.
-    const hybridInitializedArchives = new Set<string>();
-    const hybridResolvedItems: Array<{ key: string; items: DownloadItem[] }> = [];
-    const hybridStartTimes: Array<{ key: string; time: number }> = [];
+    // Track archives for parallel hybrid extraction progress
+    const hybridResolvedItems = new Map<string, DownloadItem[]>();
+    const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
-
-    const findHybridResolved = (key: string): DownloadItem[] | undefined => {
-      for (let i = 0; i < hybridResolvedItems.length; i++) {
-        if (hybridResolvedItems[i].key === key) return hybridResolvedItems[i].items;
-      }
-      return undefined;
-    };
-    const setHybridResolved = (key: string, items: DownloadItem[]): void => {
-      for (let i = 0; i < hybridResolvedItems.length; i++) {
-        if (hybridResolvedItems[i].key === key) { hybridResolvedItems[i].items = items; return; }
-      }
-      hybridResolvedItems.push({ key, items });
-    };
-    const removeHybridResolved = (key: string): void => {
-      for (let i = hybridResolvedItems.length - 1; i >= 0; i--) {
-        if (hybridResolvedItems[i].key === key) { hybridResolvedItems.splice(i, 1); return; }
-      }
-    };
-    const findHybridStartTime = (key: string): number | undefined => {
-      for (let i = 0; i < hybridStartTimes.length; i++) {
-        if (hybridStartTimes[i].key === key) return hybridStartTimes[i].time;
-      }
-      return undefined;
-    };
-    const setHybridStartTime = (key: string, time: number): void => {
-      for (let i = 0; i < hybridStartTimes.length; i++) {
-        if (hybridStartTimes[i].key === key) { hybridStartTimes[i].time = time; return; }
-      }
-      hybridStartTimes.push({ key, time });
-    };
-    const removeHybridStartTime = (key: string): void => {
-      for (let i = hybridStartTimes.length - 1; i >= 0; i--) {
-        if (hybridStartTimes[i].key === key) { hybridStartTimes.splice(i, 1); return; }
-      }
-    };
 
     // Mark items based on whether their archive is actually ready for extraction.
     // Only items whose archive is in readyArchives get "Ausstehend"; others keep
@@ -6453,28 +6441,21 @@ export class DownloadManager extends EventEmitter {
             return;
           }
           if (progress.phase === "done") {
-            // Do NOT mark remaining archives as "Done" here — some may have
-            // failed. The post-extraction code (result.failed check) will
-            // assign the correct label. Only clear the tracking caches.
-            hybridInitializedArchives.clear();
-            hybridResolvedItems.length = 0;
-            hybridStartTimes.length = 0;
+            hybridResolvedItems.clear();
+            hybridStartTimes.clear();
             return;
           }
 
           if (progress.archiveName) {
             // Resolve items for this archive if not yet tracked
-            if (!hybridInitializedArchives.has(progress.archiveName)) {
-              hybridInitializedArchives.add(progress.archiveName);
+            if (!hybridResolvedItems.has(progress.archiveName)) {
               const resolved = resolveArchiveItems(progress.archiveName);
-              setHybridResolved(progress.archiveName, resolved);
-              setHybridStartTime(progress.archiveName, nowMs());
+              hybridResolvedItems.set(progress.archiveName, resolved);
+              hybridStartTimes.set(progress.archiveName, nowMs());
               if (resolved.length === 0) {
-                logger.warn(`resolveArchiveItems (hybrid): KEINE Items gefunden für archiveName="${progress.archiveName}", items.length=${items.length}, itemNames=[${items.slice(0, 5).map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
+                logger.warn(`resolveArchiveItems (hybrid): KEINE Items gefunden für archiveName="${progress.archiveName}", items.length=${items.length}, itemNames=[${items.map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
               } else {
                 logger.info(`resolveArchiveItems (hybrid): ${resolved.length} Items für archiveName="${progress.archiveName}"`);
-                // Immediately label the matched items and force emit so the UI
-                // transitions from "Ausstehend" to the extraction label right away.
                 const initLabel = `Entpacken 0% · ${progress.archiveName}`;
                 const initAt = nowMs();
                 for (const entry of resolved) {
@@ -6487,12 +6468,12 @@ export class DownloadManager extends EventEmitter {
                 this.emitState(true);
               }
             }
-            const archItems = findHybridResolved(progress.archiveName) || [];
+            const archItems = hybridResolvedItems.get(progress.archiveName) || [];
 
             // If archive is at 100%, mark its items as done and remove from active
             if (Number(progress.archivePercent ?? 0) >= 100) {
               const doneAt = nowMs();
-              const startedAt = findHybridStartTime(progress.archiveName) || doneAt;
+              const startedAt = hybridStartTimes.get(progress.archiveName) || doneAt;
               const doneLabel = formatExtractDone(doneAt - startedAt);
               for (const entry of archItems) {
                 if (!isExtractedLabel(entry.fullStatus)) {
@@ -6500,9 +6481,8 @@ export class DownloadManager extends EventEmitter {
                   entry.updatedAt = doneAt;
                 }
               }
-              hybridInitializedArchives.delete(progress.archiveName);
-              removeHybridResolved(progress.archiveName);
-              removeHybridStartTime(progress.archiveName);
+              hybridResolvedItems.delete(progress.archiveName);
+              hybridStartTimes.delete(progress.archiveName);
               // Show transitional label while next archive initializes
               const done = progress.current + 1;
               if (done < progress.total) {
@@ -6794,46 +6774,9 @@ export class DownloadManager extends EventEmitter {
         }
       }, extractTimeoutMs);
       try {
-        // Track multiple active archives for parallel extraction.
-        // Using plain object — Map.has() had a mysterious caching failure.
-        const fullInitializedArchives = new Set<string>();
-        const fullResolvedItems: Array<{ key: string; items: DownloadItem[] }> = [];
-        const fullStartTimes: Array<{ key: string; time: number }> = [];
-
-        const findFullResolved = (key: string): DownloadItem[] | undefined => {
-          for (let i = 0; i < fullResolvedItems.length; i++) {
-            if (fullResolvedItems[i].key === key) return fullResolvedItems[i].items;
-          }
-          return undefined;
-        };
-        const setFullResolved = (key: string, items: DownloadItem[]): void => {
-          for (let i = 0; i < fullResolvedItems.length; i++) {
-            if (fullResolvedItems[i].key === key) { fullResolvedItems[i].items = items; return; }
-          }
-          fullResolvedItems.push({ key, items });
-        };
-        const removeFullResolved = (key: string): void => {
-          for (let i = fullResolvedItems.length - 1; i >= 0; i--) {
-            if (fullResolvedItems[i].key === key) { fullResolvedItems.splice(i, 1); return; }
-          }
-        };
-        const findFullStartTime = (key: string): number | undefined => {
-          for (let i = 0; i < fullStartTimes.length; i++) {
-            if (fullStartTimes[i].key === key) return fullStartTimes[i].time;
-          }
-          return undefined;
-        };
-        const setFullStartTime = (key: string, time: number): void => {
-          for (let i = 0; i < fullStartTimes.length; i++) {
-            if (fullStartTimes[i].key === key) { fullStartTimes[i].time = time; return; }
-          }
-          fullStartTimes.push({ key, time });
-        };
-        const removeFullStartTime = (key: string): void => {
-          for (let i = fullStartTimes.length - 1; i >= 0; i--) {
-            if (fullStartTimes[i].key === key) { fullStartTimes.splice(i, 1); return; }
-          }
-        };
+        // Track archives for parallel extraction progress
+        const fullResolvedItems = new Map<string, DownloadItem[]>();
+        const fullStartTimes = new Map<string, number>();
 
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
@@ -6857,28 +6800,22 @@ export class DownloadManager extends EventEmitter {
               return;
             }
             if (progress.phase === "done") {
-              // Do NOT mark remaining archives as "Done" here — some may have
-              // failed. The post-extraction code (result.failed check) will
-              // assign the correct label. Only clear the tracking caches.
-              fullInitializedArchives.clear();
-              fullResolvedItems.length = 0;
-              fullStartTimes.length = 0;
+              fullResolvedItems.clear();
+              fullStartTimes.clear();
               emitExtractStatus("Entpacken 100%", true);
               return;
             }
 
             if (progress.archiveName) {
               // Resolve items for this archive if not yet tracked
-              if (!fullInitializedArchives.has(progress.archiveName)) {
-                fullInitializedArchives.add(progress.archiveName);
+              if (!fullResolvedItems.has(progress.archiveName)) {
                 const resolved = resolveArchiveItems(progress.archiveName);
-                setFullResolved(progress.archiveName, resolved);
-                setFullStartTime(progress.archiveName, nowMs());
+                fullResolvedItems.set(progress.archiveName, resolved);
+                fullStartTimes.set(progress.archiveName, nowMs());
                 if (resolved.length === 0) {
-                  logger.warn(`resolveArchiveItems (full): KEINE Items für archiveName="${progress.archiveName}", completedItems=${completedItems.length}, names=[${completedItems.slice(0, 5).map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
+                  logger.warn(`resolveArchiveItems (full): KEINE Items für archiveName="${progress.archiveName}", completedItems=${completedItems.length}, names=[${completedItems.map((i) => path.basename(i.targetPath || i.fileName || "?")).join(", ")}]`);
                 } else {
                   logger.info(`resolveArchiveItems (full): ${resolved.length} Items für archiveName="${progress.archiveName}"`);
-                  // Immediately label items and force emit for instant UI feedback
                   const initLabel = `Entpacken 0% · ${progress.archiveName}`;
                   const initAt = nowMs();
                   for (const entry of resolved) {
@@ -6890,12 +6827,12 @@ export class DownloadManager extends EventEmitter {
                   emitExtractStatus(`Entpacken ${progress.percent}% · ${progress.archiveName}`, true);
                 }
               }
-              const archiveItems = findFullResolved(progress.archiveName) || [];
+              const archiveItems = fullResolvedItems.get(progress.archiveName) || [];
 
               // If archive is at 100%, mark its items as done and remove from active
               if (Number(progress.archivePercent ?? 0) >= 100) {
                 const doneAt = nowMs();
-                const startedAt = findFullStartTime(progress.archiveName) || doneAt;
+                const startedAt = fullStartTimes.get(progress.archiveName) || doneAt;
                 const doneLabel = formatExtractDone(doneAt - startedAt);
                 for (const entry of archiveItems) {
                   if (!isExtractedLabel(entry.fullStatus)) {
@@ -6903,9 +6840,8 @@ export class DownloadManager extends EventEmitter {
                     entry.updatedAt = doneAt;
                   }
                 }
-                fullInitializedArchives.delete(progress.archiveName);
-                removeFullResolved(progress.archiveName);
-                removeFullStartTime(progress.archiveName);
+                fullResolvedItems.delete(progress.archiveName);
+                fullStartTimes.delete(progress.archiveName);
                 // Show transitional label while next archive initializes
                 const done = progress.current + 1;
                 if (done < progress.total) {

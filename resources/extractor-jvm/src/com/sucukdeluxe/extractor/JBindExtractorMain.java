@@ -3,7 +3,9 @@ package com.sucukdeluxe.extractor;
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.exception.ZipException;
 import net.lingala.zip4j.model.FileHeader;
+import net.sf.sevenzipjbinding.ExtractAskMode;
 import net.sf.sevenzipjbinding.ExtractOperationResult;
+import net.sf.sevenzipjbinding.IArchiveExtractCallback;
 import net.sf.sevenzipjbinding.IArchiveOpenCallback;
 import net.sf.sevenzipjbinding.IArchiveOpenVolumeCallback;
 import net.sf.sevenzipjbinding.IInArchive;
@@ -360,110 +362,99 @@ public final class JBindExtractorMain {
         try {
             context = openSevenZipArchive(request.archiveFile, password);
             IInArchive archive = context.archive;
-            ISimpleInArchive simple = archive.getSimpleInterface();
-            ISimpleInArchiveItem[] items = simple.getArchiveItems();
-            if (items == null) {
+            int itemCount = archive.getNumberOfItems();
+            if (itemCount <= 0) {
                 throw new IOException("Archiv enthalt keine Eintrage oder konnte nicht gelesen werden: " + request.archiveFile.getAbsolutePath());
             }
 
+            // Pre-scan: collect file indices, sizes, output paths, and detect encryption
             long totalUnits = 0;
             boolean encrypted = false;
-            for (ISimpleInArchiveItem item : items) {
-                if (item == null || item.isFolder()) {
-                    continue;
-                }
-                try {
-                    encrypted = encrypted || item.isEncrypted();
-                } catch (Throwable ignored) {
-                    // ignore encrypted flag read issues
-                }
-                totalUnits += safeSize(item.getSize());
-            }
-            ProgressTracker progress = new ProgressTracker(totalUnits);
-            progress.emitStart();
-
+            List<Integer> fileIndices = new ArrayList<Integer>();
+            List<File> outputFiles = new ArrayList<File>();
+            List<Long> fileSizes = new ArrayList<Long>();
             Set<String> reserved = new HashSet<String>();
-            for (ISimpleInArchiveItem item : items) {
-                if (item == null) {
-                    continue;
-                }
 
-                String entryName = normalizeEntryName(item.getPath(), "item-" + item.getItemIndex());
-                if (item.isFolder()) {
+            for (int i = 0; i < itemCount; i++) {
+                Boolean isFolder = (Boolean) archive.getProperty(i, PropID.IS_FOLDER);
+                String entryPath = (String) archive.getProperty(i, PropID.PATH);
+                String entryName = normalizeEntryName(entryPath, "item-" + i);
+
+                if (Boolean.TRUE.equals(isFolder)) {
                     File dir = resolveDirectory(request.targetDir, entryName);
                     ensureDirectory(dir);
                     reserved.add(pathKey(dir));
                     continue;
                 }
 
-                long itemUnits = safeSize(item.getSize());
-                File output = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
-                if (output == null) {
-                    progress.advance(itemUnits);
-                    continue;
-                }
-
-                ensureDirectory(output.getParentFile());
-                rejectSymlink(output);
-                final FileOutputStream out = new FileOutputStream(output);
-                final long[] remaining = new long[] { itemUnits };
-                boolean extractionSuccess = false;
                 try {
-                    ExtractOperationResult result = item.extractSlow(new ISequentialOutStream() {
-                        @Override
-                        public int write(byte[] data) throws SevenZipException {
-                            if (data == null || data.length == 0) {
-                                return 0;
-                            }
-                            try {
-                                out.write(data);
-                            } catch (IOException error) {
-                                throw new SevenZipException("Fehler beim Schreiben: " + error.getMessage(), error);
-                            }
-                            long accounted = Math.min(remaining[0], (long) data.length);
-                            remaining[0] -= accounted;
-                            progress.advance(accounted);
-                            return data.length;
-                        }
-                    }, password == null ? "" : password);
-
-                    if (remaining[0] > 0) {
-                        progress.advance(remaining[0]);
-                    }
-
-                    if (result != ExtractOperationResult.OK) {
-                        if (isPasswordFailure(result, encrypted)) {
-                            throw new WrongPasswordException(new IOException("Falsches Passwort"));
-                        }
-                        throw new IOException("7z-Fehler: " + result.name());
-                    }
-                    extractionSuccess = true;
-                } catch (SevenZipException error) {
-                    if (looksLikeWrongPassword(error, encrypted)) {
-                        throw new WrongPasswordException(error);
-                    }
-                    throw error;
-                } finally {
-                    try {
-                        out.close();
-                    } catch (Throwable ignored) {
-                    }
-                    if (!extractionSuccess && output.exists()) {
-                        try {
-                            output.delete();
-                        } catch (Throwable ignored) {
-                        }
-                    }
-                }
-
-                try {
-                    java.util.Date modified = item.getLastWriteTime();
-                    if (modified != null) {
-                        output.setLastModified(modified.getTime());
-                    }
+                    Boolean isEncrypted = (Boolean) archive.getProperty(i, PropID.ENCRYPTED);
+                    encrypted = encrypted || Boolean.TRUE.equals(isEncrypted);
                 } catch (Throwable ignored) {
-                    // best effort
+                    // ignore encrypted flag read issues
                 }
+
+                Long rawSize = (Long) archive.getProperty(i, PropID.SIZE);
+                long itemSize = safeSize(rawSize);
+                totalUnits += itemSize;
+
+                File output = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                fileIndices.add(i);
+                outputFiles.add(output); // null if skipped
+                fileSizes.add(itemSize);
+            }
+
+            if (fileIndices.isEmpty()) {
+                // All items are folders or skipped
+                ProgressTracker progress = new ProgressTracker(1);
+                progress.emitStart();
+                progress.emitDone();
+                return;
+            }
+
+            ProgressTracker progress = new ProgressTracker(totalUnits);
+            progress.emitStart();
+
+            // Build index array for bulk extract
+            int[] indices = new int[fileIndices.size()];
+            for (int i = 0; i < fileIndices.size(); i++) {
+                indices[i] = fileIndices.get(i);
+            }
+
+            // Map from archive index to our position in fileIndices/outputFiles
+            Map<Integer, Integer> indexToPos = new HashMap<Integer, Integer>();
+            for (int i = 0; i < fileIndices.size(); i++) {
+                indexToPos.put(fileIndices.get(i), i);
+            }
+
+            // Bulk extraction state
+            final boolean encryptedFinal = encrypted;
+            final String effectivePassword = password == null ? "" : password;
+            final File[] currentOutput = new File[1];
+            final FileOutputStream[] currentStream = new FileOutputStream[1];
+            final boolean[] currentSuccess = new boolean[1];
+            final long[] currentRemaining = new long[1];
+            final Throwable[] firstError = new Throwable[1];
+            final int[] currentPos = new int[] { -1 };
+
+            try {
+                archive.extract(indices, false, new BulkExtractCallback(
+                    archive, indexToPos, fileIndices, outputFiles, fileSizes,
+                    progress, encryptedFinal, effectivePassword, currentOutput,
+                    currentStream, currentSuccess, currentRemaining, currentPos, firstError
+                ));
+            } catch (SevenZipException error) {
+                if (looksLikeWrongPassword(error, encryptedFinal)) {
+                    throw new WrongPasswordException(error);
+                }
+                throw error;
+            }
+
+            if (firstError[0] != null) {
+                if (firstError[0] instanceof WrongPasswordException) {
+                    throw (WrongPasswordException) firstError[0];
+                }
+                throw (Exception) firstError[0];
             }
 
             progress.emitDone();
@@ -886,6 +877,176 @@ public final class JBindExtractorMain {
         private ConflictMode conflictMode = ConflictMode.SKIP;
         private Backend backend = Backend.AUTO;
         private final List<String> passwords = new ArrayList<String>();
+    }
+
+    /**
+     * Bulk extraction callback that implements both IArchiveExtractCallback and
+     * ICryptoGetTextPassword. Using the bulk IInArchive.extract() API instead of
+     * per-item extractSlow() is critical for performance — solid RAR archives
+     * otherwise re-decode from the beginning for every single item.
+     */
+    private static final class BulkExtractCallback implements IArchiveExtractCallback, ICryptoGetTextPassword {
+        private final IInArchive archive;
+        private final Map<Integer, Integer> indexToPos;
+        private final List<Integer> fileIndices;
+        private final List<File> outputFiles;
+        private final List<Long> fileSizes;
+        private final ProgressTracker progress;
+        private final boolean encrypted;
+        private final String password;
+        private final File[] currentOutput;
+        private final FileOutputStream[] currentStream;
+        private final boolean[] currentSuccess;
+        private final long[] currentRemaining;
+        private final int[] currentPos;
+        private final Throwable[] firstError;
+
+        BulkExtractCallback(IInArchive archive, Map<Integer, Integer> indexToPos,
+                List<Integer> fileIndices, List<File> outputFiles, List<Long> fileSizes,
+                ProgressTracker progress, boolean encrypted, String password,
+                File[] currentOutput, FileOutputStream[] currentStream,
+                boolean[] currentSuccess, long[] currentRemaining, int[] currentPos,
+                Throwable[] firstError) {
+            this.archive = archive;
+            this.indexToPos = indexToPos;
+            this.fileIndices = fileIndices;
+            this.outputFiles = outputFiles;
+            this.fileSizes = fileSizes;
+            this.progress = progress;
+            this.encrypted = encrypted;
+            this.password = password;
+            this.currentOutput = currentOutput;
+            this.currentStream = currentStream;
+            this.currentSuccess = currentSuccess;
+            this.currentRemaining = currentRemaining;
+            this.currentPos = currentPos;
+            this.firstError = firstError;
+        }
+
+        @Override
+        public String cryptoGetTextPassword() {
+            return password;
+        }
+
+        @Override
+        public void setTotal(long total) {
+            // 7z reports total compressed bytes; we track uncompressed via ProgressTracker
+        }
+
+        @Override
+        public void setCompleted(long complete) {
+            // Not used — we track per-write progress
+        }
+
+        @Override
+        public ISequentialOutStream getStream(int index, ExtractAskMode extractAskMode) throws SevenZipException {
+            closeCurrentStream();
+
+            Integer pos = indexToPos.get(index);
+            if (pos == null) {
+                return null;
+            }
+            currentPos[0] = pos;
+            currentOutput[0] = outputFiles.get(pos);
+            currentSuccess[0] = false;
+            currentRemaining[0] = fileSizes.get(pos);
+
+            if (extractAskMode != ExtractAskMode.EXTRACT) {
+                currentOutput[0] = null;
+                return null;
+            }
+
+            if (currentOutput[0] == null) {
+                progress.advance(currentRemaining[0]);
+                return null;
+            }
+
+            try {
+                ensureDirectory(currentOutput[0].getParentFile());
+                rejectSymlink(currentOutput[0]);
+                currentStream[0] = new FileOutputStream(currentOutput[0]);
+            } catch (IOException error) {
+                throw new SevenZipException("Fehler beim Erstellen: " + error.getMessage(), error);
+            }
+
+            return new ISequentialOutStream() {
+                @Override
+                public int write(byte[] data) throws SevenZipException {
+                    if (data == null || data.length == 0) {
+                        return 0;
+                    }
+                    try {
+                        currentStream[0].write(data);
+                    } catch (IOException error) {
+                        throw new SevenZipException("Fehler beim Schreiben: " + error.getMessage(), error);
+                    }
+                    long accounted = Math.min(currentRemaining[0], (long) data.length);
+                    currentRemaining[0] -= accounted;
+                    progress.advance(accounted);
+                    return data.length;
+                }
+            };
+        }
+
+        @Override
+        public void prepareOperation(ExtractAskMode extractAskMode) {
+            // no-op
+        }
+
+        @Override
+        public void setOperationResult(ExtractOperationResult result) throws SevenZipException {
+            if (currentRemaining[0] > 0) {
+                progress.advance(currentRemaining[0]);
+                currentRemaining[0] = 0;
+            }
+
+            if (result == ExtractOperationResult.OK) {
+                currentSuccess[0] = true;
+                closeCurrentStream();
+                if (currentPos[0] >= 0 && currentOutput[0] != null) {
+                    try {
+                        int archiveIndex = fileIndices.get(currentPos[0]);
+                        java.util.Date modified = (java.util.Date) archive.getProperty(archiveIndex, PropID.LAST_MODIFICATION_TIME);
+                        if (modified != null) {
+                            currentOutput[0].setLastModified(modified.getTime());
+                        }
+                    } catch (Throwable ignored) {
+                        // best effort
+                    }
+                }
+            } else {
+                closeCurrentStream();
+                if (currentOutput[0] != null && currentOutput[0].exists()) {
+                    try {
+                        currentOutput[0].delete();
+                    } catch (Throwable ignored) {
+                    }
+                }
+                if (firstError[0] == null) {
+                    if (isPasswordFailure(result, encrypted)) {
+                        firstError[0] = new WrongPasswordException(new IOException("Falsches Passwort"));
+                    } else {
+                        firstError[0] = new IOException("7z-Fehler: " + result.name());
+                    }
+                }
+            }
+        }
+
+        private void closeCurrentStream() {
+            if (currentStream[0] != null) {
+                try {
+                    currentStream[0].close();
+                } catch (Throwable ignored) {
+                }
+                currentStream[0] = null;
+            }
+            if (!currentSuccess[0] && currentOutput[0] != null && currentOutput[0].exists()) {
+                try {
+                    currentOutput[0].delete();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
     }
 
     private static final class WrongPasswordException extends Exception {

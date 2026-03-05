@@ -65,6 +65,111 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     expect(fs.existsSync(path.join(targetDir, "episode.txt"))).toBe(true);
   });
 
+  it("emits progress callbacks with archiveName and percent", async () => {
+    process.env.RD_EXTRACT_BACKEND = "jvm";
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-progress-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    // Create a ZIP with some content to trigger progress
+    const zipPath = path.join(packageDir, "progress-test.zip");
+    const zip = new AdmZip();
+    zip.addFile("file1.txt", Buffer.from("Hello World ".repeat(100)));
+    zip.addFile("file2.txt", Buffer.from("Another file ".repeat(100)));
+    zip.writeZip(zipPath);
+
+    const progressUpdates: Array<{
+      archiveName: string;
+      percent: number;
+      phase: string;
+      archivePercent?: number;
+    }> = [];
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onProgress: (update) => {
+        progressUpdates.push({
+          archiveName: update.archiveName,
+          percent: update.percent,
+          phase: update.phase,
+          archivePercent: update.archivePercent,
+        });
+      },
+    });
+
+    expect(result.extracted).toBe(1);
+    expect(result.failed).toBe(0);
+
+    // Should have at least preparing, extracting, and done phases
+    const phases = new Set(progressUpdates.map((u) => u.phase));
+    expect(phases.has("preparing")).toBe(true);
+    expect(phases.has("extracting")).toBe(true);
+
+    // Extracting phase should include the archive name
+    const extracting = progressUpdates.filter((u) => u.phase === "extracting" && u.archiveName === "progress-test.zip");
+    expect(extracting.length).toBeGreaterThan(0);
+
+    // Should end at 100%
+    const lastExtracting = extracting[extracting.length - 1];
+    expect(lastExtracting.archivePercent).toBe(100);
+
+    // Files should exist
+    expect(fs.existsSync(path.join(targetDir, "file1.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(targetDir, "file2.txt"))).toBe(true);
+  });
+
+  it("extracts multiple archives sequentially with progress for each", async () => {
+    process.env.RD_EXTRACT_BACKEND = "jvm";
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-multi-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+
+    // Create two separate ZIP archives
+    const zip1 = new AdmZip();
+    zip1.addFile("episode01.txt", Buffer.from("ep1 content"));
+    zip1.writeZip(path.join(packageDir, "archive1.zip"));
+
+    const zip2 = new AdmZip();
+    zip2.addFile("episode02.txt", Buffer.from("ep2 content"));
+    zip2.writeZip(path.join(packageDir, "archive2.zip"));
+
+    const archiveNames = new Set<string>();
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onProgress: (update) => {
+        if (update.phase === "extracting" && update.archiveName) {
+          archiveNames.add(update.archiveName);
+        }
+      },
+    });
+
+    expect(result.extracted).toBe(2);
+    expect(result.failed).toBe(0);
+    // Both archive names should have appeared in progress
+    expect(archiveNames.has("archive1.zip")).toBe(true);
+    expect(archiveNames.has("archive2.zip")).toBe(true);
+    // Both files extracted
+    expect(fs.existsSync(path.join(targetDir, "episode01.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(targetDir, "episode02.txt"))).toBe(true);
+  });
+
   it("respects ask/skip conflict mode in jvm backend", async () => {
     process.env.RD_EXTRACT_BACKEND = "jvm";
 
