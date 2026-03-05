@@ -1087,6 +1087,8 @@ function handleDaemonLine(line: string): void {
 
 function startDaemon(layout: JvmExtractorLayout): boolean {
   if (daemonProcess && daemonReady) return true;
+  // Don't kill a daemon that's still booting — it will become ready soon
+  if (daemonProcess) return false;
   shutdownDaemon();
 
   const jvmTmpDir = path.join(os.tmpdir(), `rd-extract-daemon-${crypto.randomUUID()}`);
@@ -1182,6 +1184,22 @@ function isDaemonAvailable(layout: JvmExtractorLayout): boolean {
   return Boolean(daemonProcess && daemonReady && !daemonBusy);
 }
 
+/** Wait for the daemon to become ready (boot phase) or free (busy phase), with timeout. */
+function waitForDaemonReady(maxWaitMs: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      if (signal?.aborted) { resolve(false); return; }
+      if (daemonProcess && daemonReady && !daemonBusy) { resolve(true); return; }
+      // Daemon died while we were waiting
+      if (!daemonProcess) { resolve(false); return; }
+      if (Date.now() - start >= maxWaitMs) { resolve(false); return; }
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
 function sendDaemonRequest(
   archivePath: string,
   targetDir: string,
@@ -1256,7 +1274,7 @@ function sendDaemonRequest(
   });
 }
 
-function runJvmExtractCommand(
+async function runJvmExtractCommand(
   layout: JvmExtractorLayout,
   archivePath: string,
   targetDir: string,
@@ -1285,8 +1303,20 @@ function runJvmExtractCommand(
     return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
   }
 
-  // Fallback: spawn a new JVM process (daemon busy or not available)
-  logger.info(`JVM Spawn: Neuer Prozess für ${path.basename(archivePath)}${daemonBusy ? " (Daemon busy)" : ""}`);
+  // Daemon exists but is still booting or busy — wait up to 15s for it
+  if (daemonProcess) {
+    const reason = !daemonReady ? "booting" : "busy";
+    logger.info(`JVM Daemon: Warte auf ${reason} Daemon für ${path.basename(archivePath)}...`);
+    const ready = await waitForDaemonReady(15_000, signal);
+    if (ready) {
+      logger.info(`JVM Daemon: Bereit — sende Request für ${path.basename(archivePath)}`);
+      return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
+    }
+    logger.warn(`JVM Daemon: Timeout beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
+  }
+
+  // Fallback: spawn a new JVM process (daemon not available after waiting)
+  logger.info(`JVM Spawn: Neuer Prozess für ${path.basename(archivePath)}`);
 
   const mode = effectiveConflictMode(conflictMode);
   // Each JVM process needs its own temp dir so parallel SevenZipJBinding
