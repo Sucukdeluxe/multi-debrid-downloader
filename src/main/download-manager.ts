@@ -6237,6 +6237,19 @@ export class DownloadManager extends EventEmitter {
     const readyArchives = await this.findReadyArchiveSets(pkg);
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
+      // Relabel completed items that are part of incomplete multi-part archives
+      // from "Ausstehend" to "Warten auf Parts" so the UI accurately reflects
+      // that extraction is waiting for remaining parts to finish downloading.
+      const allDone = items.every((i) => i.status === "completed" || i.status === "failed" || i.status === "cancelled");
+      if (!allDone) {
+        for (const entry of items) {
+          if (entry.status === "completed" && entry.fullStatus === "Entpacken - Ausstehend") {
+            entry.fullStatus = "Entpacken - Warten auf Parts";
+            entry.updatedAt = nowMs();
+          }
+        }
+        this.emitState();
+      }
       return;
     }
 
