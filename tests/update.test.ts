@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe("update", () => {
   it("normalizes update repo input", () => {
-    expect(normalizeUpdateRepo("")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("")).toBe("Administrator/real-debrid-downloader");
     expect(normalizeUpdateRepo("owner/repo")).toBe("owner/repo");
     expect(normalizeUpdateRepo("https://codeberg.org/owner/repo")).toBe("owner/repo");
     expect(normalizeUpdateRepo("https://www.codeberg.org/owner/repo")).toBe("owner/repo");
@@ -31,14 +31,14 @@ describe("update", () => {
     expect(normalizeUpdateRepo("git@codeberg.org:owner/repo.git")).toBe("owner/repo");
   });
 
-  it("uses normalized repo slug for Codeberg API requests", async () => {
+  it("uses normalized repo slug for API requests", async () => {
     let requestedUrl = "";
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       requestedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       return new Response(
         JSON.stringify({
           tag_name: `v${APP_VERSION}`,
-          html_url: "https://codeberg.org/owner/repo/releases/tag/v1.0.0",
+          html_url: "https://git.24-music.de/owner/repo/releases/tag/v1.0.0",
           assets: []
         }),
         {
@@ -48,8 +48,8 @@ describe("update", () => {
       );
     }) as typeof fetch;
 
-    const result = await checkGitHubUpdate("https://codeberg.org/owner/repo/releases");
-    expect(requestedUrl).toBe("https://codeberg.org/api/v1/repos/owner/repo/releases/latest");
+    const result = await checkGitHubUpdate("https://git.24-music.de/owner/repo/releases");
+    expect(requestedUrl).toBe("https://git.24-music.de/api/v1/repos/owner/repo/releases/latest");
     expect(result.currentVersion).toBe(APP_VERSION);
     expect(result.latestVersion).toBe(APP_VERSION);
     expect(result.updateAvailable).toBe(false);
@@ -484,14 +484,14 @@ describe("normalizeUpdateRepo extended", () => {
   });
 
   it("returns default for malformed inputs", () => {
-    expect(normalizeUpdateRepo("just-one-part")).toBe("Sucukdeluxe/real-debrid-downloader");
-    expect(normalizeUpdateRepo("   ")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("just-one-part")).toBe("Administrator/real-debrid-downloader");
+    expect(normalizeUpdateRepo("   ")).toBe("Administrator/real-debrid-downloader");
   });
 
   it("rejects traversal-like owner or repo segments", () => {
-    expect(normalizeUpdateRepo("../owner/repo")).toBe("Sucukdeluxe/real-debrid-downloader");
-    expect(normalizeUpdateRepo("owner/../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
-    expect(normalizeUpdateRepo("https://codeberg.org/owner/../../repo")).toBe("Sucukdeluxe/real-debrid-downloader");
+    expect(normalizeUpdateRepo("../owner/repo")).toBe("Administrator/real-debrid-downloader");
+    expect(normalizeUpdateRepo("owner/../repo")).toBe("Administrator/real-debrid-downloader");
+    expect(normalizeUpdateRepo("https://codeberg.org/owner/../../repo")).toBe("Administrator/real-debrid-downloader");
   });
 
   it("handles www prefix", () => {
