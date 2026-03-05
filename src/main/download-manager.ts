@@ -6309,19 +6309,6 @@ export class DownloadManager extends EventEmitter {
     }
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
-      // Relabel completed items that are part of incomplete multi-part archives
-      // from "Ausstehend" to "Warten auf Parts" so the UI accurately reflects
-      // that extraction is waiting for remaining parts to finish downloading.
-      const allDone = items.every((i) => i.status === "completed" || i.status === "failed" || i.status === "cancelled");
-      if (!allDone) {
-        for (const entry of items) {
-          if (entry.status === "completed" && entry.fullStatus === "Entpacken - Ausstehend") {
-            entry.fullStatus = "Entpacken - Warten auf Parts";
-            entry.updatedAt = nowMs();
-          }
-        }
-        this.emitState();
-      }
       return 0;
     }
 
@@ -6402,24 +6389,26 @@ export class DownloadManager extends EventEmitter {
 
     // Mark items based on whether their archive is actually ready for extraction.
     // Only items whose archive is in readyArchives get "Ausstehend"; others keep
-    // "Warten auf Parts" to avoid flicker between hybrid runs.
+    // their current label to avoid flicker between hybrid runs.
     const allDownloaded = completedItems.length >= items.length;
+    let labelsChanged = false;
     for (const entry of completedItems) {
       if (isExtractedLabel(entry.fullStatus)) {
         continue;
       }
-      if (allDownloaded) {
-        // Everything downloaded — all remaining items will be extracted
-        entry.fullStatus = "Entpacken - Ausstehend";
-      } else if (hybridFileNames.has((entry.fileName || "").toLowerCase()) ||
-                 (entry.targetPath && hybridFileNames.has(path.basename(entry.targetPath).toLowerCase()))) {
-        entry.fullStatus = "Entpacken - Ausstehend";
-      } else {
-        entry.fullStatus = "Entpacken - Warten auf Parts";
+      const belongsToReady = allDownloaded
+        || hybridFileNames.has((entry.fileName || "").toLowerCase())
+        || (entry.targetPath && hybridFileNames.has(path.basename(entry.targetPath).toLowerCase()));
+      const targetLabel = belongsToReady ? "Entpacken - Ausstehend" : "Entpacken - Warten auf Parts";
+      if (entry.fullStatus !== targetLabel) {
+        entry.fullStatus = targetLabel;
+        entry.updatedAt = nowMs();
+        labelsChanged = true;
       }
-      entry.updatedAt = nowMs();
     }
-    this.emitState();
+    if (labelsChanged) {
+      this.emitState();
+    }
 
     try {
       const result = await extractPackageArchives({
