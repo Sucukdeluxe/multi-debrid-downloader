@@ -6433,6 +6433,18 @@ export class DownloadManager extends EventEmitter {
             }
           }
 
+          // Update package-level label with overall extraction progress
+          const activeArchive = Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
+          const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
+          if (progress.passwordFound) {
+            pkg.postProcessLabel = `Passwort gefunden · ${progress.archiveName || ""}`;
+          } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
+            const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
+            pkg.postProcessLabel = `Passwort knacken: ${pwPct}%`;
+          } else {
+            pkg.postProcessLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})`;
+          }
+
           // Throttled emit — also promote "Warten auf Parts" items that
           // completed downloading in the meantime to "Ausstehend".
           const now = nowMs();
@@ -6609,12 +6621,13 @@ export class DownloadManager extends EventEmitter {
         resolveArchiveItemsFromList(archiveName, completedItems);
 
       let lastExtractEmitAt = 0;
-      const emitExtractStatus = (_text: string, force = false): void => {
+      const emitExtractStatus = (text: string, force = false): void => {
         const now = nowMs();
         if (!force && now - lastExtractEmitAt < EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
           return;
         }
         lastExtractEmitAt = now;
+        pkg.postProcessLabel = text || "Entpacken...";
         this.emitState();
       };
 
