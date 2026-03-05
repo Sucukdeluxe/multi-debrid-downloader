@@ -37,9 +37,9 @@ function releaseTlsSkip(): void {
     delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
   }
 }
-import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
+import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
-import { clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
+import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
@@ -6485,9 +6485,9 @@ export class DownloadManager extends EventEmitter {
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       if (result.extracted > 0) {
-        pkg.postProcessLabel = "Renaming...";
-        this.emitState();
-        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
+        void this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg).catch((err) =>
+          logger.warn(`Hybrid Auto-Rename Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`)
+        );
       }
       if (result.failed > 0) {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
@@ -6633,6 +6633,7 @@ export class DownloadManager extends EventEmitter {
 
     const completedItems = items.filter((item) => item.status === "completed");
     const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => isExtractedLabel(item.fullStatus));
+    let extractedCount = 0;
 
     if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
       pkg.postProcessLabel = "Entpacken vorbereiten...";
@@ -6704,6 +6705,7 @@ export class DownloadManager extends EventEmitter {
           passwordList: this.settings.archivePasswordList,
           signal: extractAbortController.signal,
           packageId,
+          skipPostCleanup: true,
           maxParallel: this.settings.maxParallelExtract || 2,
           extractCpuPriority: this.settings.extractCpuPriority,
           onProgress: (progress) => {
@@ -6794,13 +6796,10 @@ export class DownloadManager extends EventEmitter {
           }
         });
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
+        extractedCount = result.extracted;
 
-        // Auto-rename even when some archives failed — successfully extracted files still need renaming
-        if (result.extracted > 0) {
-          pkg.postProcessLabel = "Renaming...";
-          this.emitState();
-          await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
-        }
+        // Auto-rename wird in runDeferredPostExtraction ausgeführt (im Hintergrund),
+        // damit der Slot sofort freigegeben wird.
 
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
@@ -6901,20 +6900,6 @@ export class DownloadManager extends EventEmitter {
       this.recordPackageHistory(packageId, pkg, items);
     }
 
-    if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
-      pkg.postProcessLabel = "Aufräumen...";
-      this.emitState();
-      const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
-      if (removedArchives > 0) {
-        logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
-      }
-    }
-
-    if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
-      pkg.postProcessLabel = "Verschiebe MKVs...";
-      this.emitState();
-      await this.collectMkvFilesToLibrary(packageId, pkg);
-    }
     if (this.runPackageIds.has(packageId)) {
       if (pkg.status === "completed" || pkg.status === "failed") {
         this.runCompletedPackages.add(packageId);
@@ -6924,9 +6909,137 @@ export class DownloadManager extends EventEmitter {
     }
     pkg.postProcessLabel = undefined;
     pkg.updatedAt = nowMs();
-    logger.info(`Post-Processing Ende: pkg=${pkg.name}, status=${pkg.status}`);
+    logger.info(`Post-Processing Ende: pkg=${pkg.name}, status=${pkg.status} (deferred work wird im Hintergrund ausgeführt)`);
 
-    this.applyPackageDoneCleanup(packageId);
+    // Deferred post-extraction: Rename, MKV-Sammlung, Cleanup laufen im Hintergrund,
+    // damit der Post-Process-Slot sofort freigegeben wird und das nächste Pack
+    // ohne 10–15 Sekunden Pause entpacken kann.
+    void this.runDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount);
+  }
+
+  /**
+   * Runs slow post-extraction work (rename, MKV collection, cleanup) in the background
+   * so the post-process slot is released immediately and the next pack can start unpacking.
+   */
+  private async runDeferredPostExtraction(
+    packageId: string,
+    pkg: PackageEntry,
+    success: number,
+    failed: number,
+    alreadyMarkedExtracted: boolean,
+    extractedCount: number
+  ): Promise<void> {
+    try {
+      // ── Nested extraction: extract archives found inside the extracted output ──
+      if (extractedCount > 0 && failed === 0 && this.settings.autoExtract) {
+        const nestedBlacklist = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
+        const nestedCandidates = (await findArchiveCandidates(pkg.extractDir))
+          .filter((p) => !nestedBlacklist.test(p));
+        if (nestedCandidates.length > 0) {
+          pkg.postProcessLabel = "Nested Entpacken...";
+          this.emitState();
+          logger.info(`Deferred Nested-Extraction: ${nestedCandidates.length} Archive in ${pkg.extractDir}`);
+          const nestedResult = await extractPackageArchives({
+            packageDir: pkg.extractDir,
+            targetDir: pkg.extractDir,
+            cleanupMode: this.settings.cleanupMode,
+            conflictMode: this.settings.extractConflictMode,
+            removeLinks: false,
+            removeSamples: false,
+            passwordList: this.settings.archivePasswordList,
+            packageId,
+            onlyArchives: new Set(nestedCandidates.map((p) => process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p))),
+            maxParallel: this.settings.maxParallelExtract || 2,
+            extractCpuPriority: this.settings.extractCpuPriority,
+          });
+          extractedCount += nestedResult.extracted;
+          logger.info(`Deferred Nested-Extraction Ende: extracted=${nestedResult.extracted}, failed=${nestedResult.failed}`);
+        }
+      }
+
+      // ── Auto-Rename ──
+      if (extractedCount > 0) {
+        pkg.postProcessLabel = "Renaming...";
+        this.emitState();
+        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
+      }
+
+      // ── Archive cleanup (source archives in outputDir) ──
+      if (extractedCount > 0 && failed === 0 && this.settings.cleanupMode !== "none") {
+        pkg.postProcessLabel = "Aufräumen...";
+        this.emitState();
+        const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
+        if (!sourceAndTargetEqual) {
+          const candidates = await findArchiveCandidates(pkg.outputDir);
+          if (candidates.length > 0) {
+            const removed = await cleanupArchives(candidates, this.settings.cleanupMode);
+            if (removed > 0) {
+              logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
+            }
+          }
+        }
+      }
+
+      // ── Hybrid archive cleanup (wenn bereits als extracted markiert) ──
+      if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
+        const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
+        if (removedArchives > 0) {
+          logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
+        }
+      }
+
+      // ── Link/Sample artifact removal ──
+      if (extractedCount > 0 && failed === 0) {
+        if (this.settings.removeLinkFilesAfterExtract) {
+          const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir);
+          if (removedLinks > 0) {
+            logger.info(`Deferred Link-Cleanup: pkg=${pkg.name}, entfernt=${removedLinks}`);
+          }
+        }
+        if (this.settings.removeSamplesAfterExtract) {
+          const removedSamples = await removeSampleArtifacts(pkg.extractDir);
+          if (removedSamples.files > 0 || removedSamples.dirs > 0) {
+            logger.info(`Deferred Sample-Cleanup: pkg=${pkg.name}, files=${removedSamples.files}, dirs=${removedSamples.dirs}`);
+          }
+        }
+      }
+
+      // ── Empty directory tree removal ──
+      if (extractedCount > 0 && failed === 0 && this.settings.cleanupMode === "delete") {
+        if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
+          const removedDirs = await removeEmptyDirectoryTree(pkg.outputDir);
+          if (removedDirs > 0) {
+            logger.info(`Deferred leere Download-Ordner entfernt: pkg=${pkg.name}, dirs=${removedDirs}`);
+          }
+        }
+      }
+
+      // ── Resume state cleanup ──
+      if (extractedCount > 0 && failed === 0) {
+        await clearExtractResumeState(pkg.outputDir, packageId);
+      }
+
+      // ── MKV collection ──
+      if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
+        pkg.postProcessLabel = "Verschiebe MKVs...";
+        this.emitState();
+        await this.collectMkvFilesToLibrary(packageId, pkg);
+      }
+
+      pkg.postProcessLabel = undefined;
+      pkg.updatedAt = nowMs();
+      this.persistSoon();
+      this.emitState();
+
+      this.applyPackageDoneCleanup(packageId);
+    } catch (error) {
+      logger.warn(`Deferred Post-Extraction Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
+    } finally {
+      pkg.postProcessLabel = undefined;
+      pkg.updatedAt = nowMs();
+      this.persistSoon();
+      this.emitState();
+    }
   }
 
   private applyPackageDoneCleanup(packageId: string): void {
