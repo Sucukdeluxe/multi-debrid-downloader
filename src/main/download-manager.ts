@@ -6256,7 +6256,7 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<void> {
+  private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<number> {
     const readyArchives = await this.findReadyArchiveSets(pkg);
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
@@ -6273,7 +6273,7 @@ export class DownloadManager extends EventEmitter {
         }
         this.emitState();
       }
-      return;
+      return 0;
     }
 
     logger.info(`Hybrid-Extract Start: pkg=${pkg.name}, readyArchives=${readyArchives.size}`);
@@ -6313,7 +6313,7 @@ export class DownloadManager extends EventEmitter {
     // a previous hybrid round, there is nothing new to extract.
     if (hybridItems.length > 0 && hybridItems.every((item) => isExtractedLabel(item.fullStatus))) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, alle ${hybridItems.length} Items bereits entpackt, überspringe`);
-      return;
+      return 0;
     }
 
     // Filter out archives whose items are ALL already extracted so we don't
@@ -6336,7 +6336,7 @@ export class DownloadManager extends EventEmitter {
     }
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, alle fertigen Archive bereits entpackt`);
-      return;
+      return 0;
     }
 
     // Resolve archive items dynamically from ALL package items (not just
@@ -6514,6 +6514,7 @@ export class DownloadManager extends EventEmitter {
           entry.updatedAt = updatedAt;
         }
       }
+      return result.extracted;
     } catch (error) {
       const errorText = String(error || "");
       if (errorText.includes("aborted:extract")) {
@@ -6526,7 +6527,7 @@ export class DownloadManager extends EventEmitter {
             entry.updatedAt = abortAt;
           }
         }
-        return;
+        return 0;
       }
       logger.warn(`Hybrid-Extract Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
       const errorAt = nowMs();
@@ -6538,6 +6539,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
     }
+    return 0;
   }
 
   private async handlePackagePostProcessing(packageId: string, signal?: AbortSignal): Promise<void> {
@@ -6601,7 +6603,7 @@ export class DownloadManager extends EventEmitter {
     if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
       pkg.postProcessLabel = "Entpacken vorbereiten...";
       this.emitState();
-      await this.runHybridExtraction(packageId, pkg, items, signal);
+      const hybridExtracted = await this.runHybridExtraction(packageId, pkg, items, signal);
       if (signal?.aborted) {
         pkg.postProcessLabel = undefined;
         pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "queued" : "paused";
@@ -6616,6 +6618,12 @@ export class DownloadManager extends EventEmitter {
       }
       if (!this.session.packages[packageId]) {
         return;  // Package was fully cleaned up
+      }
+      // Self-requeue if we extracted something — more archive sets may have
+      // become ready while we were extracting (items that completed before
+      // this task started set the requeue flag once, which was already consumed).
+      if (hybridExtracted > 0) {
+        this.hybridExtractRequeue.add(packageId);
       }
       pkg.postProcessLabel = undefined;
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
