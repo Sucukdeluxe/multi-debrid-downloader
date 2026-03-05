@@ -37,7 +37,8 @@ function runWithInput(command, args, input) {
     cwd: process.cwd(),
     encoding: "utf8",
     input,
-    stdio: ["pipe", "pipe", "pipe"]
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 10000
   });
   if (result.status !== 0) {
     const stderr = String(result.stderr || "").trim();
@@ -95,15 +96,17 @@ function getGiteaRepo() {
 
   const preferredBase = normalizeBaseUrl(process.env.GITEA_BASE_URL || process.env.FORGEJO_BASE_URL || "https://git.24-music.de");
 
+  const preferredProtocol = preferredBase ? new URL(preferredBase).protocol : "https:";
+
   for (const remote of remotes) {
     try {
       const remoteUrl = runCapture("git", ["remote", "get-url", remote]);
       const parsed = parseRemoteUrl(remoteUrl);
       const remoteBase = `https://${parsed.host}`.toLowerCase();
-      if (preferredBase && remoteBase !== preferredBase.toLowerCase()) {
+      if (preferredBase && remoteBase !== preferredBase.toLowerCase().replace(/^http:/, "https:")) {
         continue;
       }
-      return { remote, ...parsed, baseUrl: `https://${parsed.host}` };
+      return { remote, ...parsed, baseUrl: `${preferredProtocol}//${parsed.host}` };
     } catch {
       // try next remote
     }
@@ -179,7 +182,8 @@ function updatePackageVersion(rootDir, version) {
   const packagePath = path.join(rootDir, "package.json");
   const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
   if (String(packageJson.version || "") === version) {
-    throw new Error(`package.json is already at version ${version}`);
+    process.stdout.write(`package.json is already at version ${version}, skipping update.\n`);
+    return;
   }
   packageJson.version = version;
   fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
@@ -257,9 +261,31 @@ async function createOrGetRelease(baseApi, tag, authHeader, notes) {
 async function uploadReleaseAssets(baseApi, releaseId, authHeader, releaseDir, files) {
   for (const fileName of files) {
     const filePath = path.join(releaseDir, fileName);
-    const fileData = fs.readFileSync(filePath);
+    const fileSize = fs.statSync(filePath).size;
     const uploadUrl = `${baseApi}/releases/${releaseId}/assets?name=${encodeURIComponent(fileName)}`;
-    const response = await apiRequest("POST", uploadUrl, authHeader, fileData, "application/octet-stream");
+
+    // Stream large files instead of loading them entirely into memory
+    const fileStream = fs.createReadStream(filePath);
+    const response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: authHeader,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(fileSize)
+      },
+      body: fileStream,
+      duplex: "half"
+    });
+
+    const text = await response.text();
+    let parsed;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = text;
+    }
+
     if (response.ok) {
       process.stdout.write(`Uploaded: ${fileName}\n`);
       continue;
@@ -268,7 +294,7 @@ async function uploadReleaseAssets(baseApi, releaseId, authHeader, releaseDir, f
       process.stdout.write(`Skipped existing asset: ${fileName}\n`);
       continue;
     }
-    throw new Error(`Asset upload failed for ${fileName} (${response.status}): ${JSON.stringify(response.body)}`);
+    throw new Error(`Asset upload failed for ${fileName} (${response.status}): ${JSON.stringify(parsed)}`);
   }
 }
 
@@ -290,16 +316,17 @@ async function main() {
 
   ensureNoTrackedChanges();
   ensureTagMissing(tag);
+
+  if (args.dryRun) {
+    process.stdout.write(`Dry run: would release ${tag}. No changes made.\n`);
+    return;
+  }
+
   updatePackageVersion(rootDir, version);
 
   process.stdout.write(`Building release artifacts for ${tag}...\n`);
   run(NPM_EXECUTABLE, ["run", "release:win"]);
   const assets = ensureAssetsExist(rootDir, version);
-
-  if (args.dryRun) {
-    process.stdout.write(`Dry run complete. Assets exist for ${tag}.\n`);
-    return;
-  }
 
   run("git", ["add", "package.json"]);
   run("git", ["commit", "-m", `Release ${tag}`]);

@@ -153,7 +153,7 @@ async function main(): Promise<void> {
       createStoragePaths(path.join(tempRoot, "state-pause"))
     );
     manager2.addPackages([{ name: "pause", links: ["https://dummy/slow"] }]);
-    manager2.start();
+    await manager2.start();
     await new Promise((resolve) => setTimeout(resolve, 120));
     const paused = manager2.togglePause();
     assert(paused, "Pause konnte nicht aktiviert werden");

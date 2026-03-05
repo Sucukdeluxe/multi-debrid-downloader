@@ -25,11 +25,11 @@ AppPublisher=Sucukdeluxe
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir={#MyOutputDir}
-OutputBaseFilename=Real-Debrid-Downloader-Setup-{#MyAppVersion}
+OutputBaseFilename=Real-Debrid-Downloader Setup {#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile={#MyIconFile}
@@ -39,8 +39,8 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "{#MySourceDir}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#MyIconFile}"; DestDir: "{app}"; DestName: "app_icon.ico"; Flags: ignoreversion
+Source: "{#MySourceDir}\\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+Source: "{#MyIconFile}"; DestDir: "{app}"; DestName: "app_icon.ico"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app_icon.ico"

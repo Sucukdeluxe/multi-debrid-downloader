@@ -66,6 +66,8 @@ async function callRealDebrid(link) {
   };
 }
 
+// megaCookie is intentionally cached at module scope so that multiple
+// callMegaDebrid() invocations reuse the same session cookie.
 async function callMegaDebrid(link) {
   if (!megaCookie) {
     const loginRes = await fetch("https://www.mega-debrid.eu/index.php?form=login", {
@@ -77,13 +79,15 @@ async function callMegaDebrid(link) {
       body: new URLSearchParams({ login: megaLogin, password: megaPassword, remember: "on" }),
       redirect: "manual"
     });
-    megaCookie = (loginRes.headers.get("set-cookie") || "")
-      .split(",")
+    if (loginRes.status >= 400) {
+      return { ok: false, error: `Mega-Web login failed with HTTP ${loginRes.status}` };
+    }
+    megaCookie = loginRes.headers.getSetCookie()
       .map((chunk) => chunk.split(";")[0].trim())
       .filter(Boolean)
       .join("; ");
     if (!megaCookie) {
-      return { ok: false, error: "Mega-Web login failed" };
+      return { ok: false, error: "Mega-Web login returned no session cookie" };
     }
   }
 
@@ -290,4 +294,4 @@ async function main() {
   }
 }
 
-await main();
+await main().catch((e) => { console.error(e); process.exit(1); });

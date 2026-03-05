@@ -269,6 +269,7 @@ describe("buildAutoRenameBaseName", () => {
     const result = buildAutoRenameBaseName("Show.S99.720p-4sf", "show.s99e999.720p.mkv");
     // SCENE_EPISODE_RE allows up to 3-digit episodes and 2-digit seasons
     expect(result).not.toBeNull();
+    expect(result!).toContain("S99E999");
   });
 
   // Real-world scene release patterns
@@ -343,6 +344,7 @@ describe("buildAutoRenameBaseName", () => {
     const result = buildAutoRenameBaseName("Show.S01-4sf", "show.s01e01.mkv");
     // "mkv" should not be treated as part of the filename match
     expect(result).not.toBeNull();
+    expect(result!).toContain("S01E01");
   });
 
   it("does not match episode-like patterns in codec strings", () => {
@@ -373,6 +375,7 @@ describe("buildAutoRenameBaseName", () => {
     // Extreme edge case - sanitizeFilename trims leading dots
     expect(result).not.toBeNull();
     expect(result!).toContain("S01E01");
+    expect(result!).toContain("-4sf");
     expect(result!).not.toContain(".S01E01.S01E01"); // no duplication
   });
 

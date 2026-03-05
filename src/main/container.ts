@@ -164,7 +164,7 @@ async function decryptDlcLocal(filePath: string): Promise<ParsedPackageInput[]> 
   const dlcData = content.slice(0, -88);
 
   const rcUrl = DLC_SERVICE_URL.replace("{KEY}", encodeURIComponent(dlcKey));
-  const rcResponse = await fetch(rcUrl, { method: "GET" });
+  const rcResponse = await fetch(rcUrl, { method: "GET", signal: AbortSignal.timeout(30000) });
   if (!rcResponse.ok) {
     return [];
   }
@@ -217,7 +217,8 @@ async function tryDcryptUpload(fileContent: Buffer, fileName: string): Promise<s
 
   const response = await fetch(DCRYPT_UPLOAD_URL, {
     method: "POST",
-    body: form
+    body: form,
+    signal: AbortSignal.timeout(30000)
   });
   if (response.status === 413) {
     return null;
@@ -235,7 +236,8 @@ async function tryDcryptPaste(fileContent: Buffer): Promise<string[] | null> {
 
   const response = await fetch(DCRYPT_PASTE_URL, {
     method: "POST",
-    body: form
+    body: form,
+    signal: AbortSignal.timeout(30000)
   });
   if (response.status === 413) {
     return null;

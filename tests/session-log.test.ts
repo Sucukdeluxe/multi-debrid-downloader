@@ -8,6 +8,8 @@ import { setLogListener } from "../src/main/logger";
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  // Ensure session log is shut down between tests
+  shutdownSessionLog();
   // Ensure listener is cleared between tests
   setLogListener(null);
   for (const dir of tempDirs.splice(0)) {
@@ -45,7 +47,7 @@ describe("session-log", () => {
     logger.info("Test-Nachricht für Session-Log");
 
     // Wait for flush (200ms interval + margin)
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const content = fs.readFileSync(logPath, "utf8");
     expect(content).toContain("Test-Nachricht für Session-Log");
@@ -79,7 +81,7 @@ describe("session-log", () => {
     const { logger } = await import("../src/main/logger");
     logger.info("Nach-Shutdown-Nachricht");
 
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const content = fs.readFileSync(logPath, "utf8");
     expect(content).not.toContain("Nach-Shutdown-Nachricht");
@@ -137,7 +139,7 @@ describe("session-log", () => {
     shutdownSessionLog();
   });
 
-  it("multiple sessions create different files", () => {
+  it("multiple sessions create different files", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-slog-"));
     tempDirs.push(baseDir);
 
@@ -146,10 +148,7 @@ describe("session-log", () => {
     shutdownSessionLog();
 
     // Small delay to ensure different timestamp
-    const start = Date.now();
-    while (Date.now() - start < 1100) {
-      // busy-wait for 1.1 seconds to get different second in filename
-    }
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     initSessionLog(baseDir);
     const path2 = getSessionLogPath();

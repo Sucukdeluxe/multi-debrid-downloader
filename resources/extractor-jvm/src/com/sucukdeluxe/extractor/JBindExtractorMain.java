@@ -26,6 +26,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -42,6 +43,8 @@ public final class JBindExtractorMain {
     private static final Pattern NUMBERED_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.zip\\.\\d{3}$");
     private static final Pattern OLD_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.z\\d{2,3}$");
     private static final Pattern SEVEN_ZIP_SPLIT_RE = Pattern.compile("(?i).*\\.7z\\.001$");
+    private static final Pattern DIGIT_SUFFIX_RE = Pattern.compile("\\d{2,3}");
+    private static final Pattern WINDOWS_SPECIAL_CHARS_RE = Pattern.compile("[:<>*?\"\\|]");
     private static volatile boolean sevenZipInitialized = false;
 
     private JBindExtractorMain() {
@@ -152,30 +155,35 @@ public final class JBindExtractorMain {
                 }
 
                 ensureDirectory(output.getParentFile());
+                rejectSymlink(output);
                 long[] remaining = new long[] { itemUnits };
+                boolean extractionSuccess = false;
                 try {
                     InputStream in = zipFile.getInputStream(header);
-                    OutputStream out = new FileOutputStream(output);
                     try {
-                        byte[] buffer = new byte[BUFFER_SIZE];
-                        while (true) {
-                            int read = in.read(buffer);
-                            if (read < 0) {
-                                break;
+                        OutputStream out = new FileOutputStream(output);
+                        try {
+                            byte[] buffer = new byte[BUFFER_SIZE];
+                            while (true) {
+                                int read = in.read(buffer);
+                                if (read < 0) {
+                                    break;
+                                }
+                                if (read == 0) {
+                                    continue;
+                                }
+                                out.write(buffer, 0, read);
+                                long accounted = Math.min(remaining[0], (long) read);
+                                remaining[0] -= accounted;
+                                progress.advance(accounted);
                             }
-                            if (read == 0) {
-                                continue;
+                        } finally {
+                            try {
+                                out.close();
+                            } catch (Throwable ignored) {
                             }
-                            out.write(buffer, 0, read);
-                            long accounted = Math.min(remaining[0], (long) read);
-                            remaining[0] -= accounted;
-                            progress.advance(accounted);
                         }
                     } finally {
-                        try {
-                            out.close();
-                        } catch (Throwable ignored) {
-                        }
                         try {
                             in.close();
                         } catch (Throwable ignored) {
@@ -188,11 +196,19 @@ public final class JBindExtractorMain {
                     if (modified > 0) {
                         output.setLastModified(modified);
                     }
+                    extractionSuccess = true;
                 } catch (ZipException error) {
                     if (isWrongPassword(error, encrypted)) {
                         throw new WrongPasswordException(error);
                     }
                     throw error;
+                } finally {
+                    if (!extractionSuccess && output.exists()) {
+                        try {
+                            output.delete();
+                        } catch (Throwable ignored) {
+                        }
+                    }
                 }
             }
 
@@ -221,6 +237,9 @@ public final class JBindExtractorMain {
             IInArchive archive = context.archive;
             ISimpleInArchive simple = archive.getSimpleInterface();
             ISimpleInArchiveItem[] items = simple.getArchiveItems();
+            if (items == null) {
+                throw new IOException("Archiv enthalt keine Eintrage oder konnte nicht gelesen werden: " + request.archiveFile.getAbsolutePath());
+            }
 
             long totalUnits = 0;
             boolean encrypted = false;
@@ -260,8 +279,10 @@ public final class JBindExtractorMain {
                 }
 
                 ensureDirectory(output.getParentFile());
+                rejectSymlink(output);
                 final FileOutputStream out = new FileOutputStream(output);
                 final long[] remaining = new long[] { itemUnits };
+                boolean extractionSuccess = false;
                 try {
                     ExtractOperationResult result = item.extractSlow(new ISequentialOutStream() {
                         @Override
@@ -291,6 +312,7 @@ public final class JBindExtractorMain {
                         }
                         throw new IOException("7z-Fehler: " + result.name());
                     }
+                    extractionSuccess = true;
                 } catch (SevenZipException error) {
                     if (looksLikeWrongPassword(error, encrypted)) {
                         throw new WrongPasswordException(error);
@@ -300,6 +322,12 @@ public final class JBindExtractorMain {
                     try {
                         out.close();
                     } catch (Throwable ignored) {
+                    }
+                    if (!extractionSuccess && output.exists()) {
+                        try {
+                            output.delete();
+                        } catch (Throwable ignored) {
+                        }
                     }
                 }
 
@@ -328,14 +356,31 @@ public final class JBindExtractorMain {
 
         if (SEVEN_ZIP_SPLIT_RE.matcher(nameLower).matches()) {
             VolumedArchiveInStream volumed = new VolumedArchiveInStream(archiveFile.getName(), callback);
-            IInArchive archive = SevenZip.openInArchive(null, volumed, callback);
-            return new SevenZipArchiveContext(archive, null, volumed, callback);
+            try {
+                IInArchive archive = SevenZip.openInArchive(null, volumed, callback);
+                return new SevenZipArchiveContext(archive, null, volumed, callback);
+            } catch (Exception error) {
+                callback.close();
+                throw error;
+            }
         }
 
         RandomAccessFile raf = new RandomAccessFile(archiveFile, "r");
         RandomAccessFileInStream stream = new RandomAccessFileInStream(raf);
-        IInArchive archive = SevenZip.openInArchive(null, stream, callback);
-        return new SevenZipArchiveContext(archive, stream, null, callback);
+        try {
+            IInArchive archive = SevenZip.openInArchive(null, stream, callback);
+            return new SevenZipArchiveContext(archive, stream, null, callback);
+        } catch (Exception error) {
+            try {
+                stream.close();
+            } catch (Throwable ignored) {
+            }
+            try {
+                raf.close();
+            } catch (Throwable ignored) {
+            }
+            throw error;
+        }
     }
 
     private static boolean isWrongPassword(ZipException error, boolean encrypted) {
@@ -396,7 +441,7 @@ public final class JBindExtractorMain {
                 }
                 if (siblingName.startsWith(prefix) && siblingName.length() >= prefix.length() + 2) {
                     String suffix = siblingName.substring(prefix.length());
-                    if (suffix.matches("\\d{2,3}")) {
+                    if (DIGIT_SUFFIX_RE.matcher(suffix).matches()) {
                         return true;
                     }
                 }
@@ -480,6 +525,12 @@ public final class JBindExtractorMain {
         }
         if (normalized.matches("^[a-zA-Z]:.*")) {
             normalized = normalized.substring(2);
+            while (normalized.startsWith("/")) {
+                normalized = normalized.substring(1);
+            }
+            while (normalized.startsWith("\\")) {
+                normalized = normalized.substring(1);
+            }
         }
         File targetCanonical = targetDir.getCanonicalFile();
         File output = new File(targetCanonical, normalized);
@@ -488,7 +539,8 @@ public final class JBindExtractorMain {
         String outputPath = outputCanonical.getPath();
         String targetPathNorm = isWindows() ? targetPath.toLowerCase(Locale.ROOT) : targetPath;
         String outputPathNorm = isWindows() ? outputPath.toLowerCase(Locale.ROOT) : outputPath;
-        if (!outputPathNorm.equals(targetPathNorm) && !outputPathNorm.startsWith(targetPathNorm + File.separator)) {
+        String targetPrefix = targetPathNorm.endsWith(File.separator) ? targetPathNorm : targetPathNorm + File.separator;
+        if (!outputPathNorm.equals(targetPathNorm) && !outputPathNorm.startsWith(targetPrefix)) {
             throw new IOException("Path Traversal blockiert: " + entryName);
         }
         return outputCanonical;
@@ -506,18 +558,48 @@ public final class JBindExtractorMain {
         if (entry.length() == 0) {
             return fallback;
         }
+        // Sanitize Windows special characters from each path segment
+        String[] segments = entry.split("/", -1);
+        StringBuilder sanitized = new StringBuilder();
+        for (int i = 0; i < segments.length; i++) {
+            if (i > 0) {
+                sanitized.append('/');
+            }
+            sanitized.append(WINDOWS_SPECIAL_CHARS_RE.matcher(segments[i]).replaceAll("_"));
+        }
+        entry = sanitized.toString();
+        if (entry.length() == 0) {
+            return fallback;
+        }
         return entry;
     }
 
     private static long safeSize(Long value) {
         if (value == null) {
-            return 1;
+            return 0;
         }
         long size = value.longValue();
         if (size <= 0) {
-            return 1;
+            return 0;
         }
         return size;
+    }
+
+    private static void rejectSymlink(File file) throws IOException {
+        if (file == null) {
+            return;
+        }
+        if (Files.isSymbolicLink(file.toPath())) {
+            throw new IOException("Zieldatei ist ein Symlink, Schreiben verweigert: " + file.getAbsolutePath());
+        }
+        // Also check parent directories for symlinks
+        File parent = file.getParentFile();
+        while (parent != null) {
+            if (Files.isSymbolicLink(parent.toPath())) {
+                throw new IOException("Elternverzeichnis ist ein Symlink, Schreiben verweigert: " + parent.getAbsolutePath());
+            }
+            parent = parent.getParentFile();
+        }
     }
 
     private static void ensureDirectory(File dir) throws IOException {
@@ -828,12 +910,11 @@ public final class JBindExtractorMain {
             if (filename == null || filename.trim().length() == 0) {
                 return null;
             }
-            File direct = new File(filename);
-            if (direct.isAbsolute() && direct.exists()) {
-                return direct;
-            }
+            // Always resolve relative to the archive's parent directory.
+            // Never accept absolute paths to prevent path traversal.
+            String baseName = new File(filename).getName();
             if (archiveDir != null) {
-                File relative = new File(archiveDir, filename);
+                File relative = new File(archiveDir, baseName);
                 if (relative.exists()) {
                     return relative;
                 }
@@ -843,13 +924,13 @@ public final class JBindExtractorMain {
                         if (!sibling.isFile()) {
                             continue;
                         }
-                        if (sibling.getName().equalsIgnoreCase(filename)) {
+                        if (sibling.getName().equalsIgnoreCase(baseName)) {
                             return sibling;
                         }
                     }
                 }
             }
-            return direct.exists() ? direct : null;
+            return null;
         }
 
         @Override

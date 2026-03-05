@@ -61,7 +61,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "",
+    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", ddownloadLogin: "", ddownloadPassword: "",
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -113,15 +113,6 @@ function extractHoster(url: string): string {
     const parts = host.split(".");
     return parts.length >= 2 ? parts[parts.length - 2] : host;
   } catch { return ""; }
-}
-
-function formatHoster(item: DownloadItem): string {
-  const hoster = extractHoster(item.url);
-  const label = hoster || "-";
-  if (item.provider) {
-    return `${label} via ${providerLabels[item.provider]}`;
-  }
-  return label;
 }
 
 const settingsSubTabs: { key: SettingsSubTab; label: string }[] = [
@@ -1878,10 +1869,12 @@ export function App(): ReactElement {
 
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
     const current = snapshotRef.current;
+    const promises: Promise<void>[] = [];
     for (const id of ids) {
-      if (current.session.items[id]) void window.rd.removeItem(id);
-      else if (current.session.packages[id]) void window.rd.cancelPackage(id);
+      if (current.session.items[id]) promises.push(window.rd.removeItem(id));
+      else if (current.session.packages[id]) promises.push(window.rd.cancelPackage(id));
     }
+    void Promise.all(promises).catch(() => {});
     setSelectedIds(new Set());
   }, []);
 
@@ -1924,28 +1917,28 @@ export function App(): ReactElement {
 
   const onExportBackup = async (): Promise<void> => {
     closeMenus();
-    try {
+    await performQuickAction(async () => {
       const result = await window.rd.exportBackup();
       if (result.saved) {
         showToast("Sicherung exportiert");
       }
-    } catch (error) {
+    }, (error) => {
       showToast(`Sicherung fehlgeschlagen: ${String(error)}`, 2600);
-    }
+    });
   };
 
   const onImportBackup = async (): Promise<void> => {
     closeMenus();
-    try {
+    await performQuickAction(async () => {
       const result = await window.rd.importBackup();
       if (result.restored) {
         showToast(result.message, 4000);
       } else if (result.message !== "Abgebrochen") {
         showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
       }
-    } catch (error) {
+    }, (error) => {
       showToast(`Sicherung laden fehlgeschlagen: ${String(error)}`, 2600);
-    }
+    });
   };
 
   const onMenuRestart = (): void => {
@@ -2279,7 +2272,7 @@ export function App(): ReactElement {
             onClick={() => {
               if (snapshot.session.paused) {
                 setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: false } }));
-                void window.rd.togglePause();
+                void window.rd.togglePause().catch(() => {});
               } else {
                 void onStartDownloads();
               }
@@ -2293,7 +2286,7 @@ export function App(): ReactElement {
             disabled={!snapshot.canPause || snapshot.session.paused}
             onClick={() => {
               setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: true } }));
-              void window.rd.togglePause();
+              void window.rd.togglePause().catch(() => {});
             }}
           >
             <svg viewBox="0 0 24 24" width="18" height="18"><rect x="5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /><rect x="14.5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /></svg>
@@ -2520,7 +2513,7 @@ export function App(): ReactElement {
                 }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
               )}
               {historyEntries.length > 0 && (
-                <button className="btn btn-danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }); }}>Verlauf leeren</button>
+                <button className="btn btn-danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {}); }}>Verlauf leeren</button>
               )}
             </div>
             {historyEntries.length === 0 && <div className="empty">Noch keine abgeschlossenen Pakete im Verlauf.</div>}
@@ -2607,7 +2600,7 @@ export function App(): ReactElement {
                         <span>{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
                       </div>
                       <div className="history-actions">
-                        <button className="btn" onClick={() => { void window.rd.removeHistoryEntry(entry.id).then(() => { setHistoryEntries((prev) => prev.filter((e) => e.id !== entry.id)); setSelectedHistoryIds((prev) => { const n = new Set(prev); n.delete(entry.id); return n; }); }); }}>Eintrag entfernen</button>
+                        <button className="btn" onClick={() => { void window.rd.removeHistoryEntry(entry.id).then(() => { setHistoryEntries((prev) => prev.filter((e) => e.id !== entry.id)); setSelectedHistoryIds((prev) => { const n = new Set(prev); n.delete(entry.id); return n; }); }).catch(() => {}); }}>Eintrag entfernen</button>
                       </div>
                     </div>
                   )}
@@ -3052,8 +3045,8 @@ export function App(): ReactElement {
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
               const itemIds = [...selectedIds].filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
-              if (pkgIds.length > 0) void window.rd.startPackages(pkgIds);
-              if (itemIds.length > 0) void window.rd.startItems(itemIds);
+              if (pkgIds.length > 0) void window.rd.startPackages(pkgIds).catch(() => {});
+              if (itemIds.length > 0) void window.rd.startItems(itemIds).catch(() => {});
               setContextMenu(null);
             }}>Ausgewählte Downloads starten{multi ? ` (${selectedIds.size})` : ""}</button>
           )}
@@ -3063,7 +3056,7 @@ export function App(): ReactElement {
           <div className="ctx-menu-sep" />
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
-              for (const id of selectedIds) { if (snapshot.session.packages[id]) void window.rd.togglePackage(id); }
+              for (const id of selectedIds) { if (snapshot.session.packages[id]) void window.rd.togglePackage(id).catch(() => {}); }
               setContextMenu(null);
             }}>
               {multi ? `Alle ${selectedIds.size} umschalten` : (snapshot.session.packages[contextMenu.packageId]?.enabled ? "Deaktivieren" : "Aktivieren")}
@@ -3088,7 +3081,7 @@ export function App(): ReactElement {
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
-              for (const id of pkgIds) void window.rd.resetPackage(id);
+              for (const id of pkgIds) void window.rd.resetPackage(id).catch(() => {});
               setContextMenu(null);
             }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : ""}</button>
           )}
@@ -3097,7 +3090,7 @@ export function App(): ReactElement {
               const itemIds = multi
                 ? [...selectedIds].filter((id) => snapshot.session.items[id])
                 : [contextMenu.itemId!];
-              void window.rd.resetItems(itemIds);
+              void window.rd.resetItems(itemIds).catch(() => {});
               setContextMenu(null);
             }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.items[id]).length})` : ""}</button>
           )}
@@ -3129,7 +3122,7 @@ export function App(): ReactElement {
             const itemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
             const skippable = itemIds.filter((id) => { const it = snapshot.session.items[id]; return it && (it.status === "queued" || it.status === "reconnect_wait"); });
             if (skippable.length === 0) return null;
-            return <button className="ctx-menu-item" onClick={() => { void window.rd.skipItems(skippable); setContextMenu(null); }}>Überspringen{skippable.length > 1 ? ` (${skippable.length})` : ""}</button>;
+            return <button className="ctx-menu-item" onClick={() => { void window.rd.skipItems(skippable).catch(() => {}); setContextMenu(null); }}>Überspringen{skippable.length > 1 ? ` (${skippable.length})` : ""}</button>;
           })()}
           {hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
@@ -3214,7 +3207,7 @@ export function App(): ReactElement {
             )}
             <div className="ctx-menu-sep" />
             <button className="ctx-menu-item ctx-danger" onClick={() => {
-              void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); });
+              void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {});
               setHistoryCtxMenu(null);
             }}>Verlauf leeren</button>
           </div>
@@ -3228,8 +3221,8 @@ export function App(): ReactElement {
             <div className="link-popup-list">
               {linkPopup.links.map((link, i) => (
                 <div key={i} className="link-popup-row">
-                  <span className="link-popup-name link-popup-click" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.name); showToast("Name kopiert"); }}>{link.name}</span>
-                  <span className="link-popup-url link-popup-click" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.url); showToast("Link kopiert"); }}>{link.url}</span>
+                  <span className="link-popup-name link-popup-click" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</span>
+                  <span className="link-popup-url link-popup-click" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</span>
                 </div>
               ))}
             </div>
@@ -3237,15 +3230,13 @@ export function App(): ReactElement {
               {linkPopup.isPackage && (
                 <button className="btn" onClick={() => {
                   const text = linkPopup.links.map((l) => l.name).join("\n");
-                  void navigator.clipboard.writeText(text);
-                  showToast("Alle Namen kopiert");
+                  void navigator.clipboard.writeText(text).then(() => showToast("Alle Namen kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
                 }}>Alle Namen kopieren</button>
               )}
               {linkPopup.isPackage && (
                 <button className="btn" onClick={() => {
                   const text = linkPopup.links.map((l) => l.url).join("\n");
-                  void navigator.clipboard.writeText(text);
-                  showToast("Alle Links kopiert");
+                  void navigator.clipboard.writeText(text).then(() => showToast("Alle Links kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
                 }}>Alle Links kopieren</button>
               )}
               <button className="btn" onClick={() => setLinkPopup(null)}>Schließen</button>

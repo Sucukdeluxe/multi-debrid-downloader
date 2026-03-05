@@ -15,6 +15,8 @@ import {
 
 const tempDirs: string[] = [];
 const originalExtractBackend = process.env.RD_EXTRACT_BACKEND;
+const originalStatfs = fs.promises.statfs;
+const originalZipEntryMemoryLimit = process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
 
 beforeEach(() => {
   process.env.RD_EXTRACT_BACKEND = "legacy";
@@ -28,6 +30,12 @@ afterEach(() => {
     delete process.env.RD_EXTRACT_BACKEND;
   } else {
     process.env.RD_EXTRACT_BACKEND = originalExtractBackend;
+  }
+  (fs.promises as any).statfs = originalStatfs;
+  if (originalZipEntryMemoryLimit === undefined) {
+    delete process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
+  } else {
+    process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB = originalZipEntryMemoryLimit;
   }
 });
 
@@ -574,7 +582,6 @@ describe("extractor", () => {
   });
 
   it("keeps original ZIP size guard error when external fallback is unavailable", async () => {
-    const previousLimit = process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
     process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB = "8";
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
@@ -588,32 +595,20 @@ describe("extractor", () => {
     zip.addFile("large.bin", Buffer.alloc(9 * 1024 * 1024, 7));
     zip.writeZip(zipPath);
 
-    try {
-      const result = await extractPackageArchives({
-        packageDir,
-        targetDir,
-        cleanupMode: "none",
-        conflictMode: "overwrite",
-        removeLinks: false,
-        removeSamples: false
-      });
-      expect(result.extracted).toBe(0);
-      expect(result.failed).toBe(1);
-      expect(String(result.lastError)).toMatch(/ZIP-Eintrag.*groß/i);
-    } finally {
-      if (previousLimit === undefined) {
-        delete process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB;
-      } else {
-        process.env.RD_ZIP_ENTRY_MEMORY_LIMIT_MB = previousLimit;
-      }
-    }
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+    expect(result.extracted).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(String(result.lastError)).toMatch(/ZIP-Eintrag.*groß/i);
   });
 
-  it("matches resume-state archive names case-insensitively on Windows", async () => {
-    if (process.platform !== "win32") {
-      return;
-    }
-
+  it.skipIf(process.platform !== "win32")("matches resume-state archive names case-insensitively on Windows", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
     tempDirs.push(root);
     const packageDir = path.join(root, "pkg");
@@ -650,23 +645,18 @@ describe("extractor", () => {
       zip.addFile("test.txt", Buffer.alloc(1024, 0x41));
       zip.writeZip(path.join(packageDir, "test.zip"));
 
-      const originalStatfs = fs.promises.statfs;
       (fs.promises as any).statfs = async () => ({ bfree: 1, bsize: 1 });
 
-      try {
-        await expect(
-          extractPackageArchives({
-            packageDir,
-            targetDir,
-            cleanupMode: "none" as any,
-            conflictMode: "overwrite" as any,
-            removeLinks: false,
-            removeSamples: false,
-          })
-        ).rejects.toThrow(/Nicht genug Speicherplatz/);
-      } finally {
-        (fs.promises as any).statfs = originalStatfs;
-      }
+      await expect(
+        extractPackageArchives({
+          packageDir,
+          targetDir,
+          cleanupMode: "none" as any,
+          conflictMode: "overwrite" as any,
+          removeLinks: false,
+          removeSamples: false,
+        })
+      ).rejects.toThrow(/Nicht genug Speicherplatz/);
     });
 
     it("proceeds when disk space is sufficient", async () => {

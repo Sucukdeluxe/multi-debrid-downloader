@@ -113,7 +113,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     allDebridToken: asText(settings.allDebridToken),
     ddownloadLogin: asText(settings.ddownloadLogin),
     ddownloadPassword: asText(settings.ddownloadPassword),
-    archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n/g, "\n"),
+    archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
     providerPrimary: settings.providerPrimary,
     providerSecondary: settings.providerSecondary,
