@@ -600,8 +600,8 @@ function extractCpuBudgetFromPriority(priority?: string): number {
 
 function extractOsPriority(priority?: string): number {
   switch (priority) {
-    case "high": return os.constants.priority.PRIORITY_BELOW_NORMAL;
-    default: return os.constants.priority.PRIORITY_LOW;
+    case "high": return os.constants.priority.PRIORITY_NORMAL;
+    default: return os.constants.priority.PRIORITY_BELOW_NORMAL;
   }
 }
 
@@ -615,10 +615,15 @@ function extractCpuBudgetPercent(priority?: string): number {
 
 function extractorThreadSwitch(hybridMode = false, priority?: string): string {
   if (hybridMode) {
-    // 2 threads during hybrid extraction (download + extract simultaneously).
-    // JDownloader 2 uses in-process 7-Zip-JBinding which naturally limits throughput
-    // to ~16 MB/s write. 2 UnRAR threads produce similar controlled disk load.
-    return "-mt2";
+    // Use half the CPU budget during hybrid extraction to leave headroom for
+    // concurrent downloads. Falls back to at least 2 threads.
+    const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
+    if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
+      return `-mt${Math.floor(envValue)}`;
+    }
+    const cpuCount = Math.max(1, os.cpus().length || 1);
+    const hybridThreads = Math.max(2, Math.min(8, Math.floor(cpuCount / 2)));
+    return `-mt${hybridThreads}`;
   }
   const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
   if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
@@ -640,8 +645,8 @@ function lowerExtractProcessPriority(childPid: number | undefined, cpuPriority?:
     return;
   }
   try {
-    // Lowers CPU scheduling priority so extraction doesn't starve other processes.
-    // high → BELOW_NORMAL, middle/low → IDLE. I/O priority stays Normal (like JDownloader 2).
+    // Sets CPU scheduling priority for the extraction process.
+    // high → NORMAL (full speed), default → BELOW_NORMAL. I/O priority stays Normal.
     os.setPriority(pid, extractOsPriority(cpuPriority));
   } catch {
     // ignore: priority lowering is best-effort
