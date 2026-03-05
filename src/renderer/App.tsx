@@ -2249,10 +2249,10 @@ export function App(): ReactElement {
           </button>
           {openMenu === "hilfe" && (
             <div className="menu-dropdown">
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog(); }}>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog().catch(() => {}); }}>
                 <span>Log öffnen</span>
               </button>
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog(); }}>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}>
                 <span>Session-Log öffnen</span>
               </button>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onCheckUpdates(); }}>
@@ -2408,7 +2408,7 @@ export function App(): ReactElement {
                       newOrder.splice(toIdx, 0, dragColId);
                       setColumnOrder(newOrder);
                       setDragColId(null);
-                      void window.rd.updateSettings({ columnOrder: newOrder });
+                      void window.rd.updateSettings({ columnOrder: newOrder }).catch(() => {});
                     }}
                     onDragEnd={() => { setDragColId(null); setDropTargetCol(null); }}
                     onClick={sortCol ? () => {
@@ -3050,7 +3050,7 @@ export function App(): ReactElement {
               setContextMenu(null);
             }}>Ausgewählte Downloads starten{multi ? ` (${selectedIds.size})` : ""}</button>
           )}
-          <button className="ctx-menu-item" onClick={() => { void window.rd.start(); setContextMenu(null); }}>Alle Downloads starten</button>
+          <button className="ctx-menu-item" onClick={() => { void window.rd.start().catch(() => {}); setContextMenu(null); }}>Alle Downloads starten</button>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
           <div className="ctx-menu-sep" />
@@ -3100,7 +3100,7 @@ export function App(): ReactElement {
             const someCompleted = items.some((item) => item && item.status === "completed");
             return (<>
               {someCompleted && (
-                <button className="ctx-menu-item" onClick={() => { void window.rd.extractNow(contextMenu.packageId); setContextMenu(null); }}>Jetzt entpacken</button>
+                <button className="ctx-menu-item" onClick={() => { void window.rd.extractNow(contextMenu.packageId).catch(() => {}); setContextMenu(null); }}>Jetzt entpacken</button>
               )}
             </>);
           })()}
@@ -3113,7 +3113,7 @@ export function App(): ReactElement {
                   const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
                   const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
                   const allMatch = pkgIds.every((id) => (snapshot.session.packages[id]?.priority || "normal") === p);
-                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p); setContextMenu(null); }}>{allMatch ? `✓ ${label}` : label}</button>;
+                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `✓ ${label}` : label}</button>;
                 })}
               </div>
             </div>
@@ -3166,7 +3166,7 @@ export function App(): ReactElement {
                     newOrder.splice(insertAt, 0, col);
                   }
                   setColumnOrder(newOrder);
-                  void window.rd.updateSettings({ columnOrder: newOrder });
+                  void window.rd.updateSettings({ columnOrder: newOrder }).catch(() => {});
                 }}
               >
                 {isVisible ? "\u2713 " : "\u2003 "}{def.label}
