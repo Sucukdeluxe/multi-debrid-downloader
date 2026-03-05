@@ -1001,7 +1001,16 @@ export function App(): ReactElement {
     }
     let changelogBlock = "";
     if (result.releaseNotes) {
-      const notes = result.releaseNotes.length > 500 ? `${result.releaseNotes.slice(0, 500)}…` : result.releaseNotes;
+      // Strip markdown formatting for plain-text confirm dialog
+      let notes = result.releaseNotes
+        .replace(/^#{1,6}\s+/gm, "")       // ## headings
+        .replace(/\*\*([^*]+)\*\*/g, "$1")  // **bold**
+        .replace(/\*([^*]+)\*/g, "$1")      // *italic*
+        .replace(/`([^`]+)`/g, "$1")        // `code`
+        .replace(/^\s*[-*]\s+/gm, "- ")     // normalize list bullets
+        .replace(/\n{3,}/g, "\n\n")         // collapse excess blank lines
+        .trim();
+      if (notes.length > 500) notes = `${notes.slice(0, 500)}…`;
       changelogBlock = `\n\n--- Changelog ---\n${notes}`;
     }
     const approved = await askConfirmPrompt({
