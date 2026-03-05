@@ -283,7 +283,14 @@ export class AppController {
   }
 
   public exportBackup(): string {
-    const settings = this.settings;
+    const settings = { ...this.settings };
+    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaPassword", "bestToken", "allDebridToken"];
+    for (const key of SENSITIVE_KEYS) {
+      const val = settings[key];
+      if (typeof val === "string" && val.length > 0) {
+        (settings as Record<string, unknown>)[key] = `***${val.slice(-4)}`;
+      }
+    }
     const session = this.manager.getSession();
     return JSON.stringify({ version: 1, settings, session }, null, 2);
   }
@@ -298,7 +305,15 @@ export class AppController {
     if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.session) {
       return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
     }
-    const restoredSettings = normalizeSettings(parsed.settings as AppSettings);
+    const importedSettings = parsed.settings as AppSettings;
+    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaPassword", "bestToken", "allDebridToken"];
+    for (const key of SENSITIVE_KEYS) {
+      const val = (importedSettings as Record<string, unknown>)[key];
+      if (typeof val === "string" && val.startsWith("***")) {
+        (importedSettings as Record<string, unknown>)[key] = (this.settings as Record<string, unknown>)[key];
+      }
+    }
+    const restoredSettings = normalizeSettings(importedSettings);
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);

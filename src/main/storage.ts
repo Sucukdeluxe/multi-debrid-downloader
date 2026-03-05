@@ -91,6 +91,18 @@ function normalizeColumnOrder(raw: unknown): string[] {
   return result;
 }
 
+const DEPRECATED_UPDATE_REPOS = new Set([
+  "sucukdeluxe/real-debrid-downloader"
+]);
+
+function migrateUpdateRepo(raw: string, fallback: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || DEPRECATED_UPDATE_REPOS.has(trimmed.toLowerCase())) {
+    return fallback;
+  }
+  return trimmed;
+}
+
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const normalized: AppSettings = {
@@ -130,7 +142,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
     speedLimitMode: settings.speedLimitMode,
     autoUpdateCheck: Boolean(settings.autoUpdateCheck),
-    updateRepo: asText(settings.updateRepo) || defaults.updateRepo,
+    updateRepo: migrateUpdateRepo(asText(settings.updateRepo), defaults.updateRepo),
     clipboardWatch: Boolean(settings.clipboardWatch),
     minimizeToTray: Boolean(settings.minimizeToTray),
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
