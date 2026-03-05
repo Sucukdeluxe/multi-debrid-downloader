@@ -62,6 +62,26 @@ function removeSubstMapping(mapping: SubstMapping): void {
   logger.info(`subst ${mapping.drive}: entfernt`);
 }
 
+export function cleanupStaleSubstDrives(): void {
+  if (process.platform !== "win32") return;
+  try {
+    const result = spawnSync("subst", [], { stdio: "pipe", timeout: 5000 });
+    const output = String(result.stdout || "");
+    for (const line of output.split("\n")) {
+      const match = line.match(/^([A-Z]):\\: => (.+)/i);
+      if (!match) continue;
+      const drive = match[1].toUpperCase();
+      const target = match[2].trim();
+      if (/\\rd-extract-|\\Real-Debrid-Downloader/i.test(target)) {
+        spawnSync("subst", [`${drive}:`, "/d"], { stdio: "pipe", timeout: 5000 });
+        logger.info(`Stale subst ${drive}: entfernt (${target})`);
+      }
+    }
+  } catch {
+    // ignore — subst cleanup is best-effort
+  }
+}
+
 let resolvedExtractorCommand: string | null = null;
 let resolveFailureReason = "";
 let resolveFailureAt = 0;

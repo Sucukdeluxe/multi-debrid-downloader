@@ -31,18 +31,21 @@ async function main(): Promise<void> {
     login: settings.megaLogin,
     password: settings.megaPassword
   }));
-  const service = new DebridService(settings, {
-    megaWebUnrestrict: (link) => megaWeb.unrestrict(link)
-  });
-  for (const link of links) {
-    try {
-      const result = await service.unrestrictLink(link);
-      console.log(`[OK] ${result.providerLabel} -> ${result.fileName}`);
-    } catch (error) {
-      console.log(`[FAIL] ${String(error)}`);
+  try {
+    const service = new DebridService(settings, {
+      megaWebUnrestrict: (link) => megaWeb.unrestrict(link)
+    });
+    for (const link of links) {
+      try {
+        const result = await service.unrestrictLink(link);
+        console.log(`[OK] ${result.providerLabel} -> ${result.fileName}`);
+      } catch (error) {
+        console.log(`[FAIL] ${String(error)}`);
+      }
     }
+  } finally {
+    megaWeb.dispose();
   }
-  megaWeb.dispose();
 }
 
-void main();
+main().catch(e => { console.error(e); process.exit(1); });

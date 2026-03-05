@@ -36,12 +36,8 @@ afterEach(() => {
   }
 });
 
-describe("extractor jvm backend", () => {
+describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm backend", () => {
   it("extracts zip archives through SevenZipJBinding backend", async () => {
-    if (!hasJavaRuntime() || !hasJvmExtractorRuntime()) {
-      return;
-    }
-
     process.env.RD_EXTRACT_BACKEND = "jvm";
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-extract-"));
@@ -70,10 +66,6 @@ describe("extractor jvm backend", () => {
   });
 
   it("respects ask/skip conflict mode in jvm backend", async () => {
-    if (!hasJavaRuntime() || !hasJvmExtractorRuntime()) {
-      return;
-    }
-
     process.env.RD_EXTRACT_BACKEND = "jvm";
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-extract-"));

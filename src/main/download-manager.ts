@@ -20,6 +20,23 @@ import {
   UiSnapshot
 } from "../shared/types";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS } from "./constants";
+
+// Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
+// when multiple parallel downloads need TLS verification disabled (e.g. DDownload).
+let tlsSkipRefCount = 0;
+function acquireTlsSkip(): void {
+  tlsSkipRefCount += 1;
+  if (tlsSkipRefCount === 1) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  }
+}
+function releaseTlsSkip(): void {
+  tlsSkipRefCount -= 1;
+  if (tlsSkipRefCount <= 0) {
+    tlsSkipRefCount = 0;
+    delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  }
+}
 import { cleanupCancelledPackageArtifactsAsync } from "./cleanup";
 import { DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates } from "./extractor";
@@ -3212,11 +3229,11 @@ export class DownloadManager extends EventEmitter {
 
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "completed") continue;
-      const fs = item.fullStatus || "";
+      const fullSt = item.fullStatus || "";
       // Only relabel items with active extraction status (e.g. "Entpacken 45%", "Passwort prüfen")
       // Skip items that were merely waiting ("Entpacken - Ausstehend", "Entpacken - Warten auf Parts")
       // as they were never actively extracting and "abgebrochen" would be misleading.
-      if (/^Entpacken\b/i.test(fs) && !/Ausstehend/i.test(fs) && !/Warten/i.test(fs) && !isExtractedLabel(fs)) {
+      if (/^Entpacken\b/i.test(fullSt) && !/Ausstehend/i.test(fullSt) && !/Warten/i.test(fullSt) && !isExtractedLabel(fullSt)) {
         item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
         item.updatedAt = nowMs();
         const pkg = this.session.packages[item.packageId];
@@ -3305,7 +3322,7 @@ export class DownloadManager extends EventEmitter {
     this.session.reconnectReason = "";
 
     for (const item of Object.values(this.session.items)) {
-      if (item.provider !== "realdebrid" && item.provider !== "megadebrid" && item.provider !== "bestdebrid" && item.provider !== "alldebrid") {
+      if (item.provider !== "realdebrid" && item.provider !== "megadebrid" && item.provider !== "bestdebrid" && item.provider !== "alldebrid" && item.provider !== "ddownload") {
         item.provider = null;
       }
       if (item.status === "cancelled" && item.fullStatus === "Gestoppt") {
@@ -5152,15 +5169,12 @@ export class DownloadManager extends EventEmitter {
       const connectTimeoutMs = getDownloadConnectTimeoutMs();
       let connectTimer: NodeJS.Timeout | null = null;
       const connectAbortController = new AbortController();
-      const prevTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      if (skipTlsVerify) acquireTlsSkip();
       try {
         if (connectTimeoutMs > 0) {
           connectTimer = setTimeout(() => {
             connectAbortController.abort("connect_timeout");
           }, connectTimeoutMs);
-        }
-        if (skipTlsVerify) {
-          process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
         }
         response = await fetch(directUrl, {
           method: "GET",
@@ -5181,10 +5195,7 @@ export class DownloadManager extends EventEmitter {
         }
         throw error;
       } finally {
-        if (skipTlsVerify) {
-          if (prevTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-          else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTlsReject;
-        }
+        if (skipTlsVerify) releaseTlsSkip();
         if (connectTimer) {
           clearTimeout(connectTimer);
         }

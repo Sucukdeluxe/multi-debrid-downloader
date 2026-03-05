@@ -16,8 +16,8 @@ function sleep(ms) {
 }
 
 function cookieFrom(headers) {
-  const raw = headers.get("set-cookie") || "";
-  return raw.split(",").map((x) => x.split(";")[0].trim()).filter(Boolean).join("; ");
+  const cookies = headers.getSetCookie();
+  return cookies.map((x) => x.split(";")[0].trim()).filter(Boolean).join("; ");
 }
 
 function parseDebridCodes(html) {
@@ -47,6 +47,9 @@ async function resolveCode(cookie, code) {
     });
     const text = (await res.text()).trim();
     if (text === "reload") {
+      if (attempt % 5 === 0) {
+        console.log(`  [retry] code=${code} attempt=${attempt}/50 (waiting for server)`);
+      }
       await sleep(800);
       continue;
     }
@@ -98,7 +101,13 @@ async function main() {
     redirect: "manual"
   });
 
+  if (loginRes.status >= 400) {
+    throw new Error(`Login failed with HTTP ${loginRes.status}`);
+  }
   const cookie = cookieFrom(loginRes.headers);
+  if (!cookie) {
+    throw new Error("Login returned no session cookie");
+  }
   console.log("login", loginRes.status, loginRes.headers.get("location") || "");
 
   const debridRes = await fetch("https://www.mega-debrid.eu/index.php?form=debrid", {
@@ -136,4 +145,4 @@ async function main() {
   }
 }
 
-await main();
+await main().catch((e) => { console.error(e); process.exit(1); });

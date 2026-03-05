@@ -794,7 +794,8 @@ async function downloadFile(url: string, targetPath: string, onProgress?: Update
   };
 
   const reader = response.body.getReader();
-  const chunks: Buffer[] = [];
+  const tempPath = targetPath + ".tmp";
+  const writeStream = fs.createWriteStream(tempPath);
 
   try {
     resetIdleTimer();
@@ -808,27 +809,39 @@ async function downloadFile(url: string, targetPath: string, onProgress?: Update
         break;
       }
       const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-      chunks.push(buf);
+      if (!writeStream.write(buf)) {
+        await new Promise<void>((resolve) => writeStream.once("drain", resolve));
+      }
       downloadedBytes += buf.byteLength;
       resetIdleTimer();
       emitDownloadProgress(false);
     }
+  } catch (error) {
+    writeStream.destroy();
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
   } finally {
     clearIdleTimer();
   }
 
+  await new Promise<void>((resolve, reject) => {
+    writeStream.end(() => resolve());
+    writeStream.on("error", reject);
+  });
+
   if (idleTimedOut) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleTimeoutMs / 1000)}s`);
   }
 
-  const fileBuffer = Buffer.concat(chunks);
-  if (totalBytes && fileBuffer.byteLength !== totalBytes) {
-    throw new Error(`Update Download unvollständig (${fileBuffer.byteLength} / ${totalBytes} Bytes)`);
+  if (totalBytes && downloadedBytes !== totalBytes) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+    throw new Error(`Update Download unvollständig (${downloadedBytes} / ${totalBytes} Bytes)`);
   }
 
-  await fs.promises.writeFile(targetPath, fileBuffer);
+  await fs.promises.rename(tempPath, targetPath);
   emitDownloadProgress(true);
-  logger.info(`Update-Download abgeschlossen: ${targetPath} (${fileBuffer.byteLength} Bytes)`);
+  logger.info(`Update-Download abgeschlossen: ${targetPath} (${downloadedBytes} Bytes)`);
 
   return { expectedBytes: totalBytes };
 }

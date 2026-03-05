@@ -1154,6 +1154,9 @@ export class DebridService {
 
   private options: DebridServiceOptions;
 
+  private cachedDdownloadClient: DdownloadClient | null = null;
+  private cachedDdownloadKey = "";
+
   public constructor(settings: AppSettings, options: DebridServiceOptions = {}) {
     this.settings = cloneSettings(settings);
     this.options = options;
@@ -1161,6 +1164,16 @@ export class DebridService {
 
   public setSettings(next: AppSettings): void {
     this.settings = cloneSettings(next);
+  }
+
+  private getDdownloadClient(login: string, password: string): DdownloadClient {
+    const key = `${login}\0${password}`;
+    if (this.cachedDdownloadClient && this.cachedDdownloadKey === key) {
+      return this.cachedDdownloadClient;
+    }
+    this.cachedDdownloadClient = new DdownloadClient(login, password);
+    this.cachedDdownloadKey = key;
+    return this.cachedDdownloadClient;
   }
 
   public async resolveFilenames(
@@ -1338,7 +1351,7 @@ export class DebridService {
       return new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
     }
     if (provider === "ddownload") {
-      return new DdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
+      return this.getDdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
     }
     return new BestDebridClient(settings.bestToken).unrestrictLink(link, signal);
   }

@@ -317,7 +317,7 @@ describe("debrid service", () => {
     const controller = new AbortController();
     const abortTimer = setTimeout(() => {
       controller.abort("test");
-    }, 25);
+    }, 200);
 
     try {
       await expect(service.unrestrictLink("https://rapidgator.net/file/abort-mega-web", controller.signal)).rejects.toThrow(/aborted/i);

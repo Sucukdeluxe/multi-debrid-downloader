@@ -7,6 +7,7 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import { getLogFilePath, logger } from "./logger";
 import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
+import { cleanupStaleSubstDrives } from "./extractor";
 
 /* ── IPC validation helpers ────────────────────────────────────── */
 function validateString(value: unknown, name: string): string {
@@ -81,7 +82,7 @@ function createWindow(): BrowserWindow {
         responseHeaders: {
           ...details.responseHeaders,
           "Content-Security-Policy": [
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://codeberg.org https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://codeberg.org https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu https://git.24-music.de https://ddownload.com https://ddl.to"
           ]
         }
       });
@@ -188,7 +189,12 @@ function startClipboardWatcher(): void {
   }
   lastClipboardText = normalizeClipboardText(clipboard.readText());
   clipboardTimer = setInterval(() => {
-    const text = normalizeClipboardText(clipboard.readText());
+    let text: string;
+    try {
+      text = normalizeClipboardText(clipboard.readText());
+    } catch {
+      return;
+    }
     if (text === lastClipboardText || !text.trim()) {
       return;
     }
@@ -481,6 +487,7 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(() => {
+  cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
   bindMainWindowLifecycle(mainWindow);
@@ -493,6 +500,9 @@ app.whenReady().then(() => {
       bindMainWindowLifecycle(mainWindow);
     }
   });
+}).catch((error) => {
+  console.error("App startup failed:", error);
+  app.quit();
 });
 
 app.on("window-all-closed", () => {

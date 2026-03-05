@@ -228,22 +228,23 @@ export class MegaWebFallback {
   }
 
   public async unrestrict(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
+    const overallSignal = withTimeoutSignal(signal, 180000);
     return this.runExclusive(async () => {
-      throwIfAborted(signal);
+      throwIfAborted(overallSignal);
       const creds = this.getCredentials();
       if (!creds.login.trim() || !creds.password.trim()) {
         return null;
       }
 
       if (!this.cookie || Date.now() - this.cookieSetAt > 20 * 60 * 1000) {
-        await this.login(creds.login, creds.password, signal);
+        await this.login(creds.login, creds.password, overallSignal);
       }
 
-      const generated = await this.generate(link, signal);
+      const generated = await this.generate(link, overallSignal);
       if (!generated) {
         this.cookie = "";
-        await this.login(creds.login, creds.password, signal);
-        const retry = await this.generate(link, signal);
+        await this.login(creds.login, creds.password, overallSignal);
+        const retry = await this.generate(link, overallSignal);
         if (!retry) {
           return null;
         }
@@ -261,7 +262,7 @@ export class MegaWebFallback {
         fileSize: null,
         retriesUsed: 0
       };
-    }, signal);
+    }, overallSignal);
   }
 
   public invalidateSession(): void {

@@ -166,7 +166,7 @@ describe("mega-web-fallback", () => {
       const controller = new AbortController();
       const timer = setTimeout(() => {
         controller.abort("test");
-      }, 30);
+      }, 200);
 
       try {
         await expect(fallback.unrestrict("https://mega.debrid/link2", controller.signal)).rejects.toThrow(/aborted/i);

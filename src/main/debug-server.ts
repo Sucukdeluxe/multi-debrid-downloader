@@ -261,7 +261,7 @@ export function startDebugServer(mgr: DownloadManager, baseDir: string): void {
   const port = getPort(baseDir);
 
   server = http.createServer(handleRequest);
-  server.listen(port, "0.0.0.0", () => {
+  server.listen(port, "127.0.0.1", () => {
     logger.info(`Debug-Server gestartet auf Port ${port}`);
   });
   server.on("error", (err) => {

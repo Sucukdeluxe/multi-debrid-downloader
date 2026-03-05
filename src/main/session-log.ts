@@ -76,7 +76,12 @@ async function cleanupOldSessionLogs(dir: string, maxAgeDays: number): Promise<v
 
 export function initSessionLog(baseDir: string): void {
   sessionLogsDir = path.join(baseDir, "session-logs");
-  fs.mkdirSync(sessionLogsDir, { recursive: true });
+  try {
+    fs.mkdirSync(sessionLogsDir, { recursive: true });
+  } catch {
+    sessionLogsDir = null;
+    return;
+  }
 
   const timestamp = formatTimestamp();
   sessionLogPath = path.join(sessionLogsDir, `session_${timestamp}.txt`);

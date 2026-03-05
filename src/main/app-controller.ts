@@ -285,7 +285,7 @@ export class AppController {
 
   public exportBackup(): string {
     const settings = { ...this.settings };
-    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaPassword", "bestToken", "allDebridToken", "ddownloadPassword"];
+    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaLogin", "megaPassword", "bestToken", "allDebridToken", "ddownloadLogin", "ddownloadPassword"];
     for (const key of SENSITIVE_KEYS) {
       const val = settings[key];
       if (typeof val === "string" && val.length > 0) {
@@ -307,7 +307,7 @@ export class AppController {
       return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
     }
     const importedSettings = parsed.settings as AppSettings;
-    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaPassword", "bestToken", "allDebridToken", "ddownloadPassword"];
+    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaLogin", "megaPassword", "bestToken", "allDebridToken", "ddownloadLogin", "ddownloadPassword"];
     for (const key of SENSITIVE_KEYS) {
       const val = (importedSettings as Record<string, unknown>)[key];
       if (typeof val === "string" && val.startsWith("***")) {
