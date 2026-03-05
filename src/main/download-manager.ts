@@ -3570,14 +3570,16 @@ export class DownloadManager extends EventEmitter {
         this.emit("state", this.getSnapshot());
         return;
       }
-      // Too soon — schedule deferred forced emit
-      if (!this.stateEmitTimer) {
-        this.stateEmitTimer = setTimeout(() => {
-          this.stateEmitTimer = null;
-          this.lastStateEmitAt = nowMs();
-          this.emit("state", this.getSnapshot());
-        }, MIN_FORCE_GAP_MS - sinceLastEmit);
+      // Too soon — replace any pending timer with a shorter forced-emit timer
+      if (this.stateEmitTimer) {
+        clearTimeout(this.stateEmitTimer);
+        this.stateEmitTimer = null;
       }
+      this.stateEmitTimer = setTimeout(() => {
+        this.stateEmitTimer = null;
+        this.lastStateEmitAt = nowMs();
+        this.emit("state", this.getSnapshot());
+      }, MIN_FORCE_GAP_MS - sinceLastEmit);
       return;
     }
     if (this.stateEmitTimer) {
@@ -6400,7 +6402,7 @@ export class DownloadManager extends EventEmitter {
         packageId,
         hybridMode: true,
         maxParallel: this.settings.maxParallelExtract || 2,
-        extractCpuPriority: this.settings.extractCpuPriority,
+        extractCpuPriority: "high",
         onProgress: (progress) => {
           if (progress.phase === "preparing") {
             pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
@@ -6762,8 +6764,8 @@ export class DownloadManager extends EventEmitter {
           packageId,
           skipPostCleanup: true,
           maxParallel: this.settings.maxParallelExtract || 2,
-          // All downloads finished — use highest configured priority so extraction
-          // isn't starved. "high" maps to BELOW_NORMAL instead of the default IDLE.
+          // All downloads finished — use NORMAL OS priority so extraction runs at
+          // full speed (matching manual 7-Zip/WinRAR speed).
           extractCpuPriority: "high",
           onProgress: (progress) => {
             if (progress.phase === "preparing") {
