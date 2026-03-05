@@ -51,6 +51,10 @@ public final class JBindExtractorMain {
     }
 
     public static void main(String[] args) {
+        if (args.length == 1 && "--daemon".equals(args[0])) {
+            runDaemon();
+            return;
+        }
         int exit = 1;
         try {
             ExtractionRequest request = parseArgs(args);
@@ -63,6 +67,127 @@ public final class JBindExtractorMain {
             exit = 1;
         }
         System.exit(exit);
+    }
+
+    private static void runDaemon() {
+        System.out.println("RD_DAEMON_READY");
+        System.out.flush();
+        java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(System.in, StandardCharsets.UTF_8));
+        try {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+                int exitCode = 1;
+                try {
+                    ExtractionRequest request = parseDaemonRequest(line);
+                    exitCode = runExtraction(request);
+                } catch (IllegalArgumentException error) {
+                    emitError("Argumentfehler: " + safeMessage(error));
+                    exitCode = 2;
+                } catch (Throwable error) {
+                    emitError(safeMessage(error));
+                    exitCode = 1;
+                }
+                System.out.println("RD_REQUEST_DONE " + exitCode);
+                System.out.flush();
+            }
+        } catch (IOException ignored) {
+            // stdin closed — parent process exited
+        }
+    }
+
+    private static ExtractionRequest parseDaemonRequest(String jsonLine) {
+        // Minimal JSON parsing without external dependencies.
+        // Expected format: {"archive":"...","target":"...","conflict":"...","backend":"...","passwords":["...","..."]}
+        ExtractionRequest request = new ExtractionRequest();
+        request.archiveFile = new File(extractJsonString(jsonLine, "archive"));
+        request.targetDir = new File(extractJsonString(jsonLine, "target"));
+        String conflict = extractJsonString(jsonLine, "conflict");
+        if (conflict.length() > 0) {
+            request.conflictMode = ConflictMode.fromValue(conflict);
+        }
+        String backend = extractJsonString(jsonLine, "backend");
+        if (backend.length() > 0) {
+            request.backend = Backend.fromValue(backend);
+        }
+        // Parse passwords array
+        int pwStart = jsonLine.indexOf("\"passwords\"");
+        if (pwStart >= 0) {
+            int arrStart = jsonLine.indexOf('[', pwStart);
+            int arrEnd = jsonLine.indexOf(']', arrStart);
+            if (arrStart >= 0 && arrEnd > arrStart) {
+                String arrContent = jsonLine.substring(arrStart + 1, arrEnd);
+                int idx = 0;
+                while (idx < arrContent.length()) {
+                    int qStart = arrContent.indexOf('"', idx);
+                    if (qStart < 0) break;
+                    int qEnd = findClosingQuote(arrContent, qStart + 1);
+                    if (qEnd < 0) break;
+                    request.passwords.add(unescapeJsonString(arrContent.substring(qStart + 1, qEnd)));
+                    idx = qEnd + 1;
+                }
+            }
+        }
+        if (request.archiveFile == null || !request.archiveFile.exists() || !request.archiveFile.isFile()) {
+            throw new IllegalArgumentException("Archiv nicht gefunden: " +
+                    (request.archiveFile == null ? "null" : request.archiveFile.getAbsolutePath()));
+        }
+        if (request.targetDir == null) {
+            throw new IllegalArgumentException("--target fehlt");
+        }
+        return request;
+    }
+
+    private static String extractJsonString(String json, String key) {
+        String search = "\"" + key + "\"";
+        int keyIdx = json.indexOf(search);
+        if (keyIdx < 0) return "";
+        int colonIdx = json.indexOf(':', keyIdx + search.length());
+        if (colonIdx < 0) return "";
+        int qStart = json.indexOf('"', colonIdx + 1);
+        if (qStart < 0) return "";
+        int qEnd = findClosingQuote(json, qStart + 1);
+        if (qEnd < 0) return "";
+        return unescapeJsonString(json.substring(qStart + 1, qEnd));
+    }
+
+    private static int findClosingQuote(String s, int from) {
+        for (int i = from; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\') {
+                i++; // skip escaped character
+                continue;
+            }
+            if (c == '"') return i;
+        }
+        return -1;
+    }
+
+    private static String unescapeJsonString(String s) {
+        if (s.indexOf('\\') < 0) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char next = s.charAt(i + 1);
+                switch (next) {
+                    case '"': sb.append('"'); i++; break;
+                    case '\\': sb.append('\\'); i++; break;
+                    case '/': sb.append('/'); i++; break;
+                    case 'n': sb.append('\n'); i++; break;
+                    case 'r': sb.append('\r'); i++; break;
+                    case 't': sb.append('\t'); i++; break;
+                    default: sb.append(c); break;
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     private static int runExtraction(ExtractionRequest request) throws Exception {

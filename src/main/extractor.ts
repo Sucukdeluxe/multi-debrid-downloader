@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
@@ -988,6 +988,274 @@ function parseJvmLine(
   }
 }
 
+// ── Persistent JVM Daemon ──
+// Keeps a single JVM process alive across multiple extraction requests,
+// eliminating the ~5s JVM boot overhead per archive.
+
+interface DaemonRequest {
+  resolve: (result: JvmExtractResult) => void;
+  onArchiveProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  parseState: { bestPercent: number; usedPassword: string; backend: string; reportedError: string };
+}
+
+let daemonProcess: ChildProcess | null = null;
+let daemonReady = false;
+let daemonBusy = false;
+let daemonCurrentRequest: DaemonRequest | null = null;
+let daemonStdoutBuffer = "";
+let daemonStderrBuffer = "";
+let daemonOutput = "";
+let daemonTimeoutId: NodeJS.Timeout | null = null;
+let daemonAbortHandler: (() => void) | null = null;
+let daemonLayout: JvmExtractorLayout | null = null;
+
+export function shutdownDaemon(): void {
+  if (daemonProcess) {
+    try { daemonProcess.stdin?.end(); } catch { /* ignore */ }
+    try { killProcessTree(daemonProcess); } catch { /* ignore */ }
+    daemonProcess = null;
+  }
+  daemonReady = false;
+  daemonBusy = false;
+  daemonCurrentRequest = null;
+  daemonStdoutBuffer = "";
+  daemonStderrBuffer = "";
+  daemonOutput = "";
+  if (daemonTimeoutId) { clearTimeout(daemonTimeoutId); daemonTimeoutId = null; }
+  if (daemonAbortHandler) { daemonAbortHandler = null; }
+  daemonLayout = null;
+}
+
+function finishDaemonRequest(result: JvmExtractResult): void {
+  const req = daemonCurrentRequest;
+  if (!req) return;
+  daemonCurrentRequest = null;
+  daemonBusy = false;
+  daemonStdoutBuffer = "";
+  daemonStderrBuffer = "";
+  daemonOutput = "";
+  if (daemonTimeoutId) { clearTimeout(daemonTimeoutId); daemonTimeoutId = null; }
+  if (req.signal && daemonAbortHandler) {
+    req.signal.removeEventListener("abort", daemonAbortHandler);
+    daemonAbortHandler = null;
+  }
+  req.resolve(result);
+}
+
+function handleDaemonLine(line: string): void {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return;
+
+  // Check for daemon ready signal
+  if (trimmed === "RD_DAEMON_READY") {
+    daemonReady = true;
+    logger.info("JVM Daemon bereit (persistent)");
+    return;
+  }
+
+  // Check for request completion
+  if (trimmed.startsWith("RD_REQUEST_DONE ")) {
+    const code = parseInt(trimmed.slice("RD_REQUEST_DONE ".length).trim(), 10);
+    const req = daemonCurrentRequest;
+    if (!req) return;
+
+    if (code === 0) {
+      req.onArchiveProgress?.(100);
+      finishDaemonRequest({
+        ok: true, missingCommand: false, missingRuntime: false,
+        aborted: false, timedOut: false, errorText: "",
+        usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+      });
+    } else {
+      const message = cleanErrorText(req.parseState.reportedError || daemonOutput) || `Exit Code ${code}`;
+      finishDaemonRequest({
+        ok: false, missingCommand: false, missingRuntime: isJvmRuntimeMissingError(message),
+        aborted: false, timedOut: false, errorText: message,
+        usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+      });
+    }
+    return;
+  }
+
+  // Regular progress/status lines — delegate to parseJvmLine
+  if (daemonCurrentRequest) {
+    parseJvmLine(trimmed, daemonCurrentRequest.onArchiveProgress, daemonCurrentRequest.parseState);
+  }
+}
+
+function startDaemon(layout: JvmExtractorLayout): boolean {
+  if (daemonProcess && daemonReady) return true;
+  shutdownDaemon();
+
+  const jvmTmpDir = path.join(os.tmpdir(), `rd-extract-daemon-${crypto.randomUUID()}`);
+  fs.mkdirSync(jvmTmpDir, { recursive: true });
+
+  const args = [
+    "-Dfile.encoding=UTF-8",
+    `-Djava.io.tmpdir=${jvmTmpDir}`,
+    "-Xms512m",
+    "-Xmx8g",
+    "-XX:+UseSerialGC",
+    "-cp",
+    layout.classPath,
+    JVM_EXTRACTOR_MAIN_CLASS,
+    "--daemon"
+  ];
+
+  try {
+    const child = spawn(layout.javaCommand, args, {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
+    daemonProcess = child;
+    daemonLayout = layout;
+
+    child.stdout!.on("data", (chunk) => {
+      const raw = String(chunk || "");
+      daemonOutput = appendLimited(daemonOutput, raw);
+      daemonStdoutBuffer += raw;
+      const lines = daemonStdoutBuffer.split(/\r?\n/);
+      daemonStdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        handleDaemonLine(line);
+      }
+    });
+
+    child.stderr!.on("data", (chunk) => {
+      const raw = String(chunk || "");
+      daemonOutput = appendLimited(daemonOutput, raw);
+      daemonStderrBuffer += raw;
+      const lines = daemonStderrBuffer.split(/\r?\n/);
+      daemonStderrBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (daemonCurrentRequest) {
+          parseJvmLine(line, daemonCurrentRequest.onArchiveProgress, daemonCurrentRequest.parseState);
+        }
+      }
+    });
+
+    child.on("error", () => {
+      if (daemonCurrentRequest) {
+        finishDaemonRequest({
+          ok: false, missingCommand: true, missingRuntime: true,
+          aborted: false, timedOut: false, errorText: "Daemon process error",
+          usedPassword: "", backend: ""
+        });
+      }
+      shutdownDaemon();
+    });
+
+    child.on("close", () => {
+      if (daemonCurrentRequest) {
+        const req = daemonCurrentRequest;
+        finishDaemonRequest({
+          ok: false, missingCommand: false, missingRuntime: false,
+          aborted: false, timedOut: false,
+          errorText: cleanErrorText(req.parseState.reportedError || daemonOutput) || "Daemon process exited unexpectedly",
+          usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+        });
+      }
+      // Clean up tmp dir
+      fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
+      daemonProcess = null;
+      daemonReady = false;
+      daemonBusy = false;
+      daemonLayout = null;
+    });
+
+    logger.info(`JVM Daemon gestartet (PID ${child.pid})`);
+    return true;
+  } catch (error) {
+    logger.warn(`JVM Daemon Start fehlgeschlagen: ${String(error)}`);
+    return false;
+  }
+}
+
+function isDaemonAvailable(layout: JvmExtractorLayout): boolean {
+  // Start daemon if not running yet
+  if (!daemonProcess || !daemonReady) {
+    startDaemon(layout);
+  }
+  return Boolean(daemonProcess && daemonReady && !daemonBusy);
+}
+
+function sendDaemonRequest(
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  passwordCandidates: string[],
+  onArchiveProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+  timeoutMs?: number
+): Promise<JvmExtractResult> {
+  return new Promise((resolve) => {
+    const mode = effectiveConflictMode(conflictMode);
+    const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+
+    daemonBusy = true;
+    daemonOutput = "";
+    daemonCurrentRequest = { resolve, onArchiveProgress, signal, timeoutMs, parseState };
+
+    // Set up timeout
+    if (timeoutMs && timeoutMs > 0) {
+      daemonTimeoutId = setTimeout(() => {
+        // Timeout — kill the daemon and restart fresh for next request
+        const req = daemonCurrentRequest;
+        if (req) {
+          finishDaemonRequest({
+            ok: false, missingCommand: false, missingRuntime: false,
+            aborted: false, timedOut: true,
+            errorText: `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`,
+            usedPassword: parseState.usedPassword, backend: parseState.backend
+          });
+        }
+        shutdownDaemon();
+      }, timeoutMs);
+    }
+
+    // Set up abort handler
+    if (signal) {
+      daemonAbortHandler = () => {
+        const req = daemonCurrentRequest;
+        if (req) {
+          finishDaemonRequest({
+            ok: false, missingCommand: false, missingRuntime: false,
+            aborted: true, timedOut: false, errorText: "aborted:extract",
+            usedPassword: parseState.usedPassword, backend: parseState.backend
+          });
+        }
+        // Kill daemon on abort — cleaner than trying to interrupt mid-extraction
+        shutdownDaemon();
+      };
+      signal.addEventListener("abort", daemonAbortHandler, { once: true });
+    }
+
+    // Build and send JSON request
+    const jsonRequest = JSON.stringify({
+      archive: archivePath,
+      target: targetDir,
+      conflict: mode,
+      backend: "auto",
+      passwords: passwordCandidates
+    });
+
+    try {
+      daemonProcess!.stdin!.write(jsonRequest + "\n");
+    } catch (error) {
+      finishDaemonRequest({
+        ok: false, missingCommand: false, missingRuntime: false,
+        aborted: false, timedOut: false,
+        errorText: `Daemon stdin write failed: ${String(error)}`,
+        usedPassword: "", backend: ""
+      });
+      shutdownDaemon();
+    }
+  });
+}
+
 function runJvmExtractCommand(
   layout: JvmExtractorLayout,
   archivePath: string,
@@ -1010,6 +1278,15 @@ function runJvmExtractCommand(
       backend: ""
     });
   }
+
+  // Try persistent daemon first — saves ~5s JVM boot per archive
+  if (isDaemonAvailable(layout)) {
+    logger.info(`JVM Daemon: Sende Request für ${path.basename(archivePath)}`);
+    return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
+  }
+
+  // Fallback: spawn a new JVM process (daemon busy or not available)
+  logger.info(`JVM Spawn: Neuer Prozess für ${path.basename(archivePath)}${daemonBusy ? " (Daemon busy)" : ""}`);
 
   const mode = effectiveConflictMode(conflictMode);
   // Each JVM process needs its own temp dir so parallel SevenZipJBinding

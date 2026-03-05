@@ -7,7 +7,7 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import { getLogFilePath, logger } from "./logger";
 import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
-import { cleanupStaleSubstDrives } from "./extractor";
+import { cleanupStaleSubstDrives, shutdownDaemon } from "./extractor";
 
 /* ── IPC validation helpers ────────────────────────────────────── */
 function validateString(value: unknown, name: string): string {
@@ -515,6 +515,7 @@ app.on("before-quit", () => {
   if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
   stopClipboardWatcher();
   destroyTray();
+  shutdownDaemon();
   try {
     controller.shutdown();
   } catch (error) {
