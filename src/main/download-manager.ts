@@ -334,9 +334,11 @@ const EMPTY_DIR_IGNORED_FILE_NAMES = new Set([
   "desktop.ini",
   ".ds_store"
 ]);
+const EMPTY_DIR_IGNORED_FILE_RE = /^\.rd_extract_progress(?:_[^.\\/]+)?\.json$/i;
 
 function isIgnorableEmptyDirFileName(fileName: string): boolean {
-  return EMPTY_DIR_IGNORED_FILE_NAMES.has(String(fileName || "").trim().toLowerCase());
+  const normalized = String(fileName || "").trim().toLowerCase();
+  return EMPTY_DIR_IGNORED_FILE_NAMES.has(normalized) || EMPTY_DIR_IGNORED_FILE_RE.test(normalized);
 }
 
 function toWindowsLongPathIfNeeded(filePath: string): string {
@@ -7121,6 +7123,13 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
+      // ── Resume state cleanup ──
+      if (extractedCount > 0 && failed === 0) {
+        await clearExtractResumeState(pkg.outputDir, packageId);
+        // Backward compatibility: older versions used .rd_extract_progress.json without package suffix.
+        await clearExtractResumeState(pkg.outputDir);
+      }
+
       // ── Empty directory tree removal ──
       if (extractedCount > 0 && failed === 0 && this.settings.cleanupMode === "delete") {
         if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
@@ -7129,11 +7138,6 @@ export class DownloadManager extends EventEmitter {
             logger.info(`Deferred leere Download-Ordner entfernt: pkg=${pkg.name}, dirs=${removedDirs}`);
           }
         }
-      }
-
-      // ── Resume state cleanup ──
-      if (extractedCount > 0 && failed === 0) {
-        await clearExtractResumeState(pkg.outputDir, packageId);
       }
 
       // ── MKV collection ──

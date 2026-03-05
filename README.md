@@ -169,6 +169,12 @@ The app stores runtime files in Electron's `userData` directory, including:
 
 Release history is available on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
 
+### v1.6.61 (2026-03-05)
+
+- Fixed leftover empty package folders in `Downloader Unfertig` after successful extraction.
+- Resume marker files (`.rd_extract_progress*.json`) are now treated as ignorable for empty-folder cleanup.
+- Deferred post-processing now clears resume markers before running empty-directory removal.
+
 ### v1.6.60 (2026-03-05)
 
 - Added package-scoped password cache for extraction: once the first archive in a package is solved, following archives in the same package reuse that password first.
