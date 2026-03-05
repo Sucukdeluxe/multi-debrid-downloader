@@ -383,14 +383,7 @@ function parseProgressPercent(chunk: string): number | null {
 function nextArchivePercent(previous: number, incoming: number): number {
   const prev = Math.max(0, Math.min(100, Math.floor(Number(previous) || 0)));
   const next = Math.max(0, Math.min(100, Math.floor(Number(incoming) || 0)));
-  if (next >= prev) {
-    return next;
-  }
-  // Wrong-password retries can emit a fresh 0..100 run for the same archive.
-  if (prev >= 95 && next <= 5) {
-    return next;
-  }
-  return prev;
+  return next >= prev ? next : prev;
 }
 
 async function shouldPreferExternalZip(archivePath: string): Promise<boolean> {
@@ -1763,10 +1756,6 @@ async function runExternalExtractInner(
       onArchiveProgress?.(0);
     }
     passwordAttempt += 1;
-    if (passwordAttempt > 1 && bestPercent > 0) {
-      bestPercent = 0;
-      onArchiveProgress?.(0);
-    }
     const quotedPw = password === "" ? '""' : `"${password}"`;
     logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
     if (passwords.length > 1) {
@@ -2311,10 +2300,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
     const total = Math.max(1, candidates.length);
     let percent = Math.max(0, Math.min(100, Math.floor((current / total) * 100)));
+    let normalizedArchivePercent = Math.max(0, Math.min(100, Number(archivePercent ?? 0)));
     if (phase !== "done") {
       const boundedCurrent = Math.max(0, Math.min(total, current));
-      const boundedArchivePercent = Math.max(0, Math.min(100, Number(archivePercent ?? 0)));
-      percent = Math.max(0, Math.min(100, Math.floor(((boundedCurrent + (boundedArchivePercent / 100)) / total) * 100)));
+      if (archiveInfo?.archiveDone !== true && normalizedArchivePercent >= 100) {
+        normalizedArchivePercent = 99;
+      }
+      percent = Math.max(0, Math.min(100, Math.floor(((boundedCurrent + (normalizedArchivePercent / 100)) / total) * 100)));
     }
     try {
       options.onProgress({
@@ -2322,7 +2314,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         total,
         percent,
         archiveName,
-        archivePercent,
+        archivePercent: normalizedArchivePercent,
         elapsedMs,
         phase,
         ...(archiveInfo || {}),
