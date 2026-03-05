@@ -5,8 +5,8 @@ import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, Down
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
-const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload"]);
-const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload"]);
+const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
+const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
