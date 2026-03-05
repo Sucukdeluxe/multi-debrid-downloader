@@ -1384,6 +1384,10 @@ export class DownloadManager extends EventEmitter {
       addedPackages += 1;
     }
 
+    if (addedPackages > 0 || addedLinks > 0) {
+      const pkgNames = packages.filter((p) => p.links.length > 0).map((p) => p.name).join(", ");
+      logger.info(`Pakete hinzugefügt: ${addedPackages} Paket(e), ${addedLinks} Link(s) [${pkgNames}]`);
+    }
     this.persistSoon();
     this.emitState();
     if (unresolvedByLink.size > 0) {
@@ -4736,6 +4740,7 @@ export class DownloadManager extends EventEmitter {
         item.fullStatus = `Starte... (${unrestricted.providerLabel})`;
         item.updatedAt = nowMs();
         this.emitState();
+        logger.info(`Download Start: ${item.fileName} (${humanSize(unrestricted.fileSize || 0)}) via ${unrestricted.providerLabel}, pkg=${pkg.name}`);
 
         const maxAttempts = maxItemAttempts;
         let done = false;
