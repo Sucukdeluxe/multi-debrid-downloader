@@ -928,7 +928,7 @@ export function App(): ReactElement {
     if (settingsDraft.allDebridToken.trim()) {
       list.push("alldebrid");
     }
-    if (settingsDraft.ddownloadLogin.trim() && settingsDraft.ddownloadPassword.trim()) {
+    if ((settingsDraft.ddownloadLogin || "").trim() && (settingsDraft.ddownloadPassword || "").trim()) {
       list.push("ddownload");
     }
     return list;
@@ -2720,9 +2720,9 @@ export function App(): ReactElement {
                     <label>AllDebrid API Key</label>
                     <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
                     <label>DDownload Login</label>
-                    <input value={settingsDraft.ddownloadLogin} onChange={(e) => setText("ddownloadLogin", e.target.value)} />
+                    <input value={settingsDraft.ddownloadLogin || ""} onChange={(e) => setText("ddownloadLogin", e.target.value)} />
                     <label>DDownload Passwort</label>
-                    <input type="password" value={settingsDraft.ddownloadPassword} onChange={(e) => setText("ddownloadPassword", e.target.value)} />
+                    <input type="password" value={settingsDraft.ddownloadPassword || ""} onChange={(e) => setText("ddownloadPassword", e.target.value)} />
                     {configuredProviders.length === 0 && (
                       <div className="hint">Füge mindestens einen Account hinzu, dann erscheint die Hoster-Auswahl.</div>
                     )}
