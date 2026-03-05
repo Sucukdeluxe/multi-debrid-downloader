@@ -45,6 +45,8 @@ export function defaultSettings(): AppSettings {
     megaPassword: "",
     bestToken: "",
     allDebridToken: "",
+    ddownloadLogin: "",
+    ddownloadPassword: "",
     archivePasswordList: "",
     rememberToken: true,
     providerPrimary: "realdebrid",

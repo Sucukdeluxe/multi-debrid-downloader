@@ -6439,6 +6439,8 @@ export class DownloadManager extends EventEmitter {
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       if (result.extracted > 0) {
+        pkg.postProcessLabel = "Renaming...";
+        this.emitState();
         await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
       }
       if (result.failed > 0) {
@@ -6551,8 +6553,10 @@ export class DownloadManager extends EventEmitter {
     const allDone = success + failed + cancelled >= items.length;
 
     if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
+      pkg.postProcessLabel = "Entpacken...";
       await this.runHybridExtraction(packageId, pkg, items, signal);
       if (signal?.aborted) {
+        pkg.postProcessLabel = undefined;
         pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "queued" : "paused";
         pkg.updatedAt = nowMs();
         return;
@@ -6566,6 +6570,7 @@ export class DownloadManager extends EventEmitter {
       if (!this.session.packages[packageId]) {
         return;  // Package was fully cleaned up
       }
+      pkg.postProcessLabel = undefined;
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       pkg.updatedAt = nowMs();
       this.emitState();
@@ -6573,6 +6578,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (!allDone) {
+      pkg.postProcessLabel = undefined;
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       logger.info(`Post-Processing verschoben: pkg=${pkg.name}, noch offene items`);
       return;
@@ -6582,6 +6588,7 @@ export class DownloadManager extends EventEmitter {
     const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => isExtractedLabel(item.fullStatus));
 
     if (this.settings.autoExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
+      pkg.postProcessLabel = "Entpacken...";
       pkg.status = "extracting";
       this.emitState();
       const extractionStartMs = nowMs();
@@ -6732,6 +6739,8 @@ export class DownloadManager extends EventEmitter {
 
         // Auto-rename even when some archives failed — successfully extracted files still need renaming
         if (result.extracted > 0) {
+          pkg.postProcessLabel = "Renaming...";
+          this.emitState();
           await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
         }
 
@@ -6835,6 +6844,8 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
+      pkg.postProcessLabel = "Aufräumen...";
+      this.emitState();
       const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
       if (removedArchives > 0) {
         logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
@@ -6842,6 +6853,8 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
+      pkg.postProcessLabel = "Verschiebe MKVs...";
+      this.emitState();
       await this.collectMkvFilesToLibrary(packageId, pkg);
     }
     if (this.runPackageIds.has(packageId)) {
@@ -6851,6 +6864,7 @@ export class DownloadManager extends EventEmitter {
         this.runCompletedPackages.delete(packageId);
       }
     }
+    pkg.postProcessLabel = undefined;
     pkg.updatedAt = nowMs();
     logger.info(`Post-Processing Ende: pkg=${pkg.name}, status=${pkg.status}`);
 

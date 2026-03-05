@@ -15,7 +15,8 @@ const PROVIDER_LABELS: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
   bestdebrid: "BestDebrid",
-  alldebrid: "AllDebrid"
+  alldebrid: "AllDebrid",
+  ddownload: "DDownload"
 };
 
 interface ProviderUnrestrictedLink extends UnrestrictedLink {
@@ -958,6 +959,193 @@ class AllDebridClient {
   }
 }
 
+const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]+)/i;
+const DDOWNLOAD_WEB_BASE = "https://ddownload.com";
+const DDOWNLOAD_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
+class DdownloadClient {
+  private login: string;
+  private password: string;
+  private cookies: string = "";
+
+  public constructor(login: string, password: string) {
+    this.login = login;
+    this.password = password;
+  }
+
+  private async webLogin(signal?: AbortSignal): Promise<void> {
+    // Step 1: GET login page to extract form token
+    const loginPageRes = await fetch(`${DDOWNLOAD_WEB_BASE}/login.html`, {
+      headers: { "User-Agent": DDOWNLOAD_WEB_UA },
+      redirect: "manual",
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+    });
+    const loginPageHtml = await loginPageRes.text();
+    const tokenMatch = loginPageHtml.match(/name="token" value="([^"]+)"/);
+    const pageCookies = (loginPageRes.headers.getSetCookie?.() || []).map((c: string) => c.split(";")[0]).join("; ");
+
+    // Step 2: POST login
+    const body = new URLSearchParams({
+      op: "login",
+      token: tokenMatch?.[1] || "",
+      rand: "",
+      redirect: "",
+      login: this.login,
+      password: this.password
+    });
+    const loginRes = await fetch(`${DDOWNLOAD_WEB_BASE}/`, {
+      method: "POST",
+      headers: {
+        "User-Agent": DDOWNLOAD_WEB_UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        ...(pageCookies ? { Cookie: pageCookies } : {})
+      },
+      body: body.toString(),
+      redirect: "manual",
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+    });
+
+    // Drain body
+    try { await loginRes.text(); } catch { /* ignore */ }
+
+    const setCookies = loginRes.headers.getSetCookie?.() || [];
+    const xfss = setCookies.find((c: string) => c.startsWith("xfss="));
+    const loginCookie = setCookies.find((c: string) => c.startsWith("login="));
+    if (!xfss) {
+      throw new Error("DDownload Login fehlgeschlagen (kein Session-Cookie)");
+    }
+    this.cookies = [loginCookie, xfss].filter(Boolean).map((c: string) => c.split(";")[0]).join("; ");
+  }
+
+  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+    const match = link.match(DDOWNLOAD_URL_RE);
+    if (!match) {
+      throw new Error("Kein DDownload-Link");
+    }
+    const fileCode = match[1];
+    let lastError = "";
+
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      try {
+        if (signal?.aborted) throw new Error("aborted:debrid");
+
+        // Login if no session yet
+        if (!this.cookies) {
+          await this.webLogin(signal);
+        }
+
+        // Step 1: GET file page to extract form fields
+        const filePageRes = await fetch(`${DDOWNLOAD_WEB_BASE}/${fileCode}`, {
+          headers: {
+            "User-Agent": DDOWNLOAD_WEB_UA,
+            Cookie: this.cookies
+          },
+          redirect: "manual",
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+
+        // Premium with direct downloads enabled → redirect immediately
+        if (filePageRes.status >= 300 && filePageRes.status < 400) {
+          const directUrl = filePageRes.headers.get("location") || "";
+          try { await filePageRes.text(); } catch { /* drain */ }
+          if (directUrl) {
+            return {
+              fileName: filenameFromUrl(directUrl) || filenameFromUrl(link),
+              directUrl,
+              fileSize: null,
+              retriesUsed: attempt - 1
+            };
+          }
+        }
+
+        const html = await filePageRes.text();
+
+        // Check for file not found
+        if (/File Not Found|file was removed|file was banned/i.test(html)) {
+          throw new Error("DDownload: Datei nicht gefunden");
+        }
+
+        // Extract form fields
+        const idVal = html.match(/name="id" value="([^"]+)"/)?.[1] || fileCode;
+        const randVal = html.match(/name="rand" value="([^"]+)"/)?.[1] || "";
+        const fileNameMatch = html.match(/class="file-info-name"[^>]*>([^<]+)</);
+        const fileName = fileNameMatch?.[1]?.trim() || filenameFromUrl(link);
+
+        // Step 2: POST download2 for premium download
+        const dlBody = new URLSearchParams({
+          op: "download2",
+          id: idVal,
+          rand: randVal,
+          referer: "",
+          method_premium: "1",
+          adblock_detected: "0"
+        });
+
+        const dlRes = await fetch(`${DDOWNLOAD_WEB_BASE}/${fileCode}`, {
+          method: "POST",
+          headers: {
+            "User-Agent": DDOWNLOAD_WEB_UA,
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: this.cookies,
+            Referer: `${DDOWNLOAD_WEB_BASE}/${fileCode}`
+          },
+          body: dlBody.toString(),
+          redirect: "manual",
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+
+        if (dlRes.status >= 300 && dlRes.status < 400) {
+          const directUrl = dlRes.headers.get("location") || "";
+          try { await dlRes.text(); } catch { /* drain */ }
+          if (directUrl) {
+            return {
+              fileName: fileName || filenameFromUrl(directUrl),
+              directUrl,
+              fileSize: null,
+              retriesUsed: attempt - 1
+            };
+          }
+        }
+
+        const dlHtml = await dlRes.text();
+        // Try to find direct URL in response HTML
+        const directMatch = dlHtml.match(/https?:\/\/[a-z0-9]+\.(?:dstorage\.org|ddownload\.com|ddl\.to|ucdn\.to)[^\s"'<>]+/i);
+        if (directMatch) {
+          return {
+            fileName,
+            directUrl: directMatch[0],
+            fileSize: null,
+            retriesUsed: attempt - 1
+          };
+        }
+
+        // Check for error messages
+        const errMatch = dlHtml.match(/class="err"[^>]*>([^<]+)</i);
+        if (errMatch) {
+          throw new Error(`DDownload: ${errMatch[1].trim()}`);
+        }
+
+        throw new Error("DDownload: Kein Download-Link erhalten");
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+          break;
+        }
+        // Re-login on auth errors
+        if (/login|session|cookie/i.test(lastError)) {
+          this.cookies = "";
+        }
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
+          break;
+        }
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+
+    throw new Error(String(lastError || "DDownload Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
+  }
+}
+
 export class DebridService {
   private settings: AppSettings;
 
@@ -1109,6 +1297,9 @@ export class DebridService {
     if (provider === "alldebrid") {
       return Boolean(settings.allDebridToken.trim());
     }
+    if (provider === "ddownload") {
+      return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
+    }
     return Boolean(settings.bestToken.trim());
   }
 
@@ -1121,6 +1312,9 @@ export class DebridService {
     }
     if (provider === "alldebrid") {
       return new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
+    }
+    if (provider === "ddownload") {
+      return new DdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
     }
     return new BestDebridClient(settings.bestToken).unrestrictLink(link, signal);
   }

@@ -93,7 +93,7 @@ const cleanupLabels: Record<string, string> = {
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 const providerLabels: Record<DebridProvider, string> = {
-  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid"
+  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload"
 };
 
 function formatDateTime(ts: number): string {
@@ -928,8 +928,11 @@ export function App(): ReactElement {
     if (settingsDraft.allDebridToken.trim()) {
       list.push("alldebrid");
     }
+    if (settingsDraft.ddownloadLogin.trim() && settingsDraft.ddownloadPassword.trim()) {
+      list.push("ddownload");
+    }
     return list;
-  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken]);
+  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken, settingsDraft.ddownloadLogin, settingsDraft.ddownloadPassword]);
 
   const primaryProviderValue: DebridProvider = useMemo(() => {
     if (configuredProviders.includes(settingsDraft.providerPrimary)) {
@@ -990,9 +993,14 @@ export function App(): ReactElement {
       if (source === "manual") { showToast(`Kein Update verfügbar (v${result.currentVersion})`, 2000); }
       return;
     }
+    let changelogBlock = "";
+    if (result.releaseNotes) {
+      const notes = result.releaseNotes.length > 500 ? `${result.releaseNotes.slice(0, 500)}…` : result.releaseNotes;
+      changelogBlock = `\n\n--- Changelog ---\n${notes}`;
+    }
     const approved = await askConfirmPrompt({
       title: "Update verfügbar",
-      message: `${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`,
+      message: `${result.latestTag} (aktuell v${result.currentVersion})${changelogBlock}\n\nJetzt automatisch herunterladen und installieren?`,
       confirmLabel: "Jetzt installieren"
     });
     if (!mountedRef.current) {
@@ -2711,6 +2719,10 @@ export function App(): ReactElement {
                     <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
                     <label>AllDebrid API Key</label>
                     <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
+                    <label>DDownload Login</label>
+                    <input value={settingsDraft.ddownloadLogin} onChange={(e) => setText("ddownloadLogin", e.target.value)} />
+                    <label>DDownload Passwort</label>
+                    <input type="password" value={settingsDraft.ddownloadPassword} onChange={(e) => setText("ddownloadPassword", e.target.value)} />
                     {configuredProviders.length === 0 && (
                       <div className="hint">Füge mindestens einen Account hinzu, dann erscheint die Hoster-Auswahl.</div>
                     )}
@@ -3344,7 +3356,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
               );
               case "status": return (
-                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]</span>
+                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` ${pkg.postProcessLabel}` : ""}</span>
               );
               case "speed": return (
                 <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>

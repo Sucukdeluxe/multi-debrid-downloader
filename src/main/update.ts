@@ -336,6 +336,8 @@ function parseReleasePayload(payload: Record<string, unknown>, fallback: UpdateC
   const releaseUrl = String(payload.html_url || fallback.releaseUrl);
   const setup = pickSetupAsset(readReleaseAssets(payload));
 
+  const body = typeof payload.body === "string" ? payload.body.trim() : "";
+
   return {
     updateAvailable: isRemoteNewer(APP_VERSION, latestVersion),
     currentVersion: APP_VERSION,
@@ -344,7 +346,8 @@ function parseReleasePayload(payload: Record<string, unknown>, fallback: UpdateC
     releaseUrl,
     setupAssetUrl: setup?.browser_download_url || "",
     setupAssetName: setup?.name || "",
-    setupAssetDigest: setup?.digest || ""
+    setupAssetDigest: setup?.digest || "",
+    releaseNotes: body || undefined
   };
 }
 
