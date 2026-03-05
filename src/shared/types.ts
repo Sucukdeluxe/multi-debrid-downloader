@@ -14,7 +14,7 @@ export type CleanupMode = "none" | "trash" | "delete";
 export type ConflictMode = "overwrite" | "skip" | "rename" | "ask";
 export type SpeedMode = "global" | "per_download";
 export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "package_done";
-export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload";
+export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier";
 export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
 export type PackagePriority = "high" | "normal" | "low";
@@ -44,6 +44,7 @@ export interface AppSettings {
   allDebridToken: string;
   ddownloadLogin: string;
   ddownloadPassword: string;
+  oneFichierApiKey: string;
   archivePasswordList: string;
   rememberToken: boolean;
   providerPrimary: DebridProvider;
