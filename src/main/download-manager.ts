@@ -6412,6 +6412,12 @@ export class DownloadManager extends EventEmitter {
               }
               activeHybridArchiveMap.delete(progress.archiveName);
               hybridArchiveStartTimes.delete(progress.archiveName);
+              // Show transitional label while next archive initializes
+              const done = progress.current + 1;
+              if (done < progress.total) {
+                pkg.postProcessLabel = `Entpacken (${done}/${progress.total}) - Naechstes Archiv...`;
+                this.emitState();
+              }
             } else {
               // Update this archive's items with per-archive progress
               const archiveLabel = ` · ${progress.archiveName}`;
@@ -6726,6 +6732,11 @@ export class DownloadManager extends EventEmitter {
                 }
                 activeArchiveItemsMap.delete(progress.archiveName);
                 archiveStartTimes.delete(progress.archiveName);
+                // Show transitional label while next archive initializes
+                const done = progress.current + 1;
+                if (done < progress.total) {
+                  emitExtractStatus(`Entpacken (${done}/${progress.total}) - Naechstes Archiv...`, true);
+                }
               } else {
                 // Update this archive's items with per-archive progress
                 const archiveTag = progress.archiveName ? ` · ${progress.archiveName}` : "";
