@@ -1001,17 +1001,38 @@ export function App(): ReactElement {
     }
     let changelogBlock = "";
     if (result.releaseNotes) {
-      // Strip markdown formatting for plain-text confirm dialog
-      let notes = result.releaseNotes
-        .replace(/^#{1,6}\s+/gm, "")       // ## headings
-        .replace(/\*\*([^*]+)\*\*/g, "$1")  // **bold**
-        .replace(/\*([^*]+)\*/g, "$1")      // *italic*
-        .replace(/`([^`]+)`/g, "$1")        // `code`
-        .replace(/^\s*[-*]\s+/gm, "- ")     // normalize list bullets
-        .replace(/\n{3,}/g, "\n\n")         // collapse excess blank lines
-        .trim();
-      if (notes.length > 500) notes = `${notes.slice(0, 500)}…`;
-      changelogBlock = `\n\n--- Changelog ---\n${notes}`;
+      // Build compact changelog: only top-level list items, no sub-items or long descriptions
+      const lines = result.releaseNotes.split("\n");
+      const compactLines: string[] = [];
+      for (const line of lines) {
+        // Skip indented sub-items (2+ spaces before dash)
+        if (/^\s{2,}[-*]/.test(line)) continue;
+        // Skip heading markers
+        if (/^#{1,6}\s/.test(line)) continue;
+        // Skip empty lines
+        if (!line.trim()) continue;
+        // Strip markdown: **bold**, *italic*, `code`
+        let clean = line
+          .replace(/\*\*([^*]+)\*\*/g, "$1")
+          .replace(/\*([^*]+)\*/g, "$1")
+          .replace(/`([^`]+)`/g, "$1")
+          .replace(/^\s*[-*]\s+/, "- ")
+          .trim();
+        // Truncate long lines after the first colon/sentence
+        const colonIdx = clean.indexOf(":");
+        if (colonIdx > 0 && colonIdx < clean.length - 1) {
+          const afterColon = clean.slice(colonIdx + 1).trim();
+          // Keep short descriptions, cut long ones
+          if (afterColon.length > 60) {
+            clean = clean.slice(0, colonIdx + 1).trim();
+          }
+        }
+        if (clean) compactLines.push(clean);
+      }
+      const notes = compactLines.join("\n");
+      if (notes) {
+        changelogBlock = `\n\n--- Changelog ---\n${notes}`;
+      }
     }
     const approved = await askConfirmPrompt({
       title: "Update verfügbar",
