@@ -2983,7 +2983,7 @@ export function App(): ReactElement {
         <span>Links: {Object.keys(snapshot.session.items).length}</span>
         <span>Session: {humanSize(snapshot.stats.totalDownloaded)}</span>
         <span>Gesamt: {humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
-        <span>Hoster: {providerStats.length > 0 ? providerStats.map(([name]) => name).join(", ") : "–"}</span>
+        <span>Hoster: {providerStats.length}</span>
         <span>{snapshot.speedText}</span>
         <span>{snapshot.etaText}</span>
         <span className="footer-spacer" />
