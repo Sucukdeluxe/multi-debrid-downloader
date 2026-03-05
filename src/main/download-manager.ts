@@ -291,6 +291,9 @@ function providerLabel(provider: DownloadItem["provider"]): string {
   if (provider === "alldebrid") {
     return "AllDebrid";
   }
+  if (provider === "ddownload") {
+    return "DDownload";
+  }
   return "Debrid";
 }
 
