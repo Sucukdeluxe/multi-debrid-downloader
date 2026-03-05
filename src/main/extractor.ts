@@ -99,7 +99,7 @@ export interface ExtractProgressUpdate {
   archiveName: string;
   archivePercent?: number;
   elapsedMs?: number;
-  phase: "extracting" | "done";
+  phase: "extracting" | "done" | "preparing";
   passwordAttempt?: number;
   passwordTotal?: number;
   passwordFound?: boolean;
@@ -1862,6 +1862,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   if (options.signal?.aborted) {
     throw new Error("aborted:extract");
   }
+  options.onProgress?.({ current: 0, total: 0, percent: 0, archiveName: "Archive scannen...", phase: "preparing" });
   const allCandidates = await findArchiveCandidates(options.packageDir);
   const candidates = options.onlyArchives
     ? allCandidates.filter((archivePath) => {
@@ -1873,6 +1874,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   // Disk space pre-check
   if (candidates.length > 0) {
+    options.onProgress?.({ current: 0, total: candidates.length, percent: 0, archiveName: "Speicherplatz prüfen...", phase: "preparing" });
     try {
       await fs.promises.mkdir(options.targetDir, { recursive: true });
     } catch { /* ignore */ }

@@ -3371,7 +3371,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
               );
               case "status": return (
-                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` ${pkg.postProcessLabel}` : ""}</span>
+                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}</span>
               );
               case "speed": return (
                 <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>
