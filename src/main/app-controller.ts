@@ -5,6 +5,7 @@ import {
   AppSettings,
   DuplicatePolicy,
   HistoryEntry,
+  PackagePriority,
   ParsedPackageInput,
   SessionStats,
   StartConflictEntry,
@@ -360,8 +361,8 @@ export class AppController {
     clearHistory(this.storagePaths);
   }
 
-  public setPackagePriority(packageId: string, priority: string): void {
-    this.manager.setPackagePriority(packageId, priority as any);
+  public setPackagePriority(packageId: string, priority: PackagePriority): void {
+    this.manager.setPackagePriority(packageId, priority);
   }
 
   public skipItems(itemIds: string[]): void {
