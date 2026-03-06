@@ -4454,33 +4454,43 @@ export class DownloadManager extends EventEmitter {
     return provider;
   }
 
-  private reservePacedStartForItem(item: DownloadItem, now: number): boolean {
+  private delayPacedStartForItem(item: DownloadItem, now: number): boolean {
     const paceKey = this.getPacedStartKeyForItem(item);
     if (!paceKey) {
       return false;
     }
 
-    const activeCount = this.getProviderActiveTaskCount("alldebrid");
-    if (activeCount <= 0 && !this.providerStartReservations.has(paceKey)) {
-      return false;
-    }
-
-    const baseDelayMs = activeCount * ALLDEBRID_START_STAGGER_MS;
-    const reservedAt = this.providerStartReservations.get(paceKey) || 0;
-    const earliestAt = Math.max(now + baseDelayMs, reservedAt);
-    if (earliestAt <= now) {
+    const nextAllowedAt = this.providerStartReservations.get(paceKey) || 0;
+    if (nextAllowedAt <= now) {
       return false;
     }
 
     const existingReadyAt = this.retryAfterByItem.get(item.id) || 0;
-    const scheduledAt = Math.max(existingReadyAt, earliestAt);
+    const scheduledAt = Math.max(existingReadyAt, nextAllowedAt);
+    if (scheduledAt <= now) {
+      return false;
+    }
     this.retryAfterByItem.set(item.id, scheduledAt);
-    this.providerStartReservations.set(paceKey, scheduledAt + ALLDEBRID_START_STAGGER_MS);
     item.status = "queued";
     item.speedBps = 0;
     item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
     item.updatedAt = now;
     return true;
+  }
+
+  private notePacedStartForItem(item: DownloadItem, now: number): void {
+    const paceKey = this.getPacedStartKeyForItem(item);
+    if (!paceKey) {
+      return;
+    }
+
+    const activeCount = this.getProviderActiveTaskCount("alldebrid");
+    if (activeCount <= 0) {
+      this.providerStartReservations.delete(paceKey);
+      return;
+    }
+
+    this.providerStartReservations.set(paceKey, now + activeCount * ALLDEBRID_START_STAGGER_MS);
   }
 
   private getAllDebridStartLimit(hosterKey: string): number {
@@ -4863,7 +4873,7 @@ export class DownloadManager extends EventEmitter {
             this.retryAfterByItem.delete(itemId);
           }
           if (item.status === "queued" || item.status === "reconnect_wait") {
-            if (this.reservePacedStartForItem(item, now)) {
+            if (this.delayPacedStartForItem(item, now)) {
               continue;
             }
             if (this.shouldDelayStartForItem(item)) {
@@ -5014,6 +5024,7 @@ export class DownloadManager extends EventEmitter {
       blockedOnDiskSince: 0
     };
     this.activeTasks.set(itemId, active);
+    this.notePacedStartForItem(item, nowMs());
     this.emitState();
 
     void this.processItem(active).catch((err) => {

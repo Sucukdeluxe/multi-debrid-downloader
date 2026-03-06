@@ -1914,6 +1914,29 @@ export function App(): ReactElement {
     });
   };
 
+  const onToggleAccountEnabled = async (entry: ConfiguredAccountEntry): Promise<void> => {
+    await performQuickAction(async () => {
+      const provider = entry.service as DebridProvider;
+      const current = settingsDraft.disabledProviders || [];
+      const nextDisabledProviders = current.includes(provider)
+        ? current.filter((existing) => existing !== provider)
+        : [...current, provider];
+      const nextDraft: AppSettings = {
+        ...settingsDraft,
+        disabledProviders: nextDisabledProviders
+      };
+      await persistSpecificSettings(nextDraft);
+      showToast(
+        nextDisabledProviders.includes(provider)
+          ? `${entry.serviceLabel} deaktiviert`
+          : `${entry.serviceLabel} aktiviert`,
+        2200
+      );
+    }, (error) => {
+      showToast(`${entry.serviceLabel} konnte nicht umgeschaltet werden: ${String(error)}`, 3200);
+    });
+  };
+
   const onCheckUpdates = async (): Promise<void> => {
     let updateResult: UpdateCheckResult | null = null;
     await performQuickAction(async () => {
@@ -3687,12 +3710,7 @@ export function App(): ReactElement {
                                       {quickAction.label}
                                     </button>
                                   )}
-                                  <button className="btn" disabled={actionBusy} onClick={() => {
-                                    const provider = entry.service as DebridProvider;
-                                    const current = settingsDraft.disabledProviders || [];
-                                    const next = current.includes(provider) ? current.filter((p) => p !== provider) : [...current, provider];
-                                    setSettingsDraft((prev) => ({ ...prev, disabledProviders: next }));
-                                  }}>
+                                  <button className="btn" disabled={actionBusy} onClick={() => { void onToggleAccountEnabled(entry); }}>
                                     {entry.disabled ? "Aktivieren" : "Deaktivieren"}
                                   </button>
                                   <button className="btn" disabled={actionBusy} onClick={() => openEditAccountDialog(entry.kind)}>
