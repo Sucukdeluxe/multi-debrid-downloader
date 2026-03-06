@@ -1637,11 +1637,15 @@ export function buildExternalExtractArgs(
   conflictMode: ConflictMode,
   password = "",
   usePerformanceFlags = true,
-  hybridMode = false
+  hybridMode = false,
+  flatMode = false
 ): string[] {
   const mode = effectiveConflictMode(conflictMode);
   const lower = command.toLowerCase();
   if (lower.includes("unrar") || lower.includes("winrar")) {
+    // "e" extracts without paths (flat). Used as fallback when the archive stores paths with a
+    // leading \ (absolute-style), which causes UnRAR to produce invalid \\ double-separators.
+    const extractCmd = flatMode ? "e" : "x";
     const overwrite = mode === "overwrite" ? "-o+" : mode === "rename" ? "-or" : "-o-";
     // NOTE: The password is passed as a CLI argument (-p<password>), which means it may be
     // visible via process listing tools (e.g. `ps aux` on Unix). This is unavoidable because
@@ -1651,7 +1655,7 @@ export function buildExternalExtractArgs(
     const perfArgs = usePerformanceFlags && shouldUseExtractorPerformanceFlags()
       ? ["-idc", extractorThreadSwitch(hybridMode, currentExtractCpuPriority)]
       : [];
-    return ["x", overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
+    return [extractCmd, overwrite, pass, "-y", ...perfArgs, archivePath, `${targetDir}${path.sep}`];
   }
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
@@ -1931,6 +1935,34 @@ async function runExternalExtractInner(
     }
 
     lastError = result.errorText;
+  }
+
+  // Some archives (e.g. created by certain scene groups) store internal paths with a leading \,
+  // causing UnRAR to construct invalid \\ double-separator paths on Windows. Retry in flat mode
+  // ("e" instead of "x") which strips all archive paths and extracts files directly to targetDir.
+  const isAbsoluteArchivePath = lastError.includes("Cannot create") && lastError.includes("\\\\");
+  if (isAbsoluteArchivePath) {
+    logger.warn(`Entpack-Pfadfehler: absoluter Archivpfad erkannt, Wiederholung mit flachem Modus: ${path.basename(archivePath)}`);
+    bestPercent = 0;
+    passwordAttempt = 0;
+    for (const password of passwords) {
+      if (signal?.aborted) throw new Error("aborted:extract");
+      passwordAttempt += 1;
+      const quotedPw = password === "" ? '""' : `"${password}"`;
+      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
+      const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
+      const result = await runExtractCommand(command, args, (chunk) => {
+        const parsed = parseProgressPercent(chunk);
+        if (parsed === null) return;
+        const next = nextArchivePercent(bestPercent, parsed);
+        if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
+      }, signal, timeoutMs);
+      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
+      if (result.ok) { onArchiveProgress?.(100); return password; }
+      if (result.aborted) throw new Error("aborted:extract");
+      if (result.timedOut || result.missingCommand) break;
+      lastError = result.errorText;
+    }
   }
 
   throw new Error(lastError || "Entpacken fehlgeschlagen");

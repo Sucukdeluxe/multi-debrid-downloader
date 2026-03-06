@@ -5231,6 +5231,7 @@ export class DownloadManager extends EventEmitter {
         // Unrestrict succeeded - reset provider failure counter
         this.recordProviderSuccess(this.getProviderFailureKeyForItem(item, unrestricted.provider));
         item.provider = unrestricted.provider;
+        item.providerLabel = unrestricted.providerLabel;
         item.retries += unrestricted.retriesUsed;
         item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
         try {
