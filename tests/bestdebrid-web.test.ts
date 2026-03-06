@@ -90,12 +90,37 @@ describe("bestdebrid-web", () => {
     const count = await fallback.importCookiesFromFile(filePath);
 
     expect(count).toBe(2);
+    expect(mockClearStorageData).toHaveBeenCalledTimes(1);
+    expect(mockClearStorageData).toHaveBeenCalledWith({
+      storages: ["cookies", "indexdb", "localstorage", "serviceworkers", "cachestorage"]
+    });
     expect(mockCookiesSet).toHaveBeenCalledTimes(2);
     expect(mockCookiesSet).toHaveBeenCalledWith(expect.objectContaining({
       name: "PHPSESSID",
       domain: ".bestdebrid.com",
       httpOnly: true,
       secure: true
+    }));
+  });
+
+  it("deduplicates conflicting session cookies and prefers the HttpOnly variant", async () => {
+    const filePath = createCookieFile([
+      "# Netscape HTTP Cookie File",
+      "bestdebrid.com\tFALSE\t/\tTRUE\t1803585384\tPHPSESSID\tnon-http-only",
+      "#HttpOnly_.bestdebrid.com\tTRUE\t/\tTRUE\t1803585385\tPHPSESSID\thttp-only"
+    ].join("\n"));
+    tempFiles.push(filePath);
+
+    const fallback = new BestDebridWebFallback(() => true);
+    const count = await fallback.importCookiesFromFile(filePath);
+
+    expect(count).toBe(1);
+    expect(mockCookiesSet).toHaveBeenCalledTimes(1);
+    expect(mockCookiesSet).toHaveBeenCalledWith(expect.objectContaining({
+      name: "PHPSESSID",
+      value: "http-only",
+      httpOnly: true,
+      domain: ".bestdebrid.com"
     }));
   });
 
