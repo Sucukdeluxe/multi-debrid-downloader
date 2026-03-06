@@ -397,11 +397,11 @@ describe("debrid service", () => {
     expect(realDebridWeb).not.toHaveBeenCalled();
   });
 
-  it("treats MegaDebrid as not configured when web fallback callback is unavailable", async () => {
+  it("treats MegaDebrid as not configured when no credentials are set", async () => {
     const settings = {
       ...defaultSettings(),
-      megaLogin: "user",
-      megaPassword: "pass",
+      megaLogin: "",
+      megaPassword: "",
       providerPrimary: "megadebrid" as const,
       providerSecondary: "none" as const,
       providerTertiary: "none" as const,
@@ -412,7 +412,7 @@ describe("debrid service", () => {
     await expect(service.unrestrictLink("https://rapidgator.net/file/missing-mega-web")).rejects.toThrow(/nicht konfiguriert/i);
   });
 
-  it("uses Mega web path exclusively", async () => {
+  it("uses Mega web fallback when API fails", async () => {
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -426,6 +426,7 @@ describe("debrid service", () => {
       autoProviderFallback: true
     };
 
+    // API returns 404 for connectUser → API fails, falls back to web
     const fetchSpy = vi.fn(async () => new Response("not-found", { status: 404 }));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
@@ -441,7 +442,6 @@ describe("debrid service", () => {
     expect(result.provider).toBe("megadebrid");
     expect(result.directUrl).toContain("unrestrict.link/download/file/");
     expect(megaWeb).toHaveBeenCalledTimes(1);
-    expect(fetchSpy).toHaveBeenCalledTimes(0);
   });
 
   it("aborts Mega web unrestrict when caller signal is cancelled", async () => {
@@ -457,6 +457,9 @@ describe("debrid service", () => {
       providerTertiary: "none" as const,
       autoProviderFallback: false
     };
+
+    // API connect fails fast → falls through to web fallback
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
     const megaWeb = vi.fn((_link: string, signal?: AbortSignal): Promise<never> => new Promise((_, reject) => {
       const onAbort = (): void => reject(new Error("aborted:mega-web-test"));

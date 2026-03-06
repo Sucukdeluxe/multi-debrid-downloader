@@ -12,6 +12,8 @@ const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
 const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
 const ALL_DEBRID_API_BASE_V41 = "https://api.alldebrid.com/v4.1";
 
+const MEGA_DEBRID_API_BASE = "https://www.mega-debrid.eu/api.php";
+
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
@@ -157,6 +159,14 @@ function parseJson(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+function parseJsonSafe(text: string): Record<string, unknown> | null {
+  const parsed = parseJson(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function pickString(payload: Record<string, unknown> | null, keys: string[]): string {
@@ -659,11 +669,105 @@ function buildBestDebridRequests(link: string, token: string): BestDebridRequest
 class MegaDebridClient {
   private megaWebUnrestrict?: MegaWebUnrestrictor;
 
-  public constructor(megaWebUnrestrict?: MegaWebUnrestrictor) {
+  private login: string;
+
+  private password: string;
+
+  private preferApi: boolean;
+
+  private static cachedApiToken = "";
+
+  private static cachedApiTokenAt = 0;
+
+  public constructor(login: string, password: string, preferApi: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
+    this.login = login;
+    this.password = password;
+    this.preferApi = preferApi;
     this.megaWebUnrestrict = megaWebUnrestrict;
   }
 
-  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+  private async connectApi(signal?: AbortSignal): Promise<string | null> {
+    // Return cached token if fresh (max 20 min)
+    if (MegaDebridClient.cachedApiToken && Date.now() - MegaDebridClient.cachedApiTokenAt < 20 * 60 * 1000) {
+      return MegaDebridClient.cachedApiToken;
+    }
+
+    const url = `${MEGA_DEBRID_API_BASE}?action=connectUser&login=${encodeURIComponent(this.login)}&password=${encodeURIComponent(this.password)}`;
+    const response = await fetch(url, {
+      headers: { "User-Agent": DEBRID_USER_AGENT },
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      return null;
+    }
+    const payload = parseJsonSafe(text);
+    if (!payload || payload.response_code !== "ok") {
+      return null;
+    }
+    const token = String(payload.token || "").trim();
+    if (!token) {
+      return null;
+    }
+    MegaDebridClient.cachedApiToken = token;
+    MegaDebridClient.cachedApiTokenAt = Date.now();
+    return token;
+  }
+
+  private async unrestrictViaApi(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
+    const token = await this.connectApi(signal);
+    if (!token) {
+      return null;
+    }
+
+    const url = `${MEGA_DEBRID_API_BASE}?action=getLink&token=${encodeURIComponent(token)}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": DEBRID_USER_AGENT
+      },
+      body: new URLSearchParams({ link }),
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      // Token might be invalid, clear cache
+      if (response.status === 401 || response.status === 403) {
+        MegaDebridClient.cachedApiToken = "";
+        MegaDebridClient.cachedApiTokenAt = 0;
+      }
+      return null;
+    }
+    const payload = parseJsonSafe(text);
+    if (!payload || payload.response_code !== "ok") {
+      // Token expired — clear cache for next attempt
+      if (payload && String(payload.response_code || "").includes("token")) {
+        MegaDebridClient.cachedApiToken = "";
+        MegaDebridClient.cachedApiTokenAt = 0;
+      }
+      const errorText = String(payload?.response_text || "").trim();
+      if (errorText) {
+        throw new Error(`Mega-Debrid API: ${errorText}`);
+      }
+      return null;
+    }
+
+    const directUrl = String(payload.debridLink || "").trim();
+    if (!directUrl) {
+      return null;
+    }
+    const fileName = String(payload.filename || "").trim() || filenameFromUrl(directUrl) || filenameFromUrl(link);
+    return {
+      directUrl,
+      fileName,
+      fileSize: null,
+      retriesUsed: 0,
+      sourceLabel: "API"
+    };
+  }
+
+  private async unrestrictViaWeb(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
     if (!this.megaWebUnrestrict) {
       throw new Error("Mega-Web-Fallback nicht verfügbar");
     }
@@ -681,6 +785,7 @@ class MegaDebridClient {
       }
       if (web?.directUrl) {
         web.retriesUsed = attempt - 1;
+        web.sourceLabel = "Web";
         return web;
       }
       if (web && !web.directUrl) {
@@ -698,6 +803,29 @@ class MegaDebridClient {
       }
     }
     throw new Error(String(lastError || "Mega-Web Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
+  }
+
+  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+    if (this.preferApi && this.login.trim() && this.password.trim()) {
+      // API mode: try API first, fall back to web on failure
+      try {
+        const apiResult = await this.unrestrictViaApi(link, signal);
+        if (apiResult) {
+          logger.info(`Mega-Debrid (API) unrestrict OK: ${apiResult.fileName}`);
+          return apiResult;
+        }
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        logger.warn(`Mega-Debrid API fehlgeschlagen, versuche Web-Fallback: ${errorText}`);
+      }
+      return this.unrestrictViaWeb(link, signal);
+    }
+
+    // Web mode only
+    return this.unrestrictViaWeb(link, signal);
   }
 }
 
@@ -1454,7 +1582,7 @@ export class DebridService {
         return {
           ...result,
           provider: "onefichier",
-          providerLabel: PROVIDER_LABELS["onefichier"]
+          providerLabel: PROVIDER_LABELS["onefichier"] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
         };
       } catch (error) {
         const errorText = compactErrorText(error);
@@ -1474,7 +1602,7 @@ export class DebridService {
         return {
           ...result,
           provider: "ddownload",
-          providerLabel: PROVIDER_LABELS["ddownload"]
+          providerLabel: PROVIDER_LABELS["ddownload"] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
         };
       } catch (error) {
         const errorText = compactErrorText(error);
@@ -1509,7 +1637,7 @@ export class DebridService {
           ...result,
           fileName,
           provider: primary,
-          providerLabel: PROVIDER_LABELS[primary]
+          providerLabel: PROVIDER_LABELS[primary] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
         };
       } catch (error) {
         const errorText = compactErrorText(error);
@@ -1542,7 +1670,7 @@ export class DebridService {
           ...result,
           fileName,
           provider,
-          providerLabel: PROVIDER_LABELS[provider]
+          providerLabel: PROVIDER_LABELS[provider] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
         };
       } catch (error) {
         const errorText = compactErrorText(error);
@@ -1565,7 +1693,7 @@ export class DebridService {
       return Boolean(this.shouldUseRealDebridWeb(settings) || settings.token.trim());
     }
     if (provider === "megadebrid") {
-      return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim() && this.options.megaWebUnrestrict);
+      return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
     }
     if (provider === "alldebrid") {
       return Boolean(this.shouldUseAllDebridWeb(settings) || settings.allDebridToken.trim());
@@ -1591,7 +1719,7 @@ export class DebridService {
       return new RealDebridClient(settings.token).unrestrictLink(link, signal);
     }
     if (provider === "megadebrid") {
-      return new MegaDebridClient(this.options.megaWebUnrestrict).unrestrictLink(link, signal);
+      return new MegaDebridClient(settings.megaLogin, settings.megaPassword, settings.megaDebridPreferApi, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
     }
     if (provider === "alldebrid") {
       if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {

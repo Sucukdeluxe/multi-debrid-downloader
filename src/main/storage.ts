@@ -110,6 +110,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
     megaLogin: asText(settings.megaLogin),
     megaPassword: asText(settings.megaPassword),
+    megaDebridPreferApi: settings.megaDebridPreferApi !== undefined ? Boolean(settings.megaDebridPreferApi) : true,
     bestToken: asText(settings.bestToken),
     allDebridToken: asText(settings.allDebridToken),
     allDebridUseWebLogin: Boolean(settings.allDebridUseWebLogin),
