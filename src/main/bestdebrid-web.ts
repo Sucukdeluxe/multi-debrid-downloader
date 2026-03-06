@@ -192,6 +192,24 @@ export class BestDebridWebFallback {
     });
     window.webContents.setUserAgent(BESTDEBRID_USER_AGENT);
     window.setMenuBarVisibility(false);
+
+    // Inject anti-fingerprint patches via CDP before any page JS runs
+    // This hides Electron-specific properties that Cloudflare Turnstile detects
+    try {
+      window.webContents.debugger.attach("1.3");
+      await window.webContents.debugger.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+        source: [
+          "Object.defineProperty(navigator, 'webdriver', { get: () => false });",
+          "Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });",
+          "Object.defineProperty(navigator, 'languages', { get: () => ['de-DE', 'de', 'en-US', 'en'] });",
+          "window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {} };"
+        ].join("\n")
+      });
+      window.webContents.debugger.detach();
+    } catch {
+      // CDP not available — continue without patches
+    }
+
     window.on("closed", () => {
       if (this.loginWindow === window) {
         this.loginWindow = null;
