@@ -4829,7 +4829,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 return <span key={col} className="pkg-col pkg-col-hoster" title={hosterText}>{hosterText}</span>;
               }
               case "account": {
-                const accountText = [...new Set(items.map((item) => item.provider).filter(Boolean))].map((p) => providerLabels[p!] || p).join(", ");
+                const accountText = [...new Set(items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : null)).filter(Boolean))].join(", ");
                 return <span key={col} className="pkg-col pkg-col-account" title={accountText}>{accountText}</span>;
               }
               case "prio": return (
@@ -4890,7 +4890,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 </span>
               );
               case "hoster": { const h = extractHoster(item.url) || ""; return <span key={col} className="pkg-col pkg-col-hoster" title={h}>{h}</span>; }
-              case "account": return <span key={col} className="pkg-col pkg-col-account">{item.provider ? providerLabels[item.provider] : ""}</span>;
+              case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
               case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
               case "status": return (
                 <span key={col} className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>

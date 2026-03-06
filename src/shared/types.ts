@@ -118,6 +118,7 @@ export interface DownloadItem {
   packageId: string;
   url: string;
   provider: DebridProvider | null;
+  providerLabel?: string;
   status: DownloadStatus;
   retries: number;
   speedBps: number;
