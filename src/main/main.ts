@@ -454,6 +454,10 @@ function registerIpcHandlers(): void {
     await controller.openAllDebridLoginWindow();
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_BESTDEBRID_LOGIN, async () => {
+    await controller.openBestDebridLoginWindow();
+  });
+
   ipcMain.handle(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO, async () => {
     return controller.getAllDebridHostInfo();
   });

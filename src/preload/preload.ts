@@ -54,6 +54,7 @@ const api: ElectronApi = {
   openSessionLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_SESSION_LOG),
   openRealDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN),
   openAllDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN),
+  openBestDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_BESTDEBRID_LOGIN),
   getAllDebridHostInfo: (): Promise<AllDebridHostInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),

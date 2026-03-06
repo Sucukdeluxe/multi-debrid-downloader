@@ -36,6 +36,7 @@ export const IPC_CHANNELS = {
   OPEN_SESSION_LOG: "app:open-session-log",
   OPEN_REALDEBRID_LOGIN: "app:open-realdebrid-login",
   OPEN_ALLDEBRID_LOGIN: "app:open-alldebrid-login",
+  OPEN_BESTDEBRID_LOGIN: "app:open-bestdebrid-login",
   GET_ALLDEBRID_HOST_INFO: "app:get-alldebrid-host-info",
   RETRY_EXTRACTION: "queue:retry-extraction",
   EXTRACT_NOW: "queue:extract-now",
