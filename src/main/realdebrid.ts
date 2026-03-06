@@ -9,6 +9,7 @@ export interface UnrestrictedLink {
   fileSize: number | null;
   retriesUsed: number;
   skipTlsVerify?: boolean;
+  sourceLabel?: string;
 }
 
 function shouldRetryStatus(status: number): boolean {

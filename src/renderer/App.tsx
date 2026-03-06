@@ -63,7 +63,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
+    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridPreferApi: true, bestToken: "", allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -2841,6 +2841,7 @@ export function App(): ReactElement {
                     <input value={settingsDraft.megaLogin} onChange={(e) => setText("megaLogin", e.target.value)} />
                     <label>Mega-Debrid Passwort</label>
                     <input type="password" value={settingsDraft.megaPassword} onChange={(e) => setText("megaPassword", e.target.value)} />
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.megaDebridPreferApi} onChange={(e) => setBool("megaDebridPreferApi", e.target.checked)} /> Mega-Debrid bevorzugt über API (schneller, Fallback auf Web)</label>
                     <label>BestDebrid API Token</label>
                     <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
                     <label>AllDebrid API Key</label>

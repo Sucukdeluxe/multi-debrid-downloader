@@ -44,6 +44,7 @@ export function defaultSettings(): AppSettings {
     realDebridUseWebLogin: false,
     megaLogin: "",
     megaPassword: "",
+    megaDebridPreferApi: true,
     bestToken: "",
     allDebridToken: "",
     allDebridUseWebLogin: false,
