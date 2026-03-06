@@ -33,6 +33,16 @@ const PROVIDER_LABELS: Record<DebridProvider, string> = {
   linksnappy: "LinkSnappy"
 };
 
+function extractHosterFromUrl(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    const parts = host.split(".");
+    return parts.length >= 2 ? parts[parts.length - 2] : host;
+  } catch {
+    return "";
+  }
+}
+
 interface ProviderUnrestrictedLink extends UnrestrictedLink {
   provider: DebridProvider;
   providerLabel: string;
@@ -1874,6 +1884,42 @@ export class DebridService {
 
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
+
+    // Hoster-Zuordnung: prüfe ob für diesen Hoster ein bestimmter Provider konfiguriert ist
+    const routing = settings.hosterRouting || {};
+    const hosterKey = extractHosterFromUrl(link);
+    if (hosterKey && routing[hosterKey]) {
+      const routedProvider = routing[hosterKey];
+      if (this.isProviderConfiguredFor(settings, routedProvider)) {
+        logger.info(`Hoster-Zuordnung: ${hosterKey} → ${PROVIDER_LABELS[routedProvider]}`);
+        try {
+          const result = await this.unrestrictViaProvider(settings, routedProvider, link, signal);
+          let fileName = result.fileName;
+          if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
+            const fromPage = await resolveRapidgatorFilename(link, signal);
+            if (fromPage) fileName = fromPage;
+          }
+          return {
+            ...result,
+            fileName,
+            provider: routedProvider,
+            providerLabel: PROVIDER_LABELS[routedProvider] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
+          };
+        } catch (error) {
+          const errorText = compactErrorText(error);
+          if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+            throw error;
+          }
+          if (!settings.autoProviderFallback) {
+            throw new Error(`Hoster-Zuordnung fehlgeschlagen (${hosterKey} → ${PROVIDER_LABELS[routedProvider]}): ${errorText}`);
+          }
+          logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} fehlgeschlagen, Fallback auf Provider-Kette: ${errorText}`);
+          // Fall through to normal provider chain
+        }
+      } else {
+        logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (Provider nicht konfiguriert/deaktiviert)`);
+      }
+    }
 
     // 1Fichier is a direct file hoster. If the link is a 1fichier.com URL
     // and the API key is configured, use 1Fichier directly before debrid providers.
