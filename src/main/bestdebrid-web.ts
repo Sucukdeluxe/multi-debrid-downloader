@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { session } from "electron";
+import { session, type Session } from "electron";
 import { UnrestrictedLink } from "./realdebrid";
 import { filenameFromUrl, sleep } from "./utils";
 import { logger } from "./logger";
@@ -43,6 +43,7 @@ function parseJson(text: string): Record<string, unknown> | null {
 
 interface NetscapeCookie {
   domain: string;
+  includeSubdomains: boolean;
   httpOnly: boolean;
   path: string;
   secure: boolean;
@@ -55,16 +56,26 @@ function parseNetscapeCookieFile(text: string): NetscapeCookie[] {
   const cookies: NetscapeCookie[] = [];
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
+    if (!trimmed) {
       continue;
     }
-    const parts = trimmed.split("\t");
+
+    let normalizedLine = trimmed;
+    let httpOnly = false;
+    if (normalizedLine.startsWith("#HttpOnly_")) {
+      httpOnly = true;
+      normalizedLine = normalizedLine.slice("#HttpOnly_".length);
+    } else if (normalizedLine.startsWith("#")) {
+      continue;
+    }
+    const parts = normalizedLine.split("\t");
     if (parts.length < 7) {
       continue;
     }
     cookies.push({
       domain: parts[0],
-      httpOnly: parts[1].toUpperCase() === "TRUE",
+      includeSubdomains: parts[1].toUpperCase() === "TRUE",
+      httpOnly,
       path: parts[2],
       secure: parts[3].toUpperCase() === "TRUE",
       expirationDate: Number(parts[4]) || 0,
@@ -73,6 +84,25 @@ function parseNetscapeCookieFile(text: string): NetscapeCookie[] {
     });
   }
   return cookies;
+}
+
+function isLikelyBestDebridAuthCookie(name: string): boolean {
+  const normalized = String(name || "").trim();
+  return /phpsessid|sess(?:ion)?|auth|login/i.test(normalized);
+}
+
+function isAuthenticatedBestDebridHtml(html: string): boolean {
+  const normalized = String(html || "");
+  if (!normalized) {
+    return false;
+  }
+  return /href\s*=\s*["']logout["']/i.test(normalized)
+    || /title\s*=\s*["'][^"']*premium until/i.test(normalized)
+    || (/user-profile-image/i.test(normalized) && !/>\s*guest\s*</i.test(normalized));
+}
+
+function looksLikeGuestAccessMessage(message: string): boolean {
+  return /free users are not allowed|purchase a premium plan|premium required/i.test(String(message || ""));
 }
 
 export class BestDebridWebFallback {
@@ -102,6 +132,7 @@ export class BestDebridWebFallback {
       if (result.kind === "success") {
         return result.value;
       }
+      this.cookiesImported = false;
       throw new Error("BestDebrid: Nicht eingeloggt. Bitte neue Cookie-Datei importieren.");
     }, overallSignal);
   }
@@ -117,21 +148,27 @@ export class BestDebridWebFallback {
       throw new Error("Keine BestDebrid-Cookies in der Datei gefunden");
     }
 
+    if (!bestDebridCookies.some((cookie) => isLikelyBestDebridAuthCookie(cookie.name))) {
+      throw new Error("BestDebrid: Cookie-Datei enthält keinen Login-Cookie. Bitte nach dem Login erneut exportieren.");
+    }
+
     const currentSession = session.fromPartition(this.getPartition());
-    currentSession.setUserAgent(BESTDEBRID_USER_AGENT);
 
     for (const cookie of bestDebridCookies) {
       const url = `https://${cookie.domain.replace(/^\./, "")}${cookie.path}`;
-      await currentSession.cookies.set({
+      const details: Parameters<typeof currentSession.cookies.set>[0] = {
         url,
         name: cookie.name,
         value: cookie.value,
-        domain: cookie.domain,
         path: cookie.path,
         secure: cookie.secure,
         httpOnly: cookie.httpOnly,
         expirationDate: cookie.expirationDate > 0 ? cookie.expirationDate : undefined
-      });
+      };
+      if (cookie.includeSubdomains || cookie.domain.startsWith(".")) {
+        details.domain = cookie.domain;
+      }
+      await currentSession.cookies.set(details);
     }
 
     this.cookiesImported = true;
@@ -217,6 +254,12 @@ export class BestDebridWebFallback {
       if (/login|log in|sign in|not logged|session|auth/i.test(message)) {
         return { kind: "login_required" };
       }
+      if (looksLikeGuestAccessMessage(message)) {
+        const authenticated = await this.isAuthenticated(currentSession, signal).catch(() => null);
+        if (authenticated === false) {
+          return { kind: "login_required" };
+        }
+      }
       throw new Error(`BestDebrid Web: ${message || "Unbekannter Fehler"}`);
     }
 
@@ -247,5 +290,23 @@ export class BestDebridWebFallback {
         retriesUsed: 0
       }
     };
+  }
+
+  private async isAuthenticated(currentSession: Session, signal?: AbortSignal): Promise<boolean> {
+    throwIfAborted(signal);
+    const response = await currentSession.fetch(BESTDEBRID_DOWNLOADER_URL, {
+      method: "GET",
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Referer: BESTDEBRID_BASE_URL,
+        "User-Agent": BESTDEBRID_USER_AGENT
+      },
+      signal: withTimeoutSignal(signal, 20_000)
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const text = await response.text();
+    return isAuthenticatedBestDebridHtml(text);
   }
 }
