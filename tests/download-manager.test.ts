@@ -3161,9 +3161,9 @@ describe("download manager", () => {
       const secondDelay = readyTimes[1] - now;
       expect(firstDelay).toBeGreaterThan(1500);
       expect(firstDelay).toBeLessThan(4500);
-      expect(secondDelay).toBeGreaterThan(3500);
-      expect(secondDelay).toBeLessThan(7000);
-      expect(secondDelay - firstDelay).toBeGreaterThan(1500);
+      expect(secondDelay).toBeGreaterThan(1500);
+      expect(secondDelay).toBeLessThan(4500);
+      expect(Math.abs(secondDelay - firstDelay)).toBeLessThan(1000);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
