@@ -4,6 +4,7 @@ import os from "node:os";
 import { EventEmitter } from "node:events";
 import { v4 as uuidv4 } from "uuid";
 import {
+  AllDebridHostInfo,
   AppSettings,
   DownloadItem,
   DownloadStats,
@@ -38,7 +39,7 @@ function releaseTlsSkip(): void {
   }
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -75,6 +76,14 @@ const DEFAULT_UNRESTRICT_TIMEOUT_MS = 60000;
 const DEFAULT_LOW_THROUGHPUT_TIMEOUT_MS = 120000;
 
 const DEFAULT_LOW_THROUGHPUT_MIN_BYTES = 64 * 1024;
+
+const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 1024 * 1024;
+
+const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
+
+const ALLDEBRID_START_STAGGER_MS = 2500;
+
+const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
@@ -239,6 +248,46 @@ function isArchiveLikePath(filePath: string): boolean {
   return /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|z\d{1,3}|7z(?:\.\d+)?)$/i.test(lower);
 }
 
+function extractHosterKey(link: string): string {
+  try {
+    const host = new URL(link).hostname.replace(/^www\./, "").toLowerCase();
+    const parts = host.split(".");
+    return parts.length >= 2 ? parts[parts.length - 2] : host;
+  } catch {
+    return "";
+  }
+}
+
+function isLargeBinaryLikePath(filePath: string): boolean {
+  const lower = path.basename(String(filePath || "")).toLowerCase();
+  return isArchiveLikePath(lower) || LARGE_BINARY_FILE_RE.test(lower);
+}
+
+function shouldRejectSuspiciousSmallDownload(
+  filePath: string,
+  fileName: string,
+  fileSizeOnDisk: number,
+  expectedTotal: number | null
+): boolean {
+  const size = Math.max(0, Math.floor(Number(fileSizeOnDisk) || 0));
+  const expected = Number.isFinite(expectedTotal || NaN) ? Math.max(0, Math.floor(expectedTotal || 0)) : 0;
+  const binaryLike = isLargeBinaryLikePath(filePath || fileName);
+
+  if (size <= 0) {
+    return expected > 0 || binaryLike;
+  }
+  if (size < 512) {
+    return true;
+  }
+  if (size >= MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES) {
+    return false;
+  }
+  if (expected >= MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES) {
+    return true;
+  }
+  return binaryLike;
+}
+
 function isFetchFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
@@ -280,6 +329,23 @@ function isProviderBusyUnrestrictError(errorText: string): boolean {
     || text.includes("zu viele aktive")
     || text.includes("zu viele gleichzeitige")
     || text.includes("zu viele downloads");
+}
+
+function isTemporaryUnrestrictError(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("server error")
+    || text.includes("internal server error")
+    || text.includes("temporarily unavailable")
+    || text.includes("temporary unavailable")
+    || text.includes("temporarily disabled")
+    || text.includes("try again later")
+    || text.includes("service unavailable")
+    || text.includes("host is down")
+    || text.includes("maintenance")
+    || text.includes("bad gateway")
+    || text.includes("gateway timeout")
+    || text.includes("cloudflare")
+    || text.includes("worker error");
 }
 
 function isFinishedStatus(status: DownloadStatus): boolean {
@@ -941,6 +1007,10 @@ export class DownloadManager extends EventEmitter {
 
   private providerFailures = new Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>();
 
+  private allDebridHostInfoCache = new Map<string, { info: AllDebridHostInfo; cachedAt: number }>();
+
+  private providerStartReservations = new Map<string, number>();
+
   private lastStaleResetAt = 0;
 
   private onHistoryEntryCallback?: HistoryEntryCallback;
@@ -972,6 +1042,7 @@ export class DownloadManager extends EventEmitter {
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     this.settings = next;
     this.debridService.setSettings(next);
+    this.allDebridHostInfoCache.clear();
     this.resolveExistingQueuedOpaqueFilenames();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
     if (next.completedCleanupPolicy !== "never") {
@@ -1322,6 +1393,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.historyRecordedPackages.clear();
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
@@ -2922,6 +2994,7 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -3029,6 +3102,7 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -3132,6 +3206,7 @@ export class DownloadManager extends EventEmitter {
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
+      this.providerStartReservations.clear();
       this.retryStateByItem.clear();
       this.reservedTargetPaths.clear();
       this.claimedTargetPathByItem.clear();
@@ -3204,6 +3279,7 @@ export class DownloadManager extends EventEmitter {
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
     this.retryStateByItem.clear();
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
@@ -3315,6 +3391,7 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
     // Persist synchronously on shutdown to guarantee data is written before process exits
@@ -3347,6 +3424,7 @@ export class DownloadManager extends EventEmitter {
     // and abort long-stuck validating/downloading tasks so they get retried fresh.
     if (wasPaused && !this.session.paused) {
       this.retryAfterByItem.clear();
+      this.providerStartReservations.clear();
       // Reset provider circuit breaker so items don't sit in cooldown after unpause
       this.providerFailures.clear();
 
@@ -4201,8 +4279,9 @@ export class DownloadManager extends EventEmitter {
   // ── Provider Circuit Breaker ──────────────────────────────────────────
 
   private recordProviderFailure(provider: string): void {
+    const key = String(provider || "").trim() || "unknown";
     const now = nowMs();
-    const entry = this.providerFailures.get(provider) || { count: 0, lastFailAt: 0, cooldownUntil: 0 };
+    const entry = this.providerFailures.get(key) || { count: 0, lastFailAt: 0, cooldownUntil: 0 };
     // Decay: if last failure was >120s ago, reset count (transient burst is over)
     if (entry.lastFailAt > 0 && now - entry.lastFailAt > 120000) {
       entry.count = 0;
@@ -4211,7 +4290,7 @@ export class DownloadManager extends EventEmitter {
     // This prevents 8 parallel downloads failing at once from immediately hitting the threshold
     if (entry.lastFailAt > 0 && now - entry.lastFailAt < 2000) {
       entry.lastFailAt = now;
-      this.providerFailures.set(provider, entry);
+      this.providerFailures.set(key, entry);
       return;
     }
     entry.count += 1;
@@ -4221,20 +4300,21 @@ export class DownloadManager extends EventEmitter {
       const tier = entry.count >= 80 ? 3 : entry.count >= 50 ? 2 : entry.count >= 35 ? 1 : 0;
       const cooldownMs = [30000, 60000, 120000, 300000][tier];
       entry.cooldownUntil = now + cooldownMs;
-      logger.warn(`Provider Circuit-Breaker: ${provider} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
+      logger.warn(`Provider Circuit-Breaker: ${key} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
       // Invalidate mega-debrid session on cooldown to force fresh login
-      if (provider === "megadebrid" && this.invalidateMegaSessionFn) {
+      if (key === "megadebrid" && this.invalidateMegaSessionFn) {
         try {
           this.invalidateMegaSessionFn();
         } catch { /* ignore */ }
       }
     }
-    this.providerFailures.set(provider, entry);
+    this.providerFailures.set(key, entry);
   }
 
   private recordProviderSuccess(provider: string): void {
-    if (this.providerFailures.has(provider)) {
-      this.providerFailures.delete(provider);
+    const key = String(provider || "").trim() || "unknown";
+    if (this.providerFailures.has(key)) {
+      this.providerFailures.delete(key);
     }
   }
 
@@ -4248,7 +4328,8 @@ export class DownloadManager extends EventEmitter {
   }
 
   private getProviderCooldownRemaining(provider: string): number {
-    const entry = this.providerFailures.get(provider);
+    const key = String(provider || "").trim() || "unknown";
+    const entry = this.providerFailures.get(key);
     if (!entry || entry.cooldownUntil <= 0) {
       return 0;
     }
@@ -4260,6 +4341,248 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
     return remaining;
+  }
+
+  private isProviderConfigured(provider: DebridProvider): boolean {
+    if ((this.settings.disabledProviders || []).includes(provider)) {
+      return false;
+    }
+    if (provider === "realdebrid") {
+      return Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
+    }
+    if (provider === "megadebrid") {
+      return Boolean(this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
+    }
+    if (provider === "bestdebrid") {
+      return Boolean(this.settings.bestDebridUseWebLogin || this.settings.bestToken.trim());
+    }
+    if (provider === "alldebrid") {
+      return Boolean(this.settings.allDebridUseWebLogin || this.settings.allDebridToken.trim());
+    }
+    if (provider === "ddownload") {
+      return Boolean(this.settings.ddownloadLogin.trim() && this.settings.ddownloadPassword.trim());
+    }
+    if (provider === "onefichier") {
+      return Boolean(this.settings.oneFichierApiKey.trim());
+    }
+    if (provider === "debridlink") {
+      return Boolean(this.settings.debridLinkApiKeys.trim());
+    }
+    if (provider === "linksnappy") {
+      return Boolean(this.settings.linkSnappyLogin.trim() && this.settings.linkSnappyPassword.trim());
+    }
+    return false;
+  }
+
+  private getExpectedProviderForItem(item: DownloadItem): DebridProvider | null {
+    if (item.provider) {
+      return item.provider;
+    }
+
+    const hosterKey = extractHosterKey(item.url);
+    const routing = this.settings.hosterRouting || {};
+    const routedProvider = hosterKey ? routing[hosterKey] : undefined;
+    if (routedProvider && this.isProviderConfigured(routedProvider)) {
+      return routedProvider;
+    }
+
+    const order = [
+      this.settings.providerPrimary,
+      this.settings.providerSecondary !== "none" ? this.settings.providerSecondary : null,
+      this.settings.providerTertiary !== "none" ? this.settings.providerTertiary : null
+    ].filter(Boolean) as DebridProvider[];
+
+    const seen = new Set<DebridProvider>();
+    for (const provider of order) {
+      if (seen.has(provider)) {
+        continue;
+      }
+      seen.add(provider);
+      if (this.isProviderConfigured(provider)) {
+        return provider;
+      }
+    }
+
+    return null;
+  }
+
+  private getProviderFailureKeyForItem(item: DownloadItem, providerOverride?: DebridProvider | string | null): string {
+    const provider = String(providerOverride || item.provider || this.getExpectedProviderForItem(item) || "unknown").trim() || "unknown";
+    const hosterKey = extractHosterKey(item.url);
+    if (provider === "alldebrid" && hosterKey) {
+      return `${provider}:${hosterKey}`;
+    }
+    return provider;
+  }
+
+  private getActiveTaskCountForFailureKey(failureKey: string, excludeItemId?: string): number {
+    let count = 0;
+    for (const active of this.activeTasks.values()) {
+      if (excludeItemId && active.itemId === excludeItemId) {
+        continue;
+      }
+      const activeItem = this.session.items[active.itemId];
+      if (!activeItem) {
+        continue;
+      }
+      if (this.getProviderFailureKeyForItem(activeItem) === failureKey) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private getProviderActiveTaskCount(provider: DebridProvider): number {
+    let count = 0;
+    for (const active of this.activeTasks.values()) {
+      const activeItem = this.session.items[active.itemId];
+      if (!activeItem) {
+        continue;
+      }
+      if (this.getExpectedProviderForItem(activeItem) === provider) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private getPacedStartKeyForItem(item: DownloadItem): string | null {
+    const provider = this.getExpectedProviderForItem(item);
+    if (provider !== "alldebrid") {
+      return null;
+    }
+    return provider;
+  }
+
+  private reservePacedStartForItem(item: DownloadItem, now: number): boolean {
+    const paceKey = this.getPacedStartKeyForItem(item);
+    if (!paceKey) {
+      return false;
+    }
+
+    const activeCount = this.getProviderActiveTaskCount("alldebrid");
+    if (activeCount <= 0 && !this.providerStartReservations.has(paceKey)) {
+      return false;
+    }
+
+    const baseDelayMs = activeCount * ALLDEBRID_START_STAGGER_MS;
+    const reservedAt = this.providerStartReservations.get(paceKey) || 0;
+    const earliestAt = Math.max(now + baseDelayMs, reservedAt);
+    if (earliestAt <= now) {
+      return false;
+    }
+
+    const existingReadyAt = this.retryAfterByItem.get(item.id) || 0;
+    const scheduledAt = Math.max(existingReadyAt, earliestAt);
+    this.retryAfterByItem.set(item.id, scheduledAt);
+    this.providerStartReservations.set(paceKey, scheduledAt + ALLDEBRID_START_STAGGER_MS);
+    item.status = "queued";
+    item.speedBps = 0;
+    item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
+    item.updatedAt = now;
+    return true;
+  }
+
+  private getAllDebridStartLimit(hosterKey: string): number {
+    if (hosterKey !== "rapidgator") {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    const cached = this.allDebridHostInfoCache.get(hosterKey);
+    const apiLimit = cached?.info.limitSimuDl;
+    if (Number.isFinite(apiLimit) && (apiLimit as number) > 0) {
+      return Math.max(1, Math.min(2, Math.floor(apiLimit as number)));
+    }
+    return 1;
+  }
+
+  private shouldDelayStartForItem(item: DownloadItem): boolean {
+    const provider = this.getExpectedProviderForItem(item);
+    if (provider !== "alldebrid") {
+      return false;
+    }
+    const hosterKey = extractHosterKey(item.url);
+    if (hosterKey !== "rapidgator") {
+      return false;
+    }
+    const failureKey = this.getProviderFailureKeyForItem(item, provider);
+    const startLimit = this.getAllDebridStartLimit(hosterKey);
+    return this.getActiveTaskCountForFailureKey(failureKey) >= startLimit;
+  }
+
+  private async getAllDebridHostInfoCached(hosterKey: string, signal?: AbortSignal, forceRefresh = false): Promise<AllDebridHostInfo | null> {
+    const normalizedHost = String(hosterKey || "").trim().toLowerCase();
+    if (!normalizedHost || this.settings.allDebridUseWebLogin) {
+      return null;
+    }
+    const token = this.settings.allDebridToken.trim();
+    if (!token) {
+      return null;
+    }
+
+    const cached = this.allDebridHostInfoCache.get(normalizedHost);
+    if (!forceRefresh && cached && nowMs() - cached.cachedAt <= ALLDEBRID_HOST_INFO_TTL_MS) {
+      return cached.info;
+    }
+
+    try {
+      const info = await fetchAllDebridHostInfo(token, normalizedHost, signal);
+      this.allDebridHostInfoCache.set(normalizedHost, { info, cachedAt: nowMs() });
+      return info;
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      logger.warn(`AllDebrid Host-Info Fehler für ${normalizedHost}: ${errorText}`);
+      return cached?.info || null;
+    }
+  }
+
+  private async maybeApplyAllDebridRapidgatorBackoff(item: DownloadItem, active: ActiveTask): Promise<boolean> {
+    const provider = this.getExpectedProviderForItem(item);
+    if (provider !== "alldebrid") {
+      return false;
+    }
+
+    const hosterKey = extractHosterKey(item.url);
+    if (hosterKey !== "rapidgator") {
+      return false;
+    }
+
+    const failureKey = this.getProviderFailureKeyForItem(item, provider);
+    const activePeers = this.getActiveTaskCountForFailureKey(failureKey, item.id);
+    const info = await this.getAllDebridHostInfoCached(hosterKey, active.abortController.signal, activePeers <= 0);
+    const startLimit = this.getAllDebridStartLimit(hosterKey);
+
+    if (activePeers >= startLimit) {
+      const delayMs = Math.min(45000, 5000 + activePeers * 3000);
+      this.queueRetry(item, active, delayMs, `AllDebrid ${hosterKey}: Slot belegt (${activePeers}/${startLimit})`);
+      return true;
+    }
+
+    if (!info) {
+      return false;
+    }
+
+    if (info.state === "down") {
+      const delayMs = 60000;
+      this.applyProviderBusyBackoff(failureKey, delayMs);
+      this.queueRetry(item, active, delayMs + 1000, `AllDebrid ${info.host}: ${info.statusLabel}`);
+      return true;
+    }
+
+    if (info.limitSimuDl !== null && info.limitSimuDl <= 0) {
+      const delayMs = 45000;
+      this.applyProviderBusyBackoff(failureKey, delayMs);
+      this.queueRetry(item, active, delayMs + 1000, `AllDebrid ${info.host}: keine freien Slots`);
+      return true;
+    }
+
+    if (info.quota !== null && info.quota <= 0) {
+      const delayMs = 120000;
+      this.applyProviderBusyBackoff(failureKey, delayMs);
+      this.queueRetry(item, active, delayMs + 1000, `AllDebrid ${info.host}: Quota aufgebraucht`);
+      return true;
+    }
+
+    return false;
   }
 
   private resetStaleRetryState(): void {
@@ -4540,6 +4863,12 @@ export class DownloadManager extends EventEmitter {
             this.retryAfterByItem.delete(itemId);
           }
           if (item.status === "queued" || item.status === "reconnect_wait") {
+            if (this.reservePacedStartForItem(item, now)) {
+              continue;
+            }
+            if (this.shouldDelayStartForItem(item)) {
+              continue;
+            }
             return { packageId, itemId };
           }
         }
@@ -4741,11 +5070,16 @@ export class DownloadManager extends EventEmitter {
           throw new Error(`aborted:${active.abortReason}`);
         }
         // Check provider cooldown before attempting unrestrict
-        const cooldownProvider = item.provider || this.settings.providerPrimary || "unknown";
+        const cooldownProvider = this.getProviderFailureKeyForItem(item);
         const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
         if (cooldownMs > 0) {
           const delayMs = Math.min(cooldownMs + 1000, 310000);
           this.queueRetry(item, active, delayMs, `Provider-Cooldown (${Math.ceil(delayMs / 1000)}s)`);
+          this.persistSoon();
+          this.emitState();
+          return;
+        }
+        if (await this.maybeApplyAllDebridRapidgatorBackoff(item, active)) {
           this.persistSoon();
           this.emitState();
           return;
@@ -4765,8 +5099,10 @@ export class DownloadManager extends EventEmitter {
           const errText = compactErrorText(unrestrictError);
           if (isUnrestrictFailure(errText)) {
             this.recordProviderFailure(cooldownProvider);
-            if (isProviderBusyUnrestrictError(errText)) {
-              const busyCooldownMs = Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
+            if (isProviderBusyUnrestrictError(errText) || isTemporaryUnrestrictError(errText)) {
+              const busyCooldownMs = isTemporaryUnrestrictError(errText)
+                ? Math.min(180000, 20000 + Number(active.unrestrictRetries || 0) * 10000)
+                : Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
               this.applyProviderBusyBackoff(cooldownProvider, busyCooldownMs);
             }
           }
@@ -4776,7 +5112,7 @@ export class DownloadManager extends EventEmitter {
           throw new Error(`aborted:${active.abortReason}`);
         }
         // Unrestrict succeeded - reset provider failure counter
-        this.recordProviderSuccess(unrestricted.provider);
+        this.recordProviderSuccess(this.getProviderFailureKeyForItem(item, unrestricted.provider));
         item.provider = unrestricted.provider;
         item.retries += unrestricted.retriesUsed;
         item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
@@ -4868,13 +5204,11 @@ export class DownloadManager extends EventEmitter {
               // file does not exist
             }
           }
-          const expectsNonEmptyFile = (item.totalBytes || 0) > 0 || isArchiveLikePath(finalTargetPath || item.fileName);
-          // Catch both empty files (0 B) and suspiciously small error-response files.
-          // A real archive part or video file should be at least 1 KB.
-          const tooSmall = expectsNonEmptyFile && (
-            fileSizeOnDisk <= 0
-            || fileSizeOnDisk < 512
-            || (item.totalBytes && item.totalBytes > 10240 && fileSizeOnDisk < 1024)
+          const tooSmall = shouldRejectSuspiciousSmallDownload(
+            finalTargetPath,
+            item.fileName,
+            fileSizeOnDisk,
+            item.totalBytes
           );
           if (tooSmall) {
             try {
@@ -4889,7 +5223,7 @@ export class DownloadManager extends EventEmitter {
             item.totalBytes = (item.totalBytes || 0) > 0 ? item.totalBytes : null;
             item.speedBps = 0;
             item.updatedAt = nowMs();
-            throw new Error(`Datei zu klein (${humanSize(fileSizeOnDisk)}, erwartet ${item.totalBytes ? humanSize(item.totalBytes) : ">1 KB"})`);
+            throw new Error(`Datei zu klein (${humanSize(fileSizeOnDisk)}, erwartet ${item.totalBytes ? humanSize(item.totalBytes) : ">= 1 MB"})`);
           }
 
           done = true;
@@ -5022,11 +5356,10 @@ export class DownloadManager extends EventEmitter {
             }
             let stallDelayMs = retryDelayWithJitter(active.stallRetries, 200);
             // Respect provider cooldown
-            if (item.provider) {
-              const providerCooldown = this.getProviderCooldownRemaining(item.provider);
-              if (providerCooldown > stallDelayMs) {
-                stallDelayMs = providerCooldown + 1000;
-              }
+            const providerCooldownKey = this.getProviderFailureKeyForItem(item);
+            const providerCooldown = this.getProviderCooldownRemaining(providerCooldownKey);
+            if (providerCooldown > stallDelayMs) {
+              stallDelayMs = providerCooldown + 1000;
             }
             const retryText = wasValidating
               ? `Link-Umwandlung hing, Retry ${active.stallRetries}/${retryDisplayLimit}`
@@ -5129,10 +5462,12 @@ export class DownloadManager extends EventEmitter {
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
-            const failureProvider = item.provider || this.settings.providerPrimary || "unknown";
+            const failureProvider = this.getProviderFailureKeyForItem(item);
             this.recordProviderFailure(failureProvider);
-            if (isProviderBusyUnrestrictError(errorText)) {
-              const busyCooldownMs = Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
+            if (isProviderBusyUnrestrictError(errorText) || isTemporaryUnrestrictError(errorText)) {
+              const busyCooldownMs = isTemporaryUnrestrictError(errorText)
+                ? Math.min(180000, 20000 + Number(active.unrestrictRetries || 0) * 10000)
+                : Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
               this.applyProviderBusyBackoff(failureProvider, busyCooldownMs);
             }
             // Escalating backoff: 5s, 7.5s, 11s, 17s, 25s, 38s, ... up to 120s
@@ -7320,6 +7655,7 @@ export class DownloadManager extends EventEmitter {
       this.runCompletedPackages.clear();
     }
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
