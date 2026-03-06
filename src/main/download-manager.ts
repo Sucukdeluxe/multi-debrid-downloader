@@ -991,6 +991,10 @@ export class DownloadManager extends EventEmitter {
 
   private hybridExtractRequeue = new Set<string>();
 
+  // Tracks archive paths already attempted per package in the current post-processing session.
+  // Prevents infinite re-extraction of disk-fallback archives that have no session items.
+  private hybridExtractedPaths = new Map<string, Set<string>>();
+
   private reservedTargetPaths = new Map<string, string>();
 
   private claimedTargetPathByItem = new Map<string, string>();
@@ -1062,10 +1066,31 @@ export class DownloadManager extends EventEmitter {
   }
 
   public setSettings(next: AppSettings): void {
+    const previous = this.settings;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     this.settings = next;
     this.debridService.setSettings(next);
     this.allDebridHostInfoCache.clear();
+
+    // When the provider order or hoster routing changes, clear the cached provider on
+    // all non-active, non-terminal items so the new settings are respected on the next
+    // download attempt.
+    const prevOrder = JSON.stringify(previous.providerOrder ?? []);
+    const nextOrder = JSON.stringify(next.providerOrder ?? []);
+    const prevRouting = JSON.stringify(previous.hosterRouting ?? {});
+    const nextRouting = JSON.stringify(next.hosterRouting ?? {});
+    if (prevOrder !== nextOrder || prevRouting !== nextRouting) {
+      const activeItemIds = new Set([...this.activeTasks.values()].map((t) => t.itemId));
+      for (const item of Object.values(this.session.items)) {
+        // Clear for all non-active items except truly finished ones (completed/failed).
+        // "cancelled" items with fullStatus="Gestoppt" are stopped downloads that will
+        // restart on the next start() call, so they must also get their provider cleared.
+        if (!activeItemIds.has(item.id) && item.status !== "completed" && item.status !== "failed") {
+          item.provider = null;
+        }
+      }
+    }
+
     this.resolveExistingQueuedOpaqueFilenames();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
     if (next.completedCleanupPolicy !== "never") {
@@ -1428,6 +1453,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
     this.hybridExtractRequeue.clear();
+    this.hybridExtractedPaths.clear();
     this.providerFailures.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.packagePostProcessActive = 0;
@@ -1618,6 +1644,7 @@ export class DownloadManager extends EventEmitter {
       this.packagePostProcessAbortControllers.delete(packageId);
       this.packagePostProcessTasks.delete(packageId);
       this.hybridExtractRequeue.delete(packageId);
+      this.hybridExtractedPaths.delete(packageId);
 
       this.runPackageIds.delete(packageId);
       this.runCompletedPackages.delete(packageId);
@@ -2772,6 +2799,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessAbortControllers.delete(packageId);
     this.packagePostProcessTasks.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
+    this.hybridExtractedPaths.delete(packageId);
     this.runCompletedPackages.delete(packageId);
 
     // 3. Clean up extraction progress manifest (.rd_extract_progress.json)
@@ -2861,6 +2889,7 @@ export class DownloadManager extends EventEmitter {
       this.packagePostProcessAbortControllers.delete(pkgId);
       this.packagePostProcessTasks.delete(pkgId);
       this.hybridExtractRequeue.delete(pkgId);
+      this.hybridExtractedPaths.delete(pkgId);
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
 
@@ -3502,6 +3531,7 @@ export class DownloadManager extends EventEmitter {
         item.fullStatus = "Wartet";
         item.lastError = "";
         item.speedBps = 0;
+        item.provider = null;  // Re-evaluate provider order on restart
         item.updatedAt = nowMs();
         continue;
       }
@@ -3985,6 +4015,9 @@ export class DownloadManager extends EventEmitter {
       return existing;
     }
 
+    // Fresh session: reset the set of already-tried archives so new downloads can be retried.
+    this.hybridExtractedPaths.delete(packageId);
+
     const abortController = new AbortController();
     this.packagePostProcessAbortControllers.set(packageId, abortController);
 
@@ -4305,6 +4338,7 @@ export class DownloadManager extends EventEmitter {
     // causing "Start Selected" to continue with ALL packages after cleanup.
     this.runCompletedPackages.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
+    this.hybridExtractedPaths.delete(packageId);
     this.resetSessionTotalsIfQueueEmpty();
   }
 
@@ -6757,6 +6791,18 @@ export class DownloadManager extends EventEmitter {
     if (findReadyMs > 200) {
       logger.info(`findReadyArchiveSets dauerte ${(findReadyMs / 1000).toFixed(1)}s: pkg=${pkg.name}, found=${readyArchives.size}`);
     }
+
+    // Skip archives already attempted in this post-processing session to prevent
+    // infinite re-extraction of disk-fallback archives with no session items.
+    const alreadyTried = this.hybridExtractedPaths.get(packageId);
+    if (alreadyTried) {
+      for (const key of [...readyArchives]) {
+        if (alreadyTried.has(key)) {
+          readyArchives.delete(key);
+        }
+      }
+    }
+
     if (readyArchives.size === 0) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, keine fertigen Archive-Sets`);
       return 0;
@@ -6995,6 +7041,14 @@ export class DownloadManager extends EventEmitter {
       });
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
+      // Mark all attempted archives as tried so they are not retried in subsequent
+      // requeue rounds of the same post-processing session (prevents infinite loop
+      // when disk-fallback archives have no corresponding session items).
+      {
+        let tried = this.hybridExtractedPaths.get(packageId);
+        if (!tried) { tried = new Set(); this.hybridExtractedPaths.set(packageId, tried); }
+        for (const key of readyArchives) { tried.add(key); }
+      }
       if (result.extracted > 0) {
         // Fire-and-forget: rename then collect MKVs in background so the
         // slot is not blocked and the next archive set can start immediately.
