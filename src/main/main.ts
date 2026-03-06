@@ -315,7 +315,15 @@ function registerIpcHandlers(): void {
     return controller.resolveStartConflict(packageId, policy);
   });
   ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
-  ipcMain.handle(IPC_CHANNELS.START, () => controller.start());
+  ipcMain.handle(IPC_CHANNELS.START, () => {
+    // Cancel any pending scheduled start when the user starts manually
+    if (scheduledStartTimer !== null) {
+      clearTimeout(scheduledStartTimer);
+      scheduledStartTimer = null;
+      controller.updateSettings({ scheduledStartEpochMs: 0 });
+    }
+    return controller.start();
+  });
   ipcMain.handle(IPC_CHANNELS.START_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
     validateStringArray(packageIds ?? [], "packageIds");
     return controller.startPackages(packageIds ?? []);
