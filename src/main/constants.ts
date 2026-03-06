@@ -52,6 +52,7 @@ export function defaultSettings(): AppSettings {
     ddownloadLogin: "",
     ddownloadPassword: "",
     oneFichierApiKey: "",
+    debridLinkApiKeys: "",
     archivePasswordList: "",
     rememberToken: true,
     providerPrimary: "realdebrid",

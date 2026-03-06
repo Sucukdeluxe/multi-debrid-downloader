@@ -53,7 +53,7 @@ interface LinkPopupState {
   isPackage: boolean;
 }
 
-type AccountService = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier";
+type AccountService = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink";
 type AccountKind =
   | "realdebrid-api"
   | "realdebrid-web"
@@ -64,7 +64,8 @@ type AccountKind =
   | "alldebrid-api"
   | "alldebrid-web"
   | "ddownload-login"
-  | "onefichier-api";
+  | "onefichier-api"
+  | "debridlink-api";
 
 type AccountQuickAction = "realdebrid-login" | "bestdebrid-cookies" | "alldebrid-login" | "alldebrid-status";
 type AccountColumnKey = "service" | "mode" | "status" | "secret";
@@ -185,10 +186,19 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     modeLabel: "API",
     pickerDescription: "API-Key fuer 1fichier.com.",
     needsToken: true
+  },
+  {
+    kind: "debridlink-api",
+    service: "debridlink",
+    serviceLabel: "Debrid-Link",
+    title: "Debrid-Link API",
+    modeLabel: "API",
+    pickerDescription: "API-Key(s) fuer debrid-link.com. Mehrere Keys zeilenweise fuer Multi-Account.",
+    needsToken: true
   }
 ];
 
-const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier"];
+const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"];
 const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths";
 const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
   service: 220,
@@ -270,6 +280,9 @@ function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvid
   if (settings.allDebridUseWebLogin || settings.allDebridToken.trim()) {
     list.push("alldebrid");
   }
+  if ((settings.debridLinkApiKeys || "").trim()) {
+    list.push("debridlink");
+  }
   return list;
 }
 
@@ -311,6 +324,8 @@ function getConfiguredAccountKind(settings: AppSettings, service: AccountService
       return settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim() ? "ddownload-login" : null;
     case "onefichier":
       return settings.oneFichierApiKey.trim() ? "onefichier-api" : null;
+    case "debridlink":
+      return (settings.debridLinkApiKeys || "").trim() ? "debridlink-api" : null;
     default:
       return null;
   }
@@ -346,6 +361,11 @@ function summarizeAccount(kind: AccountKind, settings: AppSettings): string {
       return settings.ddownloadLogin.trim() ? maskValue(settings.ddownloadLogin.trim(), 2, 6) : "Login + Passwort";
     case "onefichier-api":
       return maskValue(settings.oneFichierApiKey, 3, 3);
+    case "debridlink-api": {
+      const keys = (settings.debridLinkApiKeys || "").split(/[\n,]+/).filter((k: string) => k.trim());
+      if (keys.length > 1) return `${keys.length} API-Keys`;
+      return keys.length === 1 ? maskValue(keys[0].trim(), 3, 3) : "Nicht hinterlegt";
+    }
     default:
       return "Konfiguriert";
   }
@@ -381,6 +401,8 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       return { mode, kind, token: "", login: settings.ddownloadLogin, password: settings.ddownloadPassword };
     case "onefichier-api":
       return { mode, kind, token: settings.oneFichierApiKey, login: "", password: "" };
+    case "debridlink-api":
+      return { mode, kind, token: settings.debridLinkApiKeys || "", login: "", password: "" };
     default:
       return { mode, kind, token: "", login: "", password: "" };
   }
@@ -414,6 +436,8 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
       return { ...settings, ddownloadLogin: login, ddownloadPassword: password };
     case "onefichier-api":
       return { ...settings, oneFichierApiKey: token };
+    case "debridlink-api":
+      return { ...settings, debridLinkApiKeys: token };
     default:
       return settings;
   }
@@ -433,6 +457,8 @@ function clearAccountServiceFromSettings(settings: AppSettings, service: Account
       return { ...settings, ddownloadLogin: "", ddownloadPassword: "" };
     case "onefichier":
       return { ...settings, oneFichierApiKey: "" };
+    case "debridlink":
+      return { ...settings, debridLinkApiKeys: "" };
     default:
       return settings;
   }
@@ -499,7 +525,7 @@ const cleanupLabels: Record<string, string> = {
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 const providerLabels: Record<DebridProvider, string> = {
-  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier"
+  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier", debridlink: "Debrid-Link"
 };
 
 function formatDateTime(ts: number): string {

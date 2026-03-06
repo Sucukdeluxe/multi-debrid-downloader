@@ -17,13 +17,17 @@ const MEGA_DEBRID_API_BASE = "https://www.mega-debrid.eu/api.php";
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
+const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
+const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "maxDataHost", "maxAttempts", "maxTransfer"]);
+
 const PROVIDER_LABELS: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
   ddownload: "DDownload",
-  onefichier: "1Fichier"
+  onefichier: "1Fichier",
+  debridlink: "Debrid-Link"
 };
 
 interface ProviderUnrestrictedLink extends UnrestrictedLink {
@@ -1252,6 +1256,111 @@ export async function fetchAllDebridHostInfo(token: string, host = "rapidgator",
   return new AllDebridClient(token).getHostInfo(host, signal);
 }
 
+// ── Debrid-Link Client ──
+
+class DebridLinkClient {
+  private apiKeys: string[];
+  private currentKeyIndex: number = 0;
+
+  public constructor(apiKeysRaw: string) {
+    this.apiKeys = apiKeysRaw
+      .split(/[\n,]+/)
+      .map((k) => k.trim())
+      .filter(Boolean);
+  }
+
+  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+    if (this.apiKeys.length === 0) {
+      throw new Error("Debrid-Link: Kein API-Key konfiguriert");
+    }
+
+    const startIndex = this.currentKeyIndex;
+    let triedAll = false;
+
+    while (!triedAll) {
+      const apiKey = this.apiKeys[this.currentKeyIndex];
+      const keyLabel = this.apiKeys.length > 1 ? ` (Key ${this.currentKeyIndex + 1}/${this.apiKeys.length})` : "";
+
+      let lastError = "";
+      for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+        if (signal?.aborted) throw new Error("aborted:debrid");
+        try {
+          const res = await fetch(`${DEBRID_LINK_API_BASE}/downloader/add`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              Authorization: `Bearer ${apiKey}`
+            },
+            body: `url=${encodeURIComponent(link)}`,
+            signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+          });
+
+          const json = await res.json() as Record<string, unknown>;
+
+          if (!json.success) {
+            const errorCode = String(json.error || "");
+            const errorDesc = String(json.error_description || json.error || "Unbekannter Debrid-Link-Fehler");
+
+            if (DEBRID_LINK_QUOTA_ERRORS.has(errorCode)) {
+              logger.warn(`Debrid-Link Quota erreicht${keyLabel}: ${errorCode} – ${errorDesc}`);
+              break;
+            }
+
+            if (errorCode === "badToken" || errorCode === "expired_token") {
+              throw new Error(`Debrid-Link${keyLabel}: Ungueltiger oder abgelaufener API-Key`);
+            }
+            if (errorCode === "floodDetected") {
+              await sleep(retryDelay(attempt), signal);
+              continue;
+            }
+
+            throw new Error(`Debrid-Link${keyLabel}: ${errorDesc}`);
+          }
+
+          const value = json.value as Record<string, unknown> | undefined;
+          if (!value) {
+            throw new Error(`Debrid-Link${keyLabel}: Keine Daten in Antwort`);
+          }
+
+          const directUrl = String(value.downloadUrl || "");
+          if (!directUrl) {
+            throw new Error(`Debrid-Link${keyLabel}: Keine Download-URL in Antwort`);
+          }
+
+          const fileName = String(value.name || "") || filenameFromUrl(directUrl) || filenameFromUrl(link);
+          const fileSize = typeof value.size === "number" && value.size > 0 ? value.size : null;
+
+          return {
+            fileName,
+            directUrl,
+            fileSize,
+            retriesUsed: attempt - 1,
+            sourceLabel: `API${keyLabel}`
+          };
+        } catch (error) {
+          lastError = compactErrorText(error);
+          if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+            throw error;
+          }
+          if (/Ungueltig|abgelaufen/i.test(lastError)) {
+            throw error;
+          }
+          if (attempt < REQUEST_RETRIES) {
+            await sleep(retryDelay(attempt), signal);
+          }
+        }
+      }
+
+      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+      if (this.currentKeyIndex === startIndex) {
+        triedAll = true;
+      }
+    }
+
+    throw new Error(`Debrid-Link: Alle ${this.apiKeys.length} API-Keys haben ihr Limit erreicht`);
+  }
+}
+
 // ── 1Fichier Client ──
 
 class OneFichierClient {
@@ -1509,6 +1618,8 @@ export class DebridService {
 
   private cachedDdownloadClient: DdownloadClient | null = null;
   private cachedDdownloadKey = "";
+  private cachedDebridLinkClient: DebridLinkClient | null = null;
+  private cachedDebridLinkKey = "";
 
   public constructor(settings: AppSettings, options: DebridServiceOptions = {}) {
     this.settings = cloneSettings(settings);
@@ -1517,6 +1628,15 @@ export class DebridService {
 
   public setSettings(next: AppSettings): void {
     this.settings = cloneSettings(next);
+  }
+
+  private getDebridLinkClient(apiKeysRaw: string): DebridLinkClient {
+    if (this.cachedDebridLinkClient && this.cachedDebridLinkKey === apiKeysRaw) {
+      return this.cachedDebridLinkClient;
+    }
+    this.cachedDebridLinkClient = new DebridLinkClient(apiKeysRaw);
+    this.cachedDebridLinkKey = apiKeysRaw;
+    return this.cachedDebridLinkClient;
   }
 
   private getDdownloadClient(login: string, password: string): DdownloadClient {
@@ -1724,6 +1844,9 @@ export class DebridService {
     if (provider === "onefichier") {
       return Boolean(settings.oneFichierApiKey.trim());
     }
+    if (provider === "debridlink") {
+      return Boolean(settings.debridLinkApiKeys.trim());
+    }
     return Boolean(this.shouldUseBestDebridWeb(settings) || settings.bestToken.trim());
   }
 
@@ -1762,6 +1885,11 @@ export class DebridService {
     }
     if (provider === "onefichier") {
       return new OneFichierClient(settings.oneFichierApiKey).unrestrictLink(link, signal);
+    }
+    if (provider === "debridlink") {
+      const dlResult = await this.getDebridLinkClient(settings.debridLinkApiKeys).unrestrictLink(link, signal);
+      dlResult.sourceLabel = dlResult.sourceLabel || "API";
+      return dlResult;
     }
     if (this.shouldUseBestDebridWeb(settings) && this.options.bestDebridWebUnrestrict) {
       const bdResult = await this.options.bestDebridWebUnrestrict(link, signal);
