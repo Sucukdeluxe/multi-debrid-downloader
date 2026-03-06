@@ -14,7 +14,17 @@ export type CleanupMode = "none" | "trash" | "delete";
 export type ConflictMode = "overwrite" | "skip" | "rename" | "ask";
 export type SpeedMode = "global" | "per_download";
 export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "package_done";
-export type DebridProvider = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
+export type DebridProvider =
+  | "realdebrid"
+  | "megadebrid"
+  | "megadebrid-api"
+  | "megadebrid-web"
+  | "bestdebrid"
+  | "alldebrid"
+  | "ddownload"
+  | "onefichier"
+  | "debridlink"
+  | "linksnappy";
 export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
 export type PackagePriority = "high" | "normal" | "low";
@@ -41,6 +51,8 @@ export interface AppSettings {
   realDebridUseWebLogin: boolean;
   megaLogin: string;
   megaPassword: string;
+  megaDebridApiEnabled: boolean;
+  megaDebridWebEnabled: boolean;
   megaDebridPreferApi: boolean;
   bestToken: string;
   bestDebridUseWebLogin: boolean;

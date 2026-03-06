@@ -371,6 +371,12 @@ function providerLabel(provider: DownloadItem["provider"]): string {
   if (provider === "megadebrid") {
     return "Mega-Debrid";
   }
+  if (provider === "megadebrid-api") {
+    return "Mega-Debrid API";
+  }
+  if (provider === "megadebrid-web") {
+    return "Mega-Debrid Web";
+  }
   if (provider === "bestdebrid") {
     return "BestDebrid";
   }
@@ -381,6 +387,23 @@ function providerLabel(provider: DownloadItem["provider"]): string {
     return "DDownload";
   }
   return "Debrid";
+}
+
+function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvider | null): DebridProvider | null {
+  if (provider !== "megadebrid") {
+    return provider;
+  }
+  const apiEnabled = settings.megaDebridApiEnabled
+    || (settings.megaLogin.trim() && settings.megaPassword.trim() && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
+  const webEnabled = settings.megaDebridWebEnabled
+    || (settings.megaLogin.trim() && settings.megaPassword.trim() && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
+  if (apiEnabled && !webEnabled) {
+    return "megadebrid-api";
+  }
+  if (webEnabled && !apiEnabled) {
+    return "megadebrid-web";
+  }
+  return settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
 }
 
 function pathKey(filePath: string): string {
@@ -3462,7 +3485,16 @@ export class DownloadManager extends EventEmitter {
     this.session.reconnectReason = "";
 
     for (const item of Object.values(this.session.items)) {
-      if (item.provider !== "realdebrid" && item.provider !== "megadebrid" && item.provider !== "bestdebrid" && item.provider !== "alldebrid" && item.provider !== "ddownload") {
+      if (item.provider === "megadebrid") {
+        item.provider = resolveMegaDebridProvider(this.settings, item.provider);
+      }
+      if (item.provider !== "realdebrid"
+        && item.provider !== "megadebrid"
+        && item.provider !== "megadebrid-api"
+        && item.provider !== "megadebrid-web"
+        && item.provider !== "bestdebrid"
+        && item.provider !== "alldebrid"
+        && item.provider !== "ddownload") {
         item.provider = null;
       }
       if (item.status === "cancelled" && item.fullStatus === "Gestoppt") {
@@ -4302,7 +4334,7 @@ export class DownloadManager extends EventEmitter {
       entry.cooldownUntil = now + cooldownMs;
       logger.warn(`Provider Circuit-Breaker: ${key} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
       // Invalidate mega-debrid session on cooldown to force fresh login
-      if (key === "megadebrid" && this.invalidateMegaSessionFn) {
+      if ((key === "megadebrid" || key === "megadebrid-api" || key === "megadebrid-web") && this.invalidateMegaSessionFn) {
         try {
           this.invalidateMegaSessionFn();
         } catch { /* ignore */ }
@@ -4344,28 +4376,34 @@ export class DownloadManager extends EventEmitter {
   }
 
   private isProviderConfigured(provider: DebridProvider): boolean {
-    if ((this.settings.disabledProviders || []).includes(provider)) {
+    const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
+    if ((this.settings.disabledProviders || []).includes(provider) || (this.settings.disabledProviders || []).includes(effectiveProvider)) {
       return false;
     }
-    if (provider === "realdebrid") {
+    if (effectiveProvider === "realdebrid") {
       return Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
     }
-    if (provider === "megadebrid") {
-      return Boolean(this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
+    if (effectiveProvider === "megadebrid-api") {
+      return Boolean(resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-api" && this.settings.megaLogin.trim() && this.settings.megaPassword.trim()
+        || this.settings.megaDebridApiEnabled && this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
     }
-    if (provider === "bestdebrid") {
+    if (effectiveProvider === "megadebrid-web") {
+      return Boolean(resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-web" && this.settings.megaLogin.trim() && this.settings.megaPassword.trim()
+        || this.settings.megaDebridWebEnabled && this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
+    }
+    if (effectiveProvider === "bestdebrid") {
       return Boolean(this.settings.bestDebridUseWebLogin || this.settings.bestToken.trim());
     }
-    if (provider === "alldebrid") {
+    if (effectiveProvider === "alldebrid") {
       return Boolean(this.settings.allDebridUseWebLogin || this.settings.allDebridToken.trim());
     }
-    if (provider === "ddownload") {
+    if (effectiveProvider === "ddownload") {
       return Boolean(this.settings.ddownloadLogin.trim() && this.settings.ddownloadPassword.trim());
     }
-    if (provider === "onefichier") {
+    if (effectiveProvider === "onefichier") {
       return Boolean(this.settings.oneFichierApiKey.trim());
     }
-    if (provider === "debridlink") {
+    if (effectiveProvider === "debridlink") {
       return Boolean(this.settings.debridLinkApiKeys.trim());
     }
     if (provider === "linksnappy") {
@@ -4376,7 +4414,7 @@ export class DownloadManager extends EventEmitter {
 
   private getExpectedProviderForItem(item: DownloadItem): DebridProvider | null {
     if (item.provider) {
-      return item.provider;
+      return resolveMegaDebridProvider(this.settings, item.provider);
     }
 
     const hosterKey = extractHosterKey(item.url);

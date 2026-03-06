@@ -146,6 +146,36 @@ describe("settings storage", () => {
     expect(normalized.providerTertiary).toBe("none");
   });
 
+  it("migrates legacy MegaDebrid provider selections to explicit API/Web providers", () => {
+    const apiNormalized = normalizeSettings({
+      ...defaultSettings(),
+      megaLogin: "mega-user",
+      megaPassword: "mega-pass",
+      megaDebridPreferApi: true,
+      providerPrimary: "megadebrid" as unknown as AppSettings["providerPrimary"],
+      providerSecondary: "megadebrid" as unknown as AppSettings["providerSecondary"],
+      disabledProviders: ["megadebrid" as unknown as AppSettings["providerPrimary"]]
+    });
+
+    expect(apiNormalized.providerPrimary).toBe("megadebrid-api");
+    expect(apiNormalized.providerSecondary).toBe("none");
+    expect(apiNormalized.disabledProviders).toEqual(["megadebrid-api", "megadebrid-web"]);
+
+    const webNormalized = normalizeSettings({
+      ...defaultSettings(),
+      megaLogin: "mega-user",
+      megaPassword: "mega-pass",
+      megaDebridPreferApi: false,
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
+      providerPrimary: "megadebrid" as unknown as AppSettings["providerPrimary"],
+      hosterRouting: { rapidgator: "megadebrid" as unknown as AppSettings["providerPrimary"] }
+    });
+
+    expect(webNormalized.providerPrimary).toBe("megadebrid-web");
+    expect(webNormalized.hosterRouting.rapidgator).toBe("megadebrid-web");
+  });
+
   it("normalizes archive password list line endings", () => {
     const normalized = normalizeSettings({
       ...defaultSettings(),

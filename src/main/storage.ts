@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
-const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
-const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
+const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
+const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
@@ -17,7 +17,7 @@ const VALID_PACKAGE_PRIORITIES = new Set<string>(["high", "normal", "low"]);
 const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
   "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
 ]);
-const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
+const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
 const VALID_ONLINE_STATUSES = new Set(["online", "offline", "checking"]);
 
 function asText(value: unknown): string {
@@ -91,14 +91,66 @@ function normalizeColumnOrder(raw: unknown): string[] {
   return result;
 }
 
-function normalizeHosterRouting(raw: unknown): Record<string, DebridProvider> {
+function getPreferredMegaDebridProvider(megaDebridPreferApi: boolean, megaDebridApiEnabled: boolean, megaDebridWebEnabled: boolean): DebridProvider {
+  if (megaDebridApiEnabled && !megaDebridWebEnabled) {
+    return "megadebrid-api";
+  }
+  if (megaDebridWebEnabled && !megaDebridApiEnabled) {
+    return "megadebrid-web";
+  }
+  return megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
+}
+
+function normalizeConfiguredProvider(raw: unknown, megaDebridPreferApi: boolean, megaDebridApiEnabled: boolean, megaDebridWebEnabled: boolean): DebridProvider | null {
+  const provider = String(raw ?? "").trim();
+  if (!provider) {
+    return null;
+  }
+  if (provider === "megadebrid") {
+    return getPreferredMegaDebridProvider(megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled);
+  }
+  return VALID_PRIMARY_PROVIDERS.has(provider) ? provider as DebridProvider : null;
+}
+
+function normalizeFallbackProvider(raw: unknown, megaDebridPreferApi: boolean, megaDebridApiEnabled: boolean, megaDebridWebEnabled: boolean): DebridFallbackProvider {
+  const provider = String(raw ?? "").trim();
+  if (!provider || provider === "none") {
+    return "none";
+  }
+  const normalized = normalizeConfiguredProvider(provider, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled);
+  return normalized || "none";
+}
+
+function normalizeDisabledProviders(raw: unknown): DebridProvider[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<DebridProvider>();
+  const result: DebridProvider[] = [];
+  for (const entry of raw) {
+    const provider = String(entry ?? "").trim();
+    const candidates: DebridProvider[] = provider === "megadebrid"
+      ? ["megadebrid-api", "megadebrid-web"]
+      : (VALID_PRIMARY_PROVIDERS.has(provider) ? [provider as DebridProvider] : []);
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+      result.push(candidate);
+    }
+  }
+  return result;
+}
+
+function normalizeHosterRouting(raw: unknown, megaDebridPreferApi: boolean, megaDebridApiEnabled: boolean, megaDebridWebEnabled: boolean): Record<string, DebridProvider> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const result: Record<string, DebridProvider> = {};
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const hoster = String(key).trim().toLowerCase();
-    const provider = String(value ?? "").trim();
-    if (hoster && VALID_PRIMARY_PROVIDERS.has(provider)) {
-      result[hoster] = provider as DebridProvider;
+    const provider = normalizeConfiguredProvider(value, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled);
+    if (hoster && provider) {
+      result[hoster] = provider;
     }
   }
   return result;
@@ -118,12 +170,24 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
 
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
+  const megaLogin = asText(settings.megaLogin);
+  const megaPassword = asText(settings.megaPassword);
+  const megaDebridPreferApi = settings.megaDebridPreferApi !== undefined ? Boolean(settings.megaDebridPreferApi) : true;
+  const hasMegaCreds = Boolean(megaLogin && megaPassword);
+  const megaDebridApiEnabled = settings.megaDebridApiEnabled !== undefined
+    ? Boolean(settings.megaDebridApiEnabled)
+    : (hasMegaCreds ? megaDebridPreferApi : defaults.megaDebridApiEnabled);
+  const megaDebridWebEnabled = settings.megaDebridWebEnabled !== undefined
+    ? Boolean(settings.megaDebridWebEnabled)
+    : (hasMegaCreds ? !megaDebridPreferApi : defaults.megaDebridWebEnabled);
   const normalized: AppSettings = {
     token: asText(settings.token),
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
-    megaLogin: asText(settings.megaLogin),
-    megaPassword: asText(settings.megaPassword),
-    megaDebridPreferApi: settings.megaDebridPreferApi !== undefined ? Boolean(settings.megaDebridPreferApi) : true,
+    megaLogin,
+    megaPassword,
+    megaDebridApiEnabled,
+    megaDebridWebEnabled,
+    megaDebridPreferApi,
     bestToken: asText(settings.bestToken),
     bestDebridUseWebLogin: Boolean(settings.bestDebridUseWebLogin),
     allDebridToken: asText(settings.allDebridToken),
@@ -136,9 +200,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     linkSnappyPassword: asText(settings.linkSnappyPassword),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
-    providerPrimary: settings.providerPrimary,
-    providerSecondary: settings.providerSecondary,
-    providerTertiary: settings.providerTertiary,
+    providerPrimary: normalizeConfiguredProvider(settings.providerPrimary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled) || defaults.providerPrimary,
+    providerSecondary: normalizeFallbackProvider(settings.providerSecondary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
+    providerTertiary: normalizeFallbackProvider(settings.providerTertiary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     autoProviderFallback: Boolean(settings.autoProviderFallback),
     outputDir: normalizeAbsoluteDir(settings.outputDir, defaults.outputDir),
     packageName: asText(settings.packageName),
@@ -177,8 +241,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     columnOrder: normalizeColumnOrder(settings.columnOrder),
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
-    disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders.filter((p: unknown) => VALID_PRIMARY_PROVIDERS.has(p as string)) as DebridProvider[] : [],
-    hosterRouting: normalizeHosterRouting(settings.hosterRouting)
+    disabledProviders: normalizeDisabledProviders(settings.disabledProviders),
+    hosterRouting: normalizeHosterRouting(settings.hosterRouting, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled)
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
