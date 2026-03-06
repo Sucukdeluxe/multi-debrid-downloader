@@ -53,7 +53,7 @@ interface LinkPopupState {
   isPackage: boolean;
 }
 
-type AccountService = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink";
+type AccountService = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
 type AccountKind =
   | "realdebrid-api"
   | "realdebrid-web"
@@ -65,7 +65,8 @@ type AccountKind =
   | "alldebrid-web"
   | "ddownload-login"
   | "onefichier-api"
-  | "debridlink-api";
+  | "debridlink-api"
+  | "linksnappy-login";
 
 type AccountQuickAction = "realdebrid-login" | "bestdebrid-cookies" | "alldebrid-login" | "alldebrid-status";
 type AccountColumnKey = "service" | "mode" | "status" | "secret";
@@ -97,6 +98,7 @@ interface ConfiguredAccountEntry {
   statusLabel: string;
   summary: string;
   note: string;
+  disabled: boolean;
 }
 
 const ACCOUNT_OPTIONS: AccountOption[] = [
@@ -106,7 +108,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Real-Debrid",
     title: "Real-Debrid API",
     modeLabel: "API",
-    pickerDescription: "Direkter Zugriff ueber API-Token.",
+    pickerDescription: "Direkter Zugriff über API-Token.",
     needsToken: true
   },
   {
@@ -115,7 +117,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Real-Debrid",
     title: "Real-Debrid Web",
     modeLabel: "Web",
-    pickerDescription: "Login ueber Browserfenster statt Token."
+    pickerDescription: "Login über Browserfenster statt Token."
   },
   {
     kind: "megadebrid-api",
@@ -123,7 +125,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid API",
     modeLabel: "API",
-    pickerDescription: "Login mit API-Praeferenz und Web-Fallback.",
+    pickerDescription: "Login mit API-Präferenz und Web-Fallback.",
     needsCredentials: true
   },
   {
@@ -132,7 +134,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid Web",
     modeLabel: "Web",
-    pickerDescription: "Login mit Web-Praeferenz ueber Nutzername und Passwort.",
+    pickerDescription: "Login mit Web-Präferenz über Nutzername und Passwort.",
     needsCredentials: true
   },
   {
@@ -141,7 +143,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "BestDebrid",
     title: "BestDebrid API",
     modeLabel: "API",
-    pickerDescription: "Direkter Zugriff ueber API-Token.",
+    pickerDescription: "Direkter Zugriff über API-Token.",
     needsToken: true
   },
   {
@@ -158,7 +160,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "AllDebrid",
     title: "AllDebrid API",
     modeLabel: "API",
-    pickerDescription: "Direkter Zugriff ueber API-Key.",
+    pickerDescription: "Direkter Zugriff über API-Key.",
     needsToken: true
   },
   {
@@ -167,7 +169,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "AllDebrid",
     title: "AllDebrid Web",
     modeLabel: "Web",
-    pickerDescription: "Login ueber Browserfenster fuer reCAPTCHA.",
+    pickerDescription: "Login über Browserfenster für reCAPTCHA.",
   },
   {
     kind: "ddownload-login",
@@ -175,7 +177,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "DDownload",
     title: "DDownload Login",
     modeLabel: "Login",
-    pickerDescription: "Direkter Login fuer ddownload.com und ddl.to.",
+    pickerDescription: "Direkter Login für ddownload.com und ddl.to.",
     needsCredentials: true
   },
   {
@@ -184,7 +186,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "1Fichier",
     title: "1Fichier API",
     modeLabel: "API",
-    pickerDescription: "API-Key fuer 1fichier.com.",
+    pickerDescription: "API-Key für 1fichier.com.",
     needsToken: true
   },
   {
@@ -193,12 +195,21 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Debrid-Link",
     title: "Debrid-Link API",
     modeLabel: "API",
-    pickerDescription: "API-Key(s) fuer debrid-link.com. Mehrere Keys zeilenweise fuer Multi-Account.",
+    pickerDescription: "API-Key(s) für debrid-link.com. Mehrere Keys zeilenweise für Multi-Account.",
     needsToken: true
+  },
+  {
+    kind: "linksnappy-login",
+    service: "linksnappy",
+    serviceLabel: "LinkSnappy",
+    title: "LinkSnappy Login",
+    modeLabel: "Login",
+    pickerDescription: "Login für linksnappy.com mit Benutzername und Passwort.",
+    needsCredentials: true
   }
 ];
 
-const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"];
+const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
 const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths";
 const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
   service: 220,
@@ -283,11 +294,19 @@ function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvid
   if ((settings.debridLinkApiKeys || "").trim()) {
     list.push("debridlink");
   }
+  if ((settings.linkSnappyLogin || "").trim() && (settings.linkSnappyPassword || "").trim()) {
+    list.push("linksnappy");
+  }
   return list;
 }
 
+function getActiveProvidersFromSettings(settings: AppSettings): DebridProvider[] {
+  const disabled = new Set(settings.disabledProviders || []);
+  return getConfiguredProvidersFromSettings(settings).filter((p) => !disabled.has(p));
+}
+
 function normalizeProviderSelectionForSettings(settings: AppSettings): Pick<AppSettings, "providerPrimary" | "providerSecondary" | "providerTertiary"> {
-  const configuredProviders = getConfiguredProvidersFromSettings(settings);
+  const configuredProviders = getActiveProvidersFromSettings(settings);
   const primaryProvider = configuredProviders.includes(settings.providerPrimary)
     ? settings.providerPrimary
     : (configuredProviders[0] ?? "realdebrid");
@@ -326,6 +345,8 @@ function getConfiguredAccountKind(settings: AppSettings, service: AccountService
       return settings.oneFichierApiKey.trim() ? "onefichier-api" : null;
     case "debridlink":
       return (settings.debridLinkApiKeys || "").trim() ? "debridlink-api" : null;
+    case "linksnappy":
+      return (settings.linkSnappyLogin || "").trim() && (settings.linkSnappyPassword || "").trim() ? "linksnappy-login" : null;
     default:
       return null;
   }
@@ -366,6 +387,8 @@ function summarizeAccount(kind: AccountKind, settings: AppSettings): string {
       if (keys.length > 1) return `${keys.length} API-Keys`;
       return keys.length === 1 ? maskValue(keys[0].trim(), 3, 3) : "Nicht hinterlegt";
     }
+    case "linksnappy-login":
+      return (settings.linkSnappyLogin || "").trim() ? maskValue((settings.linkSnappyLogin || "").trim(), 2, 4) : "Login + Passwort";
     default:
       return "Konfiguriert";
   }
@@ -403,6 +426,8 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       return { mode, kind, token: settings.oneFichierApiKey, login: "", password: "" };
     case "debridlink-api":
       return { mode, kind, token: settings.debridLinkApiKeys || "", login: "", password: "" };
+    case "linksnappy-login":
+      return { mode, kind, token: "", login: settings.linkSnappyLogin || "", password: settings.linkSnappyPassword || "" };
     default:
       return { mode, kind, token: "", login: "", password: "" };
   }
@@ -438,6 +463,8 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
       return { ...settings, oneFichierApiKey: token };
     case "debridlink-api":
       return { ...settings, debridLinkApiKeys: token };
+    case "linksnappy-login":
+      return { ...settings, linkSnappyLogin: login, linkSnappyPassword: password };
     default:
       return settings;
   }
@@ -459,6 +486,8 @@ function clearAccountServiceFromSettings(settings: AppSettings, service: Account
       return { ...settings, oneFichierApiKey: "" };
     case "debridlink":
       return { ...settings, debridLinkApiKeys: "" };
+    case "linksnappy":
+      return { ...settings, linkSnappyLogin: "", linkSnappyPassword: "" };
     default:
       return settings;
   }
@@ -466,7 +495,7 @@ function clearAccountServiceFromSettings(settings: AppSettings, service: Account
 
 function validateAccountDialog(dialog: AccountDialogState): string | null {
   if (!dialog.kind) {
-    return "Bitte zuerst einen Account-Typ auswaehlen.";
+    return "Bitte zuerst einen Account-Typ auswählen.";
   }
   const option = findAccountOption(dialog.kind);
   if (option.needsToken && !dialog.token.trim()) {
@@ -525,8 +554,16 @@ const cleanupLabels: Record<string, string> = {
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 const providerLabels: Record<DebridProvider, string> = {
-  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier", debridlink: "Debrid-Link"
+  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier", debridlink: "Debrid-Link", linksnappy: "LinkSnappy"
 };
+
+function providerLabelWithMode(provider: DebridProvider, settings: AppSettings): string {
+  const base = providerLabels[provider];
+  const kind = getConfiguredAccountKind(settings, provider);
+  if (!kind) return base;
+  const opt = ACCOUNT_OPTIONS.find((o) => o.kind === kind);
+  return opt?.modeLabel ? `${base} (${opt.modeLabel})` : base;
+}
 
 function formatDateTime(ts: number): string {
   if (!ts) return "";
@@ -1452,7 +1489,7 @@ export function App(): ReactElement {
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
   ), [packages, collapsedPackages]);
 
-  const configuredProviders = useMemo(() => getConfiguredProvidersFromSettings(settingsDraft), [settingsDraft]);
+  const configuredProviders = useMemo(() => getActiveProvidersFromSettings(settingsDraft), [settingsDraft]);
 
   // DDownload is a direct file hoster (not a debrid service) and is used automatically
   // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
@@ -1508,9 +1545,9 @@ export function App(): ReactElement {
       } else if (kind === "megadebrid-web") {
         note = "Web wird bevorzugt, API bleibt als Fallback aktiv.";
       } else if (kind === "realdebrid-web") {
-        note = "Login kann bei Bedarf direkt aus der Liste geoeffnet werden.";
+        note = "Login kann bei Bedarf direkt aus der Liste geöffnet werden.";
       } else if (kind === "bestdebrid-web") {
-        note = "Cookie-Import laesst sich direkt aus der Liste erneut starten.";
+        note = "Cookie-Import lässt sich direkt aus der Liste erneut starten.";
       } else if (service === "alldebrid") {
         if (allDebridHostLoading) {
           statusLabel = "Lade Status";
@@ -1525,14 +1562,20 @@ export function App(): ReactElement {
           note = "Status basiert auf den zuletzt gespeicherten AllDebrid-Daten.";
         }
       }
+      if (kind === "debridlink-api") {
+        const keyCount = (settingsDraft.debridLinkApiKeys || "").split(/[\n,]+/).filter((k: string) => k.trim()).length;
+        statusLabel = keyCount > 1 ? `${keyCount} API-Keys` : "Konfiguriert";
+      }
+      const isDisabled = (settingsDraft.disabledProviders || []).includes(service as DebridProvider);
       entries.push({
         kind,
         service,
         serviceLabel: option.serviceLabel,
         modeLabel: option.modeLabel,
-        statusLabel,
+        statusLabel: isDisabled ? "Deaktiviert" : statusLabel,
         summary: summarizeAccount(kind, settingsDraft),
-        note
+        note,
+        disabled: isDisabled
       });
     }
     return entries;
@@ -3586,7 +3629,7 @@ export function App(): ReactElement {
                             const showQuickActionButton = Boolean(quickAction && !(showStatusButton && quickAction.action === "alldebrid-status"));
                             const allDebridStateClass = entry.service === "alldebrid" && allDebridHostInfo ? ` account-status-${allDebridHostInfo.state}` : "";
                             return (
-                              <div key={entry.service} className="account-row">
+                              <div key={entry.service} className={`account-row${entry.disabled ? " account-row-disabled" : ""}`}>
                                 <div className="account-cell account-service-cell">
                                   <strong>{entry.serviceLabel}</strong>
                                   <span>{option.title}</span>
@@ -3612,6 +3655,14 @@ export function App(): ReactElement {
                                       {quickAction.label}
                                     </button>
                                   )}
+                                  <button className="btn" disabled={actionBusy} onClick={() => {
+                                    const provider = entry.service as DebridProvider;
+                                    const current = settingsDraft.disabledProviders || [];
+                                    const next = current.includes(provider) ? current.filter((p) => p !== provider) : [...current, provider];
+                                    setSettingsDraft((prev) => ({ ...prev, disabledProviders: next }));
+                                  }}>
+                                    {entry.disabled ? "Aktivieren" : "Deaktivieren"}
+                                  </button>
                                   <button className="btn" disabled={actionBusy} onClick={() => openEditAccountDialog(entry.kind)}>
                                     Bearbeiten
                                   </button>
@@ -3628,18 +3679,18 @@ export function App(): ReactElement {
 
                     <div className="settings-section card">
                       <h3>Hoster-Reihenfolge</h3>
-                      <div className="hint">Debrid-Accounts koennen hier priorisiert werden. Direkte Host-Accounts wie DDownload und 1Fichier laufen separat.</div>
+                      <div className="hint">Debrid-Accounts können hier priorisiert werden. Direkte Host-Accounts wie DDownload und 1Fichier laufen separat.</div>
                       {configuredProviders.length === 0 && (
                         <div className="account-empty-state compact">
                           <strong>Keine Debrid-Reihenfolge verfuegbar</strong>
-                          <span>Fuege mindestens einen Debrid-Account hinzu, dann kannst Du Hauptaccount und Alternativen festlegen.</span>
+                          <span>Füge mindestens einen Debrid-Account hinzu, dann kannst Du Hauptaccount und Alternativen festlegen.</span>
                         </div>
                       )}
                       {configuredProviders.length >= 1 && (
                         <div>
                           <label>Hauptaccount</label>
                           <select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
-                            {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                            {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
                           </select>
                         </div>
                       )}
@@ -3648,7 +3699,7 @@ export function App(): ReactElement {
                           <label>1. Hoster-Alternative</label>
                           <select value={secondaryProviderValue} onChange={(e) => setText("providerSecondary", e.target.value)}>
                             <option value="none">Keine Alternative</option>
-                            {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                            {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
                           </select>
                         </div>
                       )}
@@ -3657,11 +3708,11 @@ export function App(): ReactElement {
                           <label>2. Hoster-Alternative</label>
                           <select value={tertiaryProviderValue} onChange={(e) => setText("providerTertiary", e.target.value)}>
                             <option value="none">Keine Alternative</option>
-                            {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                            {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
                           </select>
                         </div>
                       )}
-                      <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehlern oder Fair-Use automatisch zum naechsten Provider wechseln</label>
+                      <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehlern oder Fair-Use automatisch zum nächsten Provider wechseln</label>
                       <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
                     </div>
 
@@ -3760,19 +3811,19 @@ export function App(): ReactElement {
                     )}
                     {configuredProviders.length >= 1 && (
                       <div><label>Hauptaccount</label><select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
-                        {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                        {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
                       </select></div>
                     )}
                     {configuredProviders.length >= 2 && (
                       <div><label>1. Hoster-Alternative</label><select value={secondaryProviderValue} onChange={(e) => setText("providerSecondary", e.target.value)}>
                         <option value="none">Keine Alternative</option>
-                        {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                        {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
                       </select></div>
                     )}
                     {configuredProviders.length >= 3 && (
                       <div><label>2. Hoster-Alternative</label><select value={tertiaryProviderValue} onChange={(e) => setText("providerTertiary", e.target.value)}>
                         <option value="none">Keine Alternative</option>
-                        {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                        {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
                       </select></div>
                     )}
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln</label>
@@ -4051,8 +4102,8 @@ export function App(): ReactElement {
 
                 {!accountDialogOption && (
                   <div className="account-empty-state compact">
-                    <strong>Oben zuerst einen Account-Typ waehlen</strong>
-                    <span>Danach erscheinen hier direkt die passenden Felder fuer Login, Passwort oder API-Token.</span>
+                    <strong>Oben zuerst einen Account-Typ wählen</strong>
+                    <span>Danach erscheinen hier direkt die passenden Felder für Login, Passwort oder API-Token.</span>
                   </div>
                 )}
 
@@ -4066,8 +4117,12 @@ export function App(): ReactElement {
                     <div className="account-modal-fields">
                       {accountDialogOption.needsToken && (
                         <div>
-                          <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" ? "API-Key" : "Token"}</label>
-                          <input type="password" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
+                          <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" || accountDialogOption.service === "debridlink" ? "API-Key(s)" : "Token"}</label>
+                          {accountDialogOption.service === "debridlink" ? (
+                            <textarea rows={4} placeholder="Ein API-Key pro Zeile" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} style={{ fontFamily: "monospace", resize: "vertical" }} />
+                          ) : (
+                            <input type="password" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
+                          )}
                         </div>
                       )}
 
@@ -4085,7 +4140,7 @@ export function App(): ReactElement {
                       )}
 
                       {accountDialog.kind === "realdebrid-web" && (
-                        <div className="account-modal-note">Nach dem Speichern kannst Du direkt das Browserfenster fuer den Web-Login oeffnen.</div>
+                        <div className="account-modal-note">Nach dem Speichern kannst Du direkt das Browserfenster für den Web-Login öffnen.</div>
                       )}
                       {accountDialog.kind === "bestdebrid-web" && (
                         <div className="account-modal-note">Der Web-Account arbeitet ueber einen Cookies.txt-Import aus dem Browser.</div>
