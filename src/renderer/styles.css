@@ -365,6 +365,67 @@ body,
   background: rgba(245, 158, 11, 0.1);
 }
 
+.schedule-ctrl {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.schedule-btn.active {
+  color: var(--accent);
+}
+.schedule-active {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.schedule-badge {
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+  padding: 2px 6px;
+  background: rgba(99, 179, 237, 0.12);
+  border-radius: 6px;
+  cursor: default;
+}
+.schedule-cancel {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.schedule-cancel:hover { color: var(--danger, #e05555); }
+.schedule-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+.schedule-picker-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.schedule-time-input {
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 3px 6px;
+  font-size: 13px;
+  width: 90px;
+}
 .ctrl-separator {
   width: 1px;
   height: 24px;
@@ -2041,6 +2102,13 @@ td {
   background: var(--field);
   border-radius: 10px;
   border: 1px solid var(--border);
+}
+.stat-item.stat-item-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.stat-item.stat-item-clickable:hover {
+  border-color: var(--danger, #e05555);
 }
 
 .stat-label {
