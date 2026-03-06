@@ -1115,7 +1115,7 @@ export function App(): ReactElement {
     if (!mountedRef.current) {
       return;
     }
-    if (install.started) { showToast("Updater gestartet - App wird geschlossen", 2600); return; }
+    if (install.started) { showToast("Stilles Update gestartet - App wird neu gestartet", 2600); return; }
     setUpdateInstallProgress({
       stage: "error",
       percent: null,

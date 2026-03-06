@@ -1,7 +1,28 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
+
+const { spawnMock, unrefMock, onceMock } = vi.hoisted(() => {
+  const unref = vi.fn();
+  const once = vi.fn((_event: string, _handler: (...args: unknown[]) => void) => ({
+    unref
+  }));
+  const spawn = vi.fn(() => ({
+    once,
+    unref
+  }));
+  return {
+    spawnMock: spawn,
+    unrefMock: unref,
+    onceMock: once
+  };
+});
+
+vi.mock("node:child_process", () => ({
+  spawn: spawnMock
+}));
+
+import { buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
 import { UpdateCheckResult, UpdateInstallProgress } from "../src/shared/types";
 
@@ -17,6 +38,9 @@ function sha512Hex(buffer: Buffer): string {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  spawnMock.mockClear();
+  unrefMock.mockClear();
+  onceMock.mockClear();
   vi.restoreAllMocks();
 });
 
@@ -82,6 +106,10 @@ describe("update", () => {
     expect(result.updateAvailable).toBe(true);
     expect(result.setupAssetUrl).toBe("https://example.invalid/setup.exe");
     expect(result.setupAssetName).toBe("Real-Debrid-Downloader Setup 9.9.9.exe");
+  });
+
+  it("uses silent NSIS install flags with auto-run after update", () => {
+    expect(buildInstallerLaunchArgs()).toEqual(["/S", "--updated", "--force-run"]);
   });
 
   it("falls back to alternate download URL when setup asset URL returns 404", async () => {
@@ -464,6 +492,12 @@ describe("update", () => {
     });
 
     expect(result.started).toBe(true);
+    expect(spawnMock).toHaveBeenCalledWith(expect.any(String), ["/S", "--updated", "--force-run"], expect.objectContaining({
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }));
+    expect(unrefMock).toHaveBeenCalledTimes(1);
     expect(progressEvents.some((entry) => entry.stage === "starting")).toBe(true);
     expect(progressEvents.some((entry) => entry.stage === "downloading")).toBe(true);
     expect(progressEvents.some((entry) => entry.stage === "verifying")).toBe(true);

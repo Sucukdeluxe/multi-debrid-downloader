@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { APP_VERSION, DEFAULT_UPDATE_REPO } from "./constants";
 import { UpdateCheckResult, UpdateInstallProgress, UpdateInstallResult } from "../shared/types";
 import { compactErrorText, humanSize } from "./utils";
@@ -50,6 +50,10 @@ type ReleaseAsset = {
 };
 
 type UpdateProgressCallback = (progress: UpdateInstallProgress) => void;
+
+export function buildInstallerLaunchArgs(): string[] {
+  return ["/S", "--updated", "--force-run"];
+}
 
 function safeEmitProgress(onProgress: UpdateProgressCallback | undefined, progress: UpdateInstallProgress): void {
   if (!onProgress) {
@@ -1129,11 +1133,12 @@ export async function installLatestUpdate(
       percent: 100,
       downloadedBytes: 0,
       totalBytes: null,
-      message: "Starte Update-Installer"
+      message: "Starte stille Update-Installation"
     });
-    const child = spawn(targetPath, [], {
+    const child = childProcess.spawn(targetPath, buildInstallerLaunchArgs(), {
       detached: true,
-      stdio: "ignore"
+      stdio: "ignore",
+      windowsHide: true
     });
     child.once("error", (spawnError) => {
       logger.error(`Update-Installer Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
@@ -1144,9 +1149,9 @@ export async function installLatestUpdate(
       percent: 100,
       downloadedBytes: 0,
       totalBytes: null,
-      message: "Update-Installer gestartet"
+      message: "Update wird im Hintergrund installiert und danach neu gestartet"
     });
-    return { started: true, message: "Update-Installer gestartet" };
+    return { started: true, message: "Stille Update-Installation gestartet" };
   } catch (error) {
     try {
       await fs.promises.rm(targetPath, { force: true });
