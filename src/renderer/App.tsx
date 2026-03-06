@@ -1,5 +1,6 @@
 import { DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
+  AllDebridHostInfo,
   AppSettings,
   AppTheme,
   BandwidthScheduleEntry,
@@ -62,7 +63,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
+    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -139,6 +140,35 @@ function humanSize(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
   if (bytes < 1024 * 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`; }
   return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(3)} TB`;
+}
+
+function formatAllDebridSourceLabel(source: AllDebridHostInfo["source"]): string {
+  return source === "web" ? "Web-Login" : "API-Key";
+}
+
+function formatAllDebridQuota(info: AllDebridHostInfo): string {
+  const suffix = info.quotaType ? ` (${info.quotaType})` : "";
+  if (info.quota !== null && info.quotaMax !== null) {
+    return `${info.quota} / ${info.quotaMax}${suffix}`;
+  }
+  if (info.quota !== null) {
+    return `${info.quota}${suffix}`;
+  }
+  if (info.quotaMax !== null) {
+    return `max. ${info.quotaMax}${suffix}`;
+  }
+  return info.source === "web" ? "Nur per API-Key sichtbar" : "Nicht angegeben";
+}
+
+function formatAllDebridSimuLimit(info: AllDebridHostInfo): string {
+  if (info.limitSimuDl === null) {
+    return info.source === "web" ? "Nur per API-Key sichtbar" : "Nicht angegeben";
+  }
+  return String(info.limitSimuDl);
+}
+
+function formatAllDebridTimestamp(info: AllDebridHostInfo): string {
+  return formatDateTime(info.lastCheckedAt || info.fetchedAt);
 }
 
 interface BandwidthChartProps {
@@ -528,6 +558,9 @@ export function App(): ReactElement {
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
   const historyCtxMenuRef = useRef<HTMLDivElement>(null);
+  const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
+  const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
+  const allDebridHostRequestRef = useRef(0);
 
   // Load history when tab changes to history
   useEffect(() => {
@@ -611,6 +644,31 @@ export function App(): ReactElement {
       toastTimerRef.current = null;
     }, timeoutMs);
   }, []);
+
+  const loadAllDebridHostInfo = useCallback(async (silent = false): Promise<void> => {
+    const requestId = allDebridHostRequestRef.current + 1;
+    allDebridHostRequestRef.current = requestId;
+    setAllDebridHostLoading(true);
+    try {
+      const info = await window.rd.getAllDebridHostInfo();
+      if (!mountedRef.current || allDebridHostRequestRef.current !== requestId) {
+        return;
+      }
+      setAllDebridHostInfo(info);
+    } catch (error) {
+      if (!mountedRef.current || allDebridHostRequestRef.current !== requestId) {
+        return;
+      }
+      setAllDebridHostInfo(null);
+      if (!silent) {
+        showToast(`AllDebrid Status fehlgeschlagen: ${String(error)}`, 3200);
+      }
+    } finally {
+      if (mountedRef.current && allDebridHostRequestRef.current === requestId) {
+        setAllDebridHostLoading(false);
+      }
+    }
+  }, [showToast]);
 
   const clearImportQueueFocusListener = useCallback((): void => {
     const handler = importQueueFocusHandlerRef.current;
@@ -866,11 +924,27 @@ export function App(): ReactElement {
     return [...active, ...rest];
   }, [packages, snapshot.session.running, snapshot.session.items]);
 
+  const hasSavedAllDebridAccount = Boolean(snapshot.settings.allDebridUseWebLogin || snapshot.settings.allDebridToken.trim());
+  const allDebridSettingsDirty = snapshot.settings.allDebridUseWebLogin !== settingsDraft.allDebridUseWebLogin
+    || snapshot.settings.allDebridToken !== settingsDraft.allDebridToken;
+
   useEffect(() => {
     if (!snapshot.session.running) {
       setShowAllPackages(false);
     }
   }, [snapshot.session.running]);
+
+  useEffect(() => {
+    if (settingsSubTab !== "accounts") {
+      return;
+    }
+    if (!hasSavedAllDebridAccount) {
+      setAllDebridHostInfo(null);
+      setAllDebridHostLoading(false);
+      return;
+    }
+    void loadAllDebridHostInfo(true);
+  }, [settingsSubTab, hasSavedAllDebridAccount, snapshot.settings.allDebridToken, snapshot.settings.allDebridUseWebLogin, loadAllDebridHostInfo]);
 
   // Auto-expand packages that are currently extracting (only once per extraction cycle)
   useEffect(() => {
@@ -917,11 +991,11 @@ export function App(): ReactElement {
     if (settingsDraft.bestToken.trim()) {
       list.push("bestdebrid");
     }
-    if (settingsDraft.allDebridToken.trim()) {
+    if (settingsDraft.allDebridUseWebLogin || settingsDraft.allDebridToken.trim()) {
       list.push("alldebrid");
     }
     return list;
-  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken]);
+  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken, settingsDraft.allDebridUseWebLogin]);
 
   // DDownload is a direct file hoster (not a debrid service) and is used automatically
   // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
@@ -1059,6 +1133,16 @@ export function App(): ReactElement {
       showToast("Einstellungen gespeichert", 1800);
     }, (error) => {
       showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
+    });
+  };
+
+  const onOpenAllDebridLogin = async (): Promise<void> => {
+    await performQuickAction(async () => {
+      await persistDraftSettings();
+      await window.rd.openAllDebridLogin();
+      showToast("AllDebrid Login-Fenster geöffnet", 2200);
+    }, (error) => {
+      showToast(`AllDebrid Login fehlgeschlagen: ${String(error)}`, 2800);
     });
   };
 
@@ -2744,6 +2828,62 @@ export function App(): ReactElement {
                     <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
                     <label>AllDebrid API Key</label>
                     <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.allDebridUseWebLogin} onChange={(e) => setBool("allDebridUseWebLogin", e.target.checked)} /> AllDebrid per Web-Login statt API-Key verwenden</label>
+                    {settingsDraft.allDebridUseWebLogin && (
+                      <>
+                        <div className="hint">Beim ersten Link oder über den Button unten öffnet sich ein echtes AllDebrid-Browserfenster. Der Login läuft dort manuell, damit reCAPTCHA sauber funktioniert.</div>
+                        <button className="btn" disabled={actionBusy} onClick={() => { void onOpenAllDebridLogin(); }}>AllDebrid Web-Login öffnen</button>
+                      </>
+                    )}
+                    <div style={{ marginTop: 12, padding: 14, borderRadius: 14, border: "1px solid rgba(83, 168, 255, 0.22)", background: "rgba(10, 20, 35, 0.32)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                        <strong>AllDebrid Rapidgator Status</strong>
+                        <button className="btn" disabled={allDebridHostLoading || !hasSavedAllDebridAccount} onClick={() => { void loadAllDebridHostInfo(false); }}>
+                          {allDebridHostLoading ? "Lade..." : "Status aktualisieren"}
+                        </button>
+                      </div>
+                      {!hasSavedAllDebridAccount && (
+                        <div className="hint" style={{ marginTop: 10 }}>Nach dem Speichern eines AllDebrid-Accounts wird hier der Rapidgator-Status angezeigt.</div>
+                      )}
+                      {hasSavedAllDebridAccount && !allDebridHostInfo && !allDebridHostLoading && (
+                        <div className="hint" style={{ marginTop: 10 }}>Noch keine Host-Information geladen.</div>
+                      )}
+                      {hasSavedAllDebridAccount && allDebridHostLoading && !allDebridHostInfo && (
+                        <div className="hint" style={{ marginTop: 10 }}>Rapidgator-Status wird geladen...</div>
+                      )}
+                      {allDebridHostInfo && (
+                        <>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 12 }}>
+                            <div>
+                              <div className="hint" style={{ margin: 0 }}>Status</div>
+                              <div>{allDebridHostInfo.statusLabel}</div>
+                            </div>
+                            <div>
+                              <div className="hint" style={{ margin: 0 }}>Quelle</div>
+                              <div>{formatAllDebridSourceLabel(allDebridHostInfo.source)}</div>
+                            </div>
+                            <div>
+                              <div className="hint" style={{ margin: 0 }}>Letztes Update</div>
+                              <div>{formatAllDebridTimestamp(allDebridHostInfo)}</div>
+                            </div>
+                            <div>
+                              <div className="hint" style={{ margin: 0 }}>Quota</div>
+                              <div>{formatAllDebridQuota(allDebridHostInfo)}</div>
+                            </div>
+                            <div>
+                              <div className="hint" style={{ margin: 0 }}>Simultan-Downloads</div>
+                              <div>{formatAllDebridSimuLimit(allDebridHostInfo)}</div>
+                            </div>
+                          </div>
+                          {allDebridHostInfo.note && (
+                            <div className="hint" style={{ marginTop: 10 }}>{allDebridHostInfo.note}</div>
+                          )}
+                        </>
+                      )}
+                      {allDebridSettingsDirty && hasSavedAllDebridAccount && (
+                        <div className="hint" style={{ marginTop: 10 }}>Status basiert auf den zuletzt gespeicherten AllDebrid-Einstellungen.</div>
+                      )}
+                    </div>
                     <label>DDownload Login</label>
                     <input value={settingsDraft.ddownloadLogin || ""} onChange={(e) => setText("ddownloadLogin", e.target.value)} />
                     <label>DDownload Passwort</label>

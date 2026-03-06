@@ -446,6 +446,14 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN, async () => {
+    await controller.openAllDebridLoginWindow();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO, async () => {
+    return controller.getAllDebridHostInfo();
+  });
+
   ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {
     const options = {
       properties: ["openFile"] as Array<"openFile">,

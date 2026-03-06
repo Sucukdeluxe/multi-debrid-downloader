@@ -1,5 +1,6 @@
 import type {
   AddLinksPayload,
+  AllDebridHostInfo,
   AppSettings,
   DuplicatePolicy,
   HistoryEntry,
@@ -46,6 +47,8 @@ export interface ElectronApi {
   importBackup: () => Promise<{ restored: boolean; message: string }>;
   openLog: () => Promise<void>;
   openSessionLog: () => Promise<void>;
+  openAllDebridLogin: () => Promise<void>;
+  getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;

@@ -1,4 +1,4 @@
-import { AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
+import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
@@ -10,6 +10,7 @@ const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
 const ALL_DEBRID_API_BASE = "https://api.alldebrid.com/v4";
+const ALL_DEBRID_API_BASE_V41 = "https://api.alldebrid.com/v4.1";
 
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
@@ -29,9 +30,11 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
 }
 
 export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
+export type AllDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 
 interface DebridServiceOptions {
   megaWebUnrestrict?: MegaWebUnrestrictor;
+  allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
 }
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -199,6 +202,43 @@ function parseAllDebridError(payload: Record<string, unknown> | null): string {
   }
   const errorObj = asRecord(errorValue);
   return pickString(errorObj, ["message", "code"]) || "AllDebrid API error";
+}
+
+function normalizeAllDebridHostKey(value: string): string {
+  return String(value || "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
+}
+
+function toAllDebridHostState(value: unknown): AllDebridHostInfo["state"] {
+  if (value === true) {
+    return "up";
+  }
+  if (value === false) {
+    return "down";
+  }
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "up" || normalized === "online" || normalized === "available") {
+    return "up";
+  }
+  if (normalized === "down" || normalized === "offline" || normalized === "unavailable") {
+    return "down";
+  }
+  if (normalized === "not_tracked" || normalized === "not tracked") {
+    return "not_tracked";
+  }
+  return "unknown";
+}
+
+function toAllDebridHostStatusLabel(state: AllDebridHostInfo["state"]): string {
+  if (state === "up") {
+    return "Verfügbar";
+  }
+  if (state === "down") {
+    return "Unverfügbar";
+  }
+  if (state === "not_tracked") {
+    return "Nicht getrackt";
+  }
+  return "Unbekannt";
 }
 
 function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
@@ -886,6 +926,105 @@ class AllDebridClient {
     return result;
   }
 
+  public async getHostInfo(host: string, signal?: AbortSignal): Promise<AllDebridHostInfo> {
+    const wanted = normalizeAllDebridHostKey(host);
+    let lastError = "";
+
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      try {
+        const response = await fetch(`${ALL_DEBRID_API_BASE_V41}/user/hosts`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "User-Agent": DEBRID_USER_AGENT
+          },
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+        const text = await response.text();
+        const payload = asRecord(parseJson(text));
+
+        if (!response.ok) {
+          const reason = parseError(response.status, text, payload);
+          if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+            await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+            continue;
+          }
+          throw new Error(reason);
+        }
+
+        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+        const looksHtml = contentType.includes("text/html") || /^\s*<(!doctype\s+html|html\b)/i.test(text);
+        if (looksHtml) {
+          throw new Error("AllDebrid lieferte HTML statt JSON");
+        }
+        if (!payload) {
+          throw new Error("AllDebrid Antwort ist kein JSON-Objekt");
+        }
+
+        const status = pickString(payload, ["status"]);
+        if (status && status.toLowerCase() === "error") {
+          throw new Error(parseAllDebridError(payload));
+        }
+
+        const data = asRecord(payload.data);
+        const hosts = asRecord(data?.hosts);
+        if (!hosts) {
+          throw new Error("AllDebrid Antwort ohne Host-Liste");
+        }
+
+        let hostEntry = asRecord(hosts[host]) || asRecord(hosts[wanted]);
+        if (!hostEntry) {
+          for (const entry of Object.values(hosts)) {
+            const candidate = asRecord(entry);
+            const candidateName = normalizeAllDebridHostKey(pickString(candidate, ["name"]));
+            if (candidateName === wanted) {
+              hostEntry = candidate;
+              break;
+            }
+          }
+        }
+
+        if (!hostEntry) {
+          throw new Error(`AllDebrid Host ${host} nicht gefunden`);
+        }
+
+        const state = toAllDebridHostState(hostEntry.status);
+        const quota = pickNumber(hostEntry, ["quota"]);
+        const quotaMax = pickNumber(hostEntry, ["quotaMax"]);
+        const limitSimuDl = pickNumber(hostEntry, ["limitSimuDl"]);
+        const quotaType = pickString(hostEntry, ["quotaType"]);
+        const note = quota === null && quotaMax === null && limitSimuDl === null
+          ? "AllDebrid liefert für diesen Host aktuell keine Quota- oder Slot-Daten."
+          : "";
+
+        return {
+          host: pickString(hostEntry, ["name"]) || host,
+          source: "api",
+          state,
+          statusLabel: toAllDebridHostStatusLabel(state),
+          fetchedAt: Date.now(),
+          lastCheckedAt: null,
+          quota,
+          quotaMax,
+          quotaType,
+          limitSimuDl,
+          note
+        };
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+          break;
+        }
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
+          break;
+        }
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+
+    throw new Error(String(lastError || "AllDebrid Host-Info fehlgeschlagen").replace(/^Error:\s*/i, ""));
+  }
+
   public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
     let lastError = "";
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
@@ -961,6 +1100,10 @@ class AllDebridClient {
 
     throw new Error(String(lastError || "AllDebrid Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
   }
+}
+
+export async function fetchAllDebridHostInfo(token: string, host = "rapidgator", signal?: AbortSignal): Promise<AllDebridHostInfo> {
+  return new AllDebridClient(token).getHostInfo(host, signal);
 }
 
 // ── 1Fichier Client ──
@@ -1290,6 +1433,10 @@ export class DebridService {
     return clean;
   }
 
+  private shouldUseAllDebridWeb(settings: AppSettings): boolean {
+    return Boolean(settings.allDebridUseWebLogin && this.options.allDebridWebUnrestrict);
+  }
+
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
@@ -1415,7 +1562,7 @@ export class DebridService {
       return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim() && this.options.megaWebUnrestrict);
     }
     if (provider === "alldebrid") {
-      return Boolean(settings.allDebridToken.trim());
+      return Boolean(this.shouldUseAllDebridWeb(settings) || settings.allDebridToken.trim());
     }
     if (provider === "ddownload") {
       return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
@@ -1434,6 +1581,13 @@ export class DebridService {
       return new MegaDebridClient(this.options.megaWebUnrestrict).unrestrictLink(link, signal);
     }
     if (provider === "alldebrid") {
+      if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {
+        const result = await this.options.allDebridWebUnrestrict(link, signal);
+        if (!result) {
+          throw new Error("AllDebrid-Web-Fallback nicht verfügbar");
+        }
+        return result;
+      }
       return new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
     }
     if (provider === "ddownload") {

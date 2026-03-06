@@ -45,6 +45,7 @@ export function defaultSettings(): AppSettings {
     megaPassword: "",
     bestToken: "",
     allDebridToken: "",
+    allDebridUseWebLogin: false,
     ddownloadLogin: "",
     ddownloadPassword: "",
     oneFichierApiKey: "",

@@ -42,6 +42,7 @@ export interface AppSettings {
   megaPassword: string;
   bestToken: string;
   allDebridToken: string;
+  allDebridUseWebLogin: boolean;
   ddownloadLogin: string;
   ddownloadPassword: string;
   oneFichierApiKey: string;
@@ -238,6 +239,23 @@ export interface UpdateInstallProgress {
   downloadedBytes: number;
   totalBytes: number | null;
   message: string;
+}
+
+export type AllDebridHostState = "up" | "down" | "not_tracked" | "unknown";
+export type AllDebridHostInfoSource = "api" | "web";
+
+export interface AllDebridHostInfo {
+  host: string;
+  source: AllDebridHostInfoSource;
+  state: AllDebridHostState;
+  statusLabel: string;
+  fetchedAt: number;
+  lastCheckedAt: number | null;
+  quota: number | null;
+  quotaMax: number | null;
+  quotaType: string;
+  limitSimuDl: number | null;
+  note: string;
 }
 
 export interface ParsedHashEntry {

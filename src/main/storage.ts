@@ -111,6 +111,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     megaPassword: asText(settings.megaPassword),
     bestToken: asText(settings.bestToken),
     allDebridToken: asText(settings.allDebridToken),
+    allDebridUseWebLogin: Boolean(settings.allDebridUseWebLogin),
     ddownloadLogin: asText(settings.ddownloadLogin),
     ddownloadPassword: asText(settings.ddownloadPassword),
     oneFichierApiKey: asText(settings.oneFichierApiKey),
