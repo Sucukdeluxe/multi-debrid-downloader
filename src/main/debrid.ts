@@ -1274,7 +1274,7 @@ class OneFichierClient {
             "Content-Type": "application/json",
             Authorization: `Bearer ${this.apiKey}`
           },
-          body: JSON.stringify({ url: link, pretty: 1 }),
+          body: JSON.stringify({ url: link, pretty: 1, cdn: 0 }),
           signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
         });
 
