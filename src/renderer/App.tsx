@@ -329,6 +329,18 @@ function normalizeProviderOrderForSettings(settings: AppSettings): DebridProvide
   return ordered;
 }
 
+function normalizeProviderSelectionForSettings(
+  settings: AppSettings
+): Pick<AppSettings, "providerOrder" | "providerPrimary" | "providerSecondary" | "providerTertiary"> {
+  const providerOrder = normalizeProviderOrderForSettings(settings);
+  return {
+    providerOrder,
+    providerPrimary: providerOrder[0] ?? settings.providerPrimary,
+    providerSecondary: (providerOrder[1] ?? "none") as DebridFallbackProvider,
+    providerTertiary: (providerOrder[2] ?? "none") as DebridFallbackProvider
+  };
+}
+
 function getConfiguredAccountKind(settings: AppSettings, service: AccountService): AccountKind | null {
   switch (service) {
     case "realdebrid":
@@ -1599,11 +1611,8 @@ export function App(): ReactElement {
 
   const normalizedSettingsDraft: AppSettings = useMemo(() => ({
     ...settingsDraft,
-    providerOrder: activeProviderOrder,
-    providerPrimary: activeProviderOrder[0] ?? settingsDraft.providerPrimary,
-    providerSecondary: (activeProviderOrder[1] ?? "none") as DebridFallbackProvider,
-    providerTertiary: (activeProviderOrder[2] ?? "none") as DebridFallbackProvider
-  }), [settingsDraft, activeProviderOrder]);
+    ...normalizeProviderSelectionForSettings(settingsDraft)
+  }), [settingsDraft]);
 
   const configuredAccounts = useMemo(() => {
     const entries: ConfiguredAccountEntry[] = [];
