@@ -1728,9 +1728,12 @@ export class DebridService {
         if (!result) {
           throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
         }
+        result.sourceLabel = "Web";
         return result;
       }
-      return new RealDebridClient(settings.token).unrestrictLink(link, signal);
+      const result = await new RealDebridClient(settings.token).unrestrictLink(link, signal);
+      result.sourceLabel = "API";
+      return result;
     }
     if (provider === "megadebrid") {
       return new MegaDebridClient(settings.megaLogin, settings.megaPassword, settings.megaDebridPreferApi, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
@@ -1741,9 +1744,12 @@ export class DebridService {
         if (!result) {
           throw new Error("AllDebrid-Web-Fallback nicht verfügbar");
         }
+        result.sourceLabel = "Web";
         return result;
       }
-      return new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
+      const adResult = await new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
+      adResult.sourceLabel = "API";
+      return adResult;
     }
     if (provider === "ddownload") {
       return this.getDdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
