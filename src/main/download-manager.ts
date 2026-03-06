@@ -4412,6 +4412,28 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
+  private getProviderOrder(): DebridProvider[] {
+    if (this.settings.providerOrder && this.settings.providerOrder.length > 0) {
+      return this.settings.providerOrder;
+    }
+    return [
+      this.settings.providerPrimary,
+      this.settings.providerSecondary !== "none" ? this.settings.providerSecondary : null,
+      this.settings.providerTertiary !== "none" ? this.settings.providerTertiary : null
+    ].filter(Boolean) as DebridProvider[];
+  }
+
+  /** Returns the first configured provider from the order that is NOT in cooldown. */
+  private findFallbackProviderNotInCooldown(item: DownloadItem): DebridProvider | null {
+    const hosterKey = extractHosterKey(item.url);
+    for (const provider of this.getProviderOrder()) {
+      if (!this.isProviderConfigured(provider)) continue;
+      const key = hosterKey && provider === "alldebrid" ? `${provider}:${hosterKey}` : provider;
+      if (this.getProviderCooldownRemaining(key) === 0) return provider;
+    }
+    return null;
+  }
+
   private getExpectedProviderForItem(item: DownloadItem): DebridProvider | null {
     if (item.provider) {
       return resolveMegaDebridProvider(this.settings, item.provider);
@@ -4424,14 +4446,8 @@ export class DownloadManager extends EventEmitter {
       return routedProvider;
     }
 
-    const order = [
-      this.settings.providerPrimary,
-      this.settings.providerSecondary !== "none" ? this.settings.providerSecondary : null,
-      this.settings.providerTertiary !== "none" ? this.settings.providerTertiary : null
-    ].filter(Boolean) as DebridProvider[];
-
     const seen = new Set<DebridProvider>();
-    for (const provider of order) {
+    for (const provider of this.getProviderOrder()) {
       if (seen.has(provider)) {
         continue;
       }
@@ -5122,11 +5138,28 @@ export class DownloadManager extends EventEmitter {
         const cooldownProvider = this.getProviderFailureKeyForItem(item);
         const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
         if (cooldownMs > 0) {
-          const delayMs = Math.min(cooldownMs + 1000, 310000);
-          this.queueRetry(item, active, delayMs, `Provider-Cooldown (${Math.ceil(delayMs / 1000)}s)`);
-          this.persistSoon();
-          this.emitState();
-          return;
+          // If autoProviderFallback is enabled and another provider is ready, switch to it
+          // instead of waiting out the full cooldown.
+          if (this.settings.autoProviderFallback) {
+            const fallback = this.findFallbackProviderNotInCooldown(item);
+            if (fallback) {
+              logger.info(`Provider-Cooldown: ${cooldownProvider} noch ${Math.ceil(cooldownMs / 1000)}s, wechsle zu ${fallback} für ${item.fileName || item.url}`);
+              item.provider = null;
+              // Continue — debrid.ts will attempt providers in order and reach the fallback
+            } else {
+              const delayMs = Math.min(cooldownMs + 1000, 310000);
+              this.queueRetry(item, active, delayMs, `Provider-Cooldown (${Math.ceil(delayMs / 1000)}s)`);
+              this.persistSoon();
+              this.emitState();
+              return;
+            }
+          } else {
+            const delayMs = Math.min(cooldownMs + 1000, 310000);
+            this.queueRetry(item, active, delayMs, `Provider-Cooldown (${Math.ceil(delayMs / 1000)}s)`);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
         }
         if (await this.maybeApplyAllDebridRapidgatorBackoff(item, active)) {
           this.persistSoon();

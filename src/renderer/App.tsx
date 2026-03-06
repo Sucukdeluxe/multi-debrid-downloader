@@ -3877,6 +3877,10 @@ export function App(): ReactElement {
                         const availableHosters = KNOWN_HOSTERS.filter((h) => !usedHosters.has(h.id));
 
                         const setRouting = (newRouting: Record<string, DebridProvider>) => {
+                          settingsDraftRevisionRef.current += 1;
+                          panelDirtyRevisionRef.current += 1;
+                          settingsDirtyRef.current = true;
+                          setSettingsDirty(true);
                           setSettingsDraft((prev) => ({ ...prev, hosterRouting: newRouting }));
                         };
 
