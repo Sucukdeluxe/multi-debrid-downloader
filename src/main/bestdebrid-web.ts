@@ -173,6 +173,10 @@ export class BestDebridWebFallback {
       existing.close();
     }
 
+    // Set user agent on session level so Cloudflare Turnstile sees a real Chrome
+    const currentSession = session.fromPartition(partition);
+    currentSession.setUserAgent(BESTDEBRID_USER_AGENT);
+
     const window = new BrowserWindow({
       width: 1120,
       height: 900,
@@ -186,6 +190,7 @@ export class BestDebridWebFallback {
         nodeIntegration: false
       }
     });
+    window.webContents.setUserAgent(BESTDEBRID_USER_AGENT);
     window.setMenuBarVisibility(false);
     window.on("closed", () => {
       if (this.loginWindow === window) {
