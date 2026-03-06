@@ -444,6 +444,68 @@ describe("debrid service", () => {
     expect(megaWeb).toHaveBeenCalledTimes(1);
   });
 
+  it("does not fallback from Mega API to Mega Web unless Mega Web is a separate provider in the order", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: true,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async () => new Response("not-found", { status: 404 })) as typeof fetch;
+
+    const megaWeb = vi.fn(async () => ({
+      fileName: "should-not-run.rar",
+      directUrl: "https://unused",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    await expect(service.unrestrictLink("https://rapidgator.net/file/mega-api-only.rar.html")).rejects.toThrow(/mega-debrid api/i);
+    expect(megaWeb).toHaveBeenCalledTimes(0);
+  });
+
+  it("uses Mega Web only when it is configured as a separate fallback provider", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: true,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "megadebrid-web" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async () => new Response("not-found", { status: 404 })) as typeof fetch;
+
+    const megaWeb = vi.fn(async () => ({
+      fileName: "from-separate-web.rar",
+      directUrl: "https://mega-web.example/from-separate-web.rar",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/from-separate-web.rar.html");
+    expect(result.provider).toBe("megadebrid-web");
+    expect(result.directUrl).toBe("https://mega-web.example/from-separate-web.rar");
+    expect(megaWeb).toHaveBeenCalledTimes(1);
+  });
+
   it("aborts Mega web unrestrict when caller signal is cancelled", async () => {
     const settings = {
       ...defaultSettings(),

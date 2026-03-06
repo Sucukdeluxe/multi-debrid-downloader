@@ -25,6 +25,8 @@ const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 const PROVIDER_LABELS: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
+  "megadebrid-api": "Mega-Debrid API",
+  "megadebrid-web": "Mega-Debrid Web",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
   ddownload: "DDownload",
@@ -65,6 +67,32 @@ function cloneSettings(settings: AppSettings): AppSettings {
     ...settings,
     bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry }))
   };
+}
+
+function hasMegaDebridCredentials(settings: AppSettings): boolean {
+  return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
+}
+
+function isMegaDebridModeEnabled(settings: AppSettings, mode: "api" | "web"): boolean {
+  if (mode === "api") {
+    return settings.megaDebridApiEnabled
+      || (hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
+  }
+  return settings.megaDebridWebEnabled
+    || (hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
+}
+
+function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvider): DebridProvider {
+  if (provider !== "megadebrid") {
+    return provider;
+  }
+  if (isMegaDebridModeEnabled(settings, "api") && !isMegaDebridModeEnabled(settings, "web")) {
+    return "megadebrid-api";
+  }
+  if (isMegaDebridModeEnabled(settings, "web") && !isMegaDebridModeEnabled(settings, "api")) {
+    return "megadebrid-web";
+  }
+  return settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
 }
 
 type BestDebridRequest = {
@@ -692,7 +720,9 @@ class MegaDebridClient {
 
   private password: string;
 
-  private preferApi: boolean;
+  private mode: "api" | "web";
+
+  private allowApiFallback: boolean;
 
   private static cachedApiToken = "";
 
@@ -700,10 +730,11 @@ class MegaDebridClient {
 
   private static pendingConnect: Promise<string | null> | null = null;
 
-  public constructor(login: string, password: string, preferApi: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
+  public constructor(login: string, password: string, mode: "api" | "web", allowApiFallback: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
     this.login = login;
     this.password = password;
-    this.preferApi = preferApi;
+    this.mode = mode;
+    this.allowApiFallback = allowApiFallback;
     this.megaWebUnrestrict = megaWebUnrestrict;
   }
 
@@ -839,17 +870,20 @@ class MegaDebridClient {
   }
 
   public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
-    if (this.preferApi && this.login.trim() && this.password.trim()) {
-      // API mode: try API first, fall back to web on failure
+    if (this.mode === "api" && this.login.trim() && this.password.trim()) {
       try {
         const apiResult = await this.unrestrictViaApi(link, signal);
         if (apiResult) {
           logger.info(`Mega-Debrid (API) unrestrict OK: ${apiResult.fileName}`);
           return apiResult;
         }
+        throw new Error("Mega-Debrid API: Login oder Unrestrict fehlgeschlagen");
       } catch (error) {
         const errorText = compactErrorText(error);
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        if (!this.allowApiFallback) {
           throw error;
         }
         logger.warn(`Mega-Debrid API fehlgeschlagen, versuche Web-Fallback: ${errorText}`);
@@ -857,7 +891,6 @@ class MegaDebridClient {
       return this.unrestrictViaWeb(link, signal);
     }
 
-    // Web mode only
     return this.unrestrictViaWeb(link, signal);
   }
 }
@@ -2036,33 +2069,38 @@ export class DebridService {
   }
 
   private isProviderConfiguredFor(settings: AppSettings, provider: DebridProvider): boolean {
-    if ((settings.disabledProviders || []).includes(provider)) return false;
-    if (provider === "realdebrid") {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if ((settings.disabledProviders || []).includes(provider) || (settings.disabledProviders || []).includes(effectiveProvider)) return false;
+    if (effectiveProvider === "realdebrid") {
       return Boolean(this.shouldUseRealDebridWeb(settings) || settings.token.trim());
     }
-    if (provider === "megadebrid") {
-      return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
+    if (effectiveProvider === "megadebrid-api") {
+      return Boolean(hasMegaDebridCredentials(settings) && isMegaDebridModeEnabled(settings, "api"));
     }
-    if (provider === "alldebrid") {
+    if (effectiveProvider === "megadebrid-web") {
+      return Boolean(hasMegaDebridCredentials(settings) && isMegaDebridModeEnabled(settings, "web") && this.options.megaWebUnrestrict);
+    }
+    if (effectiveProvider === "alldebrid") {
       return Boolean(this.shouldUseAllDebridWeb(settings) || settings.allDebridToken.trim());
     }
-    if (provider === "ddownload") {
+    if (effectiveProvider === "ddownload") {
       return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
     }
-    if (provider === "onefichier") {
+    if (effectiveProvider === "onefichier") {
       return Boolean(settings.oneFichierApiKey.trim());
     }
-    if (provider === "debridlink") {
+    if (effectiveProvider === "debridlink") {
       return Boolean(settings.debridLinkApiKeys.trim());
     }
-    if (provider === "linksnappy") {
+    if (effectiveProvider === "linksnappy") {
       return Boolean(settings.linkSnappyLogin.trim() && settings.linkSnappyPassword.trim());
     }
     return Boolean(this.shouldUseBestDebridWeb(settings) || settings.bestToken.trim());
   }
 
   private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
-    if (provider === "realdebrid") {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "realdebrid") {
       if (this.shouldUseRealDebridWeb(settings) && this.options.realDebridWebUnrestrict) {
         const result = await this.options.realDebridWebUnrestrict(link, signal);
         if (!result) {
@@ -2075,10 +2113,13 @@ export class DebridService {
       result.sourceLabel = "API";
       return result;
     }
-    if (provider === "megadebrid") {
-      return new MegaDebridClient(settings.megaLogin, settings.megaPassword, settings.megaDebridPreferApi, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
+    if (effectiveProvider === "megadebrid-api") {
+      return new MegaDebridClient(settings.megaLogin, settings.megaPassword, "api", provider === "megadebrid" && settings.megaDebridPreferApi, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
     }
-    if (provider === "alldebrid") {
+    if (effectiveProvider === "megadebrid-web") {
+      return new MegaDebridClient(settings.megaLogin, settings.megaPassword, "web", false, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
+    }
+    if (effectiveProvider === "alldebrid") {
       if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {
         const result = await this.options.allDebridWebUnrestrict(link, signal);
         if (!result) {
@@ -2091,18 +2132,18 @@ export class DebridService {
       adResult.sourceLabel = "API";
       return adResult;
     }
-    if (provider === "ddownload") {
+    if (effectiveProvider === "ddownload") {
       return this.getDdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
     }
-    if (provider === "onefichier") {
+    if (effectiveProvider === "onefichier") {
       return new OneFichierClient(settings.oneFichierApiKey).unrestrictLink(link, signal);
     }
-    if (provider === "debridlink") {
+    if (effectiveProvider === "debridlink") {
       const dlResult = await this.getDebridLinkClient(settings.debridLinkApiKeys).unrestrictLink(link, signal);
       dlResult.sourceLabel = dlResult.sourceLabel || "API";
       return dlResult;
     }
-    if (provider === "linksnappy") {
+    if (effectiveProvider === "linksnappy") {
       return this.getLinkSnappyClient(settings.linkSnappyLogin, settings.linkSnappyPassword).unrestrictLink(link, signal);
     }
     if (this.shouldUseBestDebridWeb(settings) && this.options.bestDebridWebUnrestrict) {

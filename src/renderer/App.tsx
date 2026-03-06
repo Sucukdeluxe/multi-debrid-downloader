@@ -53,7 +53,7 @@ interface LinkPopupState {
   isPackage: boolean;
 }
 
-type AccountService = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
+type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
 type AccountKind =
   | "realdebrid-api"
   | "realdebrid-web"
@@ -121,20 +121,20 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
   },
   {
     kind: "megadebrid-api",
-    service: "megadebrid",
+    service: "megadebrid-api",
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid API",
     modeLabel: "API",
-    pickerDescription: "Login mit API-Präferenz und Web-Fallback.",
+    pickerDescription: "Login nur über die API, ohne Web-Fallback.",
     needsCredentials: true
   },
   {
     kind: "megadebrid-web",
-    service: "megadebrid",
+    service: "megadebrid-web",
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid Web",
     modeLabel: "Web",
-    pickerDescription: "Login mit Web-Präferenz über Nutzername und Passwort.",
+    pickerDescription: "Login nur über Web, ohne API-Fallback.",
     needsCredentials: true
   },
   {
@@ -209,7 +209,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
   }
 ];
 
-const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
+const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
 const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths";
 const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
   service: 220,
@@ -277,13 +277,20 @@ function getAccountPickerFunctionLabel(option: AccountOption): string {
   }
 }
 
+function hasMegaDebridCredentials(settings: AppSettings): boolean {
+  return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
+}
+
 function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvider[] {
   const list: DebridProvider[] = [];
   if (settings.token.trim() || settings.realDebridUseWebLogin) {
     list.push("realdebrid");
   }
-  if (settings.megaLogin.trim() && settings.megaPassword.trim()) {
-    list.push("megadebrid");
+  if (hasMegaDebridCredentials(settings) && settings.megaDebridApiEnabled) {
+    list.push("megadebrid-api");
+  }
+  if (hasMegaDebridCredentials(settings) && settings.megaDebridWebEnabled) {
+    list.push("megadebrid-web");
   }
   if (settings.bestDebridUseWebLogin || settings.bestToken.trim()) {
     list.push("bestdebrid");
@@ -330,9 +337,10 @@ function getConfiguredAccountKind(settings: AppSettings, service: AccountService
     case "realdebrid":
       if (settings.realDebridUseWebLogin) return "realdebrid-web";
       return settings.token.trim() ? "realdebrid-api" : null;
-    case "megadebrid":
-      if (!settings.megaLogin.trim() || !settings.megaPassword.trim()) return null;
-      return settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
+    case "megadebrid-api":
+      return hasMegaDebridCredentials(settings) && settings.megaDebridApiEnabled ? "megadebrid-api" : null;
+    case "megadebrid-web":
+      return hasMegaDebridCredentials(settings) && settings.megaDebridWebEnabled ? "megadebrid-web" : null;
     case "bestdebrid":
       if (settings.bestDebridUseWebLogin) return "bestdebrid-web";
       return settings.bestToken.trim() ? "bestdebrid-api" : null;
@@ -446,9 +454,9 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
     case "realdebrid-web":
       return { ...settings, token: "", realDebridUseWebLogin: true };
     case "megadebrid-api":
-      return { ...settings, megaLogin: login, megaPassword: password, megaDebridPreferApi: true };
+      return { ...settings, megaLogin: login, megaPassword: password, megaDebridApiEnabled: true, megaDebridPreferApi: true };
     case "megadebrid-web":
-      return { ...settings, megaLogin: login, megaPassword: password, megaDebridPreferApi: false };
+      return { ...settings, megaLogin: login, megaPassword: password, megaDebridWebEnabled: true, megaDebridPreferApi: false };
     case "bestdebrid-api":
       return { ...settings, bestToken: token, bestDebridUseWebLogin: false };
     case "bestdebrid-web":
@@ -474,8 +482,14 @@ function clearAccountServiceFromSettings(settings: AppSettings, service: Account
   switch (service) {
     case "realdebrid":
       return { ...settings, token: "", realDebridUseWebLogin: false };
-    case "megadebrid":
-      return { ...settings, megaLogin: "", megaPassword: "" };
+    case "megadebrid-api":
+      return settings.megaDebridWebEnabled
+        ? { ...settings, megaDebridApiEnabled: false }
+        : { ...settings, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false };
+    case "megadebrid-web":
+      return settings.megaDebridApiEnabled
+        ? { ...settings, megaDebridWebEnabled: false }
+        : { ...settings, megaLogin: "", megaPassword: "", megaDebridWebEnabled: false };
     case "bestdebrid":
       return { ...settings, bestToken: "", bestDebridUseWebLogin: false };
     case "alldebrid":
@@ -522,9 +536,9 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
+    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
     archivePasswordList: "",
-    rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
+    rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid-api",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
     autoExtract: true, autoRename4sf4sj: false, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     collectMkvToLibrary: false, mkvLibraryDir: "",
@@ -556,7 +570,16 @@ const cleanupLabels: Record<string, string> = {
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 const providerLabels: Record<DebridProvider, string> = {
-  realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier", debridlink: "Debrid-Link", linksnappy: "LinkSnappy"
+  realdebrid: "Real-Debrid",
+  megadebrid: "Mega-Debrid",
+  "megadebrid-api": "Mega-Debrid API",
+  "megadebrid-web": "Mega-Debrid Web",
+  bestdebrid: "BestDebrid",
+  alldebrid: "AllDebrid",
+  ddownload: "DDownload",
+  onefichier: "1Fichier",
+  debridlink: "Debrid-Link",
+  linksnappy: "LinkSnappy"
 };
 
 const KNOWN_HOSTERS: { id: string; label: string }[] = [
@@ -591,7 +614,10 @@ const KNOWN_HOSTERS: { id: string; label: string }[] = [
 
 function providerLabelWithMode(provider: DebridProvider, settings: AppSettings): string {
   const base = providerLabels[provider];
-  const kind = getConfiguredAccountKind(settings, provider);
+  if (provider === "megadebrid" || provider === "megadebrid-api" || provider === "megadebrid-web") {
+    return base;
+  }
+  const kind = getConfiguredAccountKind(settings, provider as AccountService);
   if (!kind) return base;
   const opt = ACCOUNT_OPTIONS.find((o) => o.kind === kind);
   return opt?.modeLabel ? `${base} (${opt.modeLabel})` : base;
@@ -1573,9 +1599,9 @@ export function App(): ReactElement {
       let statusLabel = "Konfiguriert";
       let note = "";
       if (kind === "megadebrid-api") {
-        note = "API wird bevorzugt, Web bleibt als Fallback aktiv.";
+        note = "Nur API aktiv. Kein Web-Fallback.";
       } else if (kind === "megadebrid-web") {
-        note = "Web wird bevorzugt, API bleibt als Fallback aktiv.";
+        note = "Nur Web aktiv. Kein API-Fallback.";
       } else if (kind === "realdebrid-web") {
         note = "Login kann bei Bedarf direkt aus der Liste geöffnet werden.";
       } else if (kind === "bestdebrid-web") {
@@ -4285,10 +4311,10 @@ export function App(): ReactElement {
                         <div className="account-modal-note">Der Web-Login nutzt ein echtes Browserfenster, damit reCAPTCHA sauber laeuft.</div>
                       )}
                       {accountDialog.kind === "megadebrid-api" && (
-                        <div className="account-modal-note">Mega-Debrid versucht zuerst die API und faellt bei Bedarf auf Web zurueck.</div>
+                        <div className="account-modal-note">Dieser Account nutzt nur die Mega-Debrid API. Kein Web-Fallback.</div>
                       )}
                       {accountDialog.kind === "megadebrid-web" && (
-                        <div className="account-modal-note">Mega-Debrid bevorzugt Web. Die API bleibt als Fallback erhalten.</div>
+                        <div className="account-modal-note">Dieser Account nutzt nur Mega-Debrid Web. Kein API-Fallback.</div>
                       )}
 
                       {accountDialogOption.service === "alldebrid" && allDebridHostInfo && (
