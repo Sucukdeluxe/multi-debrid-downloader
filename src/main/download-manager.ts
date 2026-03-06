@@ -1477,12 +1477,13 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       const packageId = uuidv4();
-      const outputDir = ensureDirPath(this.settings.outputDir, pkg.name);
+      const safeName = sanitizeFilename(pkg.name);
+      const outputDir = ensureDirPath(this.settings.outputDir, safeName);
       const extractBase = this.settings.extractDir || path.join(this.settings.outputDir, "_entpackt");
-      const extractDir = this.settings.createExtractSubfolder ? ensureDirPath(extractBase, pkg.name) : extractBase;
+      const extractDir = this.settings.createExtractSubfolder ? ensureDirPath(extractBase, safeName) : extractBase;
       const packageEntry: PackageEntry = {
         id: packageId,
-        name: sanitizeFilename(pkg.name),
+        name: safeName,
         outputDir,
         extractDir,
         status: "queued",
