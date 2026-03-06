@@ -53,6 +53,8 @@ export function defaultSettings(): AppSettings {
     ddownloadPassword: "",
     oneFichierApiKey: "",
     debridLinkApiKeys: "",
+    linkSnappyLogin: "",
+    linkSnappyPassword: "",
     archivePasswordList: "",
     rememberToken: true,
     providerPrimary: "realdebrid",
@@ -95,6 +97,7 @@ export function defaultSettings(): AppSettings {
     bandwidthSchedules: [],
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     extractCpuPriority: "high",
-    autoExtractWhenStopped: true
+    autoExtractWhenStopped: true,
+    disabledProviders: []
   };
 }

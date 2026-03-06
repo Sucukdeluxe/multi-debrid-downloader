@@ -20,6 +20,8 @@ const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.c
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
 const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "maxDataHost", "maxAttempts", "maxTransfer"]);
 
+const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
+
 const PROVIDER_LABELS: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
@@ -27,7 +29,8 @@ const PROVIDER_LABELS: Record<DebridProvider, string> = {
   alldebrid: "AllDebrid",
   ddownload: "DDownload",
   onefichier: "1Fichier",
-  debridlink: "Debrid-Link"
+  debridlink: "Debrid-Link",
+  linksnappy: "LinkSnappy"
 };
 
 interface ProviderUnrestrictedLink extends UnrestrictedLink {
@@ -1279,7 +1282,7 @@ class DebridLinkClient {
 
     while (!triedAll) {
       const apiKey = this.apiKeys[this.currentKeyIndex];
-      const keyLabel = this.apiKeys.length > 1 ? ` (Key ${this.currentKeyIndex + 1}/${this.apiKeys.length})` : "";
+      const keyLabel = this.apiKeys.length > 1 ? ` #${this.currentKeyIndex + 1}` : "";
 
       let lastError = "";
       for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
@@ -1307,7 +1310,7 @@ class DebridLinkClient {
             }
 
             if (errorCode === "badToken" || errorCode === "expired_token") {
-              throw new Error(`Debrid-Link${keyLabel}: Ungueltiger oder abgelaufener API-Key`);
+              throw new Error(`Debrid-Link${keyLabel}: Ungültiger oder abgelaufener API-Key`);
             }
             if (errorCode === "floodDetected") {
               await sleep(retryDelay(attempt), signal);
@@ -1330,19 +1333,21 @@ class DebridLinkClient {
           const fileName = String(value.name || "") || filenameFromUrl(directUrl) || filenameFromUrl(link);
           const fileSize = typeof value.size === "number" && value.size > 0 ? value.size : null;
 
+          logger.info(`Debrid-Link${keyLabel}: Unrestrict OK → ${fileName || "?"}`);
+
           return {
             fileName,
             directUrl,
             fileSize,
             retriesUsed: attempt - 1,
-            sourceLabel: `API${keyLabel}`
+            sourceLabel: keyLabel ? `#${this.currentKeyIndex + 1}` : "API"
           };
         } catch (error) {
           lastError = compactErrorText(error);
           if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
             throw error;
           }
-          if (/Ungueltig|abgelaufen/i.test(lastError)) {
+          if (/Ungültig|abgelaufen/i.test(lastError)) {
             throw error;
           }
           if (attempt < REQUEST_RETRIES) {
@@ -1359,6 +1364,150 @@ class DebridLinkClient {
 
     throw new Error(`Debrid-Link: Alle ${this.apiKeys.length} API-Keys haben ihr Limit erreicht`);
   }
+}
+
+// ── LinkSnappy Client ──
+
+class LinkSnappyClient {
+  private username: string;
+  private password: string;
+  private sessionCookies: string | null = null;
+
+  public constructor(username: string, password: string) {
+    this.username = username;
+    this.password = password;
+  }
+
+  private async authenticate(signal?: AbortSignal): Promise<void> {
+    const params = new URLSearchParams({ username: this.username, password: this.password });
+    const res = await fetch(`${LINKSNAPPY_API_BASE}/AUTHENTICATE?${params.toString()}`, {
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS),
+      redirect: "manual"
+    });
+
+    const cookies: string[] = [];
+    const setCookie = res.headers.getSetCookie?.() ?? [];
+    for (const sc of setCookie) {
+      const nameValue = sc.split(";")[0];
+      if (nameValue) cookies.push(nameValue);
+    }
+
+    const json = await res.json() as Record<string, unknown>;
+    if (json.status !== "OK") {
+      throw new Error(`LinkSnappy: Login fehlgeschlagen – ${String(json.error || "Unbekannter Fehler")}`);
+    }
+
+    if (cookies.length > 0) {
+      this.sessionCookies = cookies.join("; ");
+    } else {
+      this.sessionCookies = `username=${encodeURIComponent(this.username)}; Auth=manual`;
+    }
+
+    logger.info("LinkSnappy: Authentifizierung erfolgreich");
+  }
+
+  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+    if (!this.username || !this.password) {
+      throw new Error("LinkSnappy: Kein Login konfiguriert");
+    }
+
+    let lastError = "";
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+      try {
+        if (!this.sessionCookies) {
+          await this.authenticate(signal);
+        }
+
+        const genLinks = `{"link":"${encodeURIComponent(link)}","type":"","linkpass":""}`;
+        const url = `${LINKSNAPPY_API_BASE}/linkgen?genLinks=${genLinks}`;
+
+        const res = await fetch(url, {
+          headers: { Cookie: this.sessionCookies! },
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+
+        const json = await res.json() as Record<string, unknown>;
+
+        if (json.status === "ERROR" && json.error) {
+          const errorMsg = String(json.error);
+          if (/not logged in|session expired|unauthorized/i.test(errorMsg)) {
+            this.sessionCookies = null;
+            if (attempt < REQUEST_RETRIES) {
+              continue;
+            }
+            throw new Error(`LinkSnappy: ${errorMsg}`);
+          }
+          throw new Error(`LinkSnappy: ${errorMsg}`);
+        }
+
+        const links = json.links as Array<Record<string, unknown>> | undefined;
+        if (!links || links.length === 0) {
+          throw new Error("LinkSnappy: Keine Antwort-Daten");
+        }
+
+        const entry = links[0];
+        if (entry.status === "ERROR" || (entry.error && entry.status !== "OK")) {
+          const errText = String(entry.error);
+          if (/quota|limit/i.test(errText)) {
+            throw new Error(`LinkSnappy: Quota erreicht – ${errText}`);
+          }
+          throw new Error(`LinkSnappy: ${errText}`);
+        }
+
+        let directUrl = String(entry.generated || "");
+        if (!directUrl) {
+          throw new Error("LinkSnappy: Keine Download-URL in Antwort");
+        }
+        // LinkSnappy liefert http:// URLs – auf https:// upgraden (deren Server unterstützt beides)
+        if (directUrl.startsWith("http://")) {
+          directUrl = directUrl.replace("http://", "https://");
+        }
+
+        const fileName = String(entry.filename || "") || filenameFromUrl(directUrl) || filenameFromUrl(link);
+        const rawSize = entry.filesize;
+        let fileSize: number | null = null;
+        if (typeof rawSize === "number" && rawSize > 0) {
+          fileSize = rawSize;
+        } else if (typeof rawSize === "string") {
+          const parsed = parseFileSizeString(rawSize);
+          if (parsed > 0) fileSize = parsed;
+        }
+
+        logger.info(`LinkSnappy: Unrestrict OK → ${fileName || "?"}`);
+
+        return {
+          fileName,
+          directUrl,
+          fileSize,
+          retriesUsed: attempt - 1,
+          sourceLabel: "API"
+        };
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+          throw error;
+        }
+        if (/fehlgeschlagen/i.test(lastError) && /Login/i.test(lastError)) {
+          throw error;
+        }
+        if (attempt < REQUEST_RETRIES) {
+          await sleep(retryDelay(attempt), signal);
+        }
+      }
+    }
+
+    throw new Error(String(lastError || "LinkSnappy Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
+  }
+}
+
+function parseFileSizeString(s: string): number {
+  const match = s.trim().match(/^([\d.]+)\s*([KMGT]?)B?$/i);
+  if (!match) return 0;
+  const num = parseFloat(match[1]);
+  const unit = (match[2] || "").toUpperCase();
+  const multipliers: Record<string, number> = { "": 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
+  return Math.floor(num * (multipliers[unit] || 1));
 }
 
 // ── 1Fichier Client ──
@@ -1620,6 +1769,8 @@ export class DebridService {
   private cachedDdownloadKey = "";
   private cachedDebridLinkClient: DebridLinkClient | null = null;
   private cachedDebridLinkKey = "";
+  private cachedLinkSnappyClient: LinkSnappyClient | null = null;
+  private cachedLinkSnappyKey = "";
 
   public constructor(settings: AppSettings, options: DebridServiceOptions = {}) {
     this.settings = cloneSettings(settings);
@@ -1637,6 +1788,16 @@ export class DebridService {
     this.cachedDebridLinkClient = new DebridLinkClient(apiKeysRaw);
     this.cachedDebridLinkKey = apiKeysRaw;
     return this.cachedDebridLinkClient;
+  }
+
+  private getLinkSnappyClient(login: string, password: string): LinkSnappyClient {
+    const key = `${login}\0${password}`;
+    if (this.cachedLinkSnappyClient && this.cachedLinkSnappyKey === key) {
+      return this.cachedLinkSnappyClient;
+    }
+    this.cachedLinkSnappyClient = new LinkSnappyClient(login, password);
+    this.cachedLinkSnappyKey = key;
+    return this.cachedLinkSnappyClient;
   }
 
   private getDdownloadClient(login: string, password: string): DdownloadClient {
@@ -1829,6 +1990,7 @@ export class DebridService {
   }
 
   private isProviderConfiguredFor(settings: AppSettings, provider: DebridProvider): boolean {
+    if ((settings.disabledProviders || []).includes(provider)) return false;
     if (provider === "realdebrid") {
       return Boolean(this.shouldUseRealDebridWeb(settings) || settings.token.trim());
     }
@@ -1846,6 +2008,9 @@ export class DebridService {
     }
     if (provider === "debridlink") {
       return Boolean(settings.debridLinkApiKeys.trim());
+    }
+    if (provider === "linksnappy") {
+      return Boolean(settings.linkSnappyLogin.trim() && settings.linkSnappyPassword.trim());
     }
     return Boolean(this.shouldUseBestDebridWeb(settings) || settings.bestToken.trim());
   }
@@ -1890,6 +2055,9 @@ export class DebridService {
       const dlResult = await this.getDebridLinkClient(settings.debridLinkApiKeys).unrestrictLink(link, signal);
       dlResult.sourceLabel = dlResult.sourceLabel || "API";
       return dlResult;
+    }
+    if (provider === "linksnappy") {
+      return this.getLinkSnappyClient(settings.linkSnappyLogin, settings.linkSnappyPassword).unrestrictLink(link, signal);
     }
     if (this.shouldUseBestDebridWeb(settings) && this.options.bestDebridWebUnrestrict) {
       const bdResult = await this.options.bestDebridWebUnrestrict(link, signal);

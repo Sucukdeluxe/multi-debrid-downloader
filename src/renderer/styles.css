@@ -1141,8 +1141,8 @@ body,
     minmax(180px, var(--account-col-service))
     minmax(80px, var(--account-col-mode))
     minmax(180px, var(--account-col-status))
-    minmax(140px, var(--account-col-secret))
-    minmax(190px, 1fr);
+    minmax(120px, var(--account-col-secret))
+    minmax(260px, 1fr);
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -1287,18 +1287,26 @@ body,
   display: flex;
   justify-content: flex-start;
   align-items: flex-start;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
 }
 
 .account-row-actions .btn {
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 5px 8px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
+.account-row-disabled {
+  opacity: 0.45;
+}
+
+.account-row-disabled .account-row-actions {
+  opacity: 1;
+}
+
 .account-modal {
-  width: min(880px, calc(100vw - 36px));
+  width: min(960px, calc(100vw - 36px));
   max-height: calc(100vh - 36px);
   overflow: hidden;
   gap: 14px;
@@ -1399,6 +1407,11 @@ body,
 
 .account-modal input[type="password"] {
   letter-spacing: 0.02em;
+}
+
+.account-modal textarea {
+  white-space: nowrap;
+  overflow-x: auto;
 }
 
 .account-picker-table {

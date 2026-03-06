@@ -5,8 +5,8 @@ import { AppSettings, BandwidthScheduleEntry, DebridProvider, DownloadItem, Down
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
-const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
-const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
+const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
+const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
@@ -119,6 +119,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     ddownloadPassword: asText(settings.ddownloadPassword),
     oneFichierApiKey: asText(settings.oneFichierApiKey),
     debridLinkApiKeys: String(settings.debridLinkApiKeys ?? "").replace(/\r\n|\r/g, "\n").trim(),
+    linkSnappyLogin: asText(settings.linkSnappyLogin),
+    linkSnappyPassword: asText(settings.linkSnappyPassword),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
     providerPrimary: settings.providerPrimary,
@@ -161,7 +163,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
     columnOrder: normalizeColumnOrder(settings.columnOrder),
     extractCpuPriority: settings.extractCpuPriority,
-    autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped
+    autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
+    disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders.filter((p: unknown) => VALID_PRIMARY_PROVIDERS.has(p as string)) as DebridProvider[] : []
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
@@ -214,7 +217,9 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
     ddownloadLogin: "",
     ddownloadPassword: "",
     oneFichierApiKey: "",
-    debridLinkApiKeys: ""
+    debridLinkApiKeys: "",
+    linkSnappyLogin: "",
+    linkSnappyPassword: ""
   };
 }
 
