@@ -201,8 +201,8 @@ export class AppController {
     await this.allDebridWebFallback.openLoginWindow();
   }
 
-  public async openBestDebridLoginWindow(): Promise<void> {
-    await this.bestDebridWebFallback.openLoginWindow();
+  public async importBestDebridCookies(filePath: string): Promise<number> {
+    return this.bestDebridWebFallback.importCookiesFromFile(filePath);
   }
 
   public async getAllDebridHostInfo(host = "rapidgator"): Promise<AllDebridHostInfo> {

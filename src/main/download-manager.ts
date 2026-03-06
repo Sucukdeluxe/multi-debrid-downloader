@@ -4789,7 +4789,7 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             this.emitState();
           }
-          const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes, unrestricted.skipTlsVerify);
+          const result = await this.downloadToFile(active, unrestricted.directUrl, item.targetPath, item.totalBytes, unrestricted.skipTlsVerify, pLabel);
           active.resumable = result.resumable;
           if (!active.resumable && !active.nonResumableCounted) {
             active.nonResumableCounted = true;
@@ -5176,8 +5176,10 @@ export class DownloadManager extends EventEmitter {
     directUrl: string,
     targetPath: string,
     knownTotal: number | null,
-    skipTlsVerify?: boolean
+    skipTlsVerify?: boolean,
+    pLabel?: string
   ): Promise<{ resumable: boolean }> {
+    const label = pLabel || providerLabel(this.session.items[active.itemId]?.provider);
     const item = this.session.items[active.itemId];
     if (!item) {
       throw new Error("Download-Item fehlt");
@@ -5426,7 +5428,7 @@ export class DownloadManager extends EventEmitter {
             if (nowTick - lastDiskBusyEmitAt >= 1200) {
               item.status = "downloading";
               item.speedBps = 0;
-              item.fullStatus = `Warte auf Festplatte (${pLabel})`;
+              item.fullStatus = `Warte auf Festplatte (${label})`;
               item.updatedAt = nowTick;
               this.emitState();
               lastDiskBusyEmitAt = nowTick;
@@ -5537,7 +5539,7 @@ export class DownloadManager extends EventEmitter {
               if (nowTick - lastIdleEmitAt >= idlePulseMs) {
                 item.status = "downloading";
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${pLabel})`;
+                item.fullStatus = `Warte auf Festplatte (${label})`;
                 item.updatedAt = nowTick;
                 this.emitState();
                 lastIdleEmitAt = nowTick;
@@ -5553,7 +5555,7 @@ export class DownloadManager extends EventEmitter {
             }
             item.status = "downloading";
             item.speedBps = 0;
-            item.fullStatus = `Warte auf Daten (${pLabel})`;
+            item.fullStatus = `Warte auf Daten (${label})`;
             if (nowTick - lastIdleEmitAt >= idlePulseMs) {
               item.updatedAt = nowTick;
               this.emitState();
@@ -5662,7 +5664,7 @@ export class DownloadManager extends EventEmitter {
                   if (nowTick - lastDiskBusyEmitAt >= 1200) {
                     item.status = "downloading";
                     item.speedBps = 0;
-                    item.fullStatus = `Warte auf Festplatte (${pLabel})`;
+                    item.fullStatus = `Warte auf Festplatte (${label})`;
                     item.updatedAt = nowTick;
                     this.emitState();
                     lastDiskBusyEmitAt = nowTick;
@@ -5706,10 +5708,10 @@ export class DownloadManager extends EventEmitter {
               const diskBusy = diskBusySince > 0 && nowMs() - diskBusySince >= DISK_BUSY_THRESHOLD_MS;
               if (diskBusy) {
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${pLabel})`;
+                item.fullStatus = `Warte auf Festplatte (${label})`;
               } else {
                 item.speedBps = Math.max(0, Math.floor(speed));
-                item.fullStatus = `Download läuft (${pLabel})`;
+                item.fullStatus = `Download läuft (${label})`;
               }
               const nowTick = nowMs();
               if (nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {

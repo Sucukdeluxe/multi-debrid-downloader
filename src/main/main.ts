@@ -454,8 +454,19 @@ function registerIpcHandlers(): void {
     await controller.openAllDebridLoginWindow();
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_BESTDEBRID_LOGIN, async () => {
-    await controller.openBestDebridLoginWindow();
+  ipcMain.handle(IPC_CHANNELS.IMPORT_BESTDEBRID_COOKIES, async () => {
+    const options = {
+      properties: ["openFile"] as Array<"openFile">,
+      filters: [
+        { name: "Cookie-Datei", extensions: ["txt"] },
+        { name: "Alle Dateien", extensions: ["*"] }
+      ]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return 0;
+    }
+    return controller.importBestDebridCookies(result.filePaths[0]);
   });
 
   ipcMain.handle(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO, async () => {
