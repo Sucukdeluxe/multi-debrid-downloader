@@ -22,10 +22,26 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<voi
   }
 }
 
-afterEach(() => {
+async function removeDirWithRetries(dir: string): Promise<void> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 80));
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+}
+
+afterEach(async () => {
   globalThis.fetch = originalFetch;
   for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    await removeDirWithRetries(dir);
   }
 });
 
@@ -2818,6 +2834,344 @@ describe("download manager", () => {
       await once(server, "close");
     }
   });
+
+  it("retries suspicious mini files under 1 MB until the full file arrives", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(2 * 1024 * 1024, 21);
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/mini-retry") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      directCalls += 1;
+      if (directCalls === 1) {
+        const tiny = Buffer.from("<html><body>temporary error</body></html>", "utf8");
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(tiny.length));
+        res.end(tiny);
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/mini-retry`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "mini-retry.part01.rar",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "mini-retry", links: ["https://dummy/mini-retry"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThan(1);
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+      expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("limits AllDebrid rapidgator starts to one active task by default", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(2 * 1024 * 1024, 6);
+    let unlockInFlight = 0;
+    let maxUnlockInFlight = 0;
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (route !== "/rg-1" && route !== "/rg-2") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      setTimeout(() => {
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length));
+        res.end(binary);
+      }, 1500);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+
+    const link1 = "https://rapidgator.net/file/12345678901234567890123456789012/file1.mkv.html";
+    const link2 = "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdef12/file2.mkv.html";
+    const directUrl1 = `http://127.0.0.1:${address.port}/rg-1`;
+    const directUrl2 = `http://127.0.0.1:${address.port}/rg-2`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = String(
+        init?.method
+          || (typeof input === "string" || input instanceof URL ? "" : input.method || "")
+      ).toUpperCase();
+
+      if (url.includes("/user/hosts")) {
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data: {
+              hosts: {
+                rapidgator: {
+                  name: "Rapidgator",
+                  status: true,
+                  quota: 50,
+                  quotaMax: 100,
+                  quotaType: "traffic",
+                  limitSimuDl: 1
+                }
+              }
+            }
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("/link/unlock")) {
+        unlockInFlight += 1;
+        maxUnlockInFlight = Math.max(maxUnlockInFlight, unlockInFlight);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          const body = init?.body;
+          const bodyText = body instanceof URLSearchParams ? body.toString() : String(body || "");
+          const originalLink = new URLSearchParams(bodyText).get("link") || "";
+          const directUrl = originalLink === link2 ? directUrl2 : directUrl1;
+          const fileName = originalLink === link2 ? "rg-2.mkv" : "rg-1.mkv";
+          return new Response(
+            JSON.stringify({
+              status: "success",
+              data: {
+                link: directUrl,
+                filename: fileName,
+                filesize: binary.length
+              }
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            }
+          );
+        } finally {
+          unlockInFlight = Math.max(0, unlockInFlight - 1);
+        }
+      }
+
+      if (url.startsWith("https://rapidgator.net/")) {
+        if (method === "HEAD") {
+          return new Response(null, { status: 200 });
+        }
+        return new Response("<html><title>Rapidgator</title></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          allDebridToken: "ad-token",
+          providerPrimary: "alldebrid",
+          providerSecondary: "none",
+          providerTertiary: "none",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: false,
+          maxParallel: 2
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "rg-all-debrid", links: [link1, link2] }]);
+      await manager.start();
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        return items.some((item) => item.status === "downloading") && maxUnlockInFlight >= 1;
+      }, 15000);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      const items = Object.values(manager.getSnapshot().session.items);
+      expect(items).toHaveLength(2);
+      expect(items.filter((item) => item.status === "downloading" || item.status === "completed")).toHaveLength(1);
+      expect(items.filter((item) => item.status === "queued" || item.status === "validating" || item.status === "reconnect_wait")).toHaveLength(1);
+      expect(maxUnlockInFlight).toBe(1);
+      manager.stop();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
+
+  it("staggeres AllDebrid starts by 2.5 seconds per active download", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(512 * 1024, 5);
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (route !== "/ad-1" && route !== "/ad-2" && route !== "/ad-3") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      setTimeout(() => {
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length));
+        res.end(binary);
+      }, 1800);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+
+    const link1 = "https://host-a.example/file1.bin";
+    const link2 = "https://host-b.example/file2.bin";
+    const link3 = "https://host-c.example/file3.bin";
+    const directUrl1 = `http://127.0.0.1:${address.port}/ad-1`;
+    const directUrl2 = `http://127.0.0.1:${address.port}/ad-2`;
+    const directUrl3 = `http://127.0.0.1:${address.port}/ad-3`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/link/unlock")) {
+        const body = init?.body;
+        const bodyText = body instanceof URLSearchParams ? body.toString() : String(body || "");
+        const originalLink = new URLSearchParams(bodyText).get("link") || "";
+        const directUrl = originalLink === link2 ? directUrl2 : originalLink === link3 ? directUrl3 : directUrl1;
+        const fileName = originalLink === link2 ? "ad-2.bin" : originalLink === link3 ? "ad-3.bin" : "ad-1.bin";
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data: {
+              link: directUrl,
+              filename: fileName,
+              filesize: binary.length
+            }
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          allDebridToken: "ad-token",
+          providerPrimary: "alldebrid",
+          providerSecondary: "none",
+          providerTertiary: "none",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: false,
+          maxParallel: 3
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "ad-paced", links: [link1, link2, link3] }]);
+      await manager.start();
+
+      const managerInternals = manager as unknown as { retryAfterByItem: Map<string, number> };
+      await waitFor(() => managerInternals.retryAfterByItem.size >= 2, 5000);
+
+      const now = Date.now();
+      const readyTimes = [...managerInternals.retryAfterByItem.values()].sort((a, b) => a - b);
+      expect(readyTimes).toHaveLength(2);
+      const firstDelay = readyTimes[0] - now;
+      const secondDelay = readyTimes[1] - now;
+      expect(firstDelay).toBeGreaterThan(1500);
+      expect(firstDelay).toBeLessThan(4500);
+      expect(secondDelay).toBeGreaterThan(3500);
+      expect(secondDelay).toBeLessThan(7000);
+      expect(secondDelay - firstDelay).toBeGreaterThan(1500);
+
+      manager.stop();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 20000);
 
   it("creates extract directory only at extraction and marks items as Entpackt", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
