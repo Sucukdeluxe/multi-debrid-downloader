@@ -63,7 +63,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridPreferApi: true, bestToken: "", allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
+    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -988,14 +988,14 @@ export function App(): ReactElement {
     if (settingsDraft.megaLogin.trim() && settingsDraft.megaPassword.trim()) {
       list.push("megadebrid");
     }
-    if (settingsDraft.bestToken.trim()) {
+    if (settingsDraft.bestDebridUseWebLogin || settingsDraft.bestToken.trim()) {
       list.push("bestdebrid");
     }
     if (settingsDraft.allDebridUseWebLogin || settingsDraft.allDebridToken.trim()) {
       list.push("alldebrid");
     }
     return list;
-  }, [settingsDraft.token, settingsDraft.realDebridUseWebLogin, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken, settingsDraft.allDebridUseWebLogin]);
+  }, [settingsDraft.token, settingsDraft.realDebridUseWebLogin, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.bestDebridUseWebLogin, settingsDraft.allDebridToken, settingsDraft.allDebridUseWebLogin]);
 
   // DDownload is a direct file hoster (not a debrid service) and is used automatically
   // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
@@ -1153,6 +1153,16 @@ export function App(): ReactElement {
       showToast("AllDebrid Login-Fenster geöffnet", 2200);
     }, (error) => {
       showToast(`AllDebrid Login fehlgeschlagen: ${String(error)}`, 2800);
+    });
+  };
+
+  const onOpenBestDebridLogin = async (): Promise<void> => {
+    await performQuickAction(async () => {
+      await persistDraftSettings();
+      await window.rd.openBestDebridLogin();
+      showToast("BestDebrid Login-Fenster geöffnet", 2200);
+    }, (error) => {
+      showToast(`BestDebrid Login fehlgeschlagen: ${String(error)}`, 2800);
     });
   };
 
@@ -2844,6 +2854,13 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.megaDebridPreferApi} onChange={(e) => setBool("megaDebridPreferApi", e.target.checked)} /> Mega-Debrid bevorzugt über API (schneller, Fallback auf Web)</label>
                     <label>BestDebrid API Token</label>
                     <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.bestDebridUseWebLogin} onChange={(e) => setBool("bestDebridUseWebLogin", e.target.checked)} /> BestDebrid per Web-Login statt API-Token verwenden</label>
+                    {settingsDraft.bestDebridUseWebLogin && (
+                      <>
+                        <div className="hint">Beim ersten Link oder über den Button unten öffnet sich ein BestDebrid-Browserfenster. Der Login läuft dort manuell über die Website.</div>
+                        <button className="btn" disabled={actionBusy} onClick={() => { void onOpenBestDebridLogin(); }}>BestDebrid Web-Login öffnen</button>
+                      </>
+                    )}
                     <label>AllDebrid API Key</label>
                     <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.allDebridUseWebLogin} onChange={(e) => setBool("allDebridUseWebLogin", e.target.checked)} /> AllDebrid per Web-Login statt API-Key verwenden</label>

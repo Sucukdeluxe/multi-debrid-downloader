@@ -38,7 +38,7 @@ function releaseTlsSkip(): void {
   }
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
-import { AllDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -159,6 +159,7 @@ type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
   allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
   realDebridWebUnrestrict?: RealDebridWebUnrestrictor;
+  bestDebridWebUnrestrict?: BestDebridWebUnrestrictor;
   invalidateMegaSession?: () => void;
   onHistoryEntry?: HistoryEntryCallback;
 };
@@ -953,7 +954,8 @@ export class DownloadManager extends EventEmitter {
     this.debridService = new DebridService(settings, {
       megaWebUnrestrict: options.megaWebUnrestrict,
       allDebridWebUnrestrict: options.allDebridWebUnrestrict,
-      realDebridWebUnrestrict: options.realDebridWebUnrestrict
+      realDebridWebUnrestrict: options.realDebridWebUnrestrict,
+      bestDebridWebUnrestrict: options.bestDebridWebUnrestrict
     });
     this.invalidateMegaSessionFn = options.invalidateMegaSession;
     this.onHistoryEntryCallback = options.onHistoryEntry;

@@ -43,6 +43,7 @@ export interface AppSettings {
   megaPassword: string;
   megaDebridPreferApi: boolean;
   bestToken: string;
+  bestDebridUseWebLogin: boolean;
   allDebridToken: string;
   allDebridUseWebLogin: boolean;
   ddownloadLogin: string;

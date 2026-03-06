@@ -34,11 +34,13 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
 export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type AllDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type RealDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
+export type BestDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 
 interface DebridServiceOptions {
   megaWebUnrestrict?: MegaWebUnrestrictor;
   allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
   realDebridWebUnrestrict?: RealDebridWebUnrestrictor;
+  bestDebridWebUnrestrict?: BestDebridWebUnrestrictor;
 }
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -1585,6 +1587,10 @@ export class DebridService {
     return Boolean(settings.allDebridUseWebLogin && this.options.allDebridWebUnrestrict);
   }
 
+  private shouldUseBestDebridWeb(settings: AppSettings): boolean {
+    return Boolean(settings.bestDebridUseWebLogin && this.options.bestDebridWebUnrestrict);
+  }
+
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
@@ -1718,7 +1724,7 @@ export class DebridService {
     if (provider === "onefichier") {
       return Boolean(settings.oneFichierApiKey.trim());
     }
-    return Boolean(settings.bestToken.trim());
+    return Boolean(this.shouldUseBestDebridWeb(settings) || settings.bestToken.trim());
   }
 
   private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
@@ -1757,6 +1763,16 @@ export class DebridService {
     if (provider === "onefichier") {
       return new OneFichierClient(settings.oneFichierApiKey).unrestrictLink(link, signal);
     }
-    return new BestDebridClient(settings.bestToken).unrestrictLink(link, signal);
+    if (this.shouldUseBestDebridWeb(settings) && this.options.bestDebridWebUnrestrict) {
+      const bdResult = await this.options.bestDebridWebUnrestrict(link, signal);
+      if (!bdResult) {
+        throw new Error("BestDebrid-Web-Fallback nicht verfügbar");
+      }
+      bdResult.sourceLabel = "Web";
+      return bdResult;
+    }
+    const bdResult = await new BestDebridClient(settings.bestToken).unrestrictLink(link, signal);
+    bdResult.sourceLabel = "API";
+    return bdResult;
   }
 }

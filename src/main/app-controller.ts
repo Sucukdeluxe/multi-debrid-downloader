@@ -23,6 +23,7 @@ import { fetchAllDebridHostInfo } from "./debrid";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
+import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
@@ -50,6 +51,8 @@ export class AppController {
 
   private allDebridWebFallback: AllDebridWebFallback;
 
+  private bestDebridWebFallback: BestDebridWebFallback;
+
   private lastUpdateCheck: UpdateCheckResult | null = null;
 
   private lastUpdateCheckAt = 0;
@@ -71,10 +74,12 @@ export class AppController {
     }));
     this.realDebridWebFallback = new RealDebridWebFallback(() => this.settings.rememberToken);
     this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
+    this.bestDebridWebFallback = new BestDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal),
       allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
       realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.realDebridWebFallback.unrestrict(link, signal),
+      bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       onHistoryEntry: (entry: HistoryEntry) => {
         addHistoryEntry(this.storagePaths, entry);
@@ -117,6 +122,7 @@ export class AppController {
       || settings.realDebridUseWebLogin
       || (settings.megaLogin.trim() && settings.megaPassword.trim())
       || settings.bestToken.trim()
+      || settings.bestDebridUseWebLogin
       || settings.allDebridUseWebLogin
       || settings.allDebridToken.trim()
       || (settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim())
@@ -180,6 +186,9 @@ export class AppController {
       void this.allDebridWebFallback.clearSessions().catch((error) => {
         logger.warn(`AllDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
       });
+      void this.bestDebridWebFallback.clearSessions().catch((error) => {
+        logger.warn(`BestDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
+      });
     }
     return this.settings;
   }
@@ -190,6 +199,10 @@ export class AppController {
 
   public async openAllDebridLoginWindow(): Promise<void> {
     await this.allDebridWebFallback.openLoginWindow();
+  }
+
+  public async openBestDebridLoginWindow(): Promise<void> {
+    await this.bestDebridWebFallback.openLoginWindow();
   }
 
   public async getAllDebridHostInfo(host = "rapidgator"): Promise<AllDebridHostInfo> {
@@ -394,6 +407,7 @@ export class AppController {
     this.megaWebFallback.dispose();
     this.realDebridWebFallback.dispose();
     this.allDebridWebFallback.dispose();
+    this.bestDebridWebFallback.dispose();
     shutdownSessionLog();
     logger.info("App beendet");
   }
