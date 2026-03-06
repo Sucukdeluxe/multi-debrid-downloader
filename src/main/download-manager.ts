@@ -6747,6 +6747,19 @@ export class DownloadManager extends EventEmitter {
       if (anyActivelyProcessing) {
         continue;
       }
+      // Safety: if any pending item in the package has neither targetPath nor fileName,
+      // we cannot map it to a file on disk. It could correspond to any missingPart
+      // (e.g. after a reset before re-unrestrict), so skip disk-fallback for this archive.
+      const hasUntrackedPendingItem = pkg.itemIds.some((itemId) => {
+        const pendingItem = this.session.items[itemId];
+        return pendingItem
+          && !isFinishedStatus(pendingItem.status)
+          && !pendingItem.targetPath
+          && !pendingItem.fileName;
+      });
+      if (hasUntrackedPendingItem) {
+        continue;
+      }
       logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${missingParts.length} Part(s) auf Disk ohne completed-Status)`);
       ready.add(pathKey(candidate));
     }
