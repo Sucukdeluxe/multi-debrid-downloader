@@ -59,6 +59,7 @@ export function defaultSettings(): AppSettings {
     linkSnappyPassword: "",
     archivePasswordList: "",
     rememberToken: true,
+    providerOrder: ["realdebrid", "megadebrid-api", "bestdebrid"],
     providerPrimary: "realdebrid",
     providerSecondary: "megadebrid-api",
     providerTertiary: "bestdebrid",

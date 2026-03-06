@@ -1368,6 +1368,47 @@ body,
   max-width: 260px;
 }
 
+.provider-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.provider-order-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+}
+
+.provider-order-num {
+  font-size: 0.8rem;
+  color: var(--muted);
+  min-width: 18px;
+  text-align: right;
+}
+
+.provider-order-label {
+  flex: 1;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.provider-order-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.provider-order-actions .btn-sm {
+  padding: 2px 8px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
 .account-modal {
   width: min(960px, calc(100vw - 36px));
   max-height: calc(100vh - 36px);
