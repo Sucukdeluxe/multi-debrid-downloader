@@ -679,6 +679,8 @@ class MegaDebridClient {
 
   private static cachedApiTokenAt = 0;
 
+  private static pendingConnect: Promise<string | null> | null = null;
+
   public constructor(login: string, password: string, preferApi: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
     this.login = login;
     this.password = password;
@@ -692,6 +694,18 @@ class MegaDebridClient {
       return MegaDebridClient.cachedApiToken;
     }
 
+    // Deduplicate parallel connectUser calls — only one in-flight request at a time
+    if (MegaDebridClient.pendingConnect) {
+      return MegaDebridClient.pendingConnect;
+    }
+
+    MegaDebridClient.pendingConnect = this.doConnectApi(signal).finally(() => {
+      MegaDebridClient.pendingConnect = null;
+    });
+    return MegaDebridClient.pendingConnect;
+  }
+
+  private async doConnectApi(signal?: AbortSignal): Promise<string | null> {
     const url = `${MEGA_DEBRID_API_BASE}?action=connectUser&login=${encodeURIComponent(this.login)}&password=${encodeURIComponent(this.password)}`;
     const response = await fetch(url, {
       headers: { "User-Agent": DEBRID_USER_AGENT },
