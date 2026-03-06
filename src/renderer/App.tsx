@@ -63,7 +63,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
+    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", bestToken: "", allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
     archivePasswordList: "",
     rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid",
     providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -982,7 +982,7 @@ export function App(): ReactElement {
 
   const configuredProviders = useMemo(() => {
     const list: DebridProvider[] = [];
-    if (settingsDraft.token.trim()) {
+    if (settingsDraft.realDebridUseWebLogin || settingsDraft.token.trim()) {
       list.push("realdebrid");
     }
     if (settingsDraft.megaLogin.trim() && settingsDraft.megaPassword.trim()) {
@@ -995,7 +995,7 @@ export function App(): ReactElement {
       list.push("alldebrid");
     }
     return list;
-  }, [settingsDraft.token, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken, settingsDraft.allDebridUseWebLogin]);
+  }, [settingsDraft.token, settingsDraft.realDebridUseWebLogin, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.allDebridToken, settingsDraft.allDebridUseWebLogin]);
 
   // DDownload is a direct file hoster (not a debrid service) and is used automatically
   // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
@@ -1133,6 +1133,16 @@ export function App(): ReactElement {
       showToast("Einstellungen gespeichert", 1800);
     }, (error) => {
       showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
+    });
+  };
+
+  const onOpenRealDebridLogin = async (): Promise<void> => {
+    await performQuickAction(async () => {
+      await persistDraftSettings();
+      await window.rd.openRealDebridLogin();
+      showToast("Real-Debrid Login-Fenster geöffnet", 2200);
+    }, (error) => {
+      showToast(`Real-Debrid Login fehlgeschlagen: ${String(error)}`, 2800);
     });
   };
 
@@ -2820,6 +2830,13 @@ export function App(): ReactElement {
                     <h3>Accounts</h3>
                     <label>Real-Debrid API Token</label>
                     <input type="password" value={settingsDraft.token} onChange={(e) => setText("token", e.target.value)} />
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.realDebridUseWebLogin} onChange={(e) => setBool("realDebridUseWebLogin", e.target.checked)} /> Real-Debrid per Web-Login statt API-Token verwenden</label>
+                    {settingsDraft.realDebridUseWebLogin && (
+                      <>
+                        <div className="hint">Beim ersten Link oder über den Button unten öffnet sich ein Real-Debrid-Browserfenster. Der Login läuft dort manuell über die Website.</div>
+                        <button className="btn" disabled={actionBusy} onClick={() => { void onOpenRealDebridLogin(); }}>Real-Debrid Web-Login öffnen</button>
+                      </>
+                    )}
                     <label>Mega-Debrid Login</label>
                     <input value={settingsDraft.megaLogin} onChange={(e) => setText("megaLogin", e.target.value)} />
                     <label>Mega-Debrid Passwort</label>

@@ -23,6 +23,7 @@ import { fetchAllDebridHostInfo } from "./debrid";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
+import { RealDebridWebFallback } from "./realdebrid-web";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
@@ -45,6 +46,8 @@ export class AppController {
 
   private megaWebFallback: MegaWebFallback;
 
+  private realDebridWebFallback: RealDebridWebFallback;
+
   private allDebridWebFallback: AllDebridWebFallback;
 
   private lastUpdateCheck: UpdateCheckResult | null = null;
@@ -66,10 +69,12 @@ export class AppController {
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
     }));
+    this.realDebridWebFallback = new RealDebridWebFallback(() => this.settings.rememberToken);
     this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal),
       allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
+      realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.realDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       onHistoryEntry: (entry: HistoryEntry) => {
         addHistoryEntry(this.storagePaths, entry);
@@ -109,6 +114,7 @@ export class AppController {
   private hasAnyProviderToken(settings: AppSettings): boolean {
     return Boolean(
       settings.token.trim()
+      || settings.realDebridUseWebLogin
       || (settings.megaLogin.trim() && settings.megaPassword.trim())
       || settings.bestToken.trim()
       || settings.allDebridUseWebLogin
@@ -168,11 +174,18 @@ export class AppController {
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     if (previousSettings.rememberToken && !this.settings.rememberToken) {
+      void this.realDebridWebFallback.clearSessions().catch((error) => {
+        logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
+      });
       void this.allDebridWebFallback.clearSessions().catch((error) => {
         logger.warn(`AllDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
       });
     }
     return this.settings;
+  }
+
+  public async openRealDebridLoginWindow(): Promise<void> {
+    await this.realDebridWebFallback.openLoginWindow();
   }
 
   public async openAllDebridLoginWindow(): Promise<void> {
@@ -379,6 +392,7 @@ export class AppController {
     abortActiveUpdateDownload();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
+    this.realDebridWebFallback.dispose();
     this.allDebridWebFallback.dispose();
     shutdownSessionLog();
     logger.info("App beendet");

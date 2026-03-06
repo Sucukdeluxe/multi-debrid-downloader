@@ -38,6 +38,7 @@ export interface DownloadStats {
 
 export interface AppSettings {
   token: string;
+  realDebridUseWebLogin: boolean;
   megaLogin: string;
   megaPassword: string;
   bestToken: string;

@@ -41,6 +41,7 @@ export function defaultSettings(): AppSettings {
   const baseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
   return {
     token: "",
+    realDebridUseWebLogin: false,
     megaLogin: "",
     megaPassword: "",
     bestToken: "",

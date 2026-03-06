@@ -107,6 +107,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const normalized: AppSettings = {
     token: asText(settings.token),
+    realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
     megaLogin: asText(settings.megaLogin),
     megaPassword: asText(settings.megaPassword),
     bestToken: asText(settings.bestToken),
@@ -201,6 +202,7 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
   return {
     ...settings,
     token: "",
+    realDebridUseWebLogin: settings.realDebridUseWebLogin,
     megaLogin: "",
     megaPassword: "",
     bestToken: "",

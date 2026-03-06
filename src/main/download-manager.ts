@@ -38,7 +38,7 @@ function releaseTlsSkip(): void {
   }
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
-import { AllDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
+import { AllDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -158,6 +158,7 @@ type HistoryEntryCallback = (entry: HistoryEntry) => void;
 type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
   allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
+  realDebridWebUnrestrict?: RealDebridWebUnrestrictor;
   invalidateMegaSession?: () => void;
   onHistoryEntry?: HistoryEntryCallback;
 };
@@ -951,7 +952,8 @@ export class DownloadManager extends EventEmitter {
     this.storagePaths = storagePaths;
     this.debridService = new DebridService(settings, {
       megaWebUnrestrict: options.megaWebUnrestrict,
-      allDebridWebUnrestrict: options.allDebridWebUnrestrict
+      allDebridWebUnrestrict: options.allDebridWebUnrestrict,
+      realDebridWebUnrestrict: options.realDebridWebUnrestrict
     });
     this.invalidateMegaSessionFn = options.invalidateMegaSession;
     this.onHistoryEntryCallback = options.onHistoryEntry;
