@@ -260,10 +260,19 @@ async function createOrGetRelease(baseApi, tag, authHeader, notes) {
     prerelease: false
   };
   const created = await apiRequest("POST", `${baseApi}/releases`, authHeader, JSON.stringify(payload));
-  if (!created.ok) {
-    throw new Error(`Failed to create release (${created.status}): ${JSON.stringify(created.body)}`);
+  if (created.ok) {
+    return created.body;
   }
-  return created.body;
+  // Gitea can return 409/422/500 UNIQUE when the release was already partially created.
+  // Retry the GET — it may now exist.
+  if (created.status === 409 || created.status === 422 || created.status === 500) {
+    const retry = await apiRequest("GET", `${baseApi}/releases/tags/${encodeURIComponent(tag)}`, authHeader);
+    if (retry.ok) {
+      process.stdout.write(`Release already exists, using existing release.\n`);
+      return retry.body;
+    }
+  }
+  throw new Error(`Failed to create release (${created.status}): ${JSON.stringify(created.body)}`);
 }
 
 async function uploadReleaseAssets(baseApi, releaseId, authHeader, releaseDir, files) {
@@ -322,25 +331,32 @@ async function main() {
   const releaseNotes = args.notes || `- Release ${tag}`;
   const repo = getGiteaRepo();
 
-  ensureNoTrackedChanges();
-  ensureTagMissing(tag);
+  const tagExists = spawnSync("git", ["rev-parse", "--verify", `refs/tags/${tag}`], { cwd: process.cwd(), stdio: "ignore" }).status === 0;
 
-  if (args.dryRun) {
-    process.stdout.write(`Dry run: would release ${tag}. No changes made.\n`);
-    return;
+  if (tagExists) {
+    process.stdout.write(`Tag ${tag} already exists locally — skipping version bump and git operations (recovery mode).\n`);
+  } else {
+    ensureNoTrackedChanges();
+
+    if (args.dryRun) {
+      process.stdout.write(`Dry run: would release ${tag}. No changes made.\n`);
+      return;
+    }
+
+    updatePackageVersion(rootDir, version);
   }
-
-  updatePackageVersion(rootDir, version);
 
   process.stdout.write(`Building release artifacts for ${tag}...\n`);
   run(NPM_RELEASE_WIN.command, NPM_RELEASE_WIN.args);
   const assets = ensureAssetsExist(rootDir, version);
 
-  run("git", ["add", "package.json"]);
-  run("git", ["commit", "-m", `Release ${tag}`]);
-  run("git", ["push", repo.remote, "main"]);
-  run("git", ["tag", tag]);
-  run("git", ["push", repo.remote, tag]);
+  if (!tagExists) {
+    run("git", ["add", "package.json"]);
+    run("git", ["commit", "-m", `Release ${tag}`]);
+    run("git", ["push", repo.remote, "main"]);
+    run("git", ["tag", tag]);
+    run("git", ["push", repo.remote, tag]);
+  }
 
   const authHeader = getAuthHeader(repo.host);
   const baseApi = `${repo.baseUrl}/api/v1/repos/${repo.owner}/${repo.repo}`;
