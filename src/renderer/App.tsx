@@ -536,7 +536,9 @@ const emptySnapshot = (): UiSnapshot => ({
     theme: "dark", collapseNewPackages: true, autoSkipExtracted: false, confirmDeleteSelection: true,
     bandwidthSchedules: [], totalDownloadedAllTime: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
-    autoExtractWhenStopped: true
+    autoExtractWhenStopped: true,
+    disabledProviders: [],
+    hosterRouting: {}
   },
   session: {
     version: 2, packageOrder: [], packages: {}, items: {}, runStartedAt: 0,
@@ -556,6 +558,36 @@ const AUTO_RENDER_PACKAGE_LIMIT = 260;
 const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid", megadebrid: "Mega-Debrid", bestdebrid: "BestDebrid", alldebrid: "AllDebrid", ddownload: "DDownload", onefichier: "1Fichier", debridlink: "Debrid-Link", linksnappy: "LinkSnappy"
 };
+
+const KNOWN_HOSTERS: { id: string; label: string }[] = [
+  { id: "rapidgator", label: "Rapidgator" },
+  { id: "uploaded", label: "Uploaded" },
+  { id: "1fichier", label: "1Fichier" },
+  { id: "ddownload", label: "DDownload" },
+  { id: "ddl", label: "DDL.to" },
+  { id: "turbobit", label: "Turbobit" },
+  { id: "nitroflare", label: "Nitroflare" },
+  { id: "filefactory", label: "FileFactory" },
+  { id: "katfile", label: "Katfile" },
+  { id: "hitfile", label: "Hitfile" },
+  { id: "alfafile", label: "Alfafile" },
+  { id: "k2s", label: "Keep2Share" },
+  { id: "keep2share", label: "Keep2Share (alt)" },
+  { id: "tezfiles", label: "Tezfiles" },
+  { id: "fileboom", label: "Fileboom" },
+  { id: "mexashare", label: "Mexashare" },
+  { id: "wdupload", label: "WDUpload" },
+  { id: "rosefile", label: "Rosefile" },
+  { id: "filejoker", label: "FileJoker" },
+  { id: "worldbytez", label: "Worldbytez" },
+  { id: "fileland", label: "Fileland" },
+  { id: "depositfiles", label: "DepositFiles" },
+  { id: "mediafire", label: "MediaFire" },
+  { id: "mega", label: "Mega.nz" },
+  { id: "frdl", label: "FreeDownload" },
+  { id: "hexupload", label: "HexUpload" },
+  { id: "isra", label: "Isra.cloud" }
+];
 
 function providerLabelWithMode(provider: DebridProvider, settings: AppSettings): string {
   const base = providerLabels[provider];
@@ -3715,6 +3747,92 @@ export function App(): ReactElement {
                       <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehlern oder Fair-Use automatisch zum nächsten Provider wechseln</label>
                       <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
                     </div>
+
+                    {configuredProviders.length >= 1 && (
+                    <div className="settings-section card">
+                      <h3>Hoster-Zuordnung</h3>
+                      <div className="hint">Lege fest, welcher Debrid-Provider sich um welchen Filehoster kümmert. Nicht zugeordnete Hoster nutzen die Standard-Reihenfolge oben.</div>
+                      {(() => {
+                        const routing: Record<string, DebridProvider> = settingsDraft.hosterRouting || {};
+                        const routingEntries = Object.entries(routing).sort(([a], [b]) => a.localeCompare(b));
+                        const usedHosters = new Set(routingEntries.map(([h]) => h));
+                        const availableHosters = KNOWN_HOSTERS.filter((h) => !usedHosters.has(h.id));
+
+                        const setRouting = (newRouting: Record<string, DebridProvider>) => {
+                          setSettingsDraft((prev) => ({ ...prev, hosterRouting: newRouting }));
+                        };
+
+                        const addEntry = (hosterId: string) => {
+                          if (!hosterId || routing[hosterId]) return;
+                          setRouting({ ...routing, [hosterId]: configuredProviders[0] });
+                        };
+
+                        const removeEntry = (hosterId: string) => {
+                          const copy = { ...routing };
+                          delete copy[hosterId];
+                          setRouting(copy);
+                        };
+
+                        const changeProvider = (hosterId: string, provider: DebridProvider) => {
+                          setRouting({ ...routing, [hosterId]: provider });
+                        };
+
+                        return (
+                          <>
+                            {routingEntries.length > 0 && (
+                              <div className="hoster-routing-table">
+                                <div className="hoster-routing-header">
+                                  <span>Filehoster</span>
+                                  <span>Zuständiger Provider</span>
+                                  <span></span>
+                                </div>
+                                {routingEntries.map(([hosterId, provider]) => {
+                                  const hosterLabel = KNOWN_HOSTERS.find((h) => h.id === hosterId)?.label || hosterId;
+                                  return (
+                                    <div key={hosterId} className="hoster-routing-row">
+                                      <span className="hoster-routing-label">{hosterLabel}</span>
+                                      <select value={provider} onChange={(e) => changeProvider(hosterId, e.target.value as DebridProvider)}>
+                                        {configuredProviders.map((p) => (
+                                          <option key={p} value={p}>{providerLabelWithMode(p, settingsDraft)}</option>
+                                        ))}
+                                      </select>
+                                      <button className="btn btn-sm btn-danger" onClick={() => removeEntry(hosterId)} title="Zuordnung entfernen">&times;</button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {routingEntries.length === 0 && (
+                              <div className="hint" style={{ fontStyle: "italic", opacity: 0.7 }}>Noch keine Zuordnungen. Alle Hoster nutzen die Standard-Reihenfolge.</div>
+                            )}
+                            <div className="hoster-routing-add">
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val === "__custom") {
+                                    const name = window.prompt("Hoster-Domain eingeben (z.B. rapidgator, turbobit):");
+                                    const clean = (name || "").trim().toLowerCase().replace(/^www\./, "").split(".")[0];
+                                    if (clean) addEntry(clean);
+                                  } else {
+                                    addEntry(val);
+                                  }
+                                  e.target.value = "";
+                                }}
+                              >
+                                <option value="" disabled>Hoster hinzufügen...</option>
+                                {availableHosters.map((h) => (
+                                  <option key={h.id} value={h.id}>{h.label}</option>
+                                ))}
+                                <option value="" disabled>───────────</option>
+                                <option value="__custom">Eigener Hoster...</option>
+                              </select>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                    )}
 
                     <div hidden>
                   <div className="settings-section card">

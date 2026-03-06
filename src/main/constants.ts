@@ -98,6 +98,7 @@ export function defaultSettings(): AppSettings {
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     extractCpuPriority: "high",
     autoExtractWhenStopped: true,
-    disabledProviders: []
+    disabledProviders: [],
+    hosterRouting: {}
   };
 }

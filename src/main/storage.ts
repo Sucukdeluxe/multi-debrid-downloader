@@ -91,6 +91,19 @@ function normalizeColumnOrder(raw: unknown): string[] {
   return result;
 }
 
+function normalizeHosterRouting(raw: unknown): Record<string, DebridProvider> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, DebridProvider> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const hoster = String(key).trim().toLowerCase();
+    const provider = String(value ?? "").trim();
+    if (hoster && VALID_PRIMARY_PROVIDERS.has(provider)) {
+      result[hoster] = provider as DebridProvider;
+    }
+  }
+  return result;
+}
+
 const DEPRECATED_UPDATE_REPOS = new Set([
   "sucukdeluxe/real-debrid-downloader"
 ]);
@@ -164,7 +177,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     columnOrder: normalizeColumnOrder(settings.columnOrder),
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
-    disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders.filter((p: unknown) => VALID_PRIMARY_PROVIDERS.has(p as string)) as DebridProvider[] : []
+    disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders.filter((p: unknown) => VALID_PRIMARY_PROVIDERS.has(p as string)) as DebridProvider[] : [],
+    hosterRouting: normalizeHosterRouting(settings.hosterRouting)
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {

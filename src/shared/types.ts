@@ -96,6 +96,7 @@ export interface AppSettings {
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
   disabledProviders: DebridProvider[];
+  hosterRouting: Record<string, DebridProvider>;
 }
 
 export interface DownloadItem {
