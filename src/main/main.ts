@@ -52,6 +52,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let clipboardTimer: ReturnType<typeof setInterval> | null = null;
 let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
+let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastClipboardText = "";
 const controller = new AppController();
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
@@ -266,6 +267,26 @@ function registerIpcHandlers(): void {
     const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
+    // Manage scheduled-start timer
+    if (scheduledStartTimer !== null) {
+      clearTimeout(scheduledStartTimer);
+      scheduledStartTimer = null;
+    }
+    const schedMs = result.scheduledStartEpochMs || 0;
+    if (schedMs > 0) {
+      const delay = schedMs - Date.now();
+      if (delay <= 0) {
+        // Time already passed — start immediately and clear setting
+        void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
+        controller.updateSettings({ scheduledStartEpochMs: 0 });
+      } else {
+        scheduledStartTimer = setTimeout(() => {
+          scheduledStartTimer = null;
+          void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
+          controller.updateSettings({ scheduledStartEpochMs: 0 });
+        }, delay);
+      }
+    }
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {

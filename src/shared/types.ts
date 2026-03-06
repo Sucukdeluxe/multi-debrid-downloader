@@ -110,6 +110,7 @@ export interface AppSettings {
   autoExtractWhenStopped: boolean;
   disabledProviders: DebridProvider[];
   hosterRouting: Record<string, DebridProvider>;
+  scheduledStartEpochMs: number;
 }
 
 export interface DownloadItem {

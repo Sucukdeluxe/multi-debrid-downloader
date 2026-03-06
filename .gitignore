@@ -37,3 +37,4 @@ deploy/forgejo/caddy/data/
 deploy/forgejo/caddy/config/
 deploy/forgejo/caddy/logs/
 deploy/forgejo/backups/
+.secrets

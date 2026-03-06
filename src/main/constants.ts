@@ -102,6 +102,7 @@ export function defaultSettings(): AppSettings {
     extractCpuPriority: "high",
     autoExtractWhenStopped: true,
     disabledProviders: [],
-    hosterRouting: {}
+    hosterRouting: {},
+    scheduledStartEpochMs: 0
   };
 }

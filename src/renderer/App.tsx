@@ -1017,6 +1017,9 @@ export function App(): ReactElement {
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
   const [accountColumnWidths, setAccountColumnWidths] = useState<Record<AccountColumnKey, number>>(loadAccountColumnWidths);
   const [settingsDirty, setSettingsDirty] = useState(false);
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
+  const [scheduleTimeInput, setScheduleTimeInput] = useState("");
+  const [scheduleCountdown, setScheduleCountdown] = useState("");
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
   const panelDirtyRevisionRef = useRef(0);
@@ -1198,6 +1201,23 @@ export function App(): ReactElement {
   useEffect(() => {
     setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
   }, [settingsDraft.speedLimitKbps]);
+
+  useEffect(() => {
+    const schedMs = snapshot.settings.scheduledStartEpochMs || 0;
+    if (schedMs <= 0) { setScheduleCountdown(""); return; }
+    const update = (): void => {
+      const remaining = schedMs - Date.now();
+      if (remaining <= 0) { setScheduleCountdown(""); return; }
+      const totalSec = Math.ceil(remaining / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      setScheduleCountdown(h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`);
+    };
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [snapshot.settings.scheduledStartEpochMs]);
 
   const showToast = useCallback((message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
@@ -1564,6 +1584,10 @@ export function App(): ReactElement {
 
   // Setzt providerOrder + backwards-kompatible Felder synchron
   const setProviderOrder = useCallback((newOrder: DebridProvider[]) => {
+    settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
     setSettingsDraft((prev) => ({
       ...prev,
       providerOrder: newOrder,
@@ -3187,6 +3211,44 @@ export function App(): ReactElement {
             <svg viewBox="0 0 24 24" width="18" height="18"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" /></svg>
           </button>
           <div className="ctrl-separator" />
+          <div className="schedule-ctrl">
+            {(snapshot.settings.scheduledStartEpochMs || 0) > 0 ? (
+              <div className="schedule-active">
+                <span className="schedule-badge" title="Geplanter Start">⏰ {scheduleCountdown || new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                <button className="schedule-cancel" title="Geplanten Start abbrechen" onClick={() => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); }}>✕</button>
+              </div>
+            ) : (
+              <button
+                className={`ctrl-icon-btn schedule-btn${schedulePickerOpen ? " active" : ""}`}
+                title="Download-Start planen"
+                onClick={() => { setSchedulePickerOpen((v) => !v); setScheduleTimeInput(""); }}
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><polyline points="12,6 12,12 16,14"/></svg>
+              </button>
+            )}
+            {schedulePickerOpen && (snapshot.settings.scheduledStartEpochMs || 0) === 0 && (
+              <div className="schedule-picker">
+                <span className="schedule-picker-label">Starten um</span>
+                <input
+                  type="time"
+                  className="schedule-time-input"
+                  value={scheduleTimeInput}
+                  onChange={(e) => setScheduleTimeInput(e.target.value)}
+                />
+                <button className="btn btn-sm btn-primary" onClick={() => {
+                  if (!scheduleTimeInput) return;
+                  const [hStr, mStr] = scheduleTimeInput.split(":");
+                  const now = new Date();
+                  const target = new Date(now);
+                  target.setHours(Number(hStr), Number(mStr), 0, 0);
+                  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+                  void window.rd.updateSettings({ scheduledStartEpochMs: target.getTime() }).catch(() => {});
+                  setSchedulePickerOpen(false);
+                }}>Aktivieren</button>
+              </div>
+            )}
+          </div>
+          <div className="ctrl-separator" />
           <button
             className="ctrl-icon-btn ctrl-move"
             title="Ausgewählte nach oben"
@@ -3530,7 +3592,17 @@ export function App(): ReactElement {
                   <span className="stat-label">In Warteschlange</span>
                   <span className="stat-value">{itemStatusCounts.queued}</span>
                 </div>
-                <div className="stat-item">
+                <div
+                  className={`stat-item${itemStatusCounts.failed > 0 ? " stat-item-clickable" : ""}`}
+                  title={itemStatusCounts.failed > 0 ? "Klicken zum Zurücksetzen aller fehlerhaften Downloads" : undefined}
+                  onClick={() => {
+                    if (itemStatusCounts.failed === 0) return;
+                    const failedIds = Object.values(snapshot.session.items)
+                      .filter((it) => it.status === "failed")
+                      .map((it) => it.id);
+                    void window.rd.resetItems(failedIds).catch(() => {});
+                  }}
+                >
                   <span className="stat-label">Fehlerhaft</span>
                   <span className="stat-value danger">{itemStatusCounts.failed}</span>
                 </div>
@@ -4566,6 +4638,14 @@ export function App(): ReactElement {
             {hasUrls && !multi && (
               <>
                 <div className="ctx-menu-sep" />
+                <button className="ctx-menu-item" onClick={() => {
+                  const rawText = contextEntry!.urls!.join("\n");
+                  void window.rd.addLinks({ rawText, packageName: contextEntry!.name }).then((result) => {
+                    if (result.addedLinks > 0) showToast(`${result.addedLinks} Link(s) zur Queue hinzugefügt`);
+                    else showToast("Keine Links hinzugefügt");
+                  }).catch(() => showToast("Fehler beim Hinzufügen"));
+                  setHistoryCtxMenu(null);
+                }}>Erneut herunterladen</button>
                 <button className="ctx-menu-item" onClick={() => {
                   const urls = contextEntry!.urls!;
                   const links = urls.map((u) => ({ name: u, url: u }));
