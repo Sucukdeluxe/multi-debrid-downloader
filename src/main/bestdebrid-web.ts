@@ -193,10 +193,13 @@ export class BestDebridWebFallback {
     window.webContents.setUserAgent(BESTDEBRID_USER_AGENT);
     window.setMenuBarVisibility(false);
 
-    // Inject anti-fingerprint patches via CDP before any page JS runs
-    // This hides Electron-specific properties that Cloudflare Turnstile detects
+    // Inject anti-fingerprint patches via CDP before any page JS runs.
+    // The debugger must stay attached until after page load so the
+    // registered scripts actually execute on every new document.
+    let debuggerAttached = false;
     try {
       window.webContents.debugger.attach("1.3");
+      debuggerAttached = true;
       await window.webContents.debugger.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
         source: [
           "Object.defineProperty(navigator, 'webdriver', { get: () => false });",
@@ -205,12 +208,14 @@ export class BestDebridWebFallback {
           "window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {} };"
         ].join("\n")
       });
-      window.webContents.debugger.detach();
     } catch {
       // CDP not available — continue without patches
     }
 
     window.on("closed", () => {
+      if (debuggerAttached) {
+        try { window.webContents.debugger.detach(); } catch { /* already detached */ }
+      }
       if (this.loginWindow === window) {
         this.loginWindow = null;
         this.loginWindowPartition = "";
