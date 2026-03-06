@@ -31,10 +31,12 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
 
 export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type AllDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
+export type RealDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 
 interface DebridServiceOptions {
   megaWebUnrestrict?: MegaWebUnrestrictor;
   allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
+  realDebridWebUnrestrict?: RealDebridWebUnrestrictor;
 }
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -1433,6 +1435,10 @@ export class DebridService {
     return clean;
   }
 
+  private shouldUseRealDebridWeb(settings: AppSettings): boolean {
+    return Boolean(settings.realDebridUseWebLogin && this.options.realDebridWebUnrestrict);
+  }
+
   private shouldUseAllDebridWeb(settings: AppSettings): boolean {
     return Boolean(settings.allDebridUseWebLogin && this.options.allDebridWebUnrestrict);
   }
@@ -1556,7 +1562,7 @@ export class DebridService {
 
   private isProviderConfiguredFor(settings: AppSettings, provider: DebridProvider): boolean {
     if (provider === "realdebrid") {
-      return Boolean(settings.token.trim());
+      return Boolean(this.shouldUseRealDebridWeb(settings) || settings.token.trim());
     }
     if (provider === "megadebrid") {
       return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim() && this.options.megaWebUnrestrict);
@@ -1575,6 +1581,13 @@ export class DebridService {
 
   private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
     if (provider === "realdebrid") {
+      if (this.shouldUseRealDebridWeb(settings) && this.options.realDebridWebUnrestrict) {
+        const result = await this.options.realDebridWebUnrestrict(link, signal);
+        if (!result) {
+          throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
+        }
+        return result;
+      }
       return new RealDebridClient(settings.token).unrestrictLink(link, signal);
     }
     if (provider === "megadebrid") {

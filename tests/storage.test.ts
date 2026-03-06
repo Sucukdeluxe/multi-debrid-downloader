@@ -155,6 +155,22 @@ describe("settings storage", () => {
     expect(normalized.archivePasswordList).toBe("one\ntwo\nthree");
   });
 
+  it("defaults Real-Debrid web login to disabled and normalizes the flag", () => {
+    expect(defaultSettings().realDebridUseWebLogin).toBe(false);
+
+    const normalizedEnabled = normalizeSettings({
+      ...defaultSettings(),
+      realDebridUseWebLogin: 1 as unknown as boolean
+    });
+    expect(normalizedEnabled.realDebridUseWebLogin).toBe(true);
+
+    const normalizedDisabled = normalizeSettings({
+      ...defaultSettings(),
+      realDebridUseWebLogin: 0 as unknown as boolean
+    });
+    expect(normalizedDisabled.realDebridUseWebLogin).toBe(false);
+  });
+
   it("defaults AllDebrid web login to disabled and normalizes the flag", () => {
     expect(defaultSettings().allDebridUseWebLogin).toBe(false);
 

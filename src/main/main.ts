@@ -446,6 +446,10 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async () => {
+    await controller.openRealDebridLoginWindow();
+  });
+
   ipcMain.handle(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN, async () => {
     await controller.openAllDebridLoginWindow();
   });

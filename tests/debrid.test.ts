@@ -325,6 +325,78 @@ describe("debrid service", () => {
     await expect(service.unrestrictLink("https://rapidgator.net/file/missing-alldebrid-web")).rejects.toThrow(/nicht konfiguriert/i);
   });
 
+  it("uses Real-Debrid web path when enabled", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      realDebridUseWebLogin: true,
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const fetchSpy = vi.fn(async () => new Response("not-found", { status: 404 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const realDebridWeb = vi.fn(async () => ({
+      fileName: "from-rd-web.rar",
+      directUrl: "https://download.real-debrid.com/d/example/from-rd-web.rar",
+      fileSize: 5678,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { realDebridWebUnrestrict: realDebridWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/example.part5.rar.html");
+    expect(result.provider).toBe("realdebrid");
+    expect(result.directUrl).toContain("real-debrid.com/d/");
+    expect(result.fileSize).toBe(5678);
+    expect(realDebridWeb).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(0);
+  });
+
+  it("treats Real-Debrid web mode as not configured when callback is unavailable and no token", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      realDebridUseWebLogin: true,
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://rapidgator.net/file/missing-rd-web")).rejects.toThrow(/nicht konfiguriert/i);
+  });
+
+  it("falls back to API token when Real-Debrid web login is disabled", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      realDebridUseWebLogin: false,
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      download: "https://download.real-debrid.com/d/test/file.rar",
+      filename: "file.rar",
+      filesize: 9999
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    })) as typeof fetch;
+
+    const realDebridWeb = vi.fn(async () => null);
+    const service = new DebridService(settings, { realDebridWebUnrestrict: realDebridWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/test.rar.html");
+    expect(result.provider).toBe("realdebrid");
+    expect(realDebridWeb).not.toHaveBeenCalled();
+  });
+
   it("treats MegaDebrid as not configured when web fallback callback is unavailable", async () => {
     const settings = {
       ...defaultSettings(),
