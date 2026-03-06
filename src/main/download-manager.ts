@@ -2509,9 +2509,31 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const mkvFiles = await this.collectFilesByExtensions(sourceDir, new Set([".mkv"]));
-    if (mkvFiles.length === 0) {
+    const allMkvFiles = await this.collectFilesByExtensions(sourceDir, new Set([".mkv"]));
+    if (allMkvFiles.length === 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV gefunden`);
+      return;
+    }
+
+    // Filter: Sample-Dateien ausschließen (Sample-Ordner + "sample" im Dateinamen)
+    const sampleDirNames = new Set(["sample", "samples"]);
+    const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
+    const mkvFiles: string[] = [];
+    let sampleSkipped = 0;
+    for (const filePath of allMkvFiles) {
+      const parentDir = path.basename(path.dirname(filePath)).toLowerCase();
+      const stem = path.parse(path.basename(filePath)).name;
+      if (sampleDirNames.has(parentDir) || sampleTokenRe.test(stem)) {
+        sampleSkipped += 1;
+        continue;
+      }
+      mkvFiles.push(filePath);
+    }
+    if (sampleSkipped > 0) {
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, ${sampleSkipped} Sample-MKV(s) übersprungen`);
+    }
+    if (mkvFiles.length === 0) {
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV nach Sample-Filter`);
       return;
     }
 
