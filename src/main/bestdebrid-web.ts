@@ -52,6 +52,32 @@ interface NetscapeCookie {
   value: string;
 }
 
+function normalizeCookieDomain(domain: string): string {
+  return String(domain || "").trim().replace(/^\./, "").toLowerCase();
+}
+
+function dedupeCookies(cookies: NetscapeCookie[]): NetscapeCookie[] {
+  const deduped = new Map<string, NetscapeCookie>();
+  for (const cookie of cookies) {
+    const key = `${normalizeCookieDomain(cookie.domain)}\t${cookie.path}\t${cookie.name}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, cookie);
+      continue;
+    }
+
+    if (cookie.httpOnly && !existing.httpOnly) {
+      deduped.set(key, cookie);
+      continue;
+    }
+
+    if (cookie.expirationDate > existing.expirationDate) {
+      deduped.set(key, cookie);
+    }
+  }
+  return [...deduped.values()];
+}
+
 function parseNetscapeCookieFile(text: string): NetscapeCookie[] {
   const cookies: NetscapeCookie[] = [];
   for (const line of text.split(/\r?\n/)) {
@@ -140,9 +166,9 @@ export class BestDebridWebFallback {
   public async importCookiesFromFile(filePath: string): Promise<number> {
     const text = fs.readFileSync(filePath, "utf-8");
     const cookies = parseNetscapeCookieFile(text);
-    const bestDebridCookies = cookies.filter((c) =>
+    const bestDebridCookies = dedupeCookies(cookies.filter((c) =>
       c.domain.includes("bestdebrid.com")
-    );
+    ));
 
     if (bestDebridCookies.length === 0) {
       throw new Error("Keine BestDebrid-Cookies in der Datei gefunden");
@@ -153,6 +179,7 @@ export class BestDebridWebFallback {
     }
 
     const currentSession = session.fromPartition(this.getPartition());
+    await this.clearPartitionState(currentSession);
 
     for (const cookie of bestDebridCookies) {
       const url = `https://${cookie.domain.replace(/^\./, "")}${cookie.path}`;
@@ -308,5 +335,16 @@ export class BestDebridWebFallback {
     }
     const text = await response.text();
     return isAuthenticatedBestDebridHtml(text);
+  }
+
+  private async clearPartitionState(currentSession: Session): Promise<void> {
+    await currentSession.clearStorageData({
+      storages: ["cookies", "indexdb", "localstorage", "serviceworkers", "cachestorage"]
+    });
+    try {
+      await currentSession.clearCache();
+    } catch {
+      // ignore cache clear failures
+    }
   }
 }
