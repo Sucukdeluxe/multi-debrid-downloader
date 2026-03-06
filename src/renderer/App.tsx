@@ -1,4 +1,4 @@
-import { DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   AllDebridHostInfo,
   AppSettings,
@@ -51,6 +51,410 @@ interface LinkPopupState {
   title: string;
   links: { name: string; url: string }[];
   isPackage: boolean;
+}
+
+type AccountService = "realdebrid" | "megadebrid" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier";
+type AccountKind =
+  | "realdebrid-api"
+  | "realdebrid-web"
+  | "megadebrid-api"
+  | "megadebrid-web"
+  | "bestdebrid-api"
+  | "bestdebrid-web"
+  | "alldebrid-api"
+  | "alldebrid-web"
+  | "ddownload-login"
+  | "onefichier-api";
+
+type AccountQuickAction = "realdebrid-login" | "bestdebrid-cookies" | "alldebrid-login" | "alldebrid-status";
+type AccountColumnKey = "service" | "mode" | "status" | "secret";
+
+interface AccountOption {
+  kind: AccountKind;
+  service: AccountService;
+  serviceLabel: string;
+  title: string;
+  modeLabel: string;
+  pickerDescription: string;
+  needsToken?: boolean;
+  needsCredentials?: boolean;
+}
+
+interface AccountDialogState {
+  mode: "create" | "edit";
+  kind: AccountKind | null;
+  token: string;
+  login: string;
+  password: string;
+}
+
+interface ConfiguredAccountEntry {
+  kind: AccountKind;
+  service: AccountService;
+  serviceLabel: string;
+  modeLabel: string;
+  statusLabel: string;
+  summary: string;
+  note: string;
+}
+
+const ACCOUNT_OPTIONS: AccountOption[] = [
+  {
+    kind: "realdebrid-api",
+    service: "realdebrid",
+    serviceLabel: "Real-Debrid",
+    title: "Real-Debrid API",
+    modeLabel: "API",
+    pickerDescription: "Direkter Zugriff ueber API-Token.",
+    needsToken: true
+  },
+  {
+    kind: "realdebrid-web",
+    service: "realdebrid",
+    serviceLabel: "Real-Debrid",
+    title: "Real-Debrid Web",
+    modeLabel: "Web",
+    pickerDescription: "Login ueber Browserfenster statt Token."
+  },
+  {
+    kind: "megadebrid-api",
+    service: "megadebrid",
+    serviceLabel: "Mega-Debrid",
+    title: "Mega-Debrid API",
+    modeLabel: "API",
+    pickerDescription: "Login mit API-Praeferenz und Web-Fallback.",
+    needsCredentials: true
+  },
+  {
+    kind: "megadebrid-web",
+    service: "megadebrid",
+    serviceLabel: "Mega-Debrid",
+    title: "Mega-Debrid Web",
+    modeLabel: "Web",
+    pickerDescription: "Login mit Web-Praeferenz ueber Nutzername und Passwort.",
+    needsCredentials: true
+  },
+  {
+    kind: "bestdebrid-api",
+    service: "bestdebrid",
+    serviceLabel: "BestDebrid",
+    title: "BestDebrid API",
+    modeLabel: "API",
+    pickerDescription: "Direkter Zugriff ueber API-Token.",
+    needsToken: true
+  },
+  {
+    kind: "bestdebrid-web",
+    service: "bestdebrid",
+    serviceLabel: "BestDebrid",
+    title: "BestDebrid Web",
+    modeLabel: "Web",
+    pickerDescription: "Cookie-Import aus dem Browser statt API-Token."
+  },
+  {
+    kind: "alldebrid-api",
+    service: "alldebrid",
+    serviceLabel: "AllDebrid",
+    title: "AllDebrid API",
+    modeLabel: "API",
+    pickerDescription: "Direkter Zugriff ueber API-Key.",
+    needsToken: true
+  },
+  {
+    kind: "alldebrid-web",
+    service: "alldebrid",
+    serviceLabel: "AllDebrid",
+    title: "AllDebrid Web",
+    modeLabel: "Web",
+    pickerDescription: "Login ueber Browserfenster fuer reCAPTCHA.",
+  },
+  {
+    kind: "ddownload-login",
+    service: "ddownload",
+    serviceLabel: "DDownload",
+    title: "DDownload Login",
+    modeLabel: "Login",
+    pickerDescription: "Direkter Login fuer ddownload.com und ddl.to.",
+    needsCredentials: true
+  },
+  {
+    kind: "onefichier-api",
+    service: "onefichier",
+    serviceLabel: "1Fichier",
+    title: "1Fichier API",
+    modeLabel: "API",
+    pickerDescription: "API-Key fuer 1fichier.com.",
+    needsToken: true
+  }
+];
+
+const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid", "bestdebrid", "alldebrid", "ddownload", "onefichier"];
+const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths";
+const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
+  service: 220,
+  mode: 96,
+  status: 300,
+  secret: 180
+};
+const ACCOUNT_COLUMN_MIN_WIDTHS: Record<AccountColumnKey, number> = {
+  service: 180,
+  mode: 80,
+  status: 180,
+  secret: 140
+};
+
+function loadAccountColumnWidths(): Record<AccountColumnKey, number> {
+  if (typeof window === "undefined") {
+    return { ...ACCOUNT_COLUMN_DEFAULT_WIDTHS };
+  }
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_COLUMN_STORAGE_KEY);
+    if (!raw) {
+      return { ...ACCOUNT_COLUMN_DEFAULT_WIDTHS };
+    }
+    const parsed = JSON.parse(raw) as Partial<Record<AccountColumnKey, unknown>>;
+    return {
+      service: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.service, Number(parsed.service) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.service),
+      mode: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.mode, Number(parsed.mode) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.mode),
+      status: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.status, Number(parsed.status) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.status),
+      secret: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.secret, Number(parsed.secret) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.secret)
+    };
+  } catch {
+    return { ...ACCOUNT_COLUMN_DEFAULT_WIDTHS };
+  }
+}
+
+function findAccountOption(kind: AccountKind): AccountOption {
+  const option = ACCOUNT_OPTIONS.find((entry) => entry.kind === kind);
+  if (!option) {
+    throw new Error(`Unbekannter Account-Typ: ${kind}`);
+  }
+  return option;
+}
+
+function getAccountPickerFunctionLabel(option: AccountOption): string {
+  switch (option.kind) {
+    case "realdebrid-api":
+    case "bestdebrid-api":
+      return "API-Token";
+    case "realdebrid-web":
+    case "alldebrid-web":
+      return "Browser-Login";
+    case "megadebrid-api":
+      return "Login + Passwort (API)";
+    case "megadebrid-web":
+      return "Login + Passwort (Web)";
+    case "bestdebrid-web":
+      return "Cookies.txt-Import";
+    case "alldebrid-api":
+    case "onefichier-api":
+      return "API-Key";
+    case "ddownload-login":
+      return "Login + Passwort";
+    default:
+      return option.modeLabel;
+  }
+}
+
+function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvider[] {
+  const list: DebridProvider[] = [];
+  if (settings.token.trim() || settings.realDebridUseWebLogin) {
+    list.push("realdebrid");
+  }
+  if (settings.megaLogin.trim() && settings.megaPassword.trim()) {
+    list.push("megadebrid");
+  }
+  if (settings.bestDebridUseWebLogin || settings.bestToken.trim()) {
+    list.push("bestdebrid");
+  }
+  if (settings.allDebridUseWebLogin || settings.allDebridToken.trim()) {
+    list.push("alldebrid");
+  }
+  return list;
+}
+
+function normalizeProviderSelectionForSettings(settings: AppSettings): Pick<AppSettings, "providerPrimary" | "providerSecondary" | "providerTertiary"> {
+  const configuredProviders = getConfiguredProvidersFromSettings(settings);
+  const primaryProvider = configuredProviders.includes(settings.providerPrimary)
+    ? settings.providerPrimary
+    : (configuredProviders[0] ?? "realdebrid");
+  const secondaryChoices = configuredProviders.filter((provider) => provider !== primaryProvider);
+  const secondaryProvider = secondaryChoices.includes(settings.providerSecondary as DebridProvider)
+    ? settings.providerSecondary
+    : "none";
+  const tertiaryChoices = configuredProviders.filter((provider) => provider !== primaryProvider && provider !== secondaryProvider);
+  const tertiaryProvider = tertiaryChoices.includes(settings.providerTertiary as DebridProvider)
+    ? settings.providerTertiary
+    : "none";
+  return {
+    providerPrimary: primaryProvider,
+    providerSecondary: configuredProviders.length >= 2 ? secondaryProvider : "none",
+    providerTertiary: configuredProviders.length >= 3 ? tertiaryProvider : "none"
+  };
+}
+
+function getConfiguredAccountKind(settings: AppSettings, service: AccountService): AccountKind | null {
+  switch (service) {
+    case "realdebrid":
+      if (settings.realDebridUseWebLogin) return "realdebrid-web";
+      return settings.token.trim() ? "realdebrid-api" : null;
+    case "megadebrid":
+      if (!settings.megaLogin.trim() || !settings.megaPassword.trim()) return null;
+      return settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
+    case "bestdebrid":
+      if (settings.bestDebridUseWebLogin) return "bestdebrid-web";
+      return settings.bestToken.trim() ? "bestdebrid-api" : null;
+    case "alldebrid":
+      if (settings.allDebridUseWebLogin) return "alldebrid-web";
+      return settings.allDebridToken.trim() ? "alldebrid-api" : null;
+    case "ddownload":
+      return settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim() ? "ddownload-login" : null;
+    case "onefichier":
+      return settings.oneFichierApiKey.trim() ? "onefichier-api" : null;
+    default:
+      return null;
+  }
+}
+
+function maskValue(value: string, keepStart = 2, keepEnd = 2): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "Nicht hinterlegt";
+  if (trimmed.length <= keepStart + keepEnd) {
+    return "*".repeat(trimmed.length);
+  }
+  return `${trimmed.slice(0, keepStart)}${"*".repeat(Math.max(4, trimmed.length - keepStart - keepEnd))}${trimmed.slice(-keepEnd)}`;
+}
+
+function summarizeAccount(kind: AccountKind, settings: AppSettings): string {
+  switch (kind) {
+    case "realdebrid-api":
+      return maskValue(settings.token, 3, 3);
+    case "realdebrid-web":
+      return "Browser-Login";
+    case "megadebrid-api":
+    case "megadebrid-web":
+      return settings.megaLogin.trim() ? maskValue(settings.megaLogin.trim(), 2, 6) : "Login + Passwort";
+    case "bestdebrid-api":
+      return maskValue(settings.bestToken, 3, 3);
+    case "bestdebrid-web":
+      return "Cookie-Import";
+    case "alldebrid-api":
+      return maskValue(settings.allDebridToken, 3, 3);
+    case "alldebrid-web":
+      return "Browser-Login";
+    case "ddownload-login":
+      return settings.ddownloadLogin.trim() ? maskValue(settings.ddownloadLogin.trim(), 2, 6) : "Login + Passwort";
+    case "onefichier-api":
+      return maskValue(settings.oneFichierApiKey, 3, 3);
+    default:
+      return "Konfiguriert";
+  }
+}
+
+function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | null, settings: AppSettings): AccountDialogState {
+  if (!kind) {
+    return {
+      mode,
+      kind: null,
+      token: "",
+      login: "",
+      password: ""
+    };
+  }
+  switch (kind) {
+    case "realdebrid-api":
+      return { mode, kind, token: settings.token, login: "", password: "" };
+    case "realdebrid-web":
+      return { mode, kind, token: "", login: "", password: "" };
+    case "megadebrid-api":
+    case "megadebrid-web":
+      return { mode, kind, token: "", login: settings.megaLogin, password: settings.megaPassword };
+    case "bestdebrid-api":
+      return { mode, kind, token: settings.bestToken, login: "", password: "" };
+    case "bestdebrid-web":
+      return { mode, kind, token: "", login: "", password: "" };
+    case "alldebrid-api":
+      return { mode, kind, token: settings.allDebridToken, login: "", password: "" };
+    case "alldebrid-web":
+      return { mode, kind, token: "", login: "", password: "" };
+    case "ddownload-login":
+      return { mode, kind, token: "", login: settings.ddownloadLogin, password: settings.ddownloadPassword };
+    case "onefichier-api":
+      return { mode, kind, token: settings.oneFichierApiKey, login: "", password: "" };
+    default:
+      return { mode, kind, token: "", login: "", password: "" };
+  }
+}
+
+function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDialogState): AppSettings {
+  if (!dialog.kind) {
+    return settings;
+  }
+  const token = dialog.token.trim();
+  const login = dialog.login.trim();
+  const password = dialog.password;
+  switch (dialog.kind) {
+    case "realdebrid-api":
+      return { ...settings, token, realDebridUseWebLogin: false };
+    case "realdebrid-web":
+      return { ...settings, token: "", realDebridUseWebLogin: true };
+    case "megadebrid-api":
+      return { ...settings, megaLogin: login, megaPassword: password, megaDebridPreferApi: true };
+    case "megadebrid-web":
+      return { ...settings, megaLogin: login, megaPassword: password, megaDebridPreferApi: false };
+    case "bestdebrid-api":
+      return { ...settings, bestToken: token, bestDebridUseWebLogin: false };
+    case "bestdebrid-web":
+      return { ...settings, bestToken: "", bestDebridUseWebLogin: true };
+    case "alldebrid-api":
+      return { ...settings, allDebridToken: token, allDebridUseWebLogin: false };
+    case "alldebrid-web":
+      return { ...settings, allDebridToken: "", allDebridUseWebLogin: true };
+    case "ddownload-login":
+      return { ...settings, ddownloadLogin: login, ddownloadPassword: password };
+    case "onefichier-api":
+      return { ...settings, oneFichierApiKey: token };
+    default:
+      return settings;
+  }
+}
+
+function clearAccountServiceFromSettings(settings: AppSettings, service: AccountService): AppSettings {
+  switch (service) {
+    case "realdebrid":
+      return { ...settings, token: "", realDebridUseWebLogin: false };
+    case "megadebrid":
+      return { ...settings, megaLogin: "", megaPassword: "" };
+    case "bestdebrid":
+      return { ...settings, bestToken: "", bestDebridUseWebLogin: false };
+    case "alldebrid":
+      return { ...settings, allDebridToken: "", allDebridUseWebLogin: false };
+    case "ddownload":
+      return { ...settings, ddownloadLogin: "", ddownloadPassword: "" };
+    case "onefichier":
+      return { ...settings, oneFichierApiKey: "" };
+    default:
+      return settings;
+  }
+}
+
+function validateAccountDialog(dialog: AccountDialogState): string | null {
+  if (!dialog.kind) {
+    return "Bitte zuerst einen Account-Typ auswaehlen.";
+  }
+  const option = findAccountOption(dialog.kind);
+  if (option.needsToken && !dialog.token.trim()) {
+    return `${option.title}: Bitte Zugangstoken eintragen.`;
+  }
+  if (option.needsCredentials) {
+    if (!dialog.login.trim()) {
+      return `${option.title}: Bitte Login oder E-Mail eintragen.`;
+    }
+    if (!dialog.password) {
+      return `${option.title}: Bitte Passwort eintragen.`;
+    }
+  }
+  return null;
 }
 
 const emptyStats = (): DownloadStats => ({
@@ -493,6 +897,7 @@ export function App(): ReactElement {
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
+  const [accountColumnWidths, setAccountColumnWidths] = useState<Record<AccountColumnKey, number>>(loadAccountColumnWidths);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
@@ -544,6 +949,8 @@ export function App(): ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
+  const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
+  const [accountDialogSearch, setAccountDialogSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>(() => DEFAULT_COLUMN_ORDER);
@@ -561,6 +968,36 @@ export function App(): ReactElement {
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
   const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
   const allDebridHostRequestRef = useRef(0);
+  const accountColumnResizeRef = useRef<{ key: AccountColumnKey; startX: number; startWidth: number } | null>(null);
+  const onAccountColumnResizeMove = useCallback((event: MouseEvent): void => {
+    const active = accountColumnResizeRef.current;
+    if (!active) {
+      return;
+    }
+    const nextWidth = Math.max(
+      ACCOUNT_COLUMN_MIN_WIDTHS[active.key],
+      Math.round(active.startWidth + (event.clientX - active.startX))
+    );
+    setAccountColumnWidths((prev) => (
+      prev[active.key] === nextWidth ? prev : { ...prev, [active.key]: nextWidth }
+    ));
+  }, []);
+
+  const stopAccountColumnResize = useCallback((): void => {
+    accountColumnResizeRef.current = null;
+    window.removeEventListener("mousemove", onAccountColumnResizeMove);
+    window.removeEventListener("mouseup", stopAccountColumnResize);
+  }, [onAccountColumnResizeMove]);
+
+  const startAccountColumnResize = useCallback((key: AccountColumnKey, clientX: number): void => {
+    accountColumnResizeRef.current = {
+      key,
+      startX: clientX,
+      startWidth: accountColumnWidths[key]
+    };
+    window.addEventListener("mousemove", onAccountColumnResizeMove);
+    window.addEventListener("mouseup", stopAccountColumnResize);
+  }, [accountColumnWidths, onAccountColumnResizeMove, stopAccountColumnResize]);
 
   // Load history when tab changes to history
   useEffect(() => {
@@ -579,6 +1016,14 @@ export function App(): ReactElement {
   }, [tab]);
 
   useEffect(() => { historyEntriesRef.current = historyEntries; }, [historyEntries]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ACCOUNT_COLUMN_STORAGE_KEY, JSON.stringify(accountColumnWidths));
+    } catch {
+      // Ignore local persistence failures for optional UI state.
+    }
+  }, [accountColumnWidths]);
 
   // Sync column order from settings (value-based comparison to avoid reference issues)
   const columnOrderJson = JSON.stringify(snapshot.settings.columnOrder);
@@ -781,11 +1226,12 @@ export function App(): ReactElement {
         const request = confirmQueueRef.current.shift();
         request?.resolve(false);
       }
+      stopAccountColumnResize();
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
       if (unsubUpdateInstallProgress) { unsubUpdateInstallProgress(); }
     };
-  }, [clearImportQueueFocusListener]);
+  }, [clearImportQueueFocusListener, stopAccountColumnResize]);
 
   const downloadsTabActive = tab === "downloads";
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
@@ -980,22 +1426,7 @@ export function App(): ReactElement {
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
   ), [packages, collapsedPackages]);
 
-  const configuredProviders = useMemo(() => {
-    const list: DebridProvider[] = [];
-    if (settingsDraft.realDebridUseWebLogin || settingsDraft.token.trim()) {
-      list.push("realdebrid");
-    }
-    if (settingsDraft.megaLogin.trim() && settingsDraft.megaPassword.trim()) {
-      list.push("megadebrid");
-    }
-    if (settingsDraft.bestDebridUseWebLogin || settingsDraft.bestToken.trim()) {
-      list.push("bestdebrid");
-    }
-    if (settingsDraft.allDebridUseWebLogin || settingsDraft.allDebridToken.trim()) {
-      list.push("alldebrid");
-    }
-    return list;
-  }, [settingsDraft.token, settingsDraft.realDebridUseWebLogin, settingsDraft.megaLogin, settingsDraft.megaPassword, settingsDraft.bestToken, settingsDraft.bestDebridUseWebLogin, settingsDraft.allDebridToken, settingsDraft.allDebridUseWebLogin]);
+  const configuredProviders = useMemo(() => getConfiguredProvidersFromSettings(settingsDraft), [settingsDraft]);
 
   // DDownload is a direct file hoster (not a debrid service) and is used automatically
   // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
@@ -1009,24 +1440,14 @@ export function App(): ReactElement {
   [settingsDraft.oneFichierApiKey]);
 
   const totalConfiguredAccounts = configuredProviders.length + (hasDdownloadAccount ? 1 : 0) + (hasOneFichierAccount ? 1 : 0);
-
-  const primaryProviderValue: DebridProvider = useMemo(() => {
-    if (configuredProviders.includes(settingsDraft.providerPrimary)) {
-      return settingsDraft.providerPrimary;
-    }
-    return configuredProviders[0] ?? "realdebrid";
-  }, [configuredProviders, settingsDraft.providerPrimary]);
+  const providerSelection = useMemo(() => normalizeProviderSelectionForSettings(settingsDraft), [settingsDraft]);
+  const primaryProviderValue: DebridProvider = providerSelection.providerPrimary;
 
   const secondaryProviderChoices = useMemo(() => (
     configuredProviders.filter((provider) => provider !== primaryProviderValue)
   ), [configuredProviders, primaryProviderValue]);
 
-  const secondaryProviderValue: DebridFallbackProvider = useMemo(() => {
-    if (secondaryProviderChoices.includes(settingsDraft.providerSecondary as DebridProvider)) {
-      return settingsDraft.providerSecondary;
-    }
-    return "none";
-  }, [secondaryProviderChoices, settingsDraft.providerSecondary]);
+  const secondaryProviderValue: DebridFallbackProvider = providerSelection.providerSecondary;
 
   const tertiaryProviderChoices = useMemo(() => {
     const blocked = new Set<string>([primaryProviderValue]);
@@ -1036,25 +1457,100 @@ export function App(): ReactElement {
     return configuredProviders.filter((provider) => !blocked.has(provider));
   }, [configuredProviders, primaryProviderValue, secondaryProviderValue]);
 
-  const tertiaryProviderValue: DebridFallbackProvider = useMemo(() => {
-    if (tertiaryProviderChoices.includes(settingsDraft.providerTertiary as DebridProvider)) {
-      return settingsDraft.providerTertiary;
-    }
-    return "none";
-  }, [tertiaryProviderChoices, settingsDraft.providerTertiary]);
+  const tertiaryProviderValue: DebridFallbackProvider = providerSelection.providerTertiary;
 
   const normalizedSettingsDraft: AppSettings = useMemo(() => ({
     ...settingsDraft,
-    providerPrimary: primaryProviderValue,
-    providerSecondary: configuredProviders.length >= 2 ? secondaryProviderValue : "none",
-    providerTertiary: configuredProviders.length >= 3 ? tertiaryProviderValue : "none"
+    ...providerSelection
   }), [
     settingsDraft,
-    primaryProviderValue,
-    configuredProviders.length,
-    secondaryProviderValue,
-    tertiaryProviderValue
+    providerSelection
   ]);
+
+  const configuredAccounts = useMemo(() => {
+    const entries: ConfiguredAccountEntry[] = [];
+    for (const service of ACCOUNT_SERVICES) {
+      const kind = getConfiguredAccountKind(settingsDraft, service);
+      if (!kind) {
+        continue;
+      }
+      const option = findAccountOption(kind);
+      let statusLabel = "Konfiguriert";
+      let note = "";
+      if (kind === "megadebrid-api") {
+        note = "API wird bevorzugt, Web bleibt als Fallback aktiv.";
+      } else if (kind === "megadebrid-web") {
+        note = "Web wird bevorzugt, API bleibt als Fallback aktiv.";
+      } else if (kind === "realdebrid-web") {
+        note = "Login kann bei Bedarf direkt aus der Liste geoeffnet werden.";
+      } else if (kind === "bestdebrid-web") {
+        note = "Cookie-Import laesst sich direkt aus der Liste erneut starten.";
+      } else if (service === "alldebrid") {
+        if (allDebridHostLoading) {
+          statusLabel = "Lade Status";
+          note = "Rapidgator-Status wird aktualisiert.";
+        } else if (allDebridHostInfo) {
+          statusLabel = allDebridHostInfo.statusLabel;
+          note = allDebridHostInfo.note || `Letztes Update: ${formatAllDebridTimestamp(allDebridHostInfo)}`;
+        } else if (hasSavedAllDebridAccount) {
+          note = "Rapidgator-Status kann direkt aus der Liste geladen werden.";
+        }
+        if (allDebridSettingsDirty && hasSavedAllDebridAccount) {
+          note = "Status basiert auf den zuletzt gespeicherten AllDebrid-Daten.";
+        }
+      }
+      entries.push({
+        kind,
+        service,
+        serviceLabel: option.serviceLabel,
+        modeLabel: option.modeLabel,
+        statusLabel,
+        summary: summarizeAccount(kind, settingsDraft),
+        note
+      });
+    }
+    return entries;
+  }, [settingsDraft, allDebridHostInfo, allDebridHostLoading, hasSavedAllDebridAccount, allDebridSettingsDirty]);
+
+  const configuredAccountServices = useMemo(() => new Set(configuredAccounts.map((entry) => entry.service)), [configuredAccounts]);
+  const availableAccountOptions = useMemo(() => (
+    ACCOUNT_OPTIONS.filter((option) => !configuredAccountServices.has(option.service))
+  ), [configuredAccountServices]);
+  const accountDialogOption = accountDialog?.kind ? findAccountOption(accountDialog.kind) : null;
+  const accountDialogSelectableOptions = useMemo(() => {
+    if (!accountDialog) {
+      return [];
+    }
+    if (accountDialog.mode === "edit") {
+      if (!accountDialogOption) {
+        return [];
+      }
+      return ACCOUNT_OPTIONS.filter((option) => option.service === accountDialogOption.service);
+    }
+    return availableAccountOptions;
+  }, [accountDialog, accountDialogOption, availableAccountOptions]);
+  const accountDialogSearchQuery = accountDialogSearch.trim().toLowerCase();
+  const filteredAccountDialogOptions = useMemo(() => (
+    accountDialogSelectableOptions.filter((option) => {
+      if (!accountDialogSearchQuery) {
+        return true;
+      }
+      const haystack = [
+        option.title,
+        option.serviceLabel,
+        option.modeLabel,
+        option.pickerDescription,
+        getAccountPickerFunctionLabel(option)
+      ].join(" ").toLowerCase();
+      return haystack.includes(accountDialogSearchQuery);
+    })
+  ), [accountDialogSearchQuery, accountDialogSelectableOptions]);
+  const accountTableStyle = useMemo(() => ({
+    "--account-col-service": `${accountColumnWidths.service}px`,
+    "--account-col-mode": `${accountColumnWidths.mode}px`,
+    "--account-col-status": `${accountColumnWidths.status}px`,
+    "--account-col-secret": `${accountColumnWidths.secret}px`
+  } as CSSProperties), [accountColumnWidths]);
 
   const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
     if (!mountedRef.current) {
@@ -1170,6 +1666,153 @@ export function App(): ReactElement {
     });
   };
 
+  const applyPersistedSettings = (result: AppSettings): void => {
+    setSettingsDraft(result);
+    settingsDirtyRef.current = false;
+    panelDirtyRevisionRef.current = 0;
+    setSettingsDirty(false);
+    applyTheme(result.theme);
+  };
+
+  const persistSpecificSettings = async (nextDraft: AppSettings): Promise<AppSettings> => {
+    const normalizedDraft = {
+      ...nextDraft,
+      ...normalizeProviderSelectionForSettings(nextDraft)
+    };
+    const result = await window.rd.updateSettings(normalizedDraft);
+    applyPersistedSettings(result);
+    return result;
+  };
+
+  const runAccountQuickAction = async (action: AccountQuickAction): Promise<void> => {
+    switch (action) {
+      case "realdebrid-login":
+        await window.rd.openRealDebridLogin();
+        showToast("Real-Debrid Login-Fenster geoeffnet", 2200);
+        return;
+      case "bestdebrid-cookies": {
+        const count = await window.rd.importBestDebridCookies();
+        showToast(count > 0 ? `${count} BestDebrid-Cookies importiert` : "Keine Cookie-Datei ausgewaehlt", 2200);
+        return;
+      }
+      case "alldebrid-login":
+        await window.rd.openAllDebridLogin();
+        showToast("AllDebrid Login-Fenster geoeffnet", 2200);
+        return;
+      case "alldebrid-status":
+        await loadAllDebridHostInfo(false);
+        return;
+      default:
+        return;
+    }
+  };
+
+  const getAccountQuickActionMeta = (kind: AccountKind): { label: string; action: AccountQuickAction } | null => {
+    switch (kind) {
+      case "realdebrid-web":
+        return { label: "Login", action: "realdebrid-login" };
+      case "bestdebrid-web":
+        return { label: "Cookies", action: "bestdebrid-cookies" };
+      case "alldebrid-api":
+        return { label: "Status", action: "alldebrid-status" };
+      case "alldebrid-web":
+        return { label: "Login", action: "alldebrid-login" };
+      default:
+        return null;
+    }
+  };
+
+  const openCreateAccountDialog = (): void => {
+    setAccountDialogSearch("");
+    setAccountDialog(createAccountDialogState("create", null, settingsDraft));
+  };
+
+  const openEditAccountDialog = (kind: AccountKind): void => {
+    setAccountDialogSearch("");
+    setAccountDialog(createAccountDialogState("edit", kind, settingsDraft));
+  };
+
+  const updateAccountDialogKind = (kind: AccountKind): void => {
+    setAccountDialog((prev) => {
+      const next = createAccountDialogState(prev?.mode ?? "create", kind, settingsDraft);
+      if (!prev) {
+        return next;
+      }
+      if (findAccountOption(kind).needsToken) {
+        next.token = prev.token;
+      }
+      if (findAccountOption(kind).needsCredentials) {
+        next.login = prev.login;
+        next.password = prev.password;
+      }
+      return next;
+    });
+  };
+
+  const closeAccountDialog = useCallback((): void => {
+    setAccountDialog(null);
+    setAccountDialogSearch("");
+  }, []);
+
+  const onSaveAccountDialog = async (quickAction?: AccountQuickAction): Promise<void> => {
+    if (!accountDialog) {
+      return;
+    }
+    const validationError = validateAccountDialog(accountDialog);
+    if (validationError) {
+      showToast(validationError, 2800);
+      return;
+    }
+    const dialogSnapshot = accountDialog;
+    const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
+    await performQuickAction(async () => {
+      const nextDraft = applyAccountDialogToSettings(settingsDraft, dialogSnapshot);
+      await persistSpecificSettings(nextDraft);
+      closeAccountDialog();
+      if (quickAction) {
+        await runAccountQuickAction(quickAction);
+      } else if (selectedOption) {
+        showToast(`${selectedOption.title} gespeichert`, 2200);
+      }
+    }, (error) => {
+      showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
+    });
+  };
+
+  const onRemoveAccount = async (entry: ConfiguredAccountEntry): Promise<void> => {
+    const confirmed = await askConfirmPrompt({
+      title: `${entry.serviceLabel} entfernen`,
+      message: `Soll ${entry.serviceLabel} wirklich aus der Accountliste entfernt werden?`,
+      confirmLabel: "Entfernen",
+      danger: true
+    });
+    if (!confirmed) {
+      return;
+    }
+    await performQuickAction(async () => {
+      const nextDraft = clearAccountServiceFromSettings(settingsDraft, entry.service);
+      await persistSpecificSettings(nextDraft);
+      if (entry.service === "alldebrid") {
+        setAllDebridHostInfo(null);
+      }
+      showToast(`${entry.serviceLabel} entfernt`, 2200);
+    }, (error) => {
+      showToast(`Account konnte nicht entfernt werden: ${String(error)}`, 3200);
+    });
+  };
+
+  const onAccountRowQuickAction = async (entry: ConfiguredAccountEntry): Promise<void> => {
+    const meta = getAccountQuickActionMeta(entry.kind);
+    if (!meta) {
+      return;
+    }
+    await performQuickAction(async () => {
+      await runAccountQuickAction(meta.action);
+    }, (error) => {
+      showToast(`${entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
+    });
+  };
+
   const onCheckUpdates = async (): Promise<void> => {
     let updateResult: UpdateCheckResult | null = null;
     await performQuickAction(async () => {
@@ -1185,10 +1828,7 @@ export function App(): ReactElement {
     const revisionAtStart = settingsDraftRevisionRef.current;
     const result = await window.rd.updateSettings(normalizedSettingsDraft);
     if (settingsDraftRevisionRef.current === revisionAtStart) {
-      setSettingsDraft(result);
-      settingsDirtyRef.current = false;
-      panelDirtyRevisionRef.current = 0;
-      setSettingsDirty(false);
+      applyPersistedSettings(result);
     }
     return result;
   };
@@ -2840,6 +3480,166 @@ export function App(): ReactElement {
                   </div>
                 )}
                 {settingsSubTab === "accounts" && (
+                  <div className="account-settings-layout">
+                    <div className="settings-section card account-board">
+                      <div className="account-board-header">
+                        <div>
+                          <h3>Accounts</h3>
+                          <div className="hint">Accounts werden als Liste verwaltet. Neue Eintraege kommen ueber den Dialog oben rechts dazu.</div>
+                        </div>
+                        <button className="btn accent" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
+                          Account hinzufuegen
+                        </button>
+                      </div>
+
+                      <div className="account-board-summary">
+                        <span className="account-inline-stat">{configuredAccounts.length} aktiv</span>
+                        <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfuegbar</span>
+                      </div>
+
+                      {configuredAccounts.length === 0 && (
+                        <div className="account-empty-state">
+                          <strong>Noch keine Accounts hinterlegt</strong>
+                          <span>Fuege ueber "Account hinzufuegen" den ersten Dienst hinzu. Danach erscheinen hier Status, Zugang und Aktionen als Liste.</span>
+                        </div>
+                      )}
+
+                      {configuredAccounts.length > 0 && (
+                        <div className="account-table" style={accountTableStyle}>
+                          <div className="account-table-head">
+                            <div className="account-header-cell">
+                              <span>Account</span>
+                              <button
+                                className="account-resize-handle"
+                                title="Spalte ziehen"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  startAccountColumnResize("service", event.clientX);
+                                }}
+                              />
+                            </div>
+                            <div className="account-header-cell">
+                              <span>Typ</span>
+                              <button
+                                className="account-resize-handle"
+                                title="Spalte ziehen"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  startAccountColumnResize("mode", event.clientX);
+                                }}
+                              />
+                            </div>
+                            <div className="account-header-cell">
+                              <span>Status</span>
+                              <button
+                                className="account-resize-handle"
+                                title="Spalte ziehen"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  startAccountColumnResize("status", event.clientX);
+                                }}
+                              />
+                            </div>
+                            <div className="account-header-cell">
+                              <span>Zugang</span>
+                              <button
+                                className="account-resize-handle"
+                                title="Spalte ziehen"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  startAccountColumnResize("secret", event.clientX);
+                                }}
+                              />
+                            </div>
+                            <span>Aktionen</span>
+                          </div>
+                          {configuredAccounts.map((entry) => {
+                            const option = findAccountOption(entry.kind);
+                            const quickAction = getAccountQuickActionMeta(entry.kind);
+                            const showStatusButton = entry.service === "alldebrid";
+                            const showQuickActionButton = Boolean(quickAction && !(showStatusButton && quickAction.action === "alldebrid-status"));
+                            const allDebridStateClass = entry.service === "alldebrid" && allDebridHostInfo ? ` account-status-${allDebridHostInfo.state}` : "";
+                            return (
+                              <div key={entry.service} className="account-row">
+                                <div className="account-cell account-service-cell">
+                                  <strong>{entry.serviceLabel}</strong>
+                                  <span>{option.title}</span>
+                                </div>
+                                <div className="account-cell">
+                                  <span className="account-mode-pill">{entry.modeLabel}</span>
+                                </div>
+                                <div className="account-cell account-status-cell">
+                                  <span className={`account-status-pill${allDebridStateClass}`}>{entry.statusLabel}</span>
+                                  {entry.note && <span className="account-note">{entry.note}</span>}
+                                </div>
+                                <div className="account-cell">
+                                  <span className="account-secret">{entry.summary}</span>
+                                </div>
+                                <div className="account-cell account-row-actions">
+                                  {showStatusButton && (
+                                    <button className="btn" disabled={actionBusy || allDebridHostLoading || !hasSavedAllDebridAccount} onClick={() => { void performQuickAction(async () => { await runAccountQuickAction("alldebrid-status"); }, (error) => { showToast(`AllDebrid Status fehlgeschlagen: ${String(error)}`, 3200); }); }}>
+                                      Status
+                                    </button>
+                                  )}
+                                  {showQuickActionButton && quickAction && (
+                                    <button className="btn" disabled={actionBusy} onClick={() => { void onAccountRowQuickAction(entry); }}>
+                                      {quickAction.label}
+                                    </button>
+                                  )}
+                                  <button className="btn" disabled={actionBusy} onClick={() => openEditAccountDialog(entry.kind)}>
+                                    Bearbeiten
+                                  </button>
+                                  <button className="btn danger" disabled={actionBusy} onClick={() => { void onRemoveAccount(entry); }}>
+                                    Entfernen
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="settings-section card">
+                      <h3>Hoster-Reihenfolge</h3>
+                      <div className="hint">Debrid-Accounts koennen hier priorisiert werden. Direkte Host-Accounts wie DDownload und 1Fichier laufen separat.</div>
+                      {configuredProviders.length === 0 && (
+                        <div className="account-empty-state compact">
+                          <strong>Keine Debrid-Reihenfolge verfuegbar</strong>
+                          <span>Fuege mindestens einen Debrid-Account hinzu, dann kannst Du Hauptaccount und Alternativen festlegen.</span>
+                        </div>
+                      )}
+                      {configuredProviders.length >= 1 && (
+                        <div>
+                          <label>Hauptaccount</label>
+                          <select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
+                            {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                          </select>
+                        </div>
+                      )}
+                      {configuredProviders.length >= 2 && (
+                        <div>
+                          <label>1. Hoster-Alternative</label>
+                          <select value={secondaryProviderValue} onChange={(e) => setText("providerSecondary", e.target.value)}>
+                            <option value="none">Keine Alternative</option>
+                            {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                          </select>
+                        </div>
+                      )}
+                      {configuredProviders.length >= 3 && (
+                        <div>
+                          <label>2. Hoster-Alternative</label>
+                          <select value={tertiaryProviderValue} onChange={(e) => setText("providerTertiary", e.target.value)}>
+                            <option value="none">Keine Alternative</option>
+                            {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabels[provider]}</option>))}
+                          </select>
+                        </div>
+                      )}
+                      <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehlern oder Fair-Use automatisch zum naechsten Provider wechseln</label>
+                      <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
+                    </div>
+
+                    <div hidden>
                   <div className="settings-section card">
                     <h3>Accounts</h3>
                     <label>Real-Debrid API Token</label>
@@ -2951,6 +3751,8 @@ export function App(): ReactElement {
                     )}
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
+                  </div>
+                    </div>
                   </div>
                 )}
                 {settingsSubTab === "entpacken" && (
@@ -3158,6 +3960,166 @@ export function App(): ReactElement {
               >
                 Überschreiben
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {accountDialog && (
+        <div className="modal-backdrop" onClick={closeAccountDialog}>
+          <div className="modal-card account-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="account-modal-header">
+              <div>
+                <h3>{accountDialog.mode === "edit" ? "Account bearbeiten" : "Account hinzufuegen"}</h3>
+                <p>Wie in JDownloader: oben Account-Typ auswaehlen, unten Zugangsdaten direkt eintragen.</p>
+              </div>
+            </div>
+
+            <div className="account-modal-body">
+              <div className="account-dialog-step">
+                <div className="account-dialog-step-label">1. Account-Typ auswaehlen</div>
+                <input
+                  className="account-picker-search"
+                  placeholder="Dienst oder Typ suchen"
+                  value={accountDialogSearch}
+                  onChange={(event) => setAccountDialogSearch(event.target.value)}
+                />
+                <div className="account-picker-table">
+                  <div className="account-picker-head">
+                    <span>Account</span>
+                    <span>Typ / Funktion</span>
+                  </div>
+                  {filteredAccountDialogOptions.length === 0 && (
+                    <div className="account-empty-state compact">
+                      <strong>Kein passender Account-Typ gefunden</strong>
+                      <span>
+                        {accountDialogSelectableOptions.length === 0
+                          ? "Alle verfuegbaren Typen sind bereits vorhanden."
+                          : "Passe den Suchbegriff an oder waehle einen Eintrag aus der Liste."}
+                      </span>
+                    </div>
+                  )}
+                  {filteredAccountDialogOptions.map((option) => (
+                    <button
+                      key={option.kind}
+                      className={`account-picker-row${accountDialog.kind === option.kind ? " active" : ""}`}
+                      onClick={() => updateAccountDialogKind(option.kind)}
+                    >
+                      <div>
+                        <strong>{option.title}</strong>
+                        <span>{option.serviceLabel}</span>
+                      </div>
+                      <div>
+                        <strong>{getAccountPickerFunctionLabel(option)}</strong>
+                        <span>{option.pickerDescription}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="account-dialog-step">
+                <div className="account-dialog-step-label">
+                  {accountDialogOption ? `2. ${accountDialogOption.serviceLabel} - Zugangsdaten eingeben` : "2. Zugangsdaten eingeben"}
+                </div>
+
+                {!accountDialogOption && (
+                  <div className="account-empty-state compact">
+                    <strong>Oben zuerst einen Account-Typ waehlen</strong>
+                    <span>Danach erscheinen hier direkt die passenden Felder fuer Login, Passwort oder API-Token.</span>
+                  </div>
+                )}
+
+                {accountDialogOption && (
+                  <>
+                    <div className="account-form-summary">
+                      <strong>{accountDialogOption.title}</strong>
+                      <span>{accountDialogOption.pickerDescription}</span>
+                    </div>
+
+                    <div className="account-modal-fields">
+                      {accountDialogOption.needsToken && (
+                        <div>
+                          <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" ? "API-Key" : "Token"}</label>
+                          <input type="password" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
+                        </div>
+                      )}
+
+                      {accountDialogOption.needsCredentials && (
+                        <div className="field-grid two">
+                          <div>
+                            <label>Login / E-Mail</label>
+                            <input value={accountDialog.login} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, login: event.target.value } : prev)} />
+                          </div>
+                          <div>
+                            <label>Passwort</label>
+                            <input type="password" value={accountDialog.password} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, password: event.target.value } : prev)} />
+                          </div>
+                        </div>
+                      )}
+
+                      {accountDialog.kind === "realdebrid-web" && (
+                        <div className="account-modal-note">Nach dem Speichern kannst Du direkt das Browserfenster fuer den Web-Login oeffnen.</div>
+                      )}
+                      {accountDialog.kind === "bestdebrid-web" && (
+                        <div className="account-modal-note">Der Web-Account arbeitet ueber einen Cookies.txt-Import aus dem Browser.</div>
+                      )}
+                      {accountDialog.kind === "alldebrid-web" && (
+                        <div className="account-modal-note">Der Web-Login nutzt ein echtes Browserfenster, damit reCAPTCHA sauber laeuft.</div>
+                      )}
+                      {accountDialog.kind === "megadebrid-api" && (
+                        <div className="account-modal-note">Mega-Debrid versucht zuerst die API und faellt bei Bedarf auf Web zurueck.</div>
+                      )}
+                      {accountDialog.kind === "megadebrid-web" && (
+                        <div className="account-modal-note">Mega-Debrid bevorzugt Web. Die API bleibt als Fallback erhalten.</div>
+                      )}
+
+                      {accountDialogOption.service === "alldebrid" && allDebridHostInfo && (
+                        <div className="account-status-grid">
+                          <div>
+                            <span className="hint">Rapidgator-Status</span>
+                            <strong>{allDebridHostInfo.statusLabel}</strong>
+                          </div>
+                          <div>
+                            <span className="hint">Quelle</span>
+                            <strong>{formatAllDebridSourceLabel(allDebridHostInfo.source)}</strong>
+                          </div>
+                          <div>
+                            <span className="hint">Quota</span>
+                            <strong>{formatAllDebridQuota(allDebridHostInfo)}</strong>
+                          </div>
+                          <div>
+                            <span className="hint">Simultan</span>
+                            <strong>{formatAllDebridSimuLimit(allDebridHostInfo)}</strong>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="modal-actions">
+                      <button className="btn" onClick={closeAccountDialog}>Abbrechen</button>
+                      {accountDialog.kind === "realdebrid-web" && (
+                        <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("realdebrid-login"); }}>
+                          Speichern + Login
+                        </button>
+                      )}
+                      {accountDialog.kind === "bestdebrid-web" && (
+                        <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("bestdebrid-cookies"); }}>
+                          Speichern + Cookies
+                        </button>
+                      )}
+                      {accountDialog.kind === "alldebrid-web" && (
+                        <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("alldebrid-login"); }}>
+                          Speichern + Login
+                        </button>
+                      )}
+                      <button className="btn accent" disabled={actionBusy || !accountDialog.kind} onClick={() => { void onSaveAccountDialog(); }}>
+                        Speichern
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
