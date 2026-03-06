@@ -2,6 +2,7 @@ import path from "node:path";
 import { app } from "electron";
 import {
   AddLinksPayload,
+  AllDebridHostInfo,
   AppSettings,
   DuplicatePolicy,
   HistoryEntry,
@@ -18,8 +19,10 @@ import {
 import { importDlcContainers } from "./container";
 import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
+import { fetchAllDebridHostInfo } from "./debrid";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
+import { AllDebridWebFallback } from "./all-debrid-web";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
@@ -42,6 +45,8 @@ export class AppController {
 
   private megaWebFallback: MegaWebFallback;
 
+  private allDebridWebFallback: AllDebridWebFallback;
+
   private lastUpdateCheck: UpdateCheckResult | null = null;
 
   private lastUpdateCheckAt = 0;
@@ -61,8 +66,10 @@ export class AppController {
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
     }));
+    this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal),
+      allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       onHistoryEntry: (entry: HistoryEntry) => {
         addHistoryEntry(this.storagePaths, entry);
@@ -104,6 +111,7 @@ export class AppController {
       settings.token.trim()
       || (settings.megaLogin.trim() && settings.megaPassword.trim())
       || settings.bestToken.trim()
+      || settings.allDebridUseWebLogin
       || settings.allDebridToken.trim()
       || (settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim())
       || settings.oneFichierApiKey.trim()
@@ -143,13 +151,14 @@ export class AppController {
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
+    const previousSettings = this.settings;
     const nextSettings = normalizeSettings({
-      ...this.settings,
+      ...previousSettings,
       ...sanitizedPatch
     });
 
-    if (settingsFingerprint(nextSettings) === settingsFingerprint(this.settings)) {
-      return this.settings;
+    if (settingsFingerprint(nextSettings) === settingsFingerprint(previousSettings)) {
+      return previousSettings;
     }
 
     // Preserve the live totalDownloadedAllTime from the download manager
@@ -158,7 +167,27 @@ export class AppController {
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
+    if (previousSettings.rememberToken && !this.settings.rememberToken) {
+      void this.allDebridWebFallback.clearSessions().catch((error) => {
+        logger.warn(`AllDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
+      });
+    }
     return this.settings;
+  }
+
+  public async openAllDebridLoginWindow(): Promise<void> {
+    await this.allDebridWebFallback.openLoginWindow();
+  }
+
+  public async getAllDebridHostInfo(host = "rapidgator"): Promise<AllDebridHostInfo> {
+    if (this.settings.allDebridUseWebLogin) {
+      return this.allDebridWebFallback.getHostInfo(host);
+    }
+    const token = this.settings.allDebridToken.trim();
+    if (!token) {
+      throw new Error("AllDebrid ist nicht konfiguriert");
+    }
+    return fetchAllDebridHostInfo(token, host);
   }
 
   public async checkUpdates(): Promise<UpdateCheckResult> {
@@ -350,6 +379,7 @@ export class AppController {
     abortActiveUpdateDownload();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
+    this.allDebridWebFallback.dispose();
     shutdownSessionLog();
     logger.info("App beendet");
   }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
-import { DebridService, extractRapidgatorFilenameFromHtml, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
+import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -241,6 +241,88 @@ describe("debrid service", () => {
     expect(result.provider).toBe("alldebrid");
     expect(result.directUrl).toBe("https://alldebrid.example/file.bin");
     expect(result.fileSize).toBe(4096);
+  });
+
+  it("loads AllDebrid host info via api", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.alldebrid.com/v4.1/user/hosts")) {
+        return new Response(JSON.stringify({
+          status: "success",
+          data: {
+            hosts: {
+              rapidgator: {
+                name: "rapidgator",
+                status: false,
+                quota: 1200,
+                quotaMax: 2400,
+                quotaType: "traffic",
+                limitSimuDl: 2
+              }
+            }
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const info = await fetchAllDebridHostInfo("ad-token", "rapidgator");
+    expect(info.source).toBe("api");
+    expect(info.host).toBe("rapidgator");
+    expect(info.state).toBe("down");
+    expect(info.statusLabel).toBe("Unverfügbar");
+    expect(info.quota).toBe(1200);
+    expect(info.quotaMax).toBe(2400);
+    expect(info.quotaType).toBe("traffic");
+    expect(info.limitSimuDl).toBe(2);
+  });
+
+  it("uses AllDebrid web path when enabled", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "ad-token",
+      allDebridUseWebLogin: true,
+      providerPrimary: "alldebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const fetchSpy = vi.fn(async () => new Response("not-found", { status: 404 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const allDebridWeb = vi.fn(async () => ({
+      fileName: "from-web.rar",
+      directUrl: "https://df4ea4.debrid.it/dl/example/from-web.rar",
+      fileSize: 1234,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { allDebridWebUnrestrict: allDebridWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/example.part4.rar.html");
+    expect(result.provider).toBe("alldebrid");
+    expect(result.directUrl).toContain("debrid.it/dl/");
+    expect(result.fileSize).toBe(1234);
+    expect(allDebridWeb).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(0);
+  });
+
+  it("treats AllDebrid web mode as not configured when callback is unavailable", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "",
+      allDebridUseWebLogin: true,
+      providerPrimary: "alldebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://rapidgator.net/file/missing-alldebrid-web")).rejects.toThrow(/nicht konfiguriert/i);
   });
 
   it("treats MegaDebrid as not configured when web fallback callback is unavailable", async () => {

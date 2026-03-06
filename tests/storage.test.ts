@@ -155,6 +155,22 @@ describe("settings storage", () => {
     expect(normalized.archivePasswordList).toBe("one\ntwo\nthree");
   });
 
+  it("defaults AllDebrid web login to disabled and normalizes the flag", () => {
+    expect(defaultSettings().allDebridUseWebLogin).toBe(false);
+
+    const normalizedEnabled = normalizeSettings({
+      ...defaultSettings(),
+      allDebridUseWebLogin: 1 as unknown as boolean
+    });
+    expect(normalizedEnabled.allDebridUseWebLogin).toBe(true);
+
+    const normalizedDisabled = normalizeSettings({
+      ...defaultSettings(),
+      allDebridUseWebLogin: 0 as unknown as boolean
+    });
+    expect(normalizedDisabled.allDebridUseWebLogin).toBe(false);
+  });
+
   it("assigns and preserves bandwidth schedule ids", () => {
     const normalized = normalizeSettings({
       ...defaultSettings(),
