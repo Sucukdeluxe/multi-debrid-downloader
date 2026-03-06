@@ -1993,11 +1993,10 @@ export class DebridService {
       }
     }
 
-    const order = toProviderOrder(
-      settings.providerPrimary,
-      settings.providerSecondary,
-      settings.providerTertiary
-    );
+    // Dynamische Reihenfolge: providerOrder hat Vorrang, Fallback auf altes primary/secondary/tertiary
+    const order: DebridProvider[] = (settings.providerOrder && settings.providerOrder.length > 0)
+      ? uniqueProviderOrder(settings.providerOrder)
+      : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);
 
     const primary = order[0];
     if (!settings.autoProviderFallback) {

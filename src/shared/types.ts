@@ -66,6 +66,7 @@ export interface AppSettings {
   linkSnappyPassword: string;
   archivePasswordList: string;
   rememberToken: boolean;
+  providerOrder: DebridProvider[];
   providerPrimary: DebridProvider;
   providerSecondary: DebridFallbackProvider;
   providerTertiary: DebridFallbackProvider;

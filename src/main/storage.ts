@@ -156,6 +156,41 @@ function normalizeHosterRouting(raw: unknown, megaDebridPreferApi: boolean, mega
   return result;
 }
 
+function normalizeProviderOrder(
+  raw: unknown,
+  megaDebridPreferApi: boolean,
+  megaDebridApiEnabled: boolean,
+  megaDebridWebEnabled: boolean,
+  legacyPrimary: unknown,
+  legacySecondary: unknown,
+  legacyTertiary: unknown
+): DebridProvider[] {
+  let list: unknown[] = [];
+
+  if (Array.isArray(raw) && raw.length > 0) {
+    list = raw;
+  } else {
+    // Migrate from old primary/secondary/tertiary
+    const candidates = [legacyPrimary, legacySecondary, legacyTertiary].filter(
+      (v) => v && String(v).trim() && String(v).trim() !== "none"
+    );
+    if (candidates.length > 0) {
+      list = candidates;
+    }
+  }
+
+  const seen = new Set<DebridProvider>();
+  const result: DebridProvider[] = [];
+  for (const entry of list) {
+    const provider = normalizeConfiguredProvider(entry, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled);
+    if (provider && !seen.has(provider)) {
+      seen.add(provider);
+      result.push(provider);
+    }
+  }
+  return result;
+}
+
 const DEPRECATED_UPDATE_REPOS = new Set([
   "sucukdeluxe/real-debrid-downloader"
 ]);
@@ -200,6 +235,11 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     linkSnappyPassword: asText(settings.linkSnappyPassword),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
+    providerOrder: normalizeProviderOrder(
+      settings.providerOrder,
+      megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
+      settings.providerPrimary, settings.providerSecondary, settings.providerTertiary
+    ),
     providerPrimary: normalizeConfiguredProvider(settings.providerPrimary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled) || defaults.providerPrimary,
     providerSecondary: normalizeFallbackProvider(settings.providerSecondary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     providerTertiary: normalizeFallbackProvider(settings.providerTertiary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),

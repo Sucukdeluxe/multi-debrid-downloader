@@ -312,24 +312,21 @@ function getActiveProvidersFromSettings(settings: AppSettings): DebridProvider[]
   return getConfiguredProvidersFromSettings(settings).filter((p) => !disabled.has(p));
 }
 
-function normalizeProviderSelectionForSettings(settings: AppSettings): Pick<AppSettings, "providerPrimary" | "providerSecondary" | "providerTertiary"> {
-  const configuredProviders = getActiveProvidersFromSettings(settings);
-  const primaryProvider = configuredProviders.includes(settings.providerPrimary)
-    ? settings.providerPrimary
-    : (configuredProviders[0] ?? "realdebrid");
-  const secondaryChoices = configuredProviders.filter((provider) => provider !== primaryProvider);
-  const secondaryProvider = secondaryChoices.includes(settings.providerSecondary as DebridProvider)
-    ? settings.providerSecondary
-    : "none";
-  const tertiaryChoices = configuredProviders.filter((provider) => provider !== primaryProvider && provider !== secondaryProvider);
-  const tertiaryProvider = tertiaryChoices.includes(settings.providerTertiary as DebridProvider)
-    ? settings.providerTertiary
-    : "none";
-  return {
-    providerPrimary: primaryProvider,
-    providerSecondary: configuredProviders.length >= 2 ? secondaryProvider : "none",
-    providerTertiary: configuredProviders.length >= 3 ? tertiaryProvider : "none"
-  };
+// Leitet die aktive Provider-Reihenfolge aus providerOrder ab,
+// gefiltert auf tatsächlich konfigurierte und nicht deaktivierte Provider.
+// Direkt-Hoster (onefichier, ddownload) werden ausgeschlossen.
+const DIRECT_HOSTERS: ReadonlySet<DebridProvider> = new Set(["onefichier", "ddownload"]);
+
+function normalizeProviderOrderForSettings(settings: AppSettings): DebridProvider[] {
+  const active = new Set(getActiveProvidersFromSettings(settings).filter((p) => !DIRECT_HOSTERS.has(p)));
+  // Behalte bestehende Reihenfolge aus providerOrder, filtere nicht-konfigurierte heraus
+  const ordered = (settings.providerOrder || []).filter((p) => active.has(p));
+  const inOrder = new Set(ordered);
+  // Füge neue Provider hinten an, die noch nicht in der Reihenfolge sind
+  for (const p of active) {
+    if (!inOrder.has(p)) ordered.push(p);
+  }
+  return ordered;
 }
 
 function getConfiguredAccountKind(settings: AppSettings, service: AccountService): AccountKind | null {
@@ -536,10 +533,10 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "",
+    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
     archivePasswordList: "",
-    rememberToken: true, providerPrimary: "realdebrid", providerSecondary: "megadebrid-api",
-    providerTertiary: "bestdebrid", autoProviderFallback: true, outputDir: "", packageName: "",
+    rememberToken: true, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
+    providerTertiary: "none", autoProviderFallback: true, outputDir: "", packageName: "",
     autoExtract: true, autoRename4sf4sj: false, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     collectMkvToLibrary: false, mkvLibraryDir: "",
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
@@ -1561,32 +1558,28 @@ export function App(): ReactElement {
   [settingsDraft.oneFichierApiKey]);
 
   const totalConfiguredAccounts = configuredProviders.length + (hasDdownloadAccount ? 1 : 0) + (hasOneFichierAccount ? 1 : 0);
-  const providerSelection = useMemo(() => normalizeProviderSelectionForSettings(settingsDraft), [settingsDraft]);
-  const primaryProviderValue: DebridProvider = providerSelection.providerPrimary;
 
-  const secondaryProviderChoices = useMemo(() => (
-    configuredProviders.filter((provider) => provider !== primaryProviderValue)
-  ), [configuredProviders, primaryProviderValue]);
+  // Dynamische Provider-Reihenfolge (ersetzt altes primary/secondary/tertiary)
+  const activeProviderOrder = useMemo(() => normalizeProviderOrderForSettings(settingsDraft), [settingsDraft]);
 
-  const secondaryProviderValue: DebridFallbackProvider = providerSelection.providerSecondary;
-
-  const tertiaryProviderChoices = useMemo(() => {
-    const blocked = new Set<string>([primaryProviderValue]);
-    if (secondaryProviderValue !== "none") {
-      blocked.add(secondaryProviderValue);
-    }
-    return configuredProviders.filter((provider) => !blocked.has(provider));
-  }, [configuredProviders, primaryProviderValue, secondaryProviderValue]);
-
-  const tertiaryProviderValue: DebridFallbackProvider = providerSelection.providerTertiary;
+  // Setzt providerOrder + backwards-kompatible Felder synchron
+  const setProviderOrder = useCallback((newOrder: DebridProvider[]) => {
+    setSettingsDraft((prev) => ({
+      ...prev,
+      providerOrder: newOrder,
+      providerPrimary: newOrder[0] ?? prev.providerPrimary,
+      providerSecondary: newOrder[1] ?? "none",
+      providerTertiary: newOrder[2] ?? "none"
+    }));
+  }, []);
 
   const normalizedSettingsDraft: AppSettings = useMemo(() => ({
     ...settingsDraft,
-    ...providerSelection
-  }), [
-    settingsDraft,
-    providerSelection
-  ]);
+    providerOrder: activeProviderOrder,
+    providerPrimary: activeProviderOrder[0] ?? settingsDraft.providerPrimary,
+    providerSecondary: (activeProviderOrder[1] ?? "none") as DebridFallbackProvider,
+    providerTertiary: (activeProviderOrder[2] ?? "none") as DebridFallbackProvider
+  }), [settingsDraft, activeProviderOrder]);
 
   const configuredAccounts = useMemo(() => {
     const entries: ConfiguredAccountEntry[] = [];
@@ -3755,37 +3748,46 @@ export function App(): ReactElement {
 
                     <div className="settings-section card">
                       <h3>Hoster-Reihenfolge</h3>
-                      <div className="hint">Debrid-Accounts können hier priorisiert werden. Direkte Host-Accounts wie DDownload und 1Fichier laufen separat.</div>
-                      {configuredProviders.length === 0 && (
+                      <div className="hint">
+                        Lege fest, in welcher Reihenfolge die Debrid-Accounts für Links genutzt werden.
+                        Der erste Eintrag ist der Hauptaccount. Direkt-Hoster (1Fichier, DDownload) laufen separat und erscheinen nicht hier.
+                      </div>
+                      {activeProviderOrder.length === 0 && (
                         <div className="account-empty-state compact">
-                          <strong>Keine Debrid-Reihenfolge verfuegbar</strong>
-                          <span>Füge mindestens einen Debrid-Account hinzu, dann kannst Du Hauptaccount und Alternativen festlegen.</span>
+                          <strong>Keine Debrid-Reihenfolge verfügbar</strong>
+                          <span>Füge mindestens einen Debrid-Account hinzu, dann kannst Du die Reihenfolge festlegen.</span>
                         </div>
                       )}
-                      {configuredProviders.length >= 1 && (
-                        <div>
-                          <label>Hauptaccount</label>
-                          <select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
-                            {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
-                          </select>
-                        </div>
-                      )}
-                      {configuredProviders.length >= 2 && (
-                        <div>
-                          <label>1. Hoster-Alternative</label>
-                          <select value={secondaryProviderValue} onChange={(e) => setText("providerSecondary", e.target.value)}>
-                            <option value="none">Keine Alternative</option>
-                            {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
-                          </select>
-                        </div>
-                      )}
-                      {configuredProviders.length >= 3 && (
-                        <div>
-                          <label>2. Hoster-Alternative</label>
-                          <select value={tertiaryProviderValue} onChange={(e) => setText("providerTertiary", e.target.value)}>
-                            <option value="none">Keine Alternative</option>
-                            {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
-                          </select>
+                      {activeProviderOrder.length > 0 && (
+                        <div className="provider-order-list">
+                          {activeProviderOrder.map((provider, idx) => (
+                            <div key={provider} className="provider-order-row">
+                              <span className="provider-order-num">{idx + 1}.</span>
+                              <span className="provider-order-label">{providerLabelWithMode(provider, settingsDraft)}</span>
+                              <div className="provider-order-actions">
+                                <button
+                                  className="btn btn-sm"
+                                  disabled={idx === 0}
+                                  onClick={() => {
+                                    const next = [...activeProviderOrder];
+                                    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                                    setProviderOrder(next);
+                                  }}
+                                  title="Nach oben"
+                                >▲</button>
+                                <button
+                                  className="btn btn-sm"
+                                  disabled={idx === activeProviderOrder.length - 1}
+                                  onClick={() => {
+                                    const next = [...activeProviderOrder];
+                                    [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+                                    setProviderOrder(next);
+                                  }}
+                                  title="Nach unten"
+                                >▼</button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
                       <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehlern oder Fair-Use automatisch zum nächsten Provider wechseln</label>
@@ -3968,27 +3970,6 @@ export function App(): ReactElement {
                     <input type="password" value={settingsDraft.ddownloadPassword || ""} onChange={(e) => setText("ddownloadPassword", e.target.value)} />
                     <label>1Fichier API Key</label>
                     <input type="password" value={settingsDraft.oneFichierApiKey || ""} onChange={(e) => setText("oneFichierApiKey", e.target.value)} />
-                    {configuredProviders.length === 0 && (
-                      <div className="hint">Füge mindestens einen Account hinzu, dann erscheint die Hoster-Auswahl.</div>
-                    )}
-                    {configuredProviders.length >= 1 && (
-                      <div><label>Hauptaccount</label><select value={primaryProviderValue} onChange={(e) => setText("providerPrimary", e.target.value)}>
-                        {configuredProviders.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
-                      </select></div>
-                    )}
-                    {configuredProviders.length >= 2 && (
-                      <div><label>1. Hoster-Alternative</label><select value={secondaryProviderValue} onChange={(e) => setText("providerSecondary", e.target.value)}>
-                        <option value="none">Keine Alternative</option>
-                        {secondaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
-                      </select></div>
-                    )}
-                    {configuredProviders.length >= 3 && (
-                      <div><label>2. Hoster-Alternative</label><select value={tertiaryProviderValue} onChange={(e) => setText("providerTertiary", e.target.value)}>
-                        <option value="none">Keine Alternative</option>
-                        {tertiaryProviderChoices.map((provider) => (<option key={provider} value={provider}>{providerLabelWithMode(provider, settingsDraft)}</option>))}
-                      </select></div>
-                    )}
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehler/Fair-Use automatisch zum nächsten Provider wechseln</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
                   </div>
                     </div>
