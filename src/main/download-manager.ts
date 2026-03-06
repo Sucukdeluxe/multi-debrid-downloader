@@ -4771,10 +4771,11 @@ export class DownloadManager extends EventEmitter {
         item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
         item.totalBytes = unrestricted.fileSize;
         item.status = "downloading";
-        item.fullStatus = `Starte... (${unrestricted.providerLabel})`;
+        const pLabel = unrestricted.providerLabel;
+        item.fullStatus = `Starte... (${pLabel})`;
         item.updatedAt = nowMs();
         this.emitState();
-        logger.info(`Download Start: ${item.fileName} (${humanSize(unrestricted.fileSize || 0)}) via ${unrestricted.providerLabel}, pkg=${pkg.name}`);
+        logger.info(`Download Start: ${item.fileName} (${humanSize(unrestricted.fileSize || 0)}) via ${pLabel}, pkg=${pkg.name}`);
 
         const maxAttempts = maxItemAttempts;
         let done = false;
@@ -4782,7 +4783,7 @@ export class DownloadManager extends EventEmitter {
           item.attempts += 1;
           if (item.status !== "downloading") {
             item.status = "downloading";
-            item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+            item.fullStatus = `Download läuft (${pLabel})`;
             item.updatedAt = nowMs();
             this.emitState();
           }
@@ -5423,7 +5424,7 @@ export class DownloadManager extends EventEmitter {
             if (nowTick - lastDiskBusyEmitAt >= 1200) {
               item.status = "downloading";
               item.speedBps = 0;
-              item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+              item.fullStatus = `Warte auf Festplatte (${pLabel})`;
               item.updatedAt = nowTick;
               this.emitState();
               lastDiskBusyEmitAt = nowTick;
@@ -5534,7 +5535,7 @@ export class DownloadManager extends EventEmitter {
               if (nowTick - lastIdleEmitAt >= idlePulseMs) {
                 item.status = "downloading";
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+                item.fullStatus = `Warte auf Festplatte (${pLabel})`;
                 item.updatedAt = nowTick;
                 this.emitState();
                 lastIdleEmitAt = nowTick;
@@ -5550,7 +5551,7 @@ export class DownloadManager extends EventEmitter {
             }
             item.status = "downloading";
             item.speedBps = 0;
-            item.fullStatus = `Warte auf Daten (${providerLabel(item.provider)})`;
+            item.fullStatus = `Warte auf Daten (${pLabel})`;
             if (nowTick - lastIdleEmitAt >= idlePulseMs) {
               item.updatedAt = nowTick;
               this.emitState();
@@ -5659,7 +5660,7 @@ export class DownloadManager extends EventEmitter {
                   if (nowTick - lastDiskBusyEmitAt >= 1200) {
                     item.status = "downloading";
                     item.speedBps = 0;
-                    item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+                    item.fullStatus = `Warte auf Festplatte (${pLabel})`;
                     item.updatedAt = nowTick;
                     this.emitState();
                     lastDiskBusyEmitAt = nowTick;
@@ -5703,10 +5704,10 @@ export class DownloadManager extends EventEmitter {
               const diskBusy = diskBusySince > 0 && nowMs() - diskBusySince >= DISK_BUSY_THRESHOLD_MS;
               if (diskBusy) {
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${providerLabel(item.provider)})`;
+                item.fullStatus = `Warte auf Festplatte (${pLabel})`;
               } else {
                 item.speedBps = Math.max(0, Math.floor(speed));
-                item.fullStatus = `Download läuft (${providerLabel(item.provider)})`;
+                item.fullStatus = `Download läuft (${pLabel})`;
               }
               const nowTick = nowMs();
               if (nowTick - lastUiEmitAt >= uiUpdateIntervalMs) {
