@@ -1311,7 +1311,7 @@ body,
 }
 
 .account-row > .account-cell.account-row-actions {
-  justify-content: flex-start;
+  justify-content: center;
 }
 
 .account-service-cell {
@@ -1440,14 +1440,14 @@ body,
 
 .account-row-actions {
   display: flex;
-  justify-content: flex-start;
+  justify-content: center;
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
   align-content: center;
   text-align: center;
-  padding-left: 12px;
-  padding-right: 8px;
+  padding-left: 10px;
+  padding-right: 10px;
   min-width: 0;
   overflow: hidden;
 }
