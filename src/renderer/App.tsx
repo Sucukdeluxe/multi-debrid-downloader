@@ -784,6 +784,24 @@ function providerLabelWithMode(provider: DebridProvider, settings: AppSettings):
   return opt?.modeLabel ? `${base} (${opt.modeLabel})` : base;
 }
 
+function compactProviderLabels(labels: string[]): string {
+  const unique = [...new Set(labels)];
+  const groups = new Map<string, string[]>();
+  for (const label of unique) {
+    const m = label.match(/^(.+?)\s*\((.+)\)$/);
+    if (m) {
+      const arr = groups.get(m[1]) || [];
+      arr.push(m[2]);
+      groups.set(m[1], arr);
+    } else {
+      groups.set(label, []);
+    }
+  }
+  return [...groups.entries()].map(([base, details]) =>
+    details.length === 0 ? base : `${base} (${details.join(" + ")})`
+  ).join(", ");
+}
+
 function formatDateTime(ts: number): string {
   if (!ts) return "";
   const d = new Date(ts);
@@ -5161,7 +5179,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 return <span key={col} className="pkg-col pkg-col-hoster" title={hosterText}>{hosterText}</span>;
               }
               case "account": {
-                const accountText = [...new Set(items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : null)).filter(Boolean))].join(", ");
+                const accountText = compactProviderLabels(items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean));
                 return <span key={col} className="pkg-col pkg-col-account" title={accountText}>{accountText}</span>;
               }
               case "prio": return (
