@@ -336,6 +336,10 @@ function isProviderBusyUnrestrictError(errorText: string): boolean {
     || text.includes("zu viele downloads");
 }
 
+function isHosterUnavailableError(errorText: string): boolean {
+  return String(errorText || "").toLowerCase().includes("hosternotavailable");
+}
+
 function isTemporaryUnrestrictError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("server error")
@@ -5290,7 +5294,7 @@ export class DownloadManager extends EventEmitter {
           }
           // Record failure for the provider that errored
           const errText = compactErrorText(unrestrictError);
-          if (isUnrestrictFailure(errText)) {
+          if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
             this.recordProviderFailure(cooldownProvider);
             if (isProviderBusyUnrestrictError(errText) || isTemporaryUnrestrictError(errText)) {
               const busyCooldownMs = isTemporaryUnrestrictError(errText)
@@ -5649,6 +5653,33 @@ export class DownloadManager extends EventEmitter {
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
             logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}`);
             this.queueRetry(item, active, 300000, `Viele Fehler (${totalNonStallFailures}x), Pause 5 min`);
+            item.lastError = errorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          // hosterNotAvailable: hoster issue, not provider issue — reset provider
+          // and retry quickly with fresh provider selection (like manual reset)
+          if (isHosterUnavailableError(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            item.provider = null; // fresh provider selection on next attempt
+            // Cap backoff at 30s — hoster issues often resolve quickly
+            const hosterDelayMs = Math.min(30000, Math.floor(5000 * Math.pow(1.5, Math.min(active.unrestrictRetries - 1, 5))));
+            logger.warn(`Hoster nicht verfügbar: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${hosterDelayMs}ms, link=${item.url.slice(0, 80)}`);
+            if (item.downloadedBytes > 0) {
+              const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
+              if (targetFile) {
+                try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
+              }
+              this.releaseTargetPath(item.id);
+              item.downloadedBytes = 0;
+              item.progressPercent = 0;
+              item.totalBytes = null;
+              this.dropItemContribution(item.id);
+            }
+            this.queueRetry(item, active, hosterDelayMs, `Hoster nicht verfügbar, Retry ${active.unrestrictRetries}/${retryDisplayLimit} (${Math.ceil(hosterDelayMs / 1000)}s)`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
