@@ -1210,7 +1210,7 @@ body,
   --account-col-status: 300px;
   --account-col-info: 220px;
   --account-col-secret: 180px;
-  --account-col-actions: 400px;
+  --account-col-actions: 560px;
   width: 100%;
 }
 
@@ -1223,7 +1223,7 @@ body,
     minmax(140px, var(--account-col-status))
     minmax(160px, var(--account-col-info))
     minmax(180px, var(--account-col-secret))
-    minmax(280px, var(--account-col-actions));
+    minmax(420px, var(--account-col-actions));
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -1311,7 +1311,7 @@ body,
 }
 
 .account-row > .account-cell.account-row-actions {
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .account-service-cell {
