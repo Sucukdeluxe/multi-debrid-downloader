@@ -1726,7 +1726,9 @@ async function runExternalExtract(
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal,
   hybridMode = false,
-  onPasswordAttempt?: (attempt: number, total: number) => void
+  onPasswordAttempt?: (attempt: number, total: number) => void,
+  forceFlatMode = false,
+  flatModeResult?: { needed: boolean }
 ): Promise<string> {
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
   const backendMode = extractorBackendMode();
@@ -1823,7 +1825,9 @@ async function runExternalExtract(
       signal,
       timeoutMs,
       hybridMode,
-      onPasswordAttempt
+      onPasswordAttempt,
+      forceFlatMode,
+      flatModeResult
     );
     const legacyMs = Date.now() - legacyStartedAt;
     const extractorName = path.basename(command).replace(/\.exe$/i, "");
@@ -1849,18 +1853,44 @@ async function runExternalExtractInner(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   hybridMode = false,
-  onPasswordAttempt?: (attempt: number, total: number) => void
+  onPasswordAttempt?: (attempt: number, total: number) => void,
+  forceFlatMode = false,
+  flatModeResult?: { needed: boolean }
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
 
   const quotedPasswords = passwords.map((p) => p === "" ? '""' : `"${p}"`);
-  logger.info(`Legacy-Extractor: ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${quotedPasswords.join(", ")}]`);
+  logger.info(`Legacy-Extractor: ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${quotedPasswords.join(", ")}]${forceFlatMode ? " (flat-mode cached)" : ""}`);
 
   let announcedStart = false;
   let bestPercent = 0;
   let passwordAttempt = 0;
   let usePerformanceFlags = externalExtractorSupportsPerfFlags && shouldUseExtractorPerformanceFlags();
+
+  // Skip normal extraction loop if flat mode is already known to be needed for this package
+  if (forceFlatMode) {
+    logger.info(`Flat-Modus direkt (gespeichert vom vorherigen Archiv): ${path.basename(archivePath)}`);
+    for (const password of passwords) {
+      if (signal?.aborted) throw new Error("aborted:extract");
+      passwordAttempt += 1;
+      const quotedPw = password === "" ? '""' : `"${password}"`;
+      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
+      const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
+      const result = await runExtractCommand(command, args, (chunk) => {
+        const parsed = parseProgressPercent(chunk);
+        if (parsed === null) return;
+        const next = nextArchivePercent(bestPercent, parsed);
+        if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
+      }, signal, timeoutMs);
+      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
+      if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
+      if (result.aborted) throw new Error("aborted:extract");
+      if (result.timedOut || result.missingCommand) break;
+      lastError = result.errorText;
+    }
+    throw new Error(lastError || "Entpacken fehlgeschlagen (flat-mode)");
+  }
 
   for (const password of passwords) {
     if (signal?.aborted) {
@@ -1958,7 +1988,7 @@ async function runExternalExtractInner(
         if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
       }, signal, timeoutMs);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
-      if (result.ok) { onArchiveProgress?.(100); return password; }
+      if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
       if (result.aborted) throw new Error("aborted:extract");
       if (result.timedOut || result.missingCommand) break;
       lastError = result.errorText;
@@ -2435,6 +2465,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let failed = 0;
   let lastError = "";
   let learnedPassword = cachedPackagePassword;
+  let packageNeedsFlatMode = false;
   const extractedArchives = new Set<string>();
   for (const archivePath of candidates) {
     if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
@@ -2620,10 +2651,12 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           }
         }
       } else {
+        const flatResult = { needed: false };
         const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
           reportArchiveProgress(value);
-        }, options.signal, hybrid, onPwAttempt);
+        }, options.signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult);
         rememberLearnedPassword(usedPassword);
+        if (flatResult.needed) packageNeedsFlatMode = true;
       }
       extracted += 1;
       extractedArchives.add(archivePath);
