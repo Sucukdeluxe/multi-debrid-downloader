@@ -2742,6 +2742,35 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       passwordCandidates = frozenPasswords;
 
       if (abortError) throw new Error("aborted:extract");
+
+      // ── Retry failed wrong_password archives serially ──
+      // Parallel UnRAR processes writing to the same target directory can cause
+      // CRC mismatches that are misreported as "Incorrect password".
+      // If any archive succeeded (i.e. the password is known), retry the failed
+      // ones one-at-a-time to eliminate false positives from I/O contention.
+      if (failed > 0 && extracted > 0) {
+        const failedArchives = parallelQueue.filter((ap) => !extractedArchives.has(ap) && !resumeCompleted.has(archiveNameKey(path.basename(ap))));
+        if (failedArchives.length > 0) {
+          logger.info(`Serielle Wiederholung: ${failedArchives.length} fehlgeschlagene Archive werden einzeln wiederholt (mögliche Parallelitäts-Kollision)`);
+          let retryRecovered = 0;
+          for (const archivePath of failedArchives) {
+            if (options.signal?.aborted || noExtractorEncountered) break;
+            try {
+              // Reset failed count for this archive before retry
+              failed -= 1;
+              await extractSingleArchive(archivePath);
+              retryRecovered += 1;
+            } catch (retryError) {
+              const errText = String(retryError);
+              if (isExtractAbortError(errText)) throw retryError;
+              // extractSingleArchive already incremented failed and logged the error
+            }
+          }
+          if (retryRecovered > 0) {
+            logger.info(`Serielle Wiederholung: ${retryRecovered}/${failedArchives.length} Archive erfolgreich entpackt`);
+          }
+        }
+      }
     }
 
     if (noExtractorEncountered) {
