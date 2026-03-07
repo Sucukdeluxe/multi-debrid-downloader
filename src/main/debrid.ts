@@ -21,6 +21,11 @@ const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.c
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
 const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "maxDataHost", "maxAttempts", "maxTransfer"]);
+/** Errors where the key can't handle this link — skip to next key immediately, no retries */
+const DEBRID_LINK_SKIP_KEY_ERRORS = new Set(["notDebrid", "disabledServerHost", "notFree"]);
+/** Per-key cooldown cache: keyId → expiry timestamp. Parallel items skip keys that recently failed. */
+const debridLinkKeyCooldowns = new Map<string, number>();
+const DEBRID_LINK_KEY_COOLDOWN_MS = 120_000; // 2 min cooldown per failed key
 
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 
@@ -1486,6 +1491,12 @@ class DebridLinkClient {
         this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
         continue;
       }
+      const keyCooldownExpiry = debridLinkKeyCooldowns.get(apiKey.id);
+      if (keyCooldownExpiry && Date.now() < keyCooldownExpiry) {
+        logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${new Date(keyCooldownExpiry).toLocaleTimeString()}), pruefe naechsten Key`);
+        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+        continue;
+      }
 
       let lastError = "";
       for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
@@ -1509,7 +1520,12 @@ class DebridLinkClient {
 
             if (DEBRID_LINK_QUOTA_ERRORS.has(errorCode)) {
               logger.warn(`Debrid-Link${keyLabel}: API-Quota erreicht (${errorCode}: ${errorDesc}), wechsle zum naechsten Key`);
-              logger.warn(`Debrid-Link Quota erreicht${keyLabel}: ${errorCode} – ${errorDesc}`);
+              debridLinkKeyCooldowns.set(apiKey.id, Date.now() + DEBRID_LINK_KEY_COOLDOWN_MS);
+              break;
+            }
+            if (DEBRID_LINK_SKIP_KEY_ERRORS.has(errorCode)) {
+              logger.warn(`Debrid-Link${keyLabel}: Key kann Link nicht verarbeiten (${errorCode}: ${errorDesc}), wechsle zum naechsten Key`);
+              debridLinkKeyCooldowns.set(apiKey.id, Date.now() + DEBRID_LINK_KEY_COOLDOWN_MS);
               break;
             }
 
