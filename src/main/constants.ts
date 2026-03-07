@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { AppSettings } from "../shared/types";
+import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import packageJson from "../../package.json";
 
 export const APP_NAME = "Multi Debrid Downloader";
@@ -94,6 +95,8 @@ export function defaultSettings(): AppSettings {
     minimizeToTray: false,
     theme: "dark" as const,
     collapseNewPackages: true,
+    accountListShowDetailedDebridLinkKeys: false,
+    autoSortPackagesByProgress: true,
     autoSkipExtracted: false,
     confirmDeleteSelection: true,
     totalDownloadedAllTime: 0,
@@ -103,6 +106,11 @@ export function defaultSettings(): AppSettings {
     autoExtractWhenStopped: true,
     disabledProviders: [],
     hosterRouting: {},
+    providerDailyLimitBytes: {},
+    providerDailyUsageBytes: {},
+    debridLinkApiKeyDailyLimitBytes: {},
+    debridLinkApiKeyDailyUsageBytes: {},
+    providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   };
 }

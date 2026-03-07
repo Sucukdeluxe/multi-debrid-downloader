@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { AppSettings, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
 
@@ -143,6 +145,57 @@ function normalizeDisabledProviders(raw: unknown): DebridProvider[] {
   return result;
 }
 
+function normalizeProviderByteMap(
+  raw: unknown,
+  megaDebridPreferApi: boolean,
+  megaDebridApiEnabled: boolean,
+  megaDebridWebEnabled: boolean,
+  mergeMode: "max" | "sum"
+): Partial<Record<DebridProvider, number>> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+
+  const result: Partial<Record<DebridProvider, number>> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const provider = normalizeConfiguredProvider(key, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled);
+    if (!provider) {
+      continue;
+    }
+    const bytes = clampNumber(value, 0, 0, Number.MAX_SAFE_INTEGER);
+    if (bytes <= 0) {
+      continue;
+    }
+    if (mergeMode === "sum") {
+      result[provider] = (result[provider] || 0) + bytes;
+    } else {
+      result[provider] = Math.max(result[provider] || 0, bytes);
+    }
+  }
+  return result;
+}
+
+function normalizeNamedByteMap(raw: unknown, allowedKeys: readonly string[]): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+
+  const allowed = new Set(allowedKeys);
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || !allowed.has(normalizedKey)) {
+      continue;
+    }
+    const bytes = clampNumber(value, 0, 0, Number.MAX_SAFE_INTEGER);
+    if (bytes <= 0) {
+      continue;
+    }
+    result[normalizedKey] = bytes;
+  }
+  return result;
+}
+
 function normalizeHosterRouting(raw: unknown, megaDebridPreferApi: boolean, megaDebridApiEnabled: boolean, megaDebridWebEnabled: boolean): Record<string, DebridProvider> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const result: Record<string, DebridProvider> = {};
@@ -205,6 +258,7 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
 
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
+  const currentUsageDay = getProviderUsageDayKey();
   const megaLogin = asText(settings.megaLogin);
   const megaPassword = asText(settings.megaPassword);
   const megaDebridPreferApi = settings.megaDebridPreferApi !== undefined ? Boolean(settings.megaDebridPreferApi) : true;
@@ -215,6 +269,24 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const megaDebridWebEnabled = settings.megaDebridWebEnabled !== undefined
     ? Boolean(settings.megaDebridWebEnabled)
     : (hasMegaCreds ? !megaDebridPreferApi : defaults.megaDebridWebEnabled);
+  const providerDailyUsageDayRaw = asText(settings.providerDailyUsageDay);
+  const providerDailyUsageDay = /^\d{4}-\d{2}-\d{2}$/.test(providerDailyUsageDayRaw)
+    ? providerDailyUsageDayRaw
+    : currentUsageDay;
+  const debridLinkApiKeyIds = getDebridLinkApiKeyIds(String(settings.debridLinkApiKeys ?? ""));
+  const providerDailyUsageBytes = normalizeProviderByteMap(
+    settings.providerDailyUsageBytes,
+    megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
+    "sum"
+  );
+  const debridLinkApiKeyDailyLimitBytes = normalizeNamedByteMap(
+    settings.debridLinkApiKeyDailyLimitBytes,
+    debridLinkApiKeyIds
+  );
+  const debridLinkApiKeyDailyUsageBytes = normalizeNamedByteMap(
+    settings.debridLinkApiKeyDailyUsageBytes,
+    debridLinkApiKeyIds
+  );
   const normalized: AppSettings = {
     token: asText(settings.token),
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
@@ -273,6 +345,10 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     clipboardWatch: Boolean(settings.clipboardWatch),
     minimizeToTray: Boolean(settings.minimizeToTray),
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
+    accountListShowDetailedDebridLinkKeys: settings.accountListShowDetailedDebridLinkKeys !== undefined
+      ? Boolean(settings.accountListShowDetailedDebridLinkKeys)
+      : defaults.accountListShowDetailedDebridLinkKeys,
+    autoSortPackagesByProgress: settings.autoSortPackagesByProgress !== undefined ? Boolean(settings.autoSortPackagesByProgress) : defaults.autoSortPackagesByProgress,
     autoSkipExtracted: settings.autoSkipExtracted !== undefined ? Boolean(settings.autoSkipExtracted) : defaults.autoSkipExtracted,
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
@@ -282,7 +358,17 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
     disabledProviders: normalizeDisabledProviders(settings.disabledProviders),
-    hosterRouting: normalizeHosterRouting(settings.hosterRouting, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled)
+    hosterRouting: normalizeHosterRouting(settings.hosterRouting, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
+    providerDailyLimitBytes: normalizeProviderByteMap(
+      settings.providerDailyLimitBytes,
+      megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
+      "max"
+    ),
+    providerDailyUsageBytes: providerDailyUsageDay === currentUsageDay ? providerDailyUsageBytes : {},
+    debridLinkApiKeyDailyLimitBytes,
+    debridLinkApiKeyDailyUsageBytes: providerDailyUsageDay === currentUsageDay ? debridLinkApiKeyDailyUsageBytes : {},
+    providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
+    scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };
 
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
@@ -414,6 +500,9 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       packageId,
       url,
       provider: VALID_ITEM_PROVIDERS.has(providerRaw) ? providerRaw : null,
+      providerLabel: asText(item.providerLabel) || undefined,
+      providerAccountId: asText(item.providerAccountId) || undefined,
+      providerAccountLabel: asText(item.providerAccountLabel) || undefined,
       status,
       retries: clampNumber(item.retries, 0, 0, 1_000_000),
       speedBps: clampNumber(item.speedBps, 0, 0, 10_000_000_000),

@@ -7,6 +7,8 @@ import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
 import { DownloadManager } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
+import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
+import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { createStoragePaths, emptySession } from "../src/main/storage";
 
 const tempDirs: string[] = [];
@@ -2835,7 +2837,7 @@ describe("download manager", () => {
     }
   });
 
-  it("retries suspicious mini files under 1 MB until the full file arrives", async () => {
+  it("retries suspicious mini files under 100 KB until the full file arrives", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(2 * 1024 * 1024, 21);
@@ -4856,5 +4858,63 @@ describe("download manager", () => {
     expect(internal.speedEvents.length).toBe(0);
     expect(internal.speedEventsHead).toBe(0);
     expect(internal.speedBytesLastWindow).toBe(0);
+  });
+
+  it("tracks daily usage on the actual provider key without touching other providers", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaLogin: "mega-user",
+        megaPassword: "mega-pass",
+        megaDebridApiEnabled: true,
+        providerDailyUsageDay: getProviderUsageDayKey(),
+        providerDailyUsageBytes: { realdebrid: 512 }
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "megadebrid", bytes: number) => void;
+      settings: ReturnType<typeof defaultSettings>;
+    };
+
+    internal.recordProviderDownloadedBytes("megadebrid", 1024);
+
+    expect(internal.settings.providerDailyUsageBytes.realdebrid).toBe(512);
+    expect(internal.settings.providerDailyUsageBytes["megadebrid-api"]).toBe(1024);
+    expect((internal.settings.providerDailyUsageBytes as Record<string, number>).megadebrid).toBeUndefined();
+  });
+
+  it("tracks daily usage on the actual Debrid-Link key without touching other keys", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const [firstKey, secondKey] = parseDebridLinkApiKeys("dl-key-one\ndl-key-two");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        debridLinkApiKeys: "dl-key-one\ndl-key-two",
+        providerDailyUsageDay: getProviderUsageDayKey(),
+        providerDailyUsageBytes: { debridlink: 256 },
+        debridLinkApiKeyDailyUsageBytes: { [secondKey.id]: 512 }
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "debridlink", bytes: number, providerAccountId?: string) => void;
+      settings: ReturnType<typeof defaultSettings>;
+    };
+
+    internal.recordProviderDownloadedBytes("debridlink", 1024, firstKey.id);
+
+    expect(internal.settings.providerDailyUsageBytes.debridlink).toBe(1280);
+    expect(internal.settings.debridLinkApiKeyDailyUsageBytes[firstKey.id]).toBe(1024);
+    expect(internal.settings.debridLinkApiKeyDailyUsageBytes[secondKey.id]).toBe(512);
   });
 });

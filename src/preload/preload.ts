@@ -3,6 +3,7 @@ import {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  DebridProvider,
   DuplicatePolicy,
   HistoryEntry,
   PackagePriority,
@@ -23,6 +24,8 @@ const api: ElectronApi = {
   installUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.INSTALL_UPDATE),
   openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL, url),
   updateSettings: (settings: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SETTINGS, settings),
+  resetProviderDailyUsage: (provider: DebridProvider): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, provider),
+  resetDebridLinkApiKeyDailyUsage: (keyId: string): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, keyId),
   addLinks: (payload: AddLinksPayload): Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }> =>
     ipcRenderer.invoke(IPC_CHANNELS.ADD_LINKS, payload),
   addContainers: (filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> =>

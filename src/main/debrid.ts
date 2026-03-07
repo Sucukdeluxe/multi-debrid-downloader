@@ -1,4 +1,6 @@
+import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
+import { isDebridLinkApiKeyDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
@@ -65,8 +67,18 @@ interface DebridServiceOptions {
 function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
-    bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry }))
+    bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry })),
+    providerDailyLimitBytes: { ...(settings.providerDailyLimitBytes || {}) },
+    providerDailyUsageBytes: { ...(settings.providerDailyUsageBytes || {}) },
+    debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
+    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) }
   };
+}
+
+function getAvailableDebridLinkApiKeys(settings: AppSettings, epochMs = Date.now()) {
+  return parseDebridLinkApiKeys(settings.debridLinkApiKeys).filter(
+    (entry) => !isDebridLinkApiKeyDailyLimitReached(settings, entry.id, epochMs)
+  );
 }
 
 function hasMegaDebridCredentials(settings: AppSettings): boolean {
@@ -1305,27 +1317,31 @@ export async function fetchAllDebridHostInfo(token: string, host = "rapidgator",
 // ── Debrid-Link Client ──
 
 class DebridLinkClient {
-  private apiKeys: string[];
+  private apiKeys: ReturnType<typeof parseDebridLinkApiKeys>;
   private currentKeyIndex: number = 0;
 
   public constructor(apiKeysRaw: string) {
-    this.apiKeys = apiKeysRaw
-      .split(/[\n,]+/)
-      .map((k) => k.trim())
-      .filter(Boolean);
+    this.apiKeys = parseDebridLinkApiKeys(apiKeysRaw);
   }
 
-  public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+  public async unrestrictLink(link: string, settings: AppSettings, signal?: AbortSignal): Promise<UnrestrictedLink> {
     if (this.apiKeys.length === 0) {
       throw new Error("Debrid-Link: Kein API-Key konfiguriert");
     }
 
-    const startIndex = this.currentKeyIndex;
-    let triedAll = false;
+    if (getAvailableDebridLinkApiKeys(settings).length === 0) {
+      throw new Error(`Debrid-Link: Alle ${this.apiKeys.length} API-Keys haben ihr Tageslimit erreicht`);
+    }
 
-    while (!triedAll) {
+    let checkedKeys = 0;
+    while (checkedKeys < this.apiKeys.length) {
       const apiKey = this.apiKeys[this.currentKeyIndex];
-      const keyLabel = this.apiKeys.length > 1 ? ` #${this.currentKeyIndex + 1}` : "";
+      checkedKeys += 1;
+      const keyLabel = this.apiKeys.length > 1 ? ` (${apiKey.label})` : "";
+      if (isDebridLinkApiKeyDailyLimitReached(settings, apiKey.id)) {
+        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+        continue;
+      }
 
       let lastError = "";
       for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
@@ -1335,7 +1351,7 @@ class DebridLinkClient {
             method: "POST",
             headers: {
               "Content-Type": "application/x-www-form-urlencoded",
-              Authorization: `Bearer ${apiKey}`
+              Authorization: `Bearer ${apiKey.token}`
             },
             body: `url=${encodeURIComponent(link)}`,
             signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
@@ -1383,7 +1399,9 @@ class DebridLinkClient {
             directUrl,
             fileSize,
             retriesUsed: attempt - 1,
-            sourceLabel: keyLabel ? `#${this.currentKeyIndex + 1}` : "API"
+            sourceLabel: apiKey.label,
+            sourceAccountId: apiKey.id,
+            sourceAccountLabel: apiKey.label
           };
         } catch (error) {
           lastError = compactErrorText(error);
@@ -1400,9 +1418,6 @@ class DebridLinkClient {
       }
 
       this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-      if (this.currentKeyIndex === startIndex) {
-        triedAll = true;
-      }
     }
 
     throw new Error(`Debrid-Link: Alle ${this.apiKeys.length} API-Keys haben ihr Limit erreicht`);
@@ -1915,6 +1930,29 @@ export class DebridService {
     return Boolean(settings.bestDebridUseWebLogin && this.options.bestDebridWebUnrestrict);
   }
 
+  private isProviderDailyLimited(settings: AppSettings, provider: DebridProvider): boolean {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "debridlink") {
+      const configuredKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys);
+      if (configuredKeys.length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
+        return true;
+      }
+    }
+    return isProviderDailyLimitReached(settings, effectiveProvider);
+  }
+
+  private isProviderSelectableFor(settings: AppSettings, provider: DebridProvider): boolean {
+    return this.isProviderConfiguredFor(settings, provider) && !this.isProviderDailyLimited(settings, provider);
+  }
+
+  private formatProviderLimitMessage(settings: AppSettings, provider: DebridProvider): string {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "debridlink" && parseDebridLinkApiKeys(settings.debridLinkApiKeys).length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
+      return "Debrid-Link Tageslimit erreicht (alle API-Keys ausgeschopft)";
+    }
+    return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
+  }
+
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
@@ -1923,7 +1961,7 @@ export class DebridService {
     const hosterKey = extractHosterFromUrl(link);
     if (hosterKey && routing[hosterKey]) {
       const routedProvider = routing[hosterKey];
-      if (this.isProviderConfiguredFor(settings, routedProvider)) {
+      if (this.isProviderSelectableFor(settings, routedProvider)) {
         logger.info(`Hoster-Zuordnung: ${hosterKey} → ${PROVIDER_LABELS[routedProvider]}`);
         try {
           const result = await this.unrestrictViaProvider(settings, routedProvider, link, signal);
@@ -1949,6 +1987,8 @@ export class DebridService {
           logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} fehlgeschlagen, Fallback auf Provider-Kette: ${errorText}`);
           // Fall through to normal provider chain
         }
+      } else if (this.isProviderConfiguredFor(settings, routedProvider) && this.isProviderDailyLimited(settings, routedProvider)) {
+        logger.info(`Hoster-Zuordnung ${hosterKey} ? ${PROVIDER_LABELS[routedProvider]} ?bersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
       } else {
         logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (Provider nicht konfiguriert/deaktiviert)`);
       }
@@ -1956,7 +1996,7 @@ export class DebridService {
 
     // 1Fichier is a direct file hoster. If the link is a 1fichier.com URL
     // and the API key is configured, use 1Fichier directly before debrid providers.
-    if (ONEFICHIER_URL_RE.test(link) && this.isProviderConfiguredFor(settings, "onefichier")) {
+    if (ONEFICHIER_URL_RE.test(link) && this.isProviderSelectableFor(settings, "onefichier")) {
       try {
         const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
         return {
@@ -1976,7 +2016,7 @@ export class DebridService {
     // DDownload is a direct file hoster, not a debrid service.
     // If the link is a ddownload.com/ddl.to URL and the account is configured,
     // use DDownload directly before trying any debrid providers.
-    if (DDOWNLOAD_URL_RE.test(link) && this.isProviderConfiguredFor(settings, "ddownload")) {
+    if (DDOWNLOAD_URL_RE.test(link) && this.isProviderSelectableFor(settings, "ddownload")) {
       try {
         const result = await this.unrestrictViaProvider(settings, "ddownload", link, signal);
         return {
@@ -2003,8 +2043,14 @@ export class DebridService {
       if (!this.isProviderConfiguredFor(settings, primary)) {
         throw new Error(`${PROVIDER_LABELS[primary]} nicht konfiguriert`);
       }
+      const selectedProvider = this.isProviderDailyLimited(settings, primary)
+        ? order.find((provider) => provider !== primary && this.isProviderSelectableFor(settings, provider))
+        : primary;
+      if (!selectedProvider) {
+        throw new Error(this.formatProviderLimitMessage(settings, primary));
+      }
       try {
-        const result = await this.unrestrictViaProvider(settings, primary, link, signal);
+        const result = await this.unrestrictViaProvider(settings, selectedProvider, link, signal);
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
           const fromPage = await resolveRapidgatorFilename(link, signal);
@@ -2015,19 +2061,20 @@ export class DebridService {
         return {
           ...result,
           fileName,
-          provider: primary,
-          providerLabel: PROVIDER_LABELS[primary] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
+          provider: selectedProvider,
+          providerLabel: PROVIDER_LABELS[selectedProvider] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
         };
       } catch (error) {
         const errorText = compactErrorText(error);
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
-        throw new Error(`Unrestrict fehlgeschlagen: ${PROVIDER_LABELS[primary]}: ${errorText}`);
+        throw new Error(`Unrestrict fehlgeschlagen: ${PROVIDER_LABELS[selectedProvider]}: ${errorText}`);
       }
     }
 
     let configuredFound = false;
+    let limitReachedFound = false;
     const attempts: string[] = [];
 
     for (const provider of order) {
@@ -2035,6 +2082,11 @@ export class DebridService {
         continue;
       }
       configuredFound = true;
+      if (this.isProviderDailyLimited(settings, provider)) {
+        limitReachedFound = true;
+        attempts.push(this.formatProviderLimitMessage(settings, provider));
+        continue;
+      }
 
       try {
         const result = await this.unrestrictViaProvider(settings, provider, link, signal);
@@ -2062,6 +2114,9 @@ export class DebridService {
 
     if (!configuredFound) {
       throw new Error("Kein Debrid-Provider konfiguriert");
+    }
+    if (limitReachedFound && attempts.every((entry) => /Tageslimit erreicht$/i.test(entry))) {
+      throw new Error("Alle konfigurierten Provider haben ihr Tageslimit erreicht");
     }
 
     throw new Error(`Unrestrict fehlgeschlagen: ${attempts.join(" | ")}`);
@@ -2138,7 +2193,7 @@ export class DebridService {
       return new OneFichierClient(settings.oneFichierApiKey).unrestrictLink(link, signal);
     }
     if (effectiveProvider === "debridlink") {
-      const dlResult = await this.getDebridLinkClient(settings.debridLinkApiKeys).unrestrictLink(link, signal);
+      const dlResult = await this.getDebridLinkClient(settings.debridLinkApiKeys).unrestrictLink(link, settings, signal);
       dlResult.sourceLabel = dlResult.sourceLabel || "API";
       return dlResult;
     }

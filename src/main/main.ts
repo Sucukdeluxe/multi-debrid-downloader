@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, shell, Tray } from "electron";
-import { AddLinksPayload, AppSettings, UpdateInstallProgress } from "../shared/types";
+import { AddLinksPayload, AppSettings, DebridProvider, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { getLogFilePath, logger } from "./logger";
@@ -26,6 +26,17 @@ function validatePlainObject(value: unknown, name: string): Record<string, unkno
 
 const IMPORT_QUEUE_MAX_BYTES = 10 * 1024 * 1024;
 const RENAME_PACKAGE_MAX_CHARS = 240;
+const RESETTABLE_PROVIDER_KEYS = new Set<DebridProvider>([
+  "realdebrid",
+  "megadebrid-api",
+  "megadebrid-web",
+  "bestdebrid",
+  "alldebrid",
+  "ddownload",
+  "onefichier",
+  "debridlink",
+  "linksnappy"
+]);
 function validateStringArray(value: unknown, name: string): string[] {
   if (!Array.isArray(value) || !value.every(v => typeof v === "string")) {
     throw new Error(`${name} muss ein String-Array sein`);
@@ -288,6 +299,20 @@ function registerIpcHandlers(): void {
       }
     }
     return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
+    const validatedProvider = validateString(provider, "provider") as DebridProvider;
+    if (!RESETTABLE_PROVIDER_KEYS.has(validatedProvider)) {
+      throw new Error("provider ist ungültig");
+    }
+    return controller.resetProviderDailyUsage(validatedProvider);
+  });
+  ipcMain.handle(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, (_event: IpcMainInvokeEvent, keyId: string) => {
+    const validatedKeyId = validateString(keyId, "keyId").trim();
+    if (!validatedKeyId) {
+      throw new Error("keyId ist ung?ltig");
+    }
+    return controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId);
   });
   ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
     validatePlainObject(payload ?? {}, "payload");

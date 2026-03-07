@@ -1,9 +1,11 @@
 import path from "node:path";
 import { app } from "electron";
+import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  DebridProvider,
   DuplicatePolicy,
   HistoryEntry,
   PackagePriority,
@@ -16,6 +18,7 @@ import {
   UpdateInstallProgress,
   UpdateInstallResult
 } from "../shared/types";
+import { resetDebridLinkApiKeyDailyUsage, resetProviderDailyUsage } from "../shared/provider-daily-limits";
 import { importDlcContainers } from "./container";
 import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
@@ -176,6 +179,11 @@ export class AppController {
     // Preserve the live totalDownloadedAllTime from the download manager
     const liveSettings = this.manager.getSettings();
     nextSettings.totalDownloadedAllTime = Math.max(nextSettings.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
+    nextSettings.providerDailyUsageDay = liveSettings.providerDailyUsageDay;
+    nextSettings.providerDailyUsageBytes = { ...(liveSettings.providerDailyUsageBytes || {}) };
+    nextSettings.debridLinkApiKeyDailyUsageBytes = Object.fromEntries(
+      Object.entries(liveSettings.debridLinkApiKeyDailyUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
+    );
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
@@ -190,6 +198,30 @@ export class AppController {
         logger.warn(`BestDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
       });
     }
+    return this.settings;
+  }
+
+  public resetProviderDailyUsage(provider: DebridProvider): AppSettings {
+    const liveSettings = this.manager.getSettings();
+    const nextSettings = normalizeSettings({
+      ...liveSettings,
+      ...resetProviderDailyUsage(liveSettings, provider)
+    });
+    this.settings = nextSettings;
+    saveSettings(this.storagePaths, this.settings);
+    this.manager.setSettings(this.settings);
+    return this.settings;
+  }
+
+  public resetDebridLinkApiKeyDailyUsage(keyId: string): AppSettings {
+    const liveSettings = this.manager.getSettings();
+    const nextSettings = normalizeSettings({
+      ...liveSettings,
+      ...resetDebridLinkApiKeyDailyUsage(liveSettings, keyId)
+    });
+    this.settings = nextSettings;
+    saveSettings(this.storagePaths, this.settings);
+    this.manager.setSettings(this.settings);
     return this.settings;
   }
 
