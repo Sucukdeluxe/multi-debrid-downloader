@@ -4007,12 +4007,15 @@ export class DownloadManager extends EventEmitter {
    *  old 50% recovery threshold). Reset to "queued" so it gets re-downloaded. */
   private revalidateCompletedItems(): void {
     let fixed = 0;
+    const touchedPackageIds = new Set<string>();
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "completed") continue;
       if (!item.targetPath || !item.totalBytes || item.totalBytes <= 0) continue;
       try {
         const stat = fs.statSync(item.targetPath);
-        if (stat.size < item.totalBytes - ALLOCATION_UNIT_SIZE) {
+        const expectedMinSize = item.totalBytes - ALLOCATION_UNIT_SIZE;
+        const persistedShortfall = item.downloadedBytes < expectedMinSize && stat.size >= expectedMinSize;
+        if (stat.size < expectedMinSize) {
           logger.warn(`revalidateCompleted: ${item.fileName} ist nur ${humanSize(stat.size)} statt ${humanSize(item.totalBytes)}, setze auf queued`);
           item.status = "queued";
           item.fullStatus = "Wartet";
@@ -4020,6 +4023,15 @@ export class DownloadManager extends EventEmitter {
           item.progressPercent = Math.floor((stat.size / item.totalBytes) * 100);
           item.speedBps = 0;
           fixed += 1;
+          touchedPackageIds.add(item.packageId);
+        } else if (persistedShortfall) {
+          logger.warn(`revalidateCompleted: ${item.fileName} wirkt pre-alloc/unvollständig (stat=${humanSize(stat.size)}, bytes=${humanSize(item.downloadedBytes)}, total=${humanSize(item.totalBytes)}), setze auf queued`);
+          item.status = "queued";
+          item.fullStatus = "Wartet (Auto-Recovery: pre-alloc)";
+          item.progressPercent = Math.max(0, Math.min(99, Math.floor((Math.max(0, item.downloadedBytes) / item.totalBytes) * 100)));
+          item.speedBps = 0;
+          fixed += 1;
+          touchedPackageIds.add(item.packageId);
         }
       } catch {
         // file doesn't exist — reset to queued so it gets re-downloaded
@@ -4030,9 +4042,16 @@ export class DownloadManager extends EventEmitter {
         item.progressPercent = 0;
         item.speedBps = 0;
         fixed += 1;
+        touchedPackageIds.add(item.packageId);
       }
     }
     if (fixed > 0) {
+      for (const packageId of touchedPackageIds) {
+        const pkg = this.session.packages[packageId];
+        if (pkg) {
+          this.refreshPackageStatus(pkg);
+        }
+      }
       logger.info(`revalidateCompletedItems: ${fixed} Items korrigiert`);
       this.persistSoon();
     }
@@ -6528,6 +6547,23 @@ export class DownloadManager extends EventEmitter {
           item.downloadedBytes = 0;
           item.progressPercent = 0;
           throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);
+        }
+
+        const exactLengthRequired = isLargeBinaryLikePath(item.fileName || effectiveTargetPath);
+        if (item.totalBytes && item.totalBytes > 0 && written < item.totalBytes) {
+          const shortfall = item.totalBytes - written;
+          if (preAllocated) {
+            try {
+              await fs.promises.truncate(effectiveTargetPath, written);
+            } catch { /* best-effort */ }
+          }
+          logger.warn(`Download-Underflow: erwartet=${item.totalBytes}, erhalten=${written}, shortfall=${shortfall} fuer ${item.fileName}`);
+          if (exactLengthRequired || shortfall > ALLOCATION_UNIT_SIZE) {
+            item.downloadedBytes = written;
+            item.progressPercent = Math.max(0, Math.min(99, Math.floor((written / item.totalBytes) * 100)));
+            item.speedBps = 0;
+            throw new Error(`download_underflow:${written}/${item.totalBytes}`);
+          }
         }
 
         // Truncate pre-allocated files to actual bytes written to prevent zero-padded tail

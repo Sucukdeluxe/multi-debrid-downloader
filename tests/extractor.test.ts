@@ -11,6 +11,7 @@ import {
   detectArchiveSignature,
   classifyExtractionError,
   findArchiveCandidates,
+  resolveExtractorBackendMode,
 } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
@@ -988,6 +989,10 @@ describe("extractor", () => {
       expect(classifyExtractionError("WinRAR/UnRAR nicht gefunden")).toBe("no_extractor");
     });
 
+    it("prioritizes checksum errors over embedded wrong-password wording", () => {
+      expect(classifyExtractionError("Checksum error in the encrypted file. Corrupt file or wrong password.")).toBe("crc_error");
+    });
+
     it("returns unknown for unrecognized errors", () => {
       expect(classifyExtractionError("something weird happened")).toBe("unknown");
     });
@@ -1084,6 +1089,22 @@ describe("extractor", () => {
 
       expect(result.extracted).toBe(1);
       expect(result.failed).toBe(0);
+    });
+  });
+
+  describe("backend selection", () => {
+    it("defaults to auto in production when no backend override is set", () => {
+      expect(resolveExtractorBackendMode(undefined, false)).toBe("auto");
+    });
+
+    it("defaults to legacy in vitest when no backend override is set", () => {
+      expect(resolveExtractorBackendMode(undefined, true)).toBe("legacy");
+    });
+
+    it("respects explicit backend overrides", () => {
+      expect(resolveExtractorBackendMode("legacy", false)).toBe("legacy");
+      expect(resolveExtractorBackendMode("jvm", false)).toBe("jvm");
+      expect(resolveExtractorBackendMode("auto", false)).toBe("auto");
     });
   });
 });
