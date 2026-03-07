@@ -1970,11 +1970,61 @@ async function runExternalExtract(
       }
     } catch (legacyError) {
       const legacyText = String((legacyError as Error)?.message || legacyError || "");
-      const suggestRedownload = jvmCodecError && classifyExtractionError(legacyText) === "crc_error";
-      throw withExtractionErrorHints(legacyError, {
-        suggestRedownload,
-        jvmFailureReason: jvmFailureReason || undefined
-      });
+      const legacyCategory = classifyExtractionError(legacyText);
+      const isCrcOrWrongPw = legacyCategory === "crc_error" || legacyCategory === "wrong_password";
+
+      // ── Retry once after 2s delay ──
+      // On Windows, freshly completed downloads may still have file handles not
+      // fully released by the OS.  Encrypted RAR5 headers are especially sensitive:
+      // even a single unreadable byte causes "Checksum error in the encrypted file"
+      // at bestPercent=0, indistinguishable from a wrong password.
+      // A short delay allows the OS to finalise all handles and flush caches.
+      if (isCrcOrWrongPw && !signal?.aborted) {
+        const retryDelayMs = 2500;
+        logger.warn(
+          `Legacy-Extraktion fehlgeschlagen (${legacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`
+        );
+        await extractRetryDelay(retryDelayMs);
+        if (!signal?.aborted) {
+          try {
+            const retryCmd = usedCommand;
+            const retryPassword = await runExternalExtractInner(
+              retryCmd,
+              archivePath,
+              effectiveTargetDir,
+              conflictMode,
+              passwordCandidates,
+              onArchiveProgress,
+              signal,
+              timeoutMs,
+              hybridMode,
+              onPasswordAttempt,
+              forceFlatMode,
+              flatModeResult
+            );
+            logger.info(`Legacy-Retry erfolgreich: ${archiveName}`);
+            password = retryPassword;
+            usedCommand = retryCmd;
+          } catch (retryError) {
+            const retryText = String((retryError as Error)?.message || retryError || "");
+            const retryCategory = classifyExtractionError(retryText);
+            logger.warn(`Legacy-Retry ebenfalls fehlgeschlagen (${retryCategory}): ${archiveName}`);
+            const suggestRedownload = jvmCodecError && (retryCategory === "crc_error" || retryCategory === "wrong_password");
+            throw withExtractionErrorHints(retryError, {
+              suggestRedownload,
+              jvmFailureReason: jvmFailureReason || undefined
+            });
+          }
+        } else {
+          throw legacyError;
+        }
+      } else {
+        const suggestRedownload = jvmCodecError && isCrcOrWrongPw;
+        throw withExtractionErrorHints(legacyError, {
+          suggestRedownload,
+          jvmFailureReason: jvmFailureReason || undefined
+        });
+      }
     }
     const legacyMs = Date.now() - legacyStartedAt;
     const extractorName = path.basename(usedCommand).replace(/\.exe$/i, "");
@@ -2144,6 +2194,9 @@ async function runExternalExtractInner(
 
   throw new Error(lastError || "Entpacken fehlgeschlagen");
 }
+
+// Delay helper for extraction retries (allows file handles to be released on Windows)
+const extractRetryDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isZipSafetyGuardError(error: unknown): boolean {
   const text = String(error || "").toLowerCase();
