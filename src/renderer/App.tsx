@@ -3023,9 +3023,42 @@ export function App(): ReactElement {
   const dragSelectRef = useRef(false);
   const dragAnchorRef = useRef<string | null>(null);
   const dragDidMoveRef = useRef(false);
+  const lastClickedIdRef = useRef<string | null>(null);
 
-  const onSelectId = useCallback((id: string, ctrlKey: boolean): void => {
+  // Flat list of all visible IDs (package headers + their visible items) in display order
+  const visibleOrderIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const pkg of visiblePackages) {
+      ids.push(pkg.id);
+      if (!(collapsedPackages[pkg.id] ?? false)) {
+        const items = itemsByPackage.get(pkg.id) ?? [];
+        for (const item of items) {
+          if (snapshot.settings.hideExtractedItems && item.fullStatus?.startsWith("Entpackt")) continue;
+          ids.push(item.id);
+        }
+      }
+    }
+    return ids;
+  }, [visiblePackages, collapsedPackages, itemsByPackage, snapshot.settings.hideExtractedItems]);
+
+  const onSelectId = useCallback((id: string, ctrlKey: boolean, shiftKey: boolean): void => {
     if (dragDidMoveRef.current) return; // drag handled it, skip click
+    if (shiftKey && lastClickedIdRef.current) {
+      const anchorIdx = visibleOrderIds.indexOf(lastClickedIdRef.current);
+      const targetIdx = visibleOrderIds.indexOf(id);
+      if (anchorIdx !== -1 && targetIdx !== -1) {
+        const from = Math.min(anchorIdx, targetIdx);
+        const to = Math.max(anchorIdx, targetIdx);
+        const rangeIds = visibleOrderIds.slice(from, to + 1);
+        setSelectedIds((prev) => {
+          const next = ctrlKey ? new Set(prev) : new Set<string>();
+          for (const rid of rangeIds) next.add(rid);
+          return next;
+        });
+        return;
+      }
+    }
+    lastClickedIdRef.current = id;
     setSelectedIds((prev) => {
       if (ctrlKey) {
         const next = new Set(prev);
@@ -3035,7 +3068,7 @@ export function App(): ReactElement {
       if (prev.size === 1 && prev.has(id)) return new Set();
       return new Set([id]);
     });
-  }, []);
+  }, [visibleOrderIds]);
 
   const onSelectMouseDown = useCallback((id: string, e: React.MouseEvent): void => {
     if (!e.ctrlKey || e.button !== 0) return;
