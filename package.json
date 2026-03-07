@@ -1,6 +1,6 @@
 {
   "name": "real-debrid-downloader",
-  "version": "1.7.8",
+  "version": "1.7.9",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
