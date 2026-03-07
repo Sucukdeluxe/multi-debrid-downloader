@@ -2042,6 +2042,266 @@ describe("download manager", () => {
     expect(session.packages[packageId]?.status).toBe("queued");
   });
 
+  it("does not requeue completed archive parts without local file evidence", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "crc-clean-pkg";
+    const createdAt = Date.now() - 10_000;
+    const outputDir = path.join(root, "downloads", "crc-clean");
+    const extractDir = path.join(root, "extract", "crc-clean");
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const archiveNames = ["show.s01e01.part1.rar", "show.s01e01.part2.rar"];
+    const itemIds = archiveNames.map((_, index) => `crc-clean-item-${index}`);
+    const archiveSize = 64 * 1024;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "crc-clean",
+      outputDir,
+      extractDir,
+      status: "extracting",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    for (const [index, archiveName] of archiveNames.entries()) {
+      const targetPath = path.join(outputDir, archiveName);
+      fs.writeFileSync(targetPath, Buffer.alloc(archiveSize, index + 1));
+      session.items[itemIds[index]!] = {
+        id: itemIds[index]!,
+        packageId,
+        url: `https://dummy/${archiveName}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: archiveSize,
+        totalBytes: archiveSize,
+        progressPercent: 100,
+        fileName: archiveName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Entpacken - Ausstehend",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const changed = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]!),
+      {
+        archiveName: "show.s01e01.part1.rar",
+        errorText: "Checksum error in the encrypted file",
+        category: "crc_error",
+        suggestRedownload: true,
+        jvmFailureReason: "Can not open the file as archive"
+      },
+      "hybrid"
+    );
+
+    expect(changed).toBe(0);
+    for (const itemId of itemIds) {
+      const item = session.items[itemId]!;
+      expect(item.status).toBe("completed");
+      expect(item.targetPath).toContain(".rar");
+      expect(item.downloadedBytes).toBe(archiveSize);
+    }
+  });
+
+  it("does not treat rev files as ready archive parts during disk fallback", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "disk-fallback-rev-pkg";
+    const itemIds = ["disk-fallback-rev-1", "disk-fallback-rev-2"];
+    const createdAt = Date.now() - 10_000;
+    const outputDir = path.join(root, "downloads", "disk-fallback-rev");
+    const extractDir = path.join(root, "extract", "disk-fallback-rev");
+    const part1Path = path.join(outputDir, "show.s01e01.part1.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(part1Path, Buffer.alloc(64 * 1024, 1));
+    fs.writeFileSync(path.join(outputDir, "show.s01e01.rev"), Buffer.alloc(32 * 1024, 2));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "disk-fallback-rev",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemIds[0]] = {
+      id: itemIds[0],
+      packageId,
+      url: "https://dummy/show.s01e01.part1.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 64 * 1024,
+      totalBytes: 64 * 1024,
+      progressPercent: 100,
+      fileName: "show.s01e01.part1.rar",
+      targetPath: part1Path,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpacken - Ausstehend",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemIds[1]] = {
+      id: itemIds[1],
+      packageId,
+      url: "https://dummy/show.s01e01.part2.rar",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: 64 * 1024,
+      progressPercent: 0,
+      fileName: "show.s01e01.part2.rar",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const ready = await (manager as any).findReadyArchiveSets(session.packages[packageId]);
+    expect(Array.from(ready)).toHaveLength(0);
+  });
+
+  it("allows disk fallback when queued archive parts are fully present on disk", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "disk-fallback-ready-pkg";
+    const itemIds = ["disk-fallback-ready-1", "disk-fallback-ready-2"];
+    const createdAt = Date.now() - 10_000;
+    const outputDir = path.join(root, "downloads", "disk-fallback-ready");
+    const extractDir = path.join(root, "extract", "disk-fallback-ready");
+    const part1Path = path.join(outputDir, "show.s01e01.part1.rar");
+    const part2Path = path.join(outputDir, "show.s01e01.part2.rar");
+    const archiveSize = 64 * 1024;
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(part1Path, Buffer.alloc(archiveSize, 1));
+    fs.writeFileSync(part2Path, Buffer.alloc(archiveSize, 2));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "disk-fallback-ready",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemIds[0]] = {
+      id: itemIds[0],
+      packageId,
+      url: "https://dummy/show.s01e01.part1.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "show.s01e01.part1.rar",
+      targetPath: part1Path,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpacken - Ausstehend",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemIds[1]] = {
+      id: itemIds[1],
+      packageId,
+      url: "https://dummy/show.s01e01.part2.rar",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "show.s01e01.part2.rar",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const ready = await (manager as any).findReadyArchiveSets(session.packages[packageId]);
+    expect(Array.from(ready)).toEqual([part1Path.toLowerCase()]);
+  });
+
   it("detects start conflicts when extract output already exists", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
