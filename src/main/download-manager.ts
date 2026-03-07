@@ -1067,6 +1067,7 @@ export class DownloadManager extends EventEmitter {
     });
     this.invalidateMegaSessionFn = options.invalidateMegaSession;
     this.onHistoryEntryCallback = options.onHistoryEntry;
+    logger.info(`DownloadManager Init: ${Object.keys(this.session.packages).length} Pakete, ${this.itemCount} Items, cleanupPolicy=${this.settings.completedCleanupPolicy}`);
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
@@ -3491,8 +3492,13 @@ export class DownloadManager extends EventEmitter {
     // Persist synchronously on shutdown to guarantee data is written before process exits
     // Skip if a backup was just imported — the restored session on disk must not be overwritten
     if (!this.skipShutdownPersist && !this.blockAllPersistence) {
+      const pkgCount = Object.keys(this.session.packages).length;
+      const itemCount = Object.keys(this.session.items).length;
+      logger.info(`Shutdown-Save: ${pkgCount} Pakete, ${itemCount} Items`);
       saveSession(this.storagePaths, this.session);
       saveSettings(this.storagePaths, this.settings);
+    } else {
+      logger.info(`Shutdown-Save übersprungen: skipShutdownPersist=${this.skipShutdownPersist}, blockAllPersistence=${this.blockAllPersistence}`);
     }
     this.emitState(true);
     logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
@@ -3669,6 +3675,7 @@ export class DownloadManager extends EventEmitter {
     if (this.settings.completedCleanupPolicy !== "on_start") {
       return;
     }
+    logger.info(`applyOnStartCleanupPolicy: ${Object.keys(this.session.packages).length} Pakete, ${Object.keys(this.session.items).length} Items vor Bereinigung`);
     for (const pkgId of [...this.session.packageOrder]) {
       const pkg = this.session.packages[pkgId];
       if (!pkg) {
@@ -3691,14 +3698,19 @@ export class DownloadManager extends EventEmitter {
         return true;
       });
       if (pkg.itemIds.length === 0) {
+        logger.info(`applyOnStartCleanupPolicy: entferne Paket ${pkg.name} (${completedItemIds.length} completed Items)`);
         this.removePackageFromSession(pkgId, completedItemIds);
       } else {
+        if (completedItemIds.length > 0) {
+          logger.info(`applyOnStartCleanupPolicy: entferne ${completedItemIds.length} completed Items aus Paket ${pkg.name} (${pkg.itemIds.length} Items verbleiben)`);
+        }
         for (const itemId of completedItemIds) {
           delete this.session.items[itemId];
           this.itemCount = Math.max(0, this.itemCount - 1);
         }
       }
     }
+    logger.info(`applyOnStartCleanupPolicy: ${Object.keys(this.session.packages).length} Pakete, ${Object.keys(this.session.items).length} Items nach Bereinigung`);
   }
 
   private applyRetroactiveCleanupPolicy(): void {
@@ -5526,15 +5538,21 @@ export class DownloadManager extends EventEmitter {
           const wasValidating = item.status === "validating";
           active.stallRetries += 1;
           logger.warn(`Stall erkannt: item=${item.fileName || item.id}, phase=${wasValidating ? "validating" : "downloading"}, retry=${active.stallRetries}/${retryDisplayLimit}, bytes=${item.downloadedBytes}, error=${stallErrorText || "none"}, provider=${item.provider || "?"}`);
-          // Shelve check: too many consecutive failures → long pause
+          // Shelve check: too many consecutive failures → pause with fresh provider (like manual reset)
           const totalFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
           if (totalFailures >= 15) {
             item.retries += 1;
             active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
             active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
-            logger.warn(`Item shelved: ${item.fileName || item.id}, totalFailures=${totalFailures}`);
-            this.queueRetry(item, active, 300000, `Viele Fehler (${totalFailures}x), Pause 5 min`);
+            const oldProvider = item.provider;
+            item.provider = null; // fresh provider selection after shelve (like manual reset)
+            if (oldProvider) {
+              this.providerFailures.delete(oldProvider); // clear circuit breaker for old provider
+            }
+            const shelveDurationMs = 90000; // 90s instead of 5 min — manual restart works immediately, so no need for long pause
+            logger.warn(`Item shelved: ${item.fileName || item.id}, totalFailures=${totalFailures}, oldProvider=${oldProvider || "?"}, provider+circuit-breaker reset, pause=${shelveDurationMs}ms`);
+            this.queueRetry(item, active, shelveDurationMs, `Viele Fehler (${totalFailures}x), Pause ${Math.ceil(shelveDurationMs / 1000)}s`);
             item.lastError = stallErrorText;
             this.persistSoon();
             this.emitState();
@@ -5651,8 +5669,14 @@ export class DownloadManager extends EventEmitter {
             active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
             active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
-            logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}`);
-            this.queueRetry(item, active, 300000, `Viele Fehler (${totalNonStallFailures}x), Pause 5 min`);
+            const oldProvider = item.provider;
+            item.provider = null; // fresh provider selection after shelve (like manual reset)
+            if (oldProvider) {
+              this.providerFailures.delete(oldProvider); // clear circuit breaker for old provider
+            }
+            const shelveDurationMs = 90000;
+            logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}, oldProvider=${oldProvider || "?"}, provider+circuit-breaker reset, pause=${shelveDurationMs}ms`);
+            this.queueRetry(item, active, shelveDurationMs, `Viele Fehler (${totalNonStallFailures}x), Pause ${Math.ceil(shelveDurationMs / 1000)}s`);
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();

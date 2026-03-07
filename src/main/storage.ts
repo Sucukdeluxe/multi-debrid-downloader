@@ -702,9 +702,15 @@ export function normalizeLoadedSessionTransientFields(session: SessionState): Se
 
 function readSessionFile(filePath: string): SessionState | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-    return normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
-  } catch {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    const session = normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
+    const pkgCount = Object.keys(session.packages).length;
+    const itemCount = Object.keys(session.items).length;
+    logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items, ${raw.length} Bytes)`);
+    return session;
+  } catch (error) {
+    logger.error(`Session-Datei nicht lesbar: ${filePath}: ${String(error)}`);
     return null;
   }
 }
@@ -794,15 +800,37 @@ export function emptySession(): SessionState {
 export function loadSession(paths: StoragePaths): SessionState {
   ensureBaseDir(paths.baseDir);
   if (!fs.existsSync(paths.sessionFile)) {
+    logger.info("Keine Session-Datei vorhanden, starte mit leerer Session");
     return emptySession();
   }
 
   const primary = readSessionFile(paths.sessionFile);
+  const backupFile = sessionBackupPath(paths.sessionFile);
+
+  // If primary loaded but is empty, check if backup has packages (safety net)
   if (primary) {
+    const primaryPkgCount = Object.keys(primary.packages).length;
+    if (primaryPkgCount === 0 && fs.existsSync(backupFile)) {
+      const backup = readSessionFile(backupFile);
+      if (backup) {
+        const backupPkgCount = Object.keys(backup.packages).length;
+        if (backupPkgCount > 0) {
+          logger.warn(`Session-Datei ist leer (0 Pakete), aber Backup hat ${backupPkgCount} Pakete — verwende Backup`);
+          try {
+            const payload = JSON.stringify({ ...backup, updatedAt: Date.now() });
+            const tempPath = sessionTempPath(paths.sessionFile, "sync");
+            fs.writeFileSync(tempPath, payload, "utf8");
+            syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+          } catch {
+            // ignore restore write failure
+          }
+          return backup;
+        }
+      }
+    }
     return primary;
   }
 
-  const backupFile = sessionBackupPath(paths.sessionFile);
   const backup = fs.existsSync(backupFile) ? readSessionFile(backupFile) : null;
   if (backup) {
     logger.warn("Session defekt, Backup-Datei wird verwendet");
