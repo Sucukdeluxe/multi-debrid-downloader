@@ -4225,7 +4225,11 @@ export class DownloadManager extends EventEmitter {
     failure: ExtractArchiveFailureInfo,
     scope: "hybrid" | "full"
   ): number {
-    if (!failure.suggestRedownload || failure.category !== "crc_error") {
+    // Allow auto-recovery for both crc_error and wrong_password when suggestRedownload is set.
+    // Encrypted RAR5 archives with corrupt content produce "Checksum error in the encrypted
+    // file" which is indistinguishable from a wrong-password error.  When the JVM extractor
+    // also failed (suggestRedownload=true), re-downloading is warranted for both categories.
+    if (!failure.suggestRedownload || (failure.category !== "crc_error" && failure.category !== "wrong_password")) {
       return 0;
     }
 
@@ -4269,8 +4273,24 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (hasValidSignature) {
-        logger.warn(`Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - Dateien korrekte Groesse, Archiv-Signatur gueltig (vermutlich falsches Passwort)`);
-        return 0;
+        // Check if other archives in this package were successfully extracted.
+        // If a known password worked for siblings but NOT for this archive,
+        // the file is very likely corrupt despite having a valid header.
+        const otherItemsExtracted = items.some((item) =>
+          item.status === "completed" && isExtractedLabel(item.fullStatus)
+          && !archiveItems.includes(item)
+        );
+        if (otherItemsExtracted) {
+          logger.warn(
+            `Auto-Recovery (${scope}): ${failure.archiveName} - Signatur gueltig aber ` +
+            `andere Archive im Paket bereits entpackt (bekanntes Passwort existiert). ` +
+            `Erzwinge Re-Download aller ${archiveItems.length} Parts (wahrscheinliche Korruption)`
+          );
+          corruptArchiveItems.push(...inspectedArchiveItems);
+        } else {
+          logger.warn(`Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - Dateien korrekte Groesse, Archiv-Signatur gueltig (vermutlich falsches Passwort)`);
+          return 0;
+        }
       }
 
       logger.warn(
@@ -6863,6 +6883,20 @@ export class DownloadManager extends EventEmitter {
           // Ensure stream is fully destroyed before potential retry opens new handle
           if (!stream.destroyed) {
             stream.destroy();
+          }
+          // fsync for pre-allocated files: force OS to flush all pending writes to
+          // disk so extraction processes opening the file immediately after download
+          // see the complete data (prevents "Checksum error" on Windows when file
+          // handles haven't been fully released yet).
+          if (!bodyError && preAllocated) {
+            try {
+              const syncFd = await fs.promises.open(effectiveTargetPath, "r");
+              try {
+                await syncFd.datasync();
+              } finally {
+                await syncFd.close();
+              }
+            } catch { /* best-effort; extraction retry will catch any remaining issues */ }
           }
           // If the body read succeeded but the final flush or stream close failed,
           // propagate the error so the download is retried instead of marked complete.
