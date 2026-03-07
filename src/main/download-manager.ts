@@ -4500,6 +4500,15 @@ export class DownloadManager extends EventEmitter {
           logger.info(`Post-Process Runde ${round} fertig in ${(roundMs / 1000).toFixed(1)}s (requeue=${hadRequeue}, nextRequeue=${this.hybridExtractRequeue.has(packageId)}): pkg=${packageId.slice(0, 8)}`);
           this.persistSoon();
           this.emitState();
+          // If this round was very fast (no extraction work, just a
+          // findReadyArchiveSets scan), consume pending requeues and
+          // exit the loop.  The next download completion will trigger a
+          // fresh post-processing task.  This prevents dozens of no-op
+          // rounds when many small archive parts complete in rapid
+          // succession (e.g. 15-20 × 101 MB parts per episode).
+          if (roundMs < 2000 && this.hybridExtractRequeue.has(packageId)) {
+            this.hybridExtractRequeue.delete(packageId);
+          }
         } while (this.hybridExtractRequeue.has(packageId));
       } finally {
         this.releasePostProcessSlot();
@@ -6702,6 +6711,15 @@ export class DownloadManager extends EventEmitter {
               this.recordSpeed(buffer.length, item.packageId);
               throughputWindowBytes += buffer.length;
 
+              // All expected bytes received — break immediately instead of waiting
+              // for the server to close the connection.  Some servers/CDNs delay
+              // the FIN packet, which would trigger the stall timeout even though
+              // the file is already complete.  This especially affects small
+              // multi-part archives (e.g. 15-20 × 101 MB) on fast connections.
+              if (item.totalBytes && item.totalBytes > 0 && existingBytes + written >= item.totalBytes) {
+                break;
+              }
+
               const throughputNow = nowMs();
               if (lowThroughputTimeoutMs > 0 && throughputNow - throughputWindowStartedAt >= lowThroughputTimeoutMs) {
                 if (throughputWindowBytes < lowThroughputMinBytes) {
@@ -6742,6 +6760,9 @@ export class DownloadManager extends EventEmitter {
           } finally {
             clearInterval(idleTimer);
             try {
+              // Cancel pending reads before releasing the lock so the
+              // underlying TCP connection is torn down promptly.
+              await reader.cancel().catch(() => {});
               reader.releaseLock();
             } catch {
               // ignore
