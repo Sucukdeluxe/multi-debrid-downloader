@@ -7365,15 +7365,24 @@ export class DownloadManager extends EventEmitter {
       }
       try {
         const stat = await fs.promises.stat(item.targetPath);
-        // Require file to be either ≥50% of expected size or at least 10 KB to avoid
-        // recovering tiny error-response files (e.g. 9-byte "Forbidden" pages).
+        // Require file to be essentially complete — within one allocation unit of the
+        // expected size.  The old 50% threshold incorrectly recovered partial downloads
+        // (e.g. 627 MB of 1001 MB) and triggered hybrid extraction on incomplete archives.
         const minSize = item.totalBytes && item.totalBytes > 0
-          ? Math.max(10240, Math.floor(item.totalBytes * 0.5))
+          ? Math.max(10240, item.totalBytes - ALLOCATION_UNIT_SIZE)
           : 10240;
         if (stat.size >= minSize) {
           // Re-check: another task may have started this item during the await
           if (this.activeTasks.has(item.id) || item.status === "downloading"
             || item.status === "validating" || item.status === "integrity_check") {
+            continue;
+          }
+          // Guard against pre-allocated sparse files from a hard crash: file has
+          // the full expected size but downloadedBytes is significantly behind.
+          if (item.downloadedBytes > 0 && item.totalBytes && item.totalBytes > 0
+            && stat.size >= item.totalBytes - ALLOCATION_UNIT_SIZE
+            && item.downloadedBytes < item.totalBytes * 0.95) {
+            logger.warn(`Item-Recovery: ${item.fileName} uebersprungen – vermutlich pre-alloc (stat=${humanSize(stat.size)}, bytes=${humanSize(item.downloadedBytes)}, total=${humanSize(item.totalBytes)})`);
             continue;
           }
           logger.info(`Item-Recovery: ${item.fileName} war "${item.status}" aber Datei existiert (${humanSize(stat.size)}), setze auf completed`);
