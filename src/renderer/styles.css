@@ -624,7 +624,7 @@ body,
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
 .downloads-toolbar {
@@ -632,6 +632,7 @@ body,
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .downloads-toolbar-actions {
@@ -649,14 +650,16 @@ body,
   display: grid;
   /* grid-template-columns set via inline style from columnOrder */
   gap: 8px;
-  padding: 5px 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 4px 10px;
+  background: color-mix(in srgb, var(--card) 58%, transparent);
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  border-radius: 0;
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
   user-select: none;
+  margin-bottom: 1px;
 }
 
 .pkg-column-header .pkg-col-progress,
@@ -1150,6 +1153,10 @@ body,
   flex-wrap: wrap;
 }
 
+.account-display-toggle {
+  width: fit-content;
+}
+
 .account-inline-stat {
   display: inline-flex;
   align-items: center;
@@ -1290,6 +1297,19 @@ body,
   line-height: 1.4;
 }
 
+.account-usage-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.account-usage-stats.warning {
+  color: color-mix(in srgb, #f59e0b 78%, white 8%);
+}
+
 .account-mode-pill,
 .account-status-pill {
   display: inline-flex;
@@ -1364,6 +1384,74 @@ body,
 
 .account-row-disabled .account-row-actions {
   opacity: 1;
+}
+
+.account-subkey-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.account-subkey-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--field) 72%, transparent);
+}
+
+.account-subkey-row.warning {
+  border-color: color-mix(in srgb, #f59e0b 42%, transparent);
+}
+
+.account-subkey-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.account-subkey-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.account-subkey-head strong {
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.account-subkey-head span {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.account-subkey-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.account-subkey-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.account-subkey-actions .btn {
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 .hoster-routing-table {
@@ -1681,6 +1769,54 @@ body,
   line-height: 1.5;
 }
 
+.account-dl-key-limit-list {
+  display: grid;
+  gap: 8px;
+}
+
+.account-dl-key-limit-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  background: color-mix(in srgb, var(--field) 84%, transparent);
+}
+
+.account-dl-key-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.account-dl-key-meta strong {
+  font-size: 13px;
+}
+
+.account-dl-key-meta span {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-secret.account-secret-multiline {
+  display: grid;
+  align-items: start;
+  gap: 4px;
+  padding: 10px 12px;
+  white-space: normal;
+}
+
+.account-secret.account-secret-multiline span {
+  display: block;
+  line-height: 1.35;
+}
+
 .account-status-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1730,9 +1866,22 @@ body,
 
 .package-card {
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 11px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--card) 96%, transparent), color-mix(in srgb, var(--surface) 96%, transparent));
-  padding: 8px 12px;
+  padding: 6px 10px;
+}
+
+.queue-package-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+}
+
+.queue-package-card:hover {
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
 }
 
 .package-card[draggable="true"] {
@@ -1752,6 +1901,12 @@ body,
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+.queue-package-card.pkg-selected {
+  border-color: transparent;
+  box-shadow: inset 2px 0 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
 .item-selected {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
@@ -1759,18 +1914,23 @@ body,
 .package-card header {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
+}
+
+.queue-package-card header {
+  min-height: 28px;
+  padding: 3px 10px;
 }
 
 .package-card h4 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .package-card header span {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .package-card header .progress-inline-text-filled,
@@ -1796,6 +1956,15 @@ body,
   cursor: pointer;
   padding: 0;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.queue-package-card .pkg-toggle {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 12px;
+  background: transparent;
+  border-color: color-mix(in srgb, var(--border) 42%, transparent);
 }
 
 .pkg-toggle:hover {
@@ -1837,12 +2006,19 @@ body,
 }
 
 .progress {
-  margin-top: 8px;
-  height: 7px;
+  margin-top: 6px;
+  height: 6px;
   border-radius: 999px;
   background: var(--progress-track);
   overflow: hidden;
   display: flex;
+}
+
+.queue-package-card .progress {
+  margin-top: 0;
+  height: 2px;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--progress-track) 80%, transparent);
 }
 
 .progress-dl {
@@ -1945,10 +2121,20 @@ td {
   /* grid-template-columns set via inline style from columnOrder */
   gap: 8px;
   align-items: center;
-  margin: 0 -12px;
-  padding: 4px 12px;
-  font-size: 13px;
+  margin: 0 -10px;
+  padding: 3px 10px;
+  font-size: 12px;
   border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.queue-package-card .item-row {
+  margin: 0;
+  padding: 2px 10px 2px 10px;
+  border-top: 0;
+}
+
+.queue-package-card .item-row + .item-row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 24%, transparent);
 }
 
 .item-row:hover {
@@ -1960,7 +2146,7 @@ td {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -1970,7 +2156,7 @@ td {
 
 .item-row .pkg-col-name {
   color: var(--text);
-  padding-left: 32px;
+  padding-left: 28px;
 }
 
 .link-status-dot {
@@ -2520,6 +2706,17 @@ td {
 
   .account-row-actions {
     justify-content: flex-start;
+  }
+
+  .account-subkey-row,
+  .account-dl-key-limit-row {
+    grid-template-columns: 1fr;
+  }
+
+  .account-subkey-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
   }
 
   .account-picker-list {

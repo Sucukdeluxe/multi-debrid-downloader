@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
+import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
+import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
@@ -79,6 +81,100 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     await expect(service.unrestrictLink("https://rapidgator.net/file/example.part2.rar.html")).rejects.toThrow();
     expect(megaWeb).toHaveBeenCalledTimes(0);
+  });
+
+  it("skips a provider whose daily limit is already reached and uses the next provider", async () => {
+    const calledUrls: string[] = [];
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      debridLinkApiKeys: "dl-token",
+      providerOrder: ["realdebrid", "debridlink"] as const,
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "debridlink" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true,
+      providerDailyLimitBytes: { realdebrid: 100 },
+      providerDailyUsageBytes: { realdebrid: 100 },
+      providerDailyUsageDay: getProviderUsageDayKey()
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            downloadUrl: "https://debrid-link.example/file.bin",
+            name: "file.bin",
+            size: 1234
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        throw new Error("Real-Debrid should have been skipped due to daily limit");
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://hoster.example/file.bin");
+    expect(result.provider).toBe("debridlink");
+    expect(result.directUrl).toBe("https://debrid-link.example/file.bin");
+    expect(calledUrls.some((url) => url.includes("api.real-debrid.com/rest/1.0/unrestrict/link"))).toBe(false);
+  });
+
+  it("uses the next Debrid-Link key when the first key hit its local daily limit", async () => {
+    const keys = parseDebridLinkApiKeys("dl-key-one\ndl-key-two");
+    let usedAuthHeader = "";
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      debridLinkApiKeyDailyLimitBytes: {
+        [keys[0].id]: 100
+      },
+      debridLinkApiKeyDailyUsageBytes: {
+        [keys[0].id]: 100
+      },
+      providerDailyUsageDay: getProviderUsageDayKey()
+    };
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const headers = init?.headers;
+      if (headers instanceof Headers) {
+        usedAuthHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        usedAuthHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        usedAuthHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          downloadUrl: "https://debrid-link.example/file.bin",
+          name: "file.bin",
+          size: 1234
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://hoster.example/file.bin");
+
+    expect(usedAuthHeader).toBe("Bearer dl-key-two");
+    expect(result.provider).toBe("debridlink");
+    expect(result.providerLabel).toContain("Key 2");
   });
 
   it("uses BestDebrid auth header without token query fallback", async () => {

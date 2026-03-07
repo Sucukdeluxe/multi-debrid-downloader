@@ -101,6 +101,8 @@ export interface AppSettings {
   minimizeToTray: boolean;
   theme: AppTheme;
   collapseNewPackages: boolean;
+  accountListShowDetailedDebridLinkKeys: boolean;
+  autoSortPackagesByProgress: boolean;
   autoSkipExtracted: boolean;
   confirmDeleteSelection: boolean;
   totalDownloadedAllTime: number;
@@ -110,6 +112,11 @@ export interface AppSettings {
   autoExtractWhenStopped: boolean;
   disabledProviders: DebridProvider[];
   hosterRouting: Record<string, DebridProvider>;
+  providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;
+  providerDailyUsageBytes: Partial<Record<DebridProvider, number>>;
+  debridLinkApiKeyDailyLimitBytes: Record<string, number>;
+  debridLinkApiKeyDailyUsageBytes: Record<string, number>;
+  providerDailyUsageDay: string;
   scheduledStartEpochMs: number;
 }
 
@@ -119,6 +126,8 @@ export interface DownloadItem {
   url: string;
   provider: DebridProvider | null;
   providerLabel?: string;
+  providerAccountId?: string;
+  providerAccountLabel?: string;
   status: DownloadStatus;
   retries: number;
   speedBps: number;

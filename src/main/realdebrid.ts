@@ -10,6 +10,8 @@ export interface UnrestrictedLink {
   retriesUsed: number;
   skipTlsVerify?: boolean;
   sourceLabel?: string;
+  sourceAccountId?: string;
+  sourceAccountLabel?: string;
 }
 
 function shouldRetryStatus(status: number): boolean {

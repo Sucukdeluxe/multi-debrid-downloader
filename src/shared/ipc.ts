@@ -6,6 +6,8 @@ export const IPC_CHANNELS = {
   UPDATE_INSTALL_PROGRESS: "app:update-install-progress",
   OPEN_EXTERNAL: "app:open-external",
   UPDATE_SETTINGS: "app:update-settings",
+  RESET_PROVIDER_DAILY_USAGE: "app:reset-provider-daily-usage",
+  RESET_DEBRID_LINK_API_KEY_DAILY_USAGE: "app:reset-debrid-link-api-key-daily-usage",
   ADD_LINKS: "queue:add-links",
   ADD_CONTAINERS: "queue:add-containers",
   GET_START_CONFLICTS: "queue:get-start-conflicts",

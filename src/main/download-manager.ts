@@ -20,6 +20,8 @@ import {
   StartConflictResolutionResult,
   UiSnapshot
 } from "../shared/types";
+import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { addDebridLinkApiKeyDailyUsageBytes, addProviderDailyUsageBytes, getProviderUsageDayKey, isDebridLinkApiKeyDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS } from "./constants";
 
 // Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
@@ -77,7 +79,7 @@ const DEFAULT_LOW_THROUGHPUT_TIMEOUT_MS = 120000;
 
 const DEFAULT_LOW_THROUGHPUT_MIN_BYTES = 64 * 1024;
 
-const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 1024 * 1024;
+const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 100 * 1024;
 
 const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
 
@@ -198,7 +200,11 @@ function cloneSession(session: SessionState): SessionState {
 function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
-    bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry }))
+    bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry })),
+    providerDailyLimitBytes: { ...(settings.providerDailyLimitBytes || {}) },
+    providerDailyUsageBytes: { ...(settings.providerDailyUsageBytes || {}) },
+    debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
+    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) }
   };
 }
 
@@ -1069,6 +1075,7 @@ export class DownloadManager extends EventEmitter {
     const previous = this.settings;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     this.settings = next;
+    this.ensureProviderDailyUsageFresh(nowMs());
     this.debridService.setSettings(next);
     this.allDebridHostInfoCache.clear();
 
@@ -1136,6 +1143,7 @@ export class DownloadManager extends EventEmitter {
 
   public getSnapshot(): UiSnapshot {
     const now = nowMs();
+    this.ensureProviderDailyUsageFresh(now, true);
     this.pruneSpeedEvents(now);
     const paused = this.session.running && this.session.paused;
     const speedBps = !this.session.running || paused ? 0 : this.speedBytesLastWindow / SPEED_WINDOW_SECONDS;
@@ -4410,9 +4418,44 @@ export class DownloadManager extends EventEmitter {
     return remaining;
   }
 
+  private ensureProviderDailyUsageFresh(now = nowMs(), persist = false): void {
+    const currentDay = getProviderUsageDayKey(now);
+    if (this.settings.providerDailyUsageDay === currentDay) {
+      return;
+    }
+    this.settings.providerDailyUsageDay = currentDay;
+    this.settings.providerDailyUsageBytes = {};
+    this.settings.debridLinkApiKeyDailyUsageBytes = {};
+    this.statsCache = null;
+    this.statsCacheAt = 0;
+    if (persist) {
+      this.lastSettingsPersistAt = now;
+      void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler: ${compactErrorText(err as Error)}`));
+    }
+  }
+
+  private recordProviderDownloadedBytes(provider: DownloadItem["provider"], byteDelta: number, providerAccountId?: string): void {
+    if (!provider) {
+      return;
+    }
+    const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
+    const nextUsage = addProviderDailyUsageBytes(this.settings, effectiveProvider, byteDelta);
+    this.settings.providerDailyUsageDay = nextUsage.providerDailyUsageDay;
+    this.settings.providerDailyUsageBytes = nextUsage.providerDailyUsageBytes;
+    if (effectiveProvider === "debridlink" && providerAccountId) {
+      const nextKeyUsage = addDebridLinkApiKeyDailyUsageBytes(this.settings, providerAccountId, byteDelta);
+      this.settings.providerDailyUsageDay = nextKeyUsage.providerDailyUsageDay;
+      this.settings.debridLinkApiKeyDailyUsageBytes = nextKeyUsage.debridLinkApiKeyDailyUsageBytes;
+    }
+  }
+
   private isProviderConfigured(provider: DebridProvider): boolean {
+    this.ensureProviderDailyUsageFresh(nowMs());
     const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
     if ((this.settings.disabledProviders || []).includes(provider) || (this.settings.disabledProviders || []).includes(effectiveProvider)) {
+      return false;
+    }
+    if (isProviderDailyLimitReached(this.settings, effectiveProvider)) {
       return false;
     }
     if (effectiveProvider === "realdebrid") {
@@ -4439,7 +4482,8 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.oneFichierApiKey.trim());
     }
     if (effectiveProvider === "debridlink") {
-      return Boolean(this.settings.debridLinkApiKeys.trim());
+      const configuredKeys = parseDebridLinkApiKeys(this.settings.debridLinkApiKeys);
+      return configuredKeys.some((entry) => !isDebridLinkApiKeyDailyLimitReached(this.settings, entry.id));
     }
     if (provider === "linksnappy") {
       return Boolean(this.settings.linkSnappyLogin.trim() && this.settings.linkSnappyPassword.trim());
@@ -4471,7 +4515,10 @@ export class DownloadManager extends EventEmitter {
 
   private getExpectedProviderForItem(item: DownloadItem): DebridProvider | null {
     if (item.provider) {
-      return resolveMegaDebridProvider(this.settings, item.provider);
+      const resolvedProvider = resolveMegaDebridProvider(this.settings, item.provider);
+      if (resolvedProvider && this.isProviderConfigured(resolvedProvider)) {
+        return resolvedProvider;
+      }
     }
 
     const hosterKey = extractHosterKey(item.url);
@@ -5232,6 +5279,8 @@ export class DownloadManager extends EventEmitter {
         this.recordProviderSuccess(this.getProviderFailureKeyForItem(item, unrestricted.provider));
         item.provider = unrestricted.provider;
         item.providerLabel = unrestricted.providerLabel;
+        item.providerAccountId = unrestricted.sourceAccountId;
+        item.providerAccountLabel = unrestricted.sourceAccountLabel;
         item.retries += unrestricted.retriesUsed;
         item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
         try {
@@ -5341,7 +5390,7 @@ export class DownloadManager extends EventEmitter {
             item.totalBytes = (item.totalBytes || 0) > 0 ? item.totalBytes : null;
             item.speedBps = 0;
             item.updatedAt = nowMs();
-            throw new Error(`Datei zu klein (${humanSize(fileSizeOnDisk)}, erwartet ${item.totalBytes ? humanSize(item.totalBytes) : ">= 1 MB"})`);
+            throw new Error(`Datei zu klein (${humanSize(fileSizeOnDisk)}, erwartet ${item.totalBytes ? humanSize(item.totalBytes) : ">= 100 KB"})`);
           }
 
           done = true;
@@ -6154,6 +6203,7 @@ export class DownloadManager extends EventEmitter {
               this.session.totalDownloadedBytes += buffer.length;
               this.sessionDownloadedBytes += buffer.length;
               this.settings.totalDownloadedAllTime += buffer.length;
+              this.recordProviderDownloadedBytes(item.provider, buffer.length, item.providerAccountId);
               this.itemContributedBytes.set(active.itemId, (this.itemContributedBytes.get(active.itemId) || 0) + buffer.length);
               this.recordSpeed(buffer.length, item.packageId);
               throughputWindowBytes += buffer.length;
@@ -6998,7 +7048,7 @@ export class DownloadManager extends EventEmitter {
               // Show transitional label while next archive initializes
               const done = currentCount;
               if (done < progress.total) {
-                pkg.postProcessLabel = `Entpacken (${done}/${progress.total}) - Naechstes Archiv...`;
+                pkg.postProcessLabel = `Entpacken (${done}/${progress.total}) - Nächstes Archiv...`;
                 this.emitState();
               }
             } else {
@@ -7375,7 +7425,7 @@ export class DownloadManager extends EventEmitter {
                 // Show transitional label while next archive initializes
                 const done = currentCount;
                 if (done < progress.total) {
-                  emitExtractStatus(`Entpacken (${done}/${progress.total}) - Naechstes Archiv...`, true);
+                  emitExtractStatus(`Entpacken (${done}/${progress.total}) - Nächstes Archiv...`, true);
                 }
               } else {
                 // Update this archive's items with per-archive progress

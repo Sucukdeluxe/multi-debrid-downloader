@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
+import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { createStoragePaths, emptySession, loadSession, loadSettings, normalizeSettings, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
@@ -120,7 +122,8 @@ describe("settings storage", () => {
         retryLimit: "-3",
         reconnectWaitSeconds: "1",
         speedLimitMode: "not-valid",
-        updateRepo: ""
+        updateRepo: "",
+        autoSortPackagesByProgress: false
       }),
       "utf8"
     );
@@ -133,6 +136,7 @@ describe("settings storage", () => {
     expect(loaded.reconnectWaitSeconds).toBe(10);
     expect(loaded.speedLimitMode).toBe("global");
     expect(loaded.updateRepo).toBe(defaultSettings().updateRepo);
+    expect(loaded.autoSortPackagesByProgress).toBe(false);
   });
 
   it("keeps explicit none as fallback provider choice", () => {
@@ -174,6 +178,43 @@ describe("settings storage", () => {
 
     expect(webNormalized.providerPrimary).toBe("megadebrid-web");
     expect(webNormalized.hosterRouting.rapidgator).toBe("megadebrid-web");
+  });
+
+  it("normalizes provider daily limits and resets stale daily usage", () => {
+    const [debridLinkKey] = parseDebridLinkApiKeys("dl-key-one");
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      megaLogin: "mega-user",
+      megaPassword: "mega-pass",
+      megaDebridApiEnabled: true,
+      debridLinkApiKeys: "dl-key-one",
+      providerDailyLimitBytes: {
+        realdebrid: 1024,
+        megadebrid: 2048
+      } as AppSettings["providerDailyLimitBytes"],
+      debridLinkApiKeyDailyLimitBytes: {
+        [debridLinkKey.id]: 3072,
+        stale: 1234
+      },
+      providerDailyUsageDay: "2001-01-01",
+      providerDailyUsageBytes: {
+        realdebrid: 4096,
+        megadebrid: 8192
+      } as AppSettings["providerDailyUsageBytes"],
+      debridLinkApiKeyDailyUsageBytes: {
+        [debridLinkKey.id]: 8192,
+        stale: 9999
+      }
+    });
+
+    expect(normalized.providerDailyLimitBytes.realdebrid).toBe(1024);
+    expect(normalized.providerDailyLimitBytes["megadebrid-api"]).toBe(2048);
+    expect(normalized.debridLinkApiKeyDailyLimitBytes).toEqual({
+      [debridLinkKey.id]: 3072
+    });
+    expect(normalized.providerDailyUsageDay).toBe(getProviderUsageDayKey());
+    expect(normalized.providerDailyUsageBytes).toEqual({});
+    expect(normalized.debridLinkApiKeyDailyUsageBytes).toEqual({});
   });
 
   it("normalizes archive password list line endings", () => {

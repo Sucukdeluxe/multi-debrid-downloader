@@ -2,6 +2,7 @@ import type {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  DebridProvider,
   DuplicatePolicy,
   HistoryEntry,
   PackagePriority,
@@ -21,6 +22,8 @@ export interface ElectronApi {
   installUpdate: () => Promise<UpdateInstallResult>;
   openExternal: (url: string) => Promise<boolean>;
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
+  resetProviderDailyUsage: (provider: DebridProvider) => Promise<AppSettings>;
+  resetDebridLinkApiKeyDailyUsage: (keyId: string) => Promise<AppSettings>;
   addLinks: (payload: AddLinksPayload) => Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }>;
   addContainers: (filePaths: string[]) => Promise<{ addedPackages: number; addedLinks: number }>;
   getStartConflicts: () => Promise<StartConflictEntry[]>;

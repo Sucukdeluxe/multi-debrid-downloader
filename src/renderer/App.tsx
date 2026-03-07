@@ -120,6 +120,7 @@ interface ConfiguredAccountEntry {
   modeLabel: string;
   statusLabel: string;
   summary: string;
+  summaryLines: string[];
   note: string;
   disabled: boolean;
   dailyUsedBytes: number;
@@ -474,6 +475,16 @@ function summarizeAccount(kind: AccountKind, settings: AppSettings): string {
   }
 }
 
+function summarizeAccountLines(kind: AccountKind, settings: AppSettings): string[] {
+  if (kind === "debridlink-api" && settings.accountListShowDetailedDebridLinkKeys) {
+    const keys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
+    if (keys.length > 1) {
+      return keys.map((entry) => `${entry.label}: ${entry.masked}`);
+    }
+  }
+  return [summarizeAccount(kind, settings)];
+}
+
 function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | null, settings: AppSettings): AccountDialogState {
   if (!kind) {
     return {
@@ -691,6 +702,7 @@ const emptySnapshot = (): UiSnapshot => ({
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, autoSortPackagesByProgress: true, autoSkipExtracted: false, confirmDeleteSelection: true,
+    accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     autoExtractWhenStopped: true,
@@ -1817,6 +1829,7 @@ export function App(): ReactElement {
         modeLabel: option.modeLabel,
         statusLabel: isDisabled ? "Deaktiviert" : statusLabel,
         summary: summarizeAccount(kind, settingsDraft),
+        summaryLines: summarizeAccountLines(kind, settingsDraft),
         note,
         disabled: isDisabled,
         dailyUsedBytes,
@@ -3922,6 +3935,15 @@ export function App(): ReactElement {
                         <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfügbar</span>
                       </div>
 
+                      <label className="toggle-line account-display-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.accountListShowDetailedDebridLinkKeys}
+                          onChange={(e) => setBool("accountListShowDetailedDebridLinkKeys", e.target.checked)}
+                        />
+                        Debrid-Link-Keys im Feld "Zugang" einzeln untereinander anzeigen
+                      </label>
+
                       {configuredAccounts.length === 0 && (
                         <div className="account-empty-state">
                           <strong>Noch keine Accounts hinterlegt</strong>
@@ -4038,7 +4060,15 @@ export function App(): ReactElement {
                                   )}
                                 </div>
                                 <div className="account-cell">
-                                  <span className="account-secret">{entry.summary}</span>
+                                  {entry.summaryLines.length > 1 ? (
+                                    <div className="account-secret account-secret-multiline">
+                                      {entry.summaryLines.map((line) => (
+                                        <span key={line}>{line}</span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="account-secret">{entry.summary}</span>
+                                  )}
                                 </div>
                                 <div className="account-cell account-row-actions">
                                   {showStatusButton && (

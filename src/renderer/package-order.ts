@@ -1,4 +1,6 @@
-import type { PackageEntry } from "../shared/types";
+import type { DownloadItem, DownloadStatus, PackageEntry } from "../shared/types";
+
+const ACTIVE_PACKAGE_STATUSES = new Set<DownloadStatus>(["downloading", "validating", "integrity_check", "extracting"]);
 
 export function reorderPackageOrderByDrop(order: string[], draggedPackageId: string, targetPackageId: string): string[] {
   const fromIndex = order.indexOf(draggedPackageId);
@@ -22,4 +24,50 @@ export function sortPackageOrderByName(order: string[], packages: Record<string,
     return descending ? -cmp : cmp;
   });
   return sorted;
+}
+
+export function sortPackagesForDisplay(
+  packages: PackageEntry[],
+  itemsById: Record<string, DownloadItem>,
+  running: boolean,
+  autoSortPackagesByProgress: boolean
+): PackageEntry[] {
+  if (!running || !autoSortPackagesByProgress || packages.length <= 1) {
+    return packages;
+  }
+
+  const active: Array<{ pkg: PackageEntry; index: number; completedRatio: number; downloadedBytes: number }> = [];
+  const rest: PackageEntry[] = [];
+
+  packages.forEach((pkg, index) => {
+    const items = pkg.itemIds
+      .map((id) => itemsById[id])
+      .filter((item): item is DownloadItem => Boolean(item));
+    const hasActive = items.some((item) => ACTIVE_PACKAGE_STATUSES.has(item.status));
+    if (!hasActive) {
+      rest.push(pkg);
+      return;
+    }
+    const completedRatio = items.length > 0
+      ? items.filter((item) => item.status === "completed").length / items.length
+      : 0;
+    const downloadedBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+    active.push({ pkg, index, completedRatio, downloadedBytes });
+  });
+
+  if (active.length === 0 || active.length === packages.length) {
+    return packages;
+  }
+
+  active.sort((a, b) => {
+    if (a.completedRatio !== b.completedRatio) {
+      return b.completedRatio - a.completedRatio;
+    }
+    if (a.downloadedBytes !== b.downloadedBytes) {
+      return b.downloadedBytes - a.downloadedBytes;
+    }
+    return a.index - b.index;
+  });
+
+  return [...active.map((entry) => entry.pkg), ...rest];
 }
