@@ -1370,6 +1370,16 @@ export function App(): ReactElement {
     }
   }, [accountColumnWidths]);
 
+  const resetAccountColumnWidths = useCallback((): void => {
+    setAccountColumnWidths({ ...ACCOUNT_COLUMN_DEFAULT_WIDTHS });
+    try {
+      window.localStorage.removeItem(ACCOUNT_COLUMN_STORAGE_KEY);
+    } catch {
+      // Ignore local persistence failures for optional UI state.
+    }
+    showToast("Accounts-Spalten zurückgesetzt", 1800);
+  }, [showToast]);
+
   // Sync column order from settings (value-based comparison to avoid reference issues)
   const columnOrderJson = JSON.stringify(snapshot.settings.columnOrder);
   useEffect(() => {
@@ -4178,6 +4188,11 @@ export function App(): ReactElement {
                         />
                         Debrid-Link-Keys im Feld "Zugang" einzeln untereinander anzeigen
                       </label>
+                      <div className="account-display-actions">
+                        <button className="btn btn-sm" disabled={actionBusy} onClick={resetAccountColumnWidths}>
+                          Spalten zurücksetzen
+                        </button>
+                      </div>
 
                       {configuredAccounts.length === 0 && (
                         <div className="account-empty-state">

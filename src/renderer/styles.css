@@ -1457,6 +1457,12 @@ body,
   opacity: 1;
 }
 
+.account-display-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -2px 0 10px;
+}
+
 
 .key-stats-popup {
   width: min(1360px, calc(100vw - 20px));
