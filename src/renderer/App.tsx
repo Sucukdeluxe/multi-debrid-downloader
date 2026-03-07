@@ -3682,7 +3682,7 @@ export function App(): ReactElement {
             {(snapshot.settings.scheduledStartEpochMs || 0) > 0 ? (
               <div className="schedule-active">
                 <span className="schedule-badge" title="Geplanter Start">â° {scheduleCountdown || new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <button className="schedule-cancel" title="Geplanten Start abbrechen" onClick={() => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); }}>?</button>
+                <button className="schedule-cancel" title="Geplanten Start abbrechen" onClick={() => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); }}>{"\u2715"}</button>
               </div>
             ) : (
               <button
@@ -4359,7 +4359,7 @@ export function App(): ReactElement {
                                     setProviderOrder(next);
                                   }}
                                   title="Nach oben"
-                                >?</button>
+                                >{"\u25B2"}</button>
                                 <button
                                   className="btn btn-sm"
                                   disabled={idx === activeProviderOrder.length - 1}
@@ -4369,7 +4369,7 @@ export function App(): ReactElement {
                                     setProviderOrder(next);
                                   }}
                                   title="Nach unten"
-                                >?</button>
+                                >{"\u25BC"}</button>
                               </div>
                             </div>
                           ))}
