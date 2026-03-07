@@ -3988,6 +3988,56 @@ export class DownloadManager extends EventEmitter {
     if (restored > 0) {
       logger.info(`restoreTargetPathReservations: ${restored} Pfade aus Session wiederhergestellt`);
     }
+    // Fix legacy (N) suffix files: rename back to original if original path is free
+    this.fixDuplicateSuffixFiles();
+  }
+
+  /** Detect items whose targetPath has a " (N)" suffix from a previous bug and rename
+   *  them back to the original filename if the original path is not claimed by another item. */
+  private fixDuplicateSuffixFiles(): void {
+    const SUFFIX_RE = /^(.+) \(\d+\)(\.[^.]+)$/;
+    let fixed = 0;
+    for (const item of Object.values(this.session.items)) {
+      const tp = String(item.targetPath || "").trim();
+      if (!tp) continue;
+      const parsed = path.parse(tp);
+      const fullName = parsed.name + parsed.ext; // e.g. "file.part3 (1).rar"
+      const match = SUFFIX_RE.exec(fullName);
+      if (!match) continue;
+      const originalName = match[1] + match[2]; // "file.part3.rar"
+      const originalPath = path.join(parsed.dir, originalName);
+      const originalKey = pathKey(originalPath);
+      const originalOwner = this.reservedTargetPaths.get(originalKey);
+      // Only rename if original path is not claimed by another item and doesn't exist on disk
+      if (originalOwner && originalOwner !== item.id) continue;
+      if (!originalOwner && fs.existsSync(originalPath)) continue;
+      if (!fs.existsSync(tp)) {
+        // File with (N) doesn't exist either — just fix the path reference
+        this.reservedTargetPaths.delete(pathKey(tp));
+        this.reservedTargetPaths.set(originalKey, item.id);
+        this.claimedTargetPathByItem.set(item.id, originalPath);
+        item.targetPath = originalPath;
+        item.fileName = originalName;
+        fixed += 1;
+        continue;
+      }
+      try {
+        fs.renameSync(tp, originalPath);
+        this.reservedTargetPaths.delete(pathKey(tp));
+        this.reservedTargetPaths.set(originalKey, item.id);
+        this.claimedTargetPathByItem.set(item.id, originalPath);
+        item.targetPath = originalPath;
+        item.fileName = originalName;
+        fixed += 1;
+        logger.info(`fixDuplicateSuffix: ${path.basename(tp)} → ${originalName}`);
+      } catch (err) {
+        logger.warn(`fixDuplicateSuffix: Umbenennung fehlgeschlagen ${tp}: ${compactErrorText(err)}`);
+      }
+    }
+    if (fixed > 0) {
+      logger.info(`fixDuplicateSuffixFiles: ${fixed} Dateien korrigiert`);
+      this.persistSoon();
+    }
   }
 
   private assignItemTargetPath(item: DownloadItem, targetPath: string): string {
