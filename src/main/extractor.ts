@@ -1718,6 +1718,35 @@ async function resolveExtractorCommand(): Promise<string> {
   }
 }
 
+function is7zCommand(command: string): boolean {
+  const lower = command.toLowerCase();
+  return lower.includes("7z") && !lower.includes("unrar") && !lower.includes("winrar");
+}
+
+function isUnrarCommand(command: string): boolean {
+  const lower = command.toLowerCase();
+  return lower.includes("unrar") || lower.includes("winrar");
+}
+
+async function findAlternativeExtractor(currentCommand: string): Promise<string | null> {
+  const candidates = nativeExtractorCandidates();
+  const currentIs7z = is7zCommand(currentCommand);
+  for (const candidate of candidates) {
+    if (candidate === currentCommand) continue;
+    // If current is 7z, look for UnRAR/WinRAR. If current is UnRAR, look for 7z.
+    if (currentIs7z && !isUnrarCommand(candidate)) continue;
+    if (!currentIs7z && !is7zCommand(candidate)) continue;
+    if (isAbsoluteCommand(candidate) && !fs.existsSync(candidate)) continue;
+    const lower = candidate.toLowerCase();
+    const probeArgs = (lower.includes("winrar") || lower.includes("unrar")) ? ["-?"] : ["?"];
+    const probe = await runExtractCommand(candidate, probeArgs, undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
+    if (probe.ok || (!probe.missingCommand && !probe.timedOut)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 async function runExternalExtract(
   archivePath: string,
   targetDir: string,
@@ -1815,22 +1844,58 @@ async function runExternalExtract(
 
     const command = await resolveExtractorCommand();
     const legacyStartedAt = Date.now();
-    const password = await runExternalExtractInner(
-      command,
-      archivePath,
-      effectiveTargetDir,
-      conflictMode,
-      passwordCandidates,
-      onArchiveProgress,
-      signal,
-      timeoutMs,
-      hybridMode,
-      onPasswordAttempt,
-      forceFlatMode,
-      flatModeResult
-    );
+    let password: string;
+    let usedCommand = command;
+    try {
+      password = await runExternalExtractInner(
+        command,
+        archivePath,
+        effectiveTargetDir,
+        conflictMode,
+        passwordCandidates,
+        onArchiveProgress,
+        signal,
+        timeoutMs,
+        hybridMode,
+        onPasswordAttempt,
+        forceFlatMode,
+        flatModeResult
+      );
+    } catch (primaryError) {
+      // If the primary extractor (typically 7-Zip) fails on a RAR archive,
+      // try the alternative extractor (UnRAR/WinRAR) which handles RAR natively.
+      const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
+      const errText = String((primaryError as Error)?.message || primaryError || "");
+      const isPasswordOrCorrupt = /wrong.password|checksum error|corrupt/i.test(errText);
+      if (isRar && isPasswordOrCorrupt && !signal?.aborted) {
+        const alt = await findAlternativeExtractor(command);
+        if (alt) {
+          const altName = path.basename(alt).replace(/\.exe$/i, "");
+          logger.info(`Legacy-Fallback: ${path.basename(command)} fehlgeschlagen bei RAR, versuche ${altName}: ${archiveName}`);
+          usedCommand = alt;
+          password = await runExternalExtractInner(
+            alt,
+            archivePath,
+            effectiveTargetDir,
+            conflictMode,
+            passwordCandidates,
+            onArchiveProgress,
+            signal,
+            timeoutMs,
+            hybridMode,
+            onPasswordAttempt,
+            forceFlatMode,
+            flatModeResult
+          );
+        } else {
+          throw primaryError;
+        }
+      } else {
+        throw primaryError;
+      }
+    }
     const legacyMs = Date.now() - legacyStartedAt;
-    const extractorName = path.basename(command).replace(/\.exe$/i, "");
+    const extractorName = path.basename(usedCommand).replace(/\.exe$/i, "");
     if (jvmFailureReason) {
       logger.info(`Entpackt via legacy/${extractorName} (nach JVM-Fehler): ${archiveName}`);
     } else {
