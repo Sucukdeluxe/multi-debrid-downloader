@@ -243,12 +243,12 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
 
 const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
 const ACCOUNT_LIMIT_BYTES_PER_GIB = 1024 * 1024 * 1024;
-const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths";
+const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths-v2";
 const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
-  service: 220,
+  service: 240,
   mode: 96,
-  status: 300,
-  secret: 180
+  status: 320,
+  secret: 210
 };
 const ACCOUNT_COLUMN_MIN_WIDTHS: Record<AccountColumnKey, number> = {
   service: 180,
@@ -1975,7 +1975,7 @@ export function App(): ReactElement {
           note = "Rapidgator-Status wird aktualisiert.";
         } else if (allDebridHostInfo) {
           statusLabel = allDebridHostInfo.statusLabel;
-          note = allDebridHostInfo.note || `Letztes Update: ${formatAllDebridTimestamp(allDebridHostInfo)}`;
+          note = allDebridHostInfo.note || `Update: ${formatAllDebridTimestamp(allDebridHostInfo)}`;
         } else if (hasSavedAllDebridAccount) {
           note = "Rapidgator-Status kann direkt aus der Liste geladen werden.";
         }

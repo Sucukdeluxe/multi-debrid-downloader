@@ -1347,9 +1347,16 @@ body,
 }
 
 .account-note {
+  display: block;
+  width: 100%;
   color: var(--muted);
   font-size: 11px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
 }
 
 .account-usage-stats {
@@ -1433,12 +1440,13 @@ body,
 
 .account-row-actions {
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
   align-content: center;
   text-align: center;
+  padding-right: 8px;
 }
 
 .account-row-actions .btn {
