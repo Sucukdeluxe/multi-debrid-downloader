@@ -30,9 +30,10 @@ import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
+import { encryptBackup, decryptBackup } from "./backup-crypto";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -376,31 +377,48 @@ export class AppController {
     return this.manager.getSessionStats();
   }
 
-  public exportBackup(): string {
+  public exportBackup(): Buffer {
     const settings = { ...this.settings };
-    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaLogin", "megaPassword", "bestToken", "allDebridToken", "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey"];
-    for (const key of SENSITIVE_KEYS) {
-      const val = settings[key];
-      if (typeof val === "string" && val.length > 0) {
-        (settings as Record<string, unknown>)[key] = `***${val.slice(-4)}`;
-      }
-    }
     const session = this.manager.getSession();
-    return JSON.stringify({ version: 1, settings, session }, null, 2);
+    const history = loadHistory(this.storagePaths);
+    const payload = JSON.stringify({
+      version: 2,
+      appVersion: APP_VERSION,
+      exportedAt: new Date().toISOString(),
+      settings,
+      session,
+      history
+    });
+    return encryptBackup(payload);
   }
 
-  public importBackup(json: string): { restored: boolean; message: string } {
+  public importBackup(data: Buffer): { restored: boolean; message: string } {
     let parsed: Record<string, unknown>;
     try {
+      // Try encrypted MDD format first
+      const json = decryptBackup(data);
       parsed = JSON.parse(json) as Record<string, unknown>;
     } catch {
-      return { restored: false, message: "Ungültiges JSON" };
+      // Fallback: try legacy plaintext JSON (old backups)
+      try {
+        const json = data.toString("utf8");
+        parsed = JSON.parse(json) as Record<string, unknown>;
+      } catch {
+        return { restored: false, message: "Backup-Datei konnte nicht entschlüsselt werden" };
+      }
     }
     if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.session) {
       return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
     }
+
+    // Restore settings — ALL credentials are included (no more masking)
     const importedSettings = parsed.settings as AppSettings;
-    const SENSITIVE_KEYS: (keyof AppSettings)[] = ["token", "megaLogin", "megaPassword", "bestToken", "allDebridToken", "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey"];
+    // Legacy backup compatibility: if credentials were masked with ***, keep current values
+    const SENSITIVE_KEYS: (keyof AppSettings)[] = [
+      "token", "megaLogin", "megaPassword", "bestToken", "allDebridToken",
+      "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
+      "debridLinkApiKeys", "linkSnappyLogin", "linkSnappyPassword"
+    ];
     for (const key of SENSITIVE_KEYS) {
       const val = (importedSettings as Record<string, unknown>)[key];
       if (typeof val === "string" && val.startsWith("***")) {
@@ -411,24 +429,29 @@ export class AppController {
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
-    // Full stop including extraction abort — the old session is being replaced,
-    // so no extraction tasks from it should keep running.
+
+    // Full stop including extraction abort
     this.manager.stop();
     this.manager.abortAllPostProcessing();
-    // Cancel any deferred persist timer and queued async writes so the old
-    // in-memory session does not overwrite the restored session file on disk.
     this.manager.clearPersistTimer();
     cancelPendingAsyncSaves();
+
+    // Restore session
     const restoredSession = normalizeLoadedSessionTransientFields(
       normalizeLoadedSession(parsed.session)
     );
     saveSession(this.storagePaths, restoredSession);
-    // Prevent prepareForShutdown from overwriting the restored session file
-    // with the old in-memory session when the app quits after backup restore.
+
+    // Restore history (if present in backup)
+    if (Array.isArray(parsed.history) && parsed.history.length > 0) {
+      saveHistory(this.storagePaths, parsed.history as HistoryEntry[]);
+      logger.info(`Backup: ${(parsed.history as HistoryEntry[]).length} History-Einträge wiederhergestellt`);
+    }
+
+    // Prevent prepareForShutdown from overwriting the restored data
     this.manager.skipShutdownPersist = true;
-    // Block all persistence (including persistSoon from any IPC operations
-    // the user might trigger before restarting) to protect the restored backup.
     this.manager.blockAllPersistence = true;
+    logger.info("Backup wiederhergestellt (verschlüsseltes Format)");
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }
 
