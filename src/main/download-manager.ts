@@ -73,6 +73,12 @@ type PackageItemDiskState = {
   reason: "ok" | "missing_path" | "missing_file" | "too_small" | "persisted_shortfall";
 };
 
+type HybridFailedArchiveState = {
+  marker: string;
+  lastError: string;
+  updatedAt: number;
+};
+
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
@@ -434,6 +440,15 @@ function isFinishedStatus(status: DownloadStatus): boolean {
 
 function isExtractedLabel(statusText: string): boolean {
   return /^entpackt\b/i.test(String(statusText || "").trim());
+}
+
+function isExtractErrorLabel(statusText: string): boolean {
+  const text = String(statusText || "").trim();
+  return /^entpacken\b/i.test(text) && /\berror\b/i.test(text);
+}
+
+function shouldAutoRetryExtraction(statusText: string): boolean {
+  return !isExtractedLabel(statusText) && !isExtractErrorLabel(statusText);
 }
 
 function formatExtractDone(elapsedMs: number): string {
@@ -1082,9 +1097,13 @@ export class DownloadManager extends EventEmitter {
 
   private hybridExtractRequeue = new Set<string>();
 
-  // Tracks archive paths already attempted per package in the current post-processing session.
-  // Prevents infinite re-extraction of disk-fallback archives that have no session items.
+  // Tracks archive paths already attempted per package until the package/archive state changes
+  // or the user explicitly retries extraction.
   private hybridExtractedPaths = new Map<string, Set<string>>();
+
+  // Tracks failed hybrid archives together with a lightweight state marker so unchanged
+  // archives are not retried on every subsequent post-processing wake-up.
+  private hybridFailedArchives = new Map<string, Map<string, HybridFailedArchiveState>>();
 
   private reservedTargetPaths = new Map<string, string>();
 
@@ -1184,6 +1203,13 @@ export class DownloadManager extends EventEmitter {
           item.provider = null;
         }
       }
+    }
+
+    const previousArchivePasswords = String(previous.archivePasswordList || "").replace(/\r\n|\r/g, "\n");
+    const nextArchivePasswords = String(next.archivePasswordList || "").replace(/\r\n|\r/g, "\n");
+    if (previousArchivePasswords !== nextArchivePasswords) {
+      this.hybridExtractedPaths.clear();
+      this.hybridFailedArchives.clear();
     }
 
     this.resolveExistingQueuedOpaqueFilenames();
@@ -1550,6 +1576,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessAbortControllers.clear();
     this.hybridExtractRequeue.clear();
     this.hybridExtractedPaths.clear();
+    this.hybridFailedArchives.clear();
     this.providerFailures.clear();
     this.packagePostProcessQueue = Promise.resolve();
     this.packagePostProcessActive = 0;
@@ -1741,7 +1768,7 @@ export class DownloadManager extends EventEmitter {
       this.packagePostProcessAbortControllers.delete(packageId);
       this.packagePostProcessTasks.delete(packageId);
       this.hybridExtractRequeue.delete(packageId);
-      this.hybridExtractedPaths.delete(packageId);
+      this.clearHybridArchiveState(packageId);
 
       this.runPackageIds.delete(packageId);
       this.runCompletedPackages.delete(packageId);
@@ -2927,7 +2954,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessAbortControllers.delete(packageId);
     this.packagePostProcessTasks.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
-    this.hybridExtractedPaths.delete(packageId);
+    this.clearHybridArchiveState(packageId);
     this.runCompletedPackages.delete(packageId);
 
     // 3. Clean up extraction progress manifest (.rd_extract_progress.json)
@@ -3017,7 +3044,7 @@ export class DownloadManager extends EventEmitter {
       this.packagePostProcessAbortControllers.delete(pkgId);
       this.packagePostProcessTasks.delete(pkgId);
       this.hybridExtractRequeue.delete(pkgId);
-      this.hybridExtractedPaths.delete(pkgId);
+      this.clearHybridArchiveState(pkgId);
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
 
@@ -3098,10 +3125,10 @@ export class DownloadManager extends EventEmitter {
         const pkgItems = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
         const hasPending = pkgItems.some((i) => i.status !== "completed" && i.status !== "failed" && i.status !== "cancelled");
         const hasFailed = pkgItems.some((i) => i.status === "failed");
-        const hasUnextracted = pkgItems.some((i) => i.status === "completed" && !isExtractedLabel(i.fullStatus || ""));
+        const hasUnextracted = pkgItems.some((i) => i.status === "completed" && shouldAutoRetryExtraction(i.fullStatus || ""));
         if (!hasPending && !hasFailed && hasUnextracted) {
           for (const it of pkgItems) {
-            if (it.status === "completed" && !isExtractedLabel(it.fullStatus || "")) {
+            if (it.status === "completed" && shouldAutoRetryExtraction(it.fullStatus || "")) {
               it.fullStatus = "Entpacken - Ausstehend";
               it.updatedAt = nowMs();
             }
@@ -4128,6 +4155,60 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private clearHybridArchiveState(packageId: string, archiveKey?: string): void {
+    if (!archiveKey) {
+      this.hybridExtractedPaths.delete(packageId);
+      this.hybridFailedArchives.delete(packageId);
+      return;
+    }
+
+    const normalizedKey = pathKey(archiveKey);
+    const attempted = this.hybridExtractedPaths.get(packageId);
+    if (attempted) {
+      attempted.delete(normalizedKey);
+      if (attempted.size === 0) {
+        this.hybridExtractedPaths.delete(packageId);
+      }
+    }
+
+    const failed = this.hybridFailedArchives.get(packageId);
+    if (failed) {
+      failed.delete(normalizedKey);
+      if (failed.size === 0) {
+        this.hybridFailedArchives.delete(packageId);
+      }
+    }
+  }
+
+  private buildHybridArchiveRetryMarker(pkg: PackageEntry, items: DownloadItem[], archiveKey: string): string {
+    const archiveName = path.basename(archiveKey);
+    const archiveItems = resolveArchiveItemsFromList(archiveName, items)
+      .slice()
+      .sort((left, right) => {
+        const leftName = (left.fileName || left.targetPath || left.id || "").toLowerCase();
+        const rightName = (right.fileName || right.targetPath || right.id || "").toLowerCase();
+        return leftName.localeCompare(rightName);
+      });
+
+    const itemStates = archiveItems.map((item) => {
+      const diskState = inspectPackageItemDiskState(pkg, item);
+      return [
+        (item.fileName || item.id || "").toLowerCase(),
+        item.status,
+        item.downloadedBytes || 0,
+        item.totalBytes || 0,
+        diskState.reason,
+        diskState.size
+      ].join("|");
+    });
+
+    return JSON.stringify({
+      archiveName: archiveName.toLowerCase(),
+      passwordList: String(this.settings.archivePasswordList || "").replace(/\r\n|\r/g, "\n").trim(),
+      itemStates
+    });
+  }
+
   private autoRecoverArchiveCrcFailure(
     pkg: PackageEntry,
     items: DownloadItem[],
@@ -4180,6 +4261,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (changed > 0) {
+      this.clearHybridArchiveState(pkg.id);
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       pkg.updatedAt = queuedAt;
       const evidence = corruptArchiveItems
@@ -4346,9 +4428,6 @@ export class DownloadManager extends EventEmitter {
       return existing;
     }
 
-    // Fresh session: reset the set of already-tried archives so new downloads can be retried.
-    this.hybridExtractedPaths.delete(packageId);
-
     const abortController = new AbortController();
     this.packagePostProcessAbortControllers.set(packageId, abortController);
 
@@ -4424,12 +4503,12 @@ export class DownloadManager extends EventEmitter {
       // with pending extraction status → re-label and trigger post-processing
       // so extraction picks up where it left off.
       if (!allDone && this.settings.autoExtract && this.settings.hybridExtract && success > 0 && failed === 0) {
-        const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
+        const needsExtraction = items.some((item) => item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus));
         if (needsExtraction) {
           pkg.status = "queued";
           pkg.updatedAt = nowMs();
           for (const item of items) {
-            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+            if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
               item.updatedAt = nowMs();
             }
@@ -4445,12 +4524,12 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (this.settings.autoExtract && failed === 0 && success > 0) {
-        const needsExtraction = items.some((item) => item.status === "completed" && !isExtractedLabel(item.fullStatus));
+        const needsExtraction = items.some((item) => item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus));
         if (needsExtraction) {
           pkg.status = "queued";
           pkg.updatedAt = nowMs();
           for (const item of items) {
-            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+            if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
               item.updatedAt = nowMs();
             }
@@ -4507,13 +4586,13 @@ export class DownloadManager extends EventEmitter {
       // Full extraction: all items done, no failures
       if (allDone && failed === 0 && success > 0) {
         const needsExtraction = items.some((item) =>
-          item.status === "completed" && !isExtractedLabel(item.fullStatus)
+          item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)
         );
         if (needsExtraction) {
           pkg.status = "queued";
           pkg.updatedAt = nowMs();
           for (const item of items) {
-            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+            if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
               item.updatedAt = nowMs();
             }
@@ -4527,13 +4606,13 @@ export class DownloadManager extends EventEmitter {
       // Hybrid extraction: not all items done, but some completed and no failures
       if (!allDone && this.settings.hybridExtract && success > 0 && failed === 0) {
         const needsExtraction = items.some((item) =>
-          item.status === "completed" && !isExtractedLabel(item.fullStatus)
+          item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)
         );
         if (needsExtraction) {
           pkg.status = "queued";
           pkg.updatedAt = nowMs();
           for (const item of items) {
-            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+            if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
               item.updatedAt = nowMs();
             }
@@ -4549,6 +4628,7 @@ export class DownloadManager extends EventEmitter {
     const pkg = this.session.packages[packageId];
     if (!pkg) return;
     if (this.packagePostProcessTasks.has(packageId)) return;
+    this.clearHybridArchiveState(packageId);
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
     const completedItems = items.filter((item) => item.status === "completed");
     if (completedItems.length === 0) return;
@@ -4570,6 +4650,7 @@ export class DownloadManager extends EventEmitter {
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) return;
     if (this.packagePostProcessTasks.has(packageId)) return;
+    this.clearHybridArchiveState(packageId);
     if (!pkg.enabled) {
       pkg.enabled = true;
     }
@@ -4669,7 +4750,7 @@ export class DownloadManager extends EventEmitter {
     // causing "Start Selected" to continue with ALL packages after cleanup.
     this.runCompletedPackages.delete(packageId);
     this.hybridExtractRequeue.delete(packageId);
-    this.hybridExtractedPaths.delete(packageId);
+    this.clearHybridArchiveState(packageId);
     this.resetSessionTotalsIfQueueEmpty();
   }
 
@@ -7280,14 +7361,39 @@ export class DownloadManager extends EventEmitter {
       logger.info(`findReadyArchiveSets dauerte ${(findReadyMs / 1000).toFixed(1)}s: pkg=${pkg.name}, found=${readyArchives.size}`);
     }
 
-    // Skip archives already attempted in this post-processing session to prevent
-    // infinite re-extraction of disk-fallback archives with no session items.
+    const completedItems = items.filter((item) => item.status === "completed");
+
+    // Skip archives already attempted in the current package/archive state to prevent
+    // infinite re-extraction of disk-fallback archives or repeated unchanged failures.
     const alreadyTried = this.hybridExtractedPaths.get(packageId);
     if (alreadyTried) {
       for (const key of [...readyArchives]) {
         if (alreadyTried.has(key)) {
           readyArchives.delete(key);
         }
+      }
+    }
+
+    const failedArchiveStates = this.hybridFailedArchives.get(packageId);
+    if (failedArchiveStates) {
+      for (const archiveKey of [...readyArchives]) {
+        const previousFailure = failedArchiveStates.get(archiveKey);
+        if (!previousFailure) {
+          continue;
+        }
+
+        const archiveItems = resolveArchiveItemsFromList(path.basename(archiveKey), completedItems);
+        const allItemsStillInError = archiveItems.length > 0 && archiveItems.every((item) => isExtractErrorLabel(item.fullStatus));
+        const retryMarker = this.buildHybridArchiveRetryMarker(pkg, items, archiveKey);
+        if (!allItemsStillInError || previousFailure.marker !== retryMarker) {
+          continue;
+        }
+
+        logger.info(
+          `Hybrid-Extract Skip: ${path.basename(archiveKey)} unveraendert seit letztem Fehler ` +
+          `(${compactErrorText(previousFailure.lastError)})`
+        );
+        readyArchives.delete(archiveKey);
       }
     }
 
@@ -7300,8 +7406,6 @@ export class DownloadManager extends EventEmitter {
     pkg.status = "extracting";
     this.emitState();
     const hybridExtractStartMs = nowMs();
-
-    const completedItems = items.filter((item) => item.status === "completed");
 
     // Build set of file names belonging to ready archives (for matching items)
     const hybridFileNames = new Set<string>();
@@ -7365,8 +7469,16 @@ export class DownloadManager extends EventEmitter {
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, items);
 
+    const readyArchiveKeyByName = new Map<string, string>();
+    const readyArchiveMarkers = new Map<string, string>();
+    for (const archiveKey of readyArchives) {
+      readyArchiveKeyByName.set(path.basename(archiveKey).toLowerCase(), archiveKey);
+      readyArchiveMarkers.set(archiveKey, this.buildHybridArchiveRetryMarker(pkg, items, archiveKey));
+    }
+
     // Track archives for parallel hybrid extraction progress
     const autoRecoveredArchives = new Set<string>();
+    const failedArchiveErrors = new Map<string, string>();
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
     const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
@@ -7379,6 +7491,9 @@ export class DownloadManager extends EventEmitter {
     let labelsChanged = false;
     for (const entry of completedItems) {
       if (isExtractedLabel(entry.fullStatus)) {
+        continue;
+      }
+      if (isExtractErrorLabel(entry.fullStatus)) {
         continue;
       }
       const belongsToReady = allDownloaded
@@ -7412,6 +7527,10 @@ export class DownloadManager extends EventEmitter {
         maxParallel: this.settings.maxParallelExtract || 2,
         extractCpuPriority: "high",
         onArchiveFailure: (failure) => {
+          const failedArchiveKey = readyArchiveKeyByName.get(String(failure.archiveName || "").toLowerCase());
+          if (failedArchiveKey) {
+            failedArchiveErrors.set(failedArchiveKey, failure.errorText || failure.jvmFailureReason || "Entpacken fehlgeschlagen");
+          }
           if (autoRecoveredArchives.has(failure.archiveName)) {
             return;
           }
@@ -7473,6 +7592,10 @@ export class DownloadManager extends EventEmitter {
               const doneLabel = progress.archiveSuccess === false
                 ? "Entpacken - Error"
                 : formatExtractDone(doneAt - startedAt);
+              const archiveKey = readyArchiveKeyByName.get(progress.archiveName.toLowerCase());
+              if (archiveKey && progress.archiveSuccess !== false) {
+                this.clearHybridArchiveState(packageId, archiveKey);
+              }
               for (const entry of archItems) {
                 if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                 entry.fullStatus = doneLabel;
@@ -7548,6 +7671,25 @@ export class DownloadManager extends EventEmitter {
         if (!tried) { tried = new Set(); this.hybridExtractedPaths.set(packageId, tried); }
         for (const key of readyArchives) { tried.add(key); }
       }
+      if (failedArchiveErrors.size > 0) {
+        let failed = this.hybridFailedArchives.get(packageId);
+        if (!failed) {
+          failed = new Map();
+          this.hybridFailedArchives.set(packageId, failed);
+        }
+        const failedAt = nowMs();
+        for (const [archiveKey, errorText] of failedArchiveErrors.entries()) {
+          const marker = readyArchiveMarkers.get(archiveKey);
+          if (!marker) {
+            continue;
+          }
+          failed.set(archiveKey, {
+            marker,
+            lastError: errorText,
+            updatedAt: failedAt
+          });
+        }
+      }
       if (result.extracted > 0) {
         // Fire-and-forget: rename then collect MKVs in background so the
         // slot is not blocked and the next archive set can start immediately.
@@ -7565,7 +7707,7 @@ export class DownloadManager extends EventEmitter {
         })();
       }
       if (result.failed > 0) {
-        logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, wird beim finalen Durchlauf erneut versucht`);
+        logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, werden erst nach echter Aenderung oder manuellem Retry erneut versucht`);
       }
 
       // Mark hybrid items with final status — only items whose archives were

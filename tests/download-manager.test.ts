@@ -2302,6 +2302,82 @@ describe("download manager", () => {
     expect(Array.from(ready)).toEqual([part1Path.toLowerCase()]);
   });
 
+  it("skips unchanged hybrid archives after a previous extraction failure", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const {
+      session,
+      packageId,
+      itemId,
+      outputDir,
+      extractDir
+    } = createCompletedArchiveSession(root, "hybrid-failure-skip", "episode.mkv");
+    const item = session.items[itemId]!;
+    const archiveKey = item.targetPath.toLowerCase();
+    item.fullStatus = "Entpacken - Error";
+    session.packages[packageId]!.status = "queued";
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        hybridExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const pkg = (manager as any).session.packages[packageId];
+    const items = [((manager as any).session.items[itemId])];
+    const marker = (manager as any).buildHybridArchiveRetryMarker(pkg, items, archiveKey);
+    (manager as any).hybridFailedArchives.set(packageId, new Map([
+      [archiveKey, { marker, lastError: "Checksum error in the encrypted file", updatedAt: Date.now() }]
+    ]));
+
+    const extracted = await (manager as any).runHybridExtraction(packageId, pkg, items);
+
+    expect(extracted).toBe(0);
+    expect(fs.existsSync(path.join(extractDir, "episode.mkv"))).toBe(false);
+    expect(((manager as any).session.items[itemId]).fullStatus).toBe("Entpacken - Error");
+    expect(((manager as any).session.packages[packageId]).status).not.toBe("extracting");
+    expect(fs.existsSync(path.join(outputDir, "episode.zip"))).toBe(true);
+  });
+
+  it("does not auto-reschedule extraction for completed items already marked as extract error", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const {
+      session,
+      packageId,
+      itemId
+    } = createCompletedArchiveSession(root, "hybrid-error-hold", "episode.mkv");
+    session.items[itemId]!.fullStatus = "Entpacken - Error";
+    session.packages[packageId]!.status = "queued";
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        hybridExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).triggerPendingExtractions();
+
+    expect((manager as any).packagePostProcessTasks.has(packageId)).toBe(false);
+    expect((manager as any).session.items[itemId].fullStatus).toBe("Entpacken - Error");
+  });
+
   it("detects start conflicts when extract output already exists", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
