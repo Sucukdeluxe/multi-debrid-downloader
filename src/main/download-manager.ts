@@ -302,7 +302,6 @@ function isFetchFailure(errorText: string): boolean {
 function isPermanentLinkError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("permanent ungültig")
-    || text.includes("hosternotavailable")
     || /file.?not.?found/.test(text)
     || /file.?unavailable/.test(text)
     || /link.?is.?dead/.test(text)
@@ -351,7 +350,8 @@ function isTemporaryUnrestrictError(errorText: string): boolean {
     || text.includes("bad gateway")
     || text.includes("gateway timeout")
     || text.includes("cloudflare")
-    || text.includes("worker error");
+    || text.includes("worker error")
+    || text.includes("hosternotavailable");
 }
 
 function isFinishedStatus(status: DownloadStatus): boolean {
