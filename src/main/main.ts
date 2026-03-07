@@ -74,8 +74,8 @@ function isDevMode(): boolean {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 940,
+    width: 1920,
+    height: 1080,
     minWidth: 1120,
     minHeight: 760,
     backgroundColor: "#070b14",
@@ -94,7 +94,7 @@ function createWindow(): BrowserWindow {
         responseHeaders: {
           ...details.responseHeaders,
           "Content-Security-Policy": [
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://codeberg.org https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu https://git.24-music.de https://ddownload.com https://ddl.to"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.real-debrid.com https://codeberg.org https://bestdebrid.com https://api.alldebrid.com https://www.mega-debrid.eu https://git.24-music.de https://ddownload.com https://ddl.to https://debrid-link.com"
           ]
         }
       });
@@ -525,6 +525,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO, async () => {
     return controller.getAllDebridHostInfo();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_DEBRIDLINK_HOST_LIMITS, async () => {
+    return controller.getDebridLinkHostLimits();
   });
 
   ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {

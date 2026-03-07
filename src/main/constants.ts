@@ -56,6 +56,7 @@ export function defaultSettings(): AppSettings {
     ddownloadPassword: "",
     oneFichierApiKey: "",
     debridLinkApiKeys: "",
+    debridLinkDisabledKeyIds: [],
     linkSnappyLogin: "",
     linkSnappyPassword: "",
     archivePasswordList: "",

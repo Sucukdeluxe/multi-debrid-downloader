@@ -78,6 +78,10 @@ describe("extractEpisodeToken", () => {
   it("extracts double episode with single-digit numbers", () => {
     expect(extractEpisodeToken("show-s1e1e2-720p")).toBe("S01E01E02");
   });
+
+  it("extracts episode when title and season token are joined", () => {
+    expect(extractEpisodeToken("mdgp-carters02e01-720p")).toBe("S02E01");
+  });
 });
 
 describe("applyEpisodeTokenToFolderName", () => {
@@ -690,5 +694,14 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
       { forceEpisodeForSeasonFolder: true }
     );
     expect(result).toBe("Room.104.S04E01.GERMAN.DL.720p.WEBRiP.x264-LAW");
+  });
+
+  it("renames Carter when source joins title and season token", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Carter.S02.GERMAN.DL.720p.HDTV.x264-MDGP"],
+      "mdgp-carters02e01-720p",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Carter.S02E01.GERMAN.DL.720p.HDTV.x264-MDGP");
   });
 });

@@ -22,7 +22,7 @@ import { resetDebridLinkApiKeyDailyUsage, resetProviderDailyUsage } from "../sha
 import { importDlcContainers } from "./container";
 import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
-import { fetchAllDebridHostInfo } from "./debrid";
+import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
@@ -246,6 +246,10 @@ export class AppController {
       throw new Error("AllDebrid ist nicht konfiguriert");
     }
     return fetchAllDebridHostInfo(token, host);
+  }
+
+  public async getDebridLinkHostLimits(host = "rapidgator") {
+    return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
   public async checkUpdates(): Promise<UpdateCheckResult> {

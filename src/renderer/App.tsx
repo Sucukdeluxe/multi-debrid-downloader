@@ -6,6 +6,7 @@ import type {
   AppTheme,
   BandwidthScheduleEntry,
   DebridFallbackProvider,
+  DebridLinkHostLimitInfo,
   DebridProvider,
   DownloadItem,
   DownloadStats,
@@ -105,7 +106,9 @@ interface AccountDialogState {
 interface DebridLinkAccountKeyEntry {
   id: string;
   label: string;
+  token: string;
   masked: string;
+  disabled: boolean;
   dailyUsedBytes: number;
   dailyLimitBytes: number;
   dailyRemainingBytes: number | null;
@@ -691,6 +694,7 @@ const emptyStats = (): DownloadStats => ({
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
     token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
+    debridLinkDisabledKeyIds: [],
     archivePasswordList: "",
     rememberToken: true, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
     providerTertiary: "none", autoProviderFallback: true, outputDir: "", packageName: "",
@@ -873,6 +877,39 @@ function formatAllDebridSimuLimit(info: AllDebridHostInfo): string {
 
 function formatAllDebridTimestamp(info: AllDebridHostInfo): string {
   return formatDateTime(info.lastCheckedAt || info.fetchedAt);
+}
+
+function formatDebridLinkTraffic(info: DebridLinkHostLimitInfo | null | undefined): string {
+  if (!info) {
+    return "Lade...";
+  }
+  const toGb = (bytes: number): string => `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (info.trafficCurrentBytes !== null && info.trafficMaxBytes !== null) {
+    return `${toGb(info.trafficCurrentBytes)} / ${toGb(info.trafficMaxBytes)}`;
+  }
+  if (info.trafficMaxBytes !== null) {
+    return `max. ${toGb(info.trafficMaxBytes)}`;
+  }
+  if (info.trafficCurrentBytes !== null) {
+    return toGb(info.trafficCurrentBytes);
+  }
+  return info.note || "Nicht verfügbar";
+}
+
+function formatDebridLinkCountQuota(info: DebridLinkHostLimitInfo | null | undefined): string {
+  if (!info) {
+    return "Lade...";
+  }
+  if (info.linksCurrent !== null && info.linksMax !== null) {
+    return `${info.linksCurrent} / ${info.linksMax}`;
+  }
+  if (info.linksMax !== null) {
+    return `max. ${info.linksMax}`;
+  }
+  if (info.linksCurrent !== null) {
+    return String(info.linksCurrent);
+  }
+  return info.note || "Nicht verfügbar";
 }
 
 interface BandwidthChartProps {
@@ -1254,6 +1291,10 @@ export function App(): ReactElement {
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
+  const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
+  const [debridLinkHostLimits, setDebridLinkHostLimits] = useState<Record<string, DebridLinkHostLimitInfo>>({});
+  const [debridLinkHostLimitsLoading, setDebridLinkHostLimitsLoading] = useState(false);
+  const [debridLinkHostLimitsError, setDebridLinkHostLimitsError] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>(() => DEFAULT_COLUMN_ORDER);
@@ -1271,6 +1312,7 @@ export function App(): ReactElement {
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
   const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
   const allDebridHostRequestRef = useRef(0);
+  const debridLinkHostLimitsRequestRef = useRef(0);
   const accountColumnResizeRef = useRef<{ key: AccountColumnKey; startX: number; startWidth: number } | null>(null);
   const onAccountColumnResizeMove = useCallback((event: MouseEvent): void => {
     const active = accountColumnResizeRef.current;
@@ -1434,6 +1476,149 @@ export function App(): ReactElement {
       }
     }
   }, [showToast]);
+
+  const loadDebridLinkHostLimits = useCallback(async (silent = false): Promise<void> => {
+    const requestId = debridLinkHostLimitsRequestRef.current + 1;
+    debridLinkHostLimitsRequestRef.current = requestId;
+    setDebridLinkHostLimitsLoading(true);
+    setDebridLinkHostLimitsError("");
+    setDebridLinkHostLimits({});
+    try {
+      const apiKeys = parseDebridLinkApiKeys(settingsDraft.debridLinkApiKeys || "");
+      if (apiKeys.length === 0) {
+        throw new Error("Debrid-Link ist nicht konfiguriert");
+      }
+
+      let loadedAny = false;
+      let firstError = "";
+      for (let index = 0; index < apiKeys.length; index += 1) {
+        if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
+          return;
+        }
+
+        const apiKey = apiKeys[index];
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 8000);
+        let info: DebridLinkHostLimitInfo;
+        try {
+          const readLimitsPayload = async (path: "limits" | "limits/all") => {
+            const response = await fetch(`https://debrid-link.com/api/v2/downloader/${path}`, {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${apiKey.token}`
+              },
+              signal: controller.signal
+            });
+            const payload = await response.json() as {
+              success?: boolean;
+              value?: {
+                hosters?: Array<{
+                  name?: string;
+                  displayName?: string;
+                  daySize?: { current?: number; value?: number };
+                  dayCount?: { current?: number; value?: number };
+                }>;
+              };
+              error?: string;
+              error_description?: string;
+            };
+            if (!response.ok || !payload?.success) {
+              throw new Error(String(payload?.error_description || payload?.error || `HTTP ${response.status}`));
+            }
+            return payload;
+          };
+
+          let payload = await readLimitsPayload("limits/all");
+          let hostEntry = (payload.value?.hosters || []).find((entry) => String(entry.name || "").toLowerCase() === "rapidgator");
+          if (!hostEntry) {
+            payload = await readLimitsPayload("limits");
+            hostEntry = (payload.value?.hosters || []).find((entry) => String(entry.name || "").toLowerCase() === "rapidgator");
+          }
+          if (!hostEntry) {
+            info = {
+              keyId: apiKey.id,
+              keyLabel: apiKey.label,
+              host: "rapidgator",
+              fetchedAt: Date.now(),
+              trafficCurrentBytes: null,
+              trafficMaxBytes: null,
+              linksCurrent: null,
+              linksMax: null,
+              note: "Rapidgator nicht in der API-Antwort gefunden."
+            };
+          } else {
+            info = {
+              keyId: apiKey.id,
+              keyLabel: apiKey.label,
+              host: String(hostEntry.displayName || hostEntry.name || "rapidgator"),
+              fetchedAt: Date.now(),
+              trafficCurrentBytes: typeof hostEntry.daySize?.current === "number" ? hostEntry.daySize.current : null,
+              trafficMaxBytes: typeof hostEntry.daySize?.value === "number" ? hostEntry.daySize.value : null,
+              linksCurrent: typeof hostEntry.dayCount?.current === "number" ? hostEntry.dayCount.current : null,
+              linksMax: typeof hostEntry.dayCount?.value === "number" ? hostEntry.dayCount.value : null,
+              note: ""
+            };
+          }
+        } catch (error) {
+          const message = String(error || "Quota konnte nicht geladen werden");
+          if (!firstError) {
+            firstError = message;
+          }
+          info = {
+            keyId: apiKey.id,
+            keyLabel: apiKey.label,
+            host: "rapidgator",
+            fetchedAt: Date.now(),
+            trafficCurrentBytes: null,
+            trafficMaxBytes: null,
+            linksCurrent: null,
+            linksMax: null,
+            note: message
+          };
+        } finally {
+          window.clearTimeout(timer);
+        }
+
+        if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
+          return;
+        }
+
+        loadedAny = true;
+        setDebridLinkHostLimits((prev) => ({
+          ...prev,
+          [info.keyId]: info
+        }));
+
+      }
+
+      if (!loadedAny && firstError) {
+        throw new Error(firstError);
+      }
+    } catch (error) {
+      if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
+        return;
+      }
+      setDebridLinkHostLimits({});
+      setDebridLinkHostLimitsError(String(error));
+      if (!silent) {
+        showToast(`Debrid-Link Quota fehlgeschlagen: ${String(error)}`, 3200);
+      }
+    } finally {
+      if (mountedRef.current && debridLinkHostLimitsRequestRef.current === requestId) {
+        setDebridLinkHostLimitsLoading(false);
+      }
+    }
+  }, [settingsDraft.debridLinkApiKeys, showToast]);
+
+  useEffect(() => {
+    if (keyStatsPopup !== "debridlink") {
+      setDebridLinkHostLimits({});
+      setDebridLinkHostLimitsError("");
+      setDebridLinkHostLimitsLoading(false);
+      return;
+    }
+    void loadDebridLinkHostLimits(true);
+  }, [keyStatsPopup, loadDebridLinkHostLimits]);
 
   const clearImportQueueFocusListener = useCallback((): void => {
     const handler = importQueueFocusHandlerRef.current;
@@ -1764,7 +1949,7 @@ export function App(): ReactElement {
         continue;
       }
       const option = findAccountOption(kind);
-      let statusLabel = "Konfiguriert";
+      let statusLabel = "Aktiviert";
       let note = "";
       if (kind === "megadebrid-api") {
         note = "Nur API aktiv. Kein Web-Fallback.";
@@ -1790,7 +1975,7 @@ export function App(): ReactElement {
       }
       if (kind === "debridlink-api") {
         const keyCount = parseDebridLinkApiKeys(settingsDraft.debridLinkApiKeys || "").length;
-        statusLabel = keyCount > 1 ? `${keyCount} API-Keys` : "Konfiguriert";
+        statusLabel = keyCount > 1 ? `${keyCount} API-Keys` : "Aktiviert";
       }
       const provider = getAccountServiceProvider(service);
       const dailyUsedBytes = getProviderDailyUsageBytes(snapshot.settings, provider);
@@ -1816,7 +2001,9 @@ export function App(): ReactElement {
           return {
             id: key.id,
             label: key.label,
+            token: key.token,
             masked: key.masked,
+            disabled: (settingsDraft.debridLinkDisabledKeyIds || []).includes(key.id),
             dailyUsedBytes: keyDailyUsedBytes,
             dailyLimitBytes: keyDailyLimitBytes,
             dailyRemainingBytes: keyDailyRemainingBytes,
@@ -1826,11 +2013,19 @@ export function App(): ReactElement {
         : [];
       if (kind === "debridlink-api" && debridLinkKeys.length > 0) {
         const limitedCount = debridLinkKeys.filter((entry) => entry.dailyLimitReached).length;
+        const disabledKeyCount = debridLinkKeys.filter((entry) => entry.disabled).length;
+        const keyNotes: string[] = [];
         if (limitedCount > 0) {
-          const limitNote = `${limitedCount}/${debridLinkKeys.length} API-Keys am Limit.`;
-          note = note ? `${limitNote} ${note}` : limitNote;
+          keyNotes.push(`${limitedCount}/${debridLinkKeys.length} API-Keys am Limit.`);
         }
-        if (limitedCount === debridLinkKeys.length) {
+        if (disabledKeyCount > 0) {
+          keyNotes.push(`${disabledKeyCount}/${debridLinkKeys.length} API-Keys deaktiviert.`);
+        }
+        if (keyNotes.length > 0) {
+          const combinedKeyNote = keyNotes.join(" ");
+          note = note ? `${combinedKeyNote} ${note}` : combinedKeyNote;
+        }
+        if (debridLinkKeys.every((entry) => entry.disabled || entry.dailyLimitReached)) {
           dailyLimitReached = true;
         }
       }
@@ -2182,6 +2377,28 @@ export function App(): ReactElement {
       showToast(`${entry.serviceLabel} ${keyLabel}: Tageszähler zurückgesetzt`, 2200);
     }, (error) => {
       showToast(`${entry.serviceLabel} ${keyLabel}: Reset fehlgeschlagen: ${String(error)}`, 3200);
+    });
+  };
+
+  const onToggleDebridLinkApiKeyEnabled = async (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry): Promise<void> => {
+    await performQuickAction(async () => {
+      const currentDisabledIds = settingsDraft.debridLinkDisabledKeyIds || [];
+      const nextDisabledIds = key.disabled
+        ? currentDisabledIds.filter((existingId) => existingId !== key.id)
+        : [...currentDisabledIds, key.id];
+      const nextDraft: AppSettings = {
+        ...settingsDraft,
+        debridLinkDisabledKeyIds: nextDisabledIds
+      };
+      await persistSpecificSettings(nextDraft);
+      showToast(
+        key.disabled
+          ? `${entry.serviceLabel} ${key.label} aktiviert`
+          : `${entry.serviceLabel} ${key.label} deaktiviert`,
+        2200
+      );
+    }, (error) => {
+      showToast(`${entry.serviceLabel} ${key.label}: Umschalten fehlgeschlagen: ${String(error)}`, 3200);
     });
   };
 
@@ -4006,6 +4223,9 @@ export function App(): ReactElement {
                               />
                             </div>
                             <div className="account-header-cell">
+                              <span>Info</span>
+                            </div>
+                            <div className="account-header-cell">
                               <span>Zugang</span>
                               <button
                                 className="account-resize-handle"
@@ -4016,7 +4236,9 @@ export function App(): ReactElement {
                                 }}
                               />
                             </div>
-                            <span>Aktionen</span>
+                            <div className="account-header-cell">
+                              <span>Aktionen</span>
+                            </div>
                           </div>
                           {configuredAccounts.map((entry) => {
                             const option = findAccountOption(entry.kind);
@@ -4034,46 +4256,21 @@ export function App(): ReactElement {
                                   <span className="account-mode-pill">{entry.modeLabel}</span>
                                 </div>
                                 <div className="account-cell account-status-cell">
-                                  <span className={`account-status-pill${allDebridStateClass}`}>{entry.statusLabel}</span>
+                                  <span className={`account-status-pill${entry.disabled ? " account-status-disabled" : ""}${allDebridStateClass}`}>{entry.statusLabel}</span>
                                   {entry.note && <span className="account-note">{entry.note}</span>}
-                                  <div className={`account-usage-stats${entry.dailyLimitReached ? " warning" : ""}`}>
-                                    <span>Heute: {humanSize(entry.dailyUsedBytes)}</span>
-                                    <span>{entry.dailyLimitBytes > 0 ? `Limit: ${humanSize(entry.dailyLimitBytes)}` : "Kein Tageslimit"}</span>
-                                    {entry.dailyLimitBytes > 0 && (
-                                      <span>{entry.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(entry.dailyRemainingBytes || 0)}`}</span>
-                                    )}
-                                    {entry.dailyLimitBytes <= 0 && entry.dailyLimitReached && entry.debridLinkKeys.length > 0 && (
-                                      <span>Fallback aktiv</span>
-                                    )}
-                                  </div>
-                                  {entry.debridLinkKeys.length > 0 && (
-                                    <div className="account-subkey-list">
-                                      {entry.debridLinkKeys.map((key) => (
-                                        <div key={key.id} className={`account-subkey-row${key.dailyLimitReached ? " warning" : ""}`}>
-                                          <div className="account-subkey-main">
-                                            <div className="account-subkey-head">
-                                              <strong>{key.label}</strong>
-                                              <span>{key.masked}</span>
-                                            </div>
-                                            <div className="account-subkey-stats">
-                                              <span>Heute: {humanSize(key.dailyUsedBytes)}</span>
-                                              <span>{key.dailyLimitBytes > 0 ? `Limit: ${humanSize(key.dailyLimitBytes)}` : "Kein Limit"}</span>
-                                              {key.dailyLimitBytes > 0 && (
-                                                <span>{key.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(key.dailyRemainingBytes || 0)}`}</span>
-                                              )}
-                                            </div>
-                                          </div>
-                                          <div className="account-subkey-actions">
-                                            <button
-                                              className="btn"
-                                              disabled={actionBusy || key.dailyUsedBytes <= 0}
-                                              onClick={() => { void onResetDebridLinkApiKeyDailyUsage(entry, key.id, key.label); }}
-                                            >
-                                              Reset
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ))}
+                                </div>
+                                <div className="account-cell account-info-cell">
+                                  {entry.debridLinkKeys.length > 0 ? (
+                                    <button className="btn btn-sm" onClick={() => setKeyStatsPopup(entry.service)}>
+                                      Statistik
+                                    </button>
+                                  ) : (
+                                    <div className={`account-usage-stats${entry.dailyLimitReached ? " warning" : ""}`}>
+                                      <span>Heute: {humanSize(entry.dailyUsedBytes)}</span>
+                                      <span>{entry.dailyLimitBytes > 0 ? `Limit: ${humanSize(entry.dailyLimitBytes)}` : "Kein Tageslimit"}</span>
+                                      {entry.dailyLimitBytes > 0 && (
+                                        <span>{entry.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(entry.dailyRemainingBytes || 0)}`}</span>
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -5013,6 +5210,91 @@ export function App(): ReactElement {
               void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {});
               setHistoryCtxMenu(null);
             }}>Verlauf leeren</button>
+          </div>
+        );
+      })()}
+      {keyStatsPopup && (() => {
+        const entry = configuredAccounts.find((a) => a.service === keyStatsPopup);
+        if (!entry || entry.debridLinkKeys.length === 0) return null;
+        const totalUsed = entry.debridLinkKeys.reduce((s, k) => s + k.dailyUsedBytes, 0);
+        const limitedCount = entry.debridLinkKeys.filter((k) => k.dailyLimitReached).length;
+        const disabledCount = entry.debridLinkKeys.filter((k) => k.disabled).length;
+        const loadedQuotaCount = entry.debridLinkKeys.filter((k) => Boolean(debridLinkHostLimits[k.id])).length;
+        return (
+          <div className="modal-backdrop" onClick={() => setKeyStatsPopup(null)}>
+            <div className="modal-card key-stats-popup" onClick={(e) => e.stopPropagation()}>
+              <div className="key-stats-popup-header">
+                <div>
+                  <h3>API-Key Statistik</h3>
+                  <p className="key-stats-summary">
+                    {entry.debridLinkKeys.length} Keys &middot; Heute: {humanSize(totalUsed)}
+                    {limitedCount > 0 && <span className="key-stats-warn"> &middot; {limitedCount} am Limit</span>}
+                    {disabledCount > 0 && <span className="key-stats-warn"> &middot; {disabledCount} deaktiviert</span>}
+                    {debridLinkHostLimitsLoading && <span> &middot; Rapidgator-Quota wird geladen ({loadedQuotaCount}/{entry.debridLinkKeys.length})</span>}
+                    {!debridLinkHostLimitsLoading && !debridLinkHostLimitsError && <span> &middot; Rapidgator API-Quota</span>}
+                    {debridLinkHostLimitsError && <span className="key-stats-warn"> &middot; API-Quota konnte nicht geladen werden</span>}
+                  </p>
+                </div>
+                <button className="update-popup-close" onClick={() => setKeyStatsPopup(null)}>&times;</button>
+              </div>
+              <div className="account-subkey-table">
+                <div className="account-subkey-table-head">
+                  <span className="col-key">#</span>
+                  <span className="col-masked">Key</span>
+                  <span className="col-usage">Heute</span>
+                  <span className="col-limit">Lokal</span>
+                  <span className="col-traffic">RG Traffic</span>
+                  <span className="col-links">RG Links</span>
+                  <span className="col-action"></span>
+                </div>
+                {entry.debridLinkKeys.map((key, ki) => (
+                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached ? " warning" : ""}${key.disabled ? " disabled" : ""}`}>
+                    {(() => {
+                      const hostInfo = debridLinkHostLimits[key.id];
+                      return (
+                        <>
+                    <span className="col-key">{ki + 1}</span>
+                    <span
+                      className="col-masked link-popup-click"
+                      title={`${key.masked}\nKlicken zum Kopieren`}
+                      onClick={() => {
+                        void navigator.clipboard.writeText(key.token)
+                          .then(() => showToast(`${key.label} kopiert`, 1800))
+                          .catch(() => showToast("Kopieren fehlgeschlagen", 2200));
+                      }}
+                    >
+                      {key.masked}
+                    </span>
+                    <span className="col-usage">{humanSize(key.dailyUsedBytes)}</span>
+                    <span className="col-limit">{key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
+                    <span className="col-traffic" title={hostInfo?.note || ""}>{formatDebridLinkTraffic(hostInfo)}</span>
+                    <span className="col-links" title={hostInfo?.note || ""}>{formatDebridLinkCountQuota(hostInfo)}</span>
+                    <span className="col-action">
+                      <button
+                        className={`btn btn-sm ${key.disabled ? "success" : "danger"}`}
+                        disabled={actionBusy}
+                        onClick={() => { void onToggleDebridLinkApiKeyEnabled(entry, key); }}
+                      >
+                        {key.disabled ? "Aktivieren" : "Deaktivieren"}
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        disabled={actionBusy || key.dailyUsedBytes <= 0}
+                        onClick={() => { void onResetDebridLinkApiKeyDailyUsage(entry, key.id, key.label); }}
+                      >
+                        Reset
+                      </button>
+                    </span>
+                        </>
+                      );
+                    })()}
+                  </div>
+                ))}
+              </div>
+              <div className="modal-actions">
+                <button className="btn" onClick={() => setKeyStatsPopup(null)}>Schließen</button>
+              </div>
+            </div>
           </div>
         );
       })()}

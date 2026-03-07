@@ -62,6 +62,7 @@ export interface AppSettings {
   ddownloadPassword: string;
   oneFichierApiKey: string;
   debridLinkApiKeys: string;
+  debridLinkDisabledKeyIds: string[];
   linkSnappyLogin: string;
   linkSnappyPassword: string;
   archivePasswordList: string;
@@ -287,6 +288,18 @@ export interface AllDebridHostInfo {
   quotaMax: number | null;
   quotaType: string;
   limitSimuDl: number | null;
+  note: string;
+}
+
+export interface DebridLinkHostLimitInfo {
+  keyId: string;
+  keyLabel: string;
+  host: string;
+  fetchedAt: number;
+  trafficCurrentBytes: number | null;
+  trafficMaxBytes: number | null;
+  linksCurrent: number | null;
+  linksMax: number | null;
   note: string;
 }
 
