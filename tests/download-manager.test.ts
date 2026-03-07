@@ -2042,7 +2042,7 @@ describe("download manager", () => {
     expect(session.packages[packageId]?.status).toBe("queued");
   });
 
-  it("does not requeue completed archive parts without local file evidence", () => {
+  it("requeues completed archive parts on CRC error even when file size matches", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -2121,13 +2121,18 @@ describe("download manager", () => {
       "hybrid"
     );
 
-    expect(changed).toBe(0);
+    // CRC error from extractor IS evidence of corruption — even when files
+    // have the right size, content may be corrupt.  Must force re-download.
+    expect(changed).toBe(2);
     for (const itemId of itemIds) {
       const item = session.items[itemId]!;
-      expect(item.status).toBe("completed");
-      expect(item.targetPath).toContain(".rar");
-      expect(item.downloadedBytes).toBe(archiveSize);
+      expect(item.status).toBe("queued");
+      expect(item.targetPath).toBe("");
+      expect(item.downloadedBytes).toBe(0);
+      expect(item.fullStatus).toContain("Auto-Recovery");
     }
+    expect(fs.existsSync(path.join(outputDir, archiveNames[0]!))).toBe(false);
+    expect(fs.existsSync(path.join(outputDir, archiveNames[1]!))).toBe(false);
   });
 
   it("does not treat rev files as ready archive parts during disk fallback", async () => {

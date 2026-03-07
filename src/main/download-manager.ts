@@ -4226,12 +4226,21 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
 
-    const corruptArchiveItems = archiveItems
-      .map((item) => ({ item, state: inspectPackageItemDiskState(pkg, item) }))
+    const inspectedArchiveItems = archiveItems
+      .map((item) => ({ item, state: inspectPackageItemDiskState(pkg, item) }));
+    const corruptArchiveItems = inspectedArchiveItems
       .filter(({ state }) => state.reason !== "ok");
+
     if (corruptArchiveItems.length === 0) {
-      logger.warn(`Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - kein lokaler Dateifehler nachweisbar`);
-      return 0;
+      // The extractor confirmed corruption (CRC error) but all files look
+      // correct by size.  This happens when content is corrupt despite having
+      // the right byte count (e.g. network corruption during download).
+      // Trust the extractor verdict and force re-download of ALL archive parts.
+      logger.warn(
+        `Auto-Recovery (${scope}): ${failure.archiveName} - Dateien korrekte Groesse aber Extractor meldet CRC-Fehler, ` +
+        `erzwinge Re-Download aller ${archiveItems.length} Parts`
+      );
+      corruptArchiveItems.push(...inspectedArchiveItems);
     }
 
     const queuedAt = nowMs();
@@ -7814,7 +7823,21 @@ export class DownloadManager extends EventEmitter {
           item.updatedAt = nowMs();
           this.recordRunOutcome(item.id, "completed");
         } else if (stat.size > 0) {
-          logger.warn(`Item-Recovery: ${item.fileName} übersprungen – Datei zu klein (${humanSize(stat.size)}, erwartet mind. ${humanSize(minSize)})`);
+          // File exists but is clearly incomplete — delete and re-queue for download.
+          logger.warn(`Item-Recovery: ${item.fileName} unvollstaendig (${humanSize(stat.size)}, erwartet mind. ${humanSize(minSize)}), loesche und re-queue`);
+          try {
+            fs.rmSync(item.targetPath, { force: true });
+          } catch { /* ignore */ }
+          this.releaseTargetPath(item.id);
+          this.dropItemContribution(item.id);
+          item.targetPath = "";
+          item.status = "queued";
+          item.attempts = 0;
+          item.downloadedBytes = 0;
+          item.progressPercent = 0;
+          item.speedBps = 0;
+          item.fullStatus = "Wartet (unvollständiger Download)";
+          item.updatedAt = nowMs();
         }
       } catch {
         // file doesn't exist, nothing to recover
