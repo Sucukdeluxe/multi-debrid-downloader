@@ -288,6 +288,80 @@ describe("download manager", () => {
     }
   });
 
+  it("does not mark truncated archive downloads as completed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const advertised = Buffer.alloc(96 * 1024, 5);
+    const actual = advertised.subarray(0, advertised.length - 2048);
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/short-archive") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(actual.length));
+      res.end(actual);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/short-archive`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "broken.part01.rar",
+            filesize: advertised.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          retryLimit: 1
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "short-archive", links: ["https://dummy/short-archive"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("failed");
+      expect(item?.fullStatus || item?.lastError || "").toContain("download_underflow");
+      expect(item?.downloadedBytes).toBe(actual.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("continues downloading while package post-processing is pending", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -1808,6 +1882,72 @@ describe("download manager", () => {
     expect(item?.fullStatus).toContain("0B-Datei");
     expect(snapshot.session.packages[packageId]?.status).toBe("queued");
     expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
+  it("requeues preallocated completed archive items automatically on startup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "prealloc-pkg";
+    const itemId = "prealloc-item";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "prealloc");
+    const targetPath = path.join(outputDir, "archive.part01.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(8192));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "prealloc",
+      outputDir,
+      extractDir: path.join(root, "extract", "prealloc"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/prealloc",
+      provider: "megadebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1024,
+      totalBytes: 8192,
+      progressPercent: 100,
+      fileName: "archive.part01.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (8 KB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const snapshot = manager.getSnapshot();
+    const item = snapshot.session.items[itemId];
+    expect(item?.status).toBe("queued");
+    expect(item?.fullStatus).toContain("pre-alloc");
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
   });
 
   it("detects start conflicts when extract output already exists", async () => {

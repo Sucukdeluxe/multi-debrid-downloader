@@ -536,8 +536,8 @@ export function classifyExtractionError(errorText: string): ExtractErrorCategory
   const text = String(errorText || "").toLowerCase();
   if (text.includes("aborted:extract") || text.includes("extract_aborted")) return "aborted";
   if (text.includes("timeout")) return "timeout";
-  if (text.includes("wrong password") || text.includes("falsches passwort") || text.includes("incorrect password")) return "wrong_password";
   if (text.includes("crc failed") || text.includes("checksum error") || text.includes("crc error")) return "crc_error";
+  if (text.includes("wrong password") || text.includes("falsches passwort") || text.includes("incorrect password")) return "wrong_password";
   if (text.includes("missing volume") || text.includes("next volume") || text.includes("unexpected end of archive") || text.includes("missing parts")) return "missing_parts";
   if (text.includes("nicht gefunden") || text.includes("not found") || text.includes("no extractor")) return "no_extractor";
   if (text.includes("kein rar-archiv") || text.includes("not a rar archive") || text.includes("unsupported") || text.includes("unsupportedmethod")) return "unsupported_format";
@@ -937,9 +937,12 @@ type JvmExtractResult = {
   backend: string;
 };
 
-function extractorBackendMode(): ExtractBackendMode {
-  const defaultMode = "legacy";
-  const raw = String(process.env.RD_EXTRACT_BACKEND || defaultMode).trim().toLowerCase();
+export function resolveExtractorBackendMode(
+  rawValue?: string | null,
+  isVitestEnv = Boolean(process.env.VITEST)
+): ExtractBackendMode {
+  const defaultMode: ExtractBackendMode = isVitestEnv ? "legacy" : "auto";
+  const raw = String(rawValue ?? defaultMode).trim().toLowerCase();
   if (raw === "legacy") {
     return "legacy";
   }
@@ -947,6 +950,10 @@ function extractorBackendMode(): ExtractBackendMode {
     return "jvm";
   }
   return "auto";
+}
+
+function extractorBackendMode(): ExtractBackendMode {
+  return resolveExtractorBackendMode(process.env.RD_EXTRACT_BACKEND);
 }
 
 function isJvmRuntimeMissingError(errorText: string): boolean {
