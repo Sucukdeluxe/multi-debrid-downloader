@@ -733,14 +733,14 @@ function extractCpuBudgetPercent(priority?: string): number {
 
 function extractorThreadSwitch(hybridMode = false, priority?: string): string {
   if (hybridMode) {
-    // Use half the CPU budget during hybrid extraction to leave headroom for
-    // concurrent downloads. Falls back to at least 2 threads.
+    // Use 75% of CPU cores during hybrid extraction — downloads are mostly
+    // I/O-bound so they don't need much CPU headroom.
     const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
     if (Number.isFinite(envValue) && envValue >= 1 && envValue <= 32) {
       return `-mt${Math.floor(envValue)}`;
     }
     const cpuCount = Math.max(1, os.cpus().length || 1);
-    const hybridThreads = Math.max(2, Math.min(8, Math.floor(cpuCount / 2)));
+    const hybridThreads = Math.max(2, Math.min(12, Math.ceil(cpuCount * 0.75)));
     return `-mt${hybridThreads}`;
   }
   const envValue = Number(process.env.RD_EXTRACT_THREADS ?? NaN);
@@ -1261,9 +1261,10 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
   const args = [
     "-Dfile.encoding=UTF-8",
     `-Djava.io.tmpdir=${jvmTmpDir}`,
-    "-Xms512m",
-    "-Xmx8g",
-    "-XX:+UseSerialGC",
+    "-Xms1g",
+    "-Xmx32g",
+    "-XX:+UseG1GC",
+    "-XX:MaxGCPauseMillis=50",
     "-cp",
     layout.classPath,
     JVM_EXTRACTOR_MAIN_CLASS,
@@ -1474,6 +1475,10 @@ async function runJvmExtractCommand(
 
   // Try persistent daemon first — saves ~5s JVM boot per archive
   if (isDaemonAvailable(layout)) {
+    // Refresh daemon process priority before each request so hybrid
+    // extraction ("high") gets NORMAL priority even if the daemon was
+    // originally started with BELOW_NORMAL.
+    lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
     logger.info(`JVM Daemon: Sofort verfügbar, sende Request für ${path.basename(archivePath)} (pwCandidates=${passwordCandidates.length})`);
     return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
   }
@@ -1486,6 +1491,7 @@ async function runJvmExtractCommand(
     const ready = await waitForDaemonReady(15_000, signal);
     const waitedMs = Date.now() - waitStartedAt;
     if (ready) {
+      lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
       logger.info(`JVM Daemon: Bereit nach ${waitedMs}ms — sende Request für ${path.basename(archivePath)}`);
       return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
     }
@@ -1503,9 +1509,10 @@ async function runJvmExtractCommand(
   const args = [
     "-Dfile.encoding=UTF-8",
     `-Djava.io.tmpdir=${jvmTmpDir}`,
-    "-Xms512m",
-    "-Xmx8g",
-    "-XX:+UseSerialGC",
+    "-Xms1g",
+    "-Xmx32g",
+    "-XX:+UseG1GC",
+    "-XX:MaxGCPauseMillis=50",
     "-cp",
     layout.classPath,
     JVM_EXTRACTOR_MAIN_CLASS,
