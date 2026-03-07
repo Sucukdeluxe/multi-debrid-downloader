@@ -231,7 +231,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     service: "linksnappy",
     serviceLabel: "LinkSnappy",
     title: "LinkSnappy Web",
-    modeLabel: "Login",
+    modeLabel: "Web",
     pickerDescription: "Login für linksnappy.com mit Benutzername und Passwort.",
     needsCredentials: true
   }
