@@ -42,7 +42,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys } from "./debrid";
-import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree } from "./extractor";
+import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
@@ -4057,6 +4057,62 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private autoRecoverArchiveCrcFailure(
+    pkg: PackageEntry,
+    items: DownloadItem[],
+    failure: ExtractArchiveFailureInfo,
+    scope: "hybrid" | "full"
+  ): number {
+    if (!failure.suggestRedownload || failure.category !== "crc_error") {
+      return 0;
+    }
+
+    const archiveItems = resolveArchiveItemsFromList(failure.archiveName, items)
+      .filter((item) => item.status === "completed");
+    if (archiveItems.length === 0) {
+      logger.warn(`Auto-Recovery (${scope}): Keine completed Items für ${failure.archiveName} gefunden, überspringe`);
+      return 0;
+    }
+
+    const queuedAt = nowMs();
+    const reason = "Wartet (Auto-Recovery: Archiv beschädigt/unvollständig)";
+    let changed = 0;
+    for (const item of archiveItems) {
+      const claimedTargetPath = String(item.targetPath || "").trim();
+      if (claimedTargetPath) {
+        try {
+          fs.rmSync(claimedTargetPath, { force: true });
+        } catch {
+          // ignore; claim is still released so a fresh path can be chosen if needed
+        }
+      }
+      this.releaseTargetPath(item.id);
+      this.dropItemContribution(item.id);
+      item.targetPath = "";
+      item.status = "queued";
+      item.attempts = 0;
+      item.downloadedBytes = 0;
+      item.progressPercent = 0;
+      item.speedBps = 0;
+      item.lastError = failure.errorText;
+      item.fullStatus = reason;
+      item.updatedAt = queuedAt;
+      changed += 1;
+    }
+
+    if (changed > 0) {
+      pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
+      pkg.updatedAt = queuedAt;
+      logger.warn(
+        `Auto-Recovery (${scope}): ${failure.archiveName} auf queued gesetzt (${changed} Items), ` +
+        `reason=${compactErrorText(failure.jvmFailureReason || failure.errorText)}`
+      );
+      this.persistSoon();
+      this.emitState();
+    }
+    return changed;
+  }
+
   /** Detect items whose targetPath has a " (N)" suffix from a previous bug and rename
    *  them back to the original filename if the original path is not claimed by another item. */
   private fixDuplicateSuffixFiles(): void {
@@ -7198,6 +7254,7 @@ export class DownloadManager extends EventEmitter {
       resolveArchiveItemsFromList(archiveName, items);
 
     // Track archives for parallel hybrid extraction progress
+    const autoRecoveredArchives = new Set<string>();
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
     const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
@@ -7242,6 +7299,15 @@ export class DownloadManager extends EventEmitter {
         hybridMode: true,
         maxParallel: this.settings.maxParallelExtract || 2,
         extractCpuPriority: "high",
+        onArchiveFailure: (failure) => {
+          if (autoRecoveredArchives.has(failure.archiveName)) {
+            return;
+          }
+          const changed = this.autoRecoverArchiveCrcFailure(pkg, items, failure, "hybrid");
+          if (changed > 0) {
+            autoRecoveredArchives.add(failure.archiveName);
+          }
+        },
         onProgress: (progress) => {
           if (progress.phase === "preparing") {
             pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
@@ -7273,6 +7339,9 @@ export class DownloadManager extends EventEmitter {
                 const initLabel = `Entpacken 0% · ${progress.archiveName}`;
                 const initAt = nowMs();
                 for (const entry of resolved) {
+                  if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) {
+                    continue;
+                  }
                   if (!isExtractedLabel(entry.fullStatus)) {
                     entry.fullStatus = initLabel;
                     entry.updatedAt = initAt;
@@ -7293,10 +7362,9 @@ export class DownloadManager extends EventEmitter {
                 ? "Entpacken - Error"
                 : formatExtractDone(doneAt - startedAt);
               for (const entry of archItems) {
-                if (!isExtractedLabel(entry.fullStatus)) {
-                  entry.fullStatus = doneLabel;
-                  entry.updatedAt = doneAt;
-                }
+                if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
+                entry.fullStatus = doneLabel;
+                entry.updatedAt = doneAt;
               }
               hybridResolvedItems.delete(progress.archiveName);
               hybridStartTimes.delete(progress.archiveName);
@@ -7324,10 +7392,9 @@ export class DownloadManager extends EventEmitter {
               }
               const updatedAt = nowMs();
               for (const entry of archItems) {
-                if (!isExtractedLabel(entry.fullStatus) && entry.fullStatus !== label) {
-                  entry.fullStatus = label;
-                  entry.updatedAt = updatedAt;
-                }
+                if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus) || entry.fullStatus === label) continue;
+                entry.fullStatus = label;
+                entry.updatedAt = updatedAt;
               }
             }
           }
@@ -7396,7 +7463,7 @@ export class DownloadManager extends EventEmitter {
       // downloading) as "Done".
       const updatedAt = nowMs();
       for (const entry of hybridItems) {
-        if (isExtractedLabel(entry.fullStatus)) {
+        if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) {
           continue;
         }
         const status = entry.fullStatus || "";
@@ -7417,7 +7484,7 @@ export class DownloadManager extends EventEmitter {
         logger.info(`Hybrid-Extract abgebrochen: pkg=${pkg.name}`);
         const abortAt = nowMs();
         for (const entry of hybridItems) {
-          if (isExtractedLabel(entry.fullStatus || "")) continue;
+          if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus || "")) continue;
           if (/^Entpacken\b/i.test(entry.fullStatus || "") || /^Passwort\b/i.test(entry.fullStatus || "")) {
             entry.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
             entry.updatedAt = abortAt;
@@ -7428,7 +7495,7 @@ export class DownloadManager extends EventEmitter {
       logger.warn(`Hybrid-Extract Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
       const errorAt = nowMs();
       for (const entry of hybridItems) {
-        if (isExtractedLabel(entry.fullStatus || "")) continue;
+        if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus || "")) continue;
         if (/^Entpacken\b/i.test(entry.fullStatus || "") || /^Passwort\b/i.test(entry.fullStatus || "")) {
           entry.fullStatus = `Entpacken - Error`;
           entry.updatedAt = errorAt;
@@ -7609,6 +7676,7 @@ export class DownloadManager extends EventEmitter {
       }, extractTimeoutMs);
       try {
         // Track archives for parallel extraction progress
+        const autoRecoveredArchives = new Set<string>();
         const fullResolvedItems = new Map<string, DownloadItem[]>();
         const fullStartTimes = new Map<string, number>();
         let fullLastProgressCurrent: number | null = null;
@@ -7628,6 +7696,15 @@ export class DownloadManager extends EventEmitter {
           // All downloads finished — use NORMAL OS priority so extraction runs at
           // full speed (matching manual 7-Zip/WinRAR speed).
           extractCpuPriority: "high",
+          onArchiveFailure: (failure) => {
+            if (autoRecoveredArchives.has(failure.archiveName)) {
+              return;
+            }
+            const changed = this.autoRecoverArchiveCrcFailure(pkg, completedItems, failure, "full");
+            if (changed > 0) {
+              autoRecoveredArchives.add(failure.archiveName);
+            }
+          },
           onProgress: (progress) => {
             if (progress.phase === "preparing") {
               pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
@@ -7660,10 +7737,9 @@ export class DownloadManager extends EventEmitter {
                   const initLabel = `Entpacken 0% · ${progress.archiveName}`;
                   const initAt = nowMs();
                   for (const entry of resolved) {
-                    if (!isExtractedLabel(entry.fullStatus)) {
-                      entry.fullStatus = initLabel;
-                      entry.updatedAt = initAt;
-                    }
+                    if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
+                    entry.fullStatus = initLabel;
+                    entry.updatedAt = initAt;
                   }
                   emitExtractStatus(`Entpacken ${progress.percent}% · ${progress.archiveName}`, true);
                 }
@@ -7679,10 +7755,9 @@ export class DownloadManager extends EventEmitter {
                   ? "Entpacken - Error"
                   : formatExtractDone(doneAt - startedAt);
                 for (const entry of archiveItems) {
-                  if (!isExtractedLabel(entry.fullStatus)) {
-                    entry.fullStatus = doneLabel;
-                    entry.updatedAt = doneAt;
-                  }
+                  if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
+                  entry.fullStatus = doneLabel;
+                  entry.updatedAt = doneAt;
                 }
                 fullResolvedItems.delete(progress.archiveName);
                 fullStartTimes.delete(progress.archiveName);
@@ -7709,10 +7784,9 @@ export class DownloadManager extends EventEmitter {
                 }
                 const updatedAt = nowMs();
                 for (const entry of archiveItems) {
-                  if (!isExtractedLabel(entry.fullStatus) && entry.fullStatus !== label) {
-                    entry.fullStatus = label;
-                    entry.updatedAt = updatedAt;
-                  }
+                  if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus) || entry.fullStatus === label) continue;
+                  entry.fullStatus = label;
+                  entry.updatedAt = updatedAt;
                 }
               }
             }
@@ -7738,16 +7812,25 @@ export class DownloadManager extends EventEmitter {
         });
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         extractedCount = result.extracted;
+        const autoRecoveredPending = completedItems.some((item) => item.status === "queued");
 
         // Auto-rename wird in runDeferredPostExtraction ausgeführt (im Hintergrund),
         // damit der Slot sofort freigegeben wird.
+
+        if (autoRecoveredPending) {
+          pkg.postProcessLabel = undefined;
+          pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
+          pkg.updatedAt = nowMs();
+          logger.warn(`Post-Processing: pkg=${pkg.name}, Archivfehler automatisch auf Re-Download umgestellt`);
+          return;
+        }
 
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
           const failAt = nowMs();
           for (const entry of completedItems) {
             // Preserve per-archive "Entpackt - Done (X.Xs)" labels for successfully extracted archives
-            if (!isExtractedLabel(entry.fullStatus)) {
+            if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
               entry.fullStatus = `Entpack-Fehler: ${reason}`;
               entry.updatedAt = failAt;
             }
@@ -7786,7 +7869,7 @@ export class DownloadManager extends EventEmitter {
             const timeoutReason = `Entpacken Timeout nach ${Math.ceil(extractTimeoutMs / 1000)}s`;
             logger.error(`Post-Processing Entpacken Timeout: pkg=${pkg.name}`);
             for (const entry of completedItems) {
-              if (!isExtractedLabel(entry.fullStatus)) {
+              if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
                 entry.fullStatus = `Entpack-Fehler: ${timeoutReason}`;
                 entry.updatedAt = nowMs();
               }
@@ -7811,7 +7894,7 @@ export class DownloadManager extends EventEmitter {
           const reason = compactErrorText(error);
           logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
           for (const entry of completedItems) {
-            if (!isExtractedLabel(entry.fullStatus)) {
+            if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
               entry.fullStatus = `Entpack-Fehler: ${reason}`;
               entry.updatedAt = nowMs();
             }

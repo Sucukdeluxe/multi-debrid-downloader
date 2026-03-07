@@ -1950,6 +1950,98 @@ describe("download manager", () => {
     expect(snapshot.session.packages[packageId]?.status).toBe("queued");
   });
 
+  it("requeues completed archive parts after auto-recovery extraction failures", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "crc-pkg";
+    const createdAt = Date.now() - 10_000;
+    const outputDir = path.join(root, "downloads", "crc");
+    const extractDir = path.join(root, "extract", "crc");
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const archiveNames = ["show.s01e01.part1.rar", "show.s01e01.part2.rar"];
+    const itemIds = archiveNames.map((_, index) => `crc-item-${index}`);
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "crc",
+      outputDir,
+      extractDir,
+      status: "extracting",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    for (const [index, archiveName] of archiveNames.entries()) {
+      const targetPath = path.join(outputDir, archiveName);
+      fs.writeFileSync(targetPath, Buffer.from(`part-${index}`));
+      session.items[itemIds[index]!] = {
+        id: itemIds[index]!,
+        packageId,
+        url: `https://dummy/${archiveName}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: 4096,
+        totalBytes: 4096,
+        progressPercent: 100,
+        fileName: archiveName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Entpacken - Ausstehend",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const changed = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]!),
+      {
+        archiveName: "show.s01e01.part1.rar",
+        errorText: "Checksum error in the encrypted file",
+        category: "crc_error",
+        suggestRedownload: true,
+        jvmFailureReason: "Can not open the file as archive"
+      },
+      "hybrid"
+    );
+
+    expect(changed).toBe(2);
+    for (const itemId of itemIds) {
+      const item = session.items[itemId]!;
+      expect(item.status).toBe("queued");
+      expect(item.targetPath).toBe("");
+      expect(item.downloadedBytes).toBe(0);
+      expect(item.attempts).toBe(0);
+      expect(item.fullStatus).toContain("Auto-Recovery");
+    }
+    expect(fs.existsSync(path.join(outputDir, archiveNames[0]!))).toBe(false);
+    expect(fs.existsSync(path.join(outputDir, archiveNames[1]!))).toBe(false);
+    expect(session.packages[packageId]?.status).toBe("queued");
+  });
+
   it("detects start conflicts when extract output already exists", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
