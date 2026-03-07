@@ -350,8 +350,7 @@ function isTemporaryUnrestrictError(errorText: string): boolean {
     || text.includes("bad gateway")
     || text.includes("gateway timeout")
     || text.includes("cloudflare")
-    || text.includes("worker error")
-    || text.includes("hosternotavailable");
+    || text.includes("worker error");
 }
 
 function isFinishedStatus(status: DownloadStatus): boolean {
