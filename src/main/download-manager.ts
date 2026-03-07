@@ -4232,12 +4232,39 @@ export class DownloadManager extends EventEmitter {
       .filter(({ state }) => state.reason !== "ok");
 
     if (corruptArchiveItems.length === 0) {
-      // The extractor confirmed corruption (CRC error) but all files look
-      // correct by size.  This happens when content is corrupt despite having
-      // the right byte count (e.g. network corruption during download).
-      // Trust the extractor verdict and force re-download of ALL archive parts.
+      // All files have the expected size on disk.  This can mean either:
+      //   (a) content is corrupt despite correct size (network corruption), or
+      //   (b) archive is valid but password is wrong (e.g. header-encrypted RAR).
+      // Check the RAR magic bytes of the first part to distinguish:
+      //   valid signature → password issue → don't waste traffic re-downloading.
+      //   invalid signature → genuine corruption → force re-download.
+      const firstPart = inspectedArchiveItems.find(({ state }) => state.diskPath);
+      let hasValidSignature = false;
+      if (firstPart?.state.diskPath) {
+        try {
+          const fd = fs.openSync(firstPart.state.diskPath, "r");
+          try {
+            const header = Buffer.alloc(8);
+            fs.readSync(fd, header, 0, 8, 0);
+            // RAR4: 52 61 72 21 1a 07 00, RAR5: 52 61 72 21 1a 07 01 00
+            // 7z:   37 7a bc af 27 1c, ZIP: 50 4b 03 04
+            hasValidSignature =
+              (header[0] === 0x52 && header[1] === 0x61 && header[2] === 0x72 && header[3] === 0x21 && header[4] === 0x1a && header[5] === 0x07) ||
+              (header[0] === 0x37 && header[1] === 0x7a && header[2] === 0xbc && header[3] === 0xaf) ||
+              (header[0] === 0x50 && header[1] === 0x4b && header[2] === 0x03 && header[3] === 0x04);
+          } finally {
+            fs.closeSync(fd);
+          }
+        } catch { /* can't read → treat as corrupt */ }
+      }
+
+      if (hasValidSignature) {
+        logger.warn(`Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - Dateien korrekte Groesse, Archiv-Signatur gueltig (vermutlich falsches Passwort)`);
+        return 0;
+      }
+
       logger.warn(
-        `Auto-Recovery (${scope}): ${failure.archiveName} - Dateien korrekte Groesse aber Extractor meldet CRC-Fehler, ` +
+        `Auto-Recovery (${scope}): ${failure.archiveName} - Dateien korrekte Groesse aber ungueltige Archiv-Signatur, ` +
         `erzwinge Re-Download aller ${archiveItems.length} Parts`
       );
       corruptArchiveItems.push(...inspectedArchiveItems);

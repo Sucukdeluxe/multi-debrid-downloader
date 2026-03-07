@@ -2042,25 +2042,25 @@ describe("download manager", () => {
     expect(session.packages[packageId]?.status).toBe("queued");
   });
 
-  it("requeues completed archive parts on CRC error even when file size matches", () => {
+  it("requeues archive parts on CRC error when file has invalid archive signature (corrupt content)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
     const session = emptySession();
-    const packageId = "crc-clean-pkg";
+    const packageId = "crc-corrupt-sig-pkg";
     const createdAt = Date.now() - 10_000;
-    const outputDir = path.join(root, "downloads", "crc-clean");
-    const extractDir = path.join(root, "extract", "crc-clean");
+    const outputDir = path.join(root, "downloads", "crc-corrupt-sig");
+    const extractDir = path.join(root, "extract", "crc-corrupt-sig");
     fs.mkdirSync(outputDir, { recursive: true });
 
     const archiveNames = ["show.s01e01.part1.rar", "show.s01e01.part2.rar"];
-    const itemIds = archiveNames.map((_, index) => `crc-clean-item-${index}`);
+    const itemIds = archiveNames.map((_, index) => `crc-corrupt-sig-item-${index}`);
     const archiveSize = 64 * 1024;
 
     session.packageOrder = [packageId];
     session.packages[packageId] = {
       id: packageId,
-      name: "crc-clean",
+      name: "crc-corrupt-sig",
       outputDir,
       extractDir,
       status: "extracting",
@@ -2073,7 +2073,8 @@ describe("download manager", () => {
 
     for (const [index, archiveName] of archiveNames.entries()) {
       const targetPath = path.join(outputDir, archiveName);
-      fs.writeFileSync(targetPath, Buffer.alloc(archiveSize, index + 1));
+      // Write garbage content (no valid archive signature) — simulates corrupt download
+      fs.writeFileSync(targetPath, Buffer.alloc(archiveSize, 0xAA));
       session.items[itemIds[index]!] = {
         id: itemIds[index]!,
         packageId,
@@ -2121,8 +2122,7 @@ describe("download manager", () => {
       "hybrid"
     );
 
-    // CRC error from extractor IS evidence of corruption — even when files
-    // have the right size, content may be corrupt.  Must force re-download.
+    // Invalid archive signature = genuine corruption → force re-download
     expect(changed).toBe(2);
     for (const itemId of itemIds) {
       const item = session.items[itemId]!;
@@ -2133,6 +2133,98 @@ describe("download manager", () => {
     }
     expect(fs.existsSync(path.join(outputDir, archiveNames[0]!))).toBe(false);
     expect(fs.existsSync(path.join(outputDir, archiveNames[1]!))).toBe(false);
+  });
+
+  it("does not requeue archive parts on CRC error when file has valid RAR signature (wrong password)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "crc-valid-sig-pkg";
+    const createdAt = Date.now() - 10_000;
+    const outputDir = path.join(root, "downloads", "crc-valid-sig");
+    const extractDir = path.join(root, "extract", "crc-valid-sig");
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const archiveNames = ["show.s01e01.part1.rar", "show.s01e01.part2.rar"];
+    const itemIds = archiveNames.map((_, index) => `crc-valid-sig-item-${index}`);
+    const archiveSize = 64 * 1024;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "crc-valid-sig",
+      outputDir,
+      extractDir,
+      status: "extracting",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    for (const [index, archiveName] of archiveNames.entries()) {
+      const targetPath = path.join(outputDir, archiveName);
+      // Write file with valid RAR5 signature — simulates wrong password, not corruption
+      const content = Buffer.alloc(archiveSize, 0);
+      Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]).copy(content);
+      fs.writeFileSync(targetPath, content);
+      session.items[itemIds[index]!] = {
+        id: itemIds[index]!,
+        packageId,
+        url: `https://dummy/${archiveName}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: archiveSize,
+        totalBytes: archiveSize,
+        progressPercent: 100,
+        fileName: archiveName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Entpacken - Ausstehend",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const changed = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]!),
+      {
+        archiveName: "show.s01e01.part1.rar",
+        errorText: "Checksum error in the encrypted file",
+        category: "crc_error",
+        suggestRedownload: true,
+        jvmFailureReason: "Can not open the file as archive"
+      },
+      "hybrid"
+    );
+
+    // Valid RAR signature = file is structurally intact → wrong password, don't re-download
+    expect(changed).toBe(0);
+    for (const itemId of itemIds) {
+      const item = session.items[itemId]!;
+      expect(item.status).toBe("completed");
+      expect(item.targetPath).toContain(".rar");
+      expect(item.downloadedBytes).toBe(archiveSize);
+    }
   });
 
   it("does not treat rev files as ready archive parts during disk fallback", async () => {
