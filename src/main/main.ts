@@ -310,7 +310,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, (_event: IpcMainInvokeEvent, keyId: string) => {
     const validatedKeyId = validateString(keyId, "keyId").trim();
     if (!validatedKeyId) {
-      throw new Error("keyId ist ung?ltig");
+      throw new Error("keyId ist ungültig");
     }
     return controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId);
   });

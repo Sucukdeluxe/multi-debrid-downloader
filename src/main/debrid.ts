@@ -1988,7 +1988,7 @@ export class DebridService {
           // Fall through to normal provider chain
         }
       } else if (this.isProviderConfiguredFor(settings, routedProvider) && this.isProviderDailyLimited(settings, routedProvider)) {
-        logger.info(`Hoster-Zuordnung ${hosterKey} ? ${PROVIDER_LABELS[routedProvider]} ?bersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
+        logger.info(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
       } else {
         logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (Provider nicht konfiguriert/deaktiviert)`);
       }
