@@ -5363,7 +5363,7 @@ interface PackageCardProps {
   selectedIds: Set<string>;
   columnOrder: string[];
   gridTemplate: string;
-  onSelect: (id: string, ctrlKey: boolean) => void;
+  onSelect: (id: string, ctrlKey: boolean, shiftKey: boolean) => void;
   onSelectMouseDown: (id: string, e: React.MouseEvent) => void;
   onSelectMouseEnter: (id: string) => void;
   onStartEdit: (packageId: string, packageName: string) => void;
@@ -5422,7 +5422,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
       className={`package-card queue-package-card${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
       draggable
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, undefined, e.clientX, e.clientY); }}
-      onClick={(e) => { if (e.ctrlKey) onSelect(pkg.id, true); }}
+      onClick={(e) => { if (e.ctrlKey || e.shiftKey) onSelect(pkg.id, e.ctrlKey, e.shiftKey); }}
       onMouseDown={(e) => onSelectMouseDown(pkg.id, e)}
       onMouseEnter={() => onSelectMouseEnter(pkg.id)}
       onDragStart={(event) => { event.stopPropagation(); onDragStart(pkg.id); }}
@@ -5504,7 +5504,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
         {useExtractSplit && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
       </div>
       {!collapsed && items.filter((item) => !hideExtractedItems || !item.fullStatus?.startsWith("Entpackt")).map((item) => (
-        <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} style={{ gridTemplateColumns: gridTemplate }} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
+        <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} style={{ gridTemplateColumns: gridTemplate }} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey, e.shiftKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           {columnOrder.map((col) => {
             switch (col) {
               case "name": return (

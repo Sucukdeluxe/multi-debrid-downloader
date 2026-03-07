@@ -1074,6 +1074,7 @@ export class DownloadManager extends EventEmitter {
     this.recoverPostProcessingOnStartup();
     this.resolveExistingQueuedOpaqueFilenames();
     this.restoreTargetPathReservations();
+    this.revalidateCompletedItems();
     this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
   }
@@ -3990,6 +3991,42 @@ export class DownloadManager extends EventEmitter {
     }
     // Fix legacy (N) suffix files: rename back to original if original path is free
     this.fixDuplicateSuffixFiles();
+  }
+
+  /** Re-validate "completed" items on startup: if the file on disk is significantly
+   *  smaller than expected, the item was incorrectly marked completed (e.g. by the
+   *  old 50% recovery threshold). Reset to "queued" so it gets re-downloaded. */
+  private revalidateCompletedItems(): void {
+    let fixed = 0;
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "completed") continue;
+      if (!item.targetPath || !item.totalBytes || item.totalBytes <= 0) continue;
+      try {
+        const stat = fs.statSync(item.targetPath);
+        if (stat.size < item.totalBytes - ALLOCATION_UNIT_SIZE) {
+          logger.warn(`revalidateCompleted: ${item.fileName} ist nur ${humanSize(stat.size)} statt ${humanSize(item.totalBytes)}, setze auf queued`);
+          item.status = "queued";
+          item.fullStatus = "Wartet";
+          item.downloadedBytes = stat.size;
+          item.progressPercent = Math.floor((stat.size / item.totalBytes) * 100);
+          item.speedBps = 0;
+          fixed += 1;
+        }
+      } catch {
+        // file doesn't exist — reset to queued so it gets re-downloaded
+        logger.warn(`revalidateCompleted: ${item.fileName} Datei nicht gefunden, setze auf queued`);
+        item.status = "queued";
+        item.fullStatus = "Wartet";
+        item.downloadedBytes = 0;
+        item.progressPercent = 0;
+        item.speedBps = 0;
+        fixed += 1;
+      }
+    }
+    if (fixed > 0) {
+      logger.info(`revalidateCompletedItems: ${fixed} Items korrigiert`);
+      this.persistSoon();
+    }
   }
 
   /** Detect items whose targetPath has a " (N)" suffix from a previous bug and rename
