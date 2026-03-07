@@ -1,5 +1,5 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridProvider } from "../shared/types";
+import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostLimitInfo, DebridProvider } from "../shared/types";
 import { isDebridLinkApiKeyDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
@@ -68,6 +68,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry })),
+    debridLinkDisabledKeyIds: [...(settings.debridLinkDisabledKeyIds || [])],
     providerDailyLimitBytes: { ...(settings.providerDailyLimitBytes || {}) },
     providerDailyUsageBytes: { ...(settings.providerDailyUsageBytes || {}) },
     debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
@@ -75,9 +76,13 @@ function cloneSettings(settings: AppSettings): AppSettings {
   };
 }
 
-function getAvailableDebridLinkApiKeys(settings: AppSettings, epochMs = Date.now()) {
+export function isDebridLinkApiKeyDisabled(settings: AppSettings, keyId: string): boolean {
+  return (settings.debridLinkDisabledKeyIds || []).includes(keyId);
+}
+
+export function getAvailableDebridLinkApiKeys(settings: AppSettings, epochMs = Date.now()) {
   return parseDebridLinkApiKeys(settings.debridLinkApiKeys).filter(
-    (entry) => !isDebridLinkApiKeyDailyLimitReached(settings, entry.id, epochMs)
+    (entry) => !isDebridLinkApiKeyDisabled(settings, entry.id) && !isDebridLinkApiKeyDailyLimitReached(settings, entry.id, epochMs)
   );
 }
 
@@ -310,6 +315,126 @@ function toAllDebridHostStatusLabel(state: AllDebridHostInfo["state"]): string {
     return "Nicht getrackt";
   }
   return "Unbekannt";
+}
+
+function normalizeDebridLinkHostKey(value: string): string {
+  return String(value || "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
+}
+
+function parseDebridLinkSuccess(payload: Record<string, unknown> | null): boolean {
+  if (!payload) {
+    return false;
+  }
+  if (typeof payload.success === "boolean") {
+    return payload.success;
+  }
+  return pickString(payload, ["result"]).toUpperCase() === "OK";
+}
+
+function parseDebridLinkHosters(payload: Record<string, unknown> | null): Record<string, unknown>[] {
+  const value = asRecord(payload?.value);
+  const hosters = value?.hosters ?? payload?.hosters;
+  if (Array.isArray(hosters)) {
+    return hosters.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry))).map((entry) => entry as Record<string, unknown>);
+  }
+  return [];
+}
+
+function findDebridLinkHostEntry(payload: Record<string, unknown> | null, host: string): Record<string, unknown> | null {
+  const wanted = normalizeDebridLinkHostKey(host);
+  for (const entry of parseDebridLinkHosters(payload)) {
+    const name = normalizeDebridLinkHostKey(pickString(entry, ["name", "host"]));
+    if (name === wanted) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: string; token: string }, host: string, signal?: AbortSignal): Promise<DebridLinkHostLimitInfo> {
+  let lastError = "";
+  const hostLabel = host.trim() || "rapidgator";
+  const endpoints = [`${DEBRID_LINK_API_BASE}/downloader/limits/all`, `${DEBRID_LINK_API_BASE}/downloader/limits`];
+
+  for (const endpoint of endpoints) {
+    for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      try {
+        const response = await fetch(endpoint, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${apiKey.token}`,
+            "User-Agent": DEBRID_USER_AGENT
+          },
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+        const text = await response.text();
+        const payload = parseJsonSafe(text);
+
+        if (response.status === 404 && endpoint.endsWith("/all")) {
+          break;
+        }
+
+        if (!response.ok) {
+          const reason = parseError(response.status, text, payload);
+          if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES) {
+            await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+            continue;
+          }
+          throw new Error(reason);
+        }
+
+        if (!payload) {
+          throw new Error("Debrid-Link Limits Antwort ist kein JSON-Objekt");
+        }
+        if (!parseDebridLinkSuccess(payload)) {
+          throw new Error(pickString(payload, ["error_description", "error", "message"]) || "Debrid-Link Limits fehlgeschlagen");
+        }
+
+        const hostEntry = findDebridLinkHostEntry(payload, hostLabel);
+        if (!hostEntry) {
+          if (endpoint.endsWith("/all")) {
+            return {
+              keyId: apiKey.id,
+              keyLabel: apiKey.label,
+              host: hostLabel,
+              fetchedAt: Date.now(),
+              trafficCurrentBytes: null,
+              trafficMaxBytes: null,
+              linksCurrent: null,
+              linksMax: null,
+              note: `${hostLabel} nicht in der Debrid-Link-Limits-Antwort vorhanden.`
+            };
+          }
+          break;
+        }
+
+        const daySize = asRecord(hostEntry.daySize);
+        const dayCount = asRecord(hostEntry.dayCount);
+        return {
+          keyId: apiKey.id,
+          keyLabel: apiKey.label,
+          host: pickString(hostEntry, ["name", "host"]) || hostLabel,
+          fetchedAt: Date.now(),
+          trafficCurrentBytes: pickNumber(daySize, ["current"]),
+          trafficMaxBytes: pickNumber(daySize, ["value", "max"]),
+          linksCurrent: pickNumber(dayCount, ["current"]),
+          linksMax: pickNumber(dayCount, ["value", "max"]),
+          note: ""
+        };
+      } catch (error) {
+        lastError = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+          break;
+        }
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
+          break;
+        }
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+  }
+
+  throw new Error(String(lastError || `Debrid-Link Limits für ${apiKey.label} fehlgeschlagen`).replace(/^Error:\s*/i, ""));
 }
 
 function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
@@ -1314,6 +1439,19 @@ export async function fetchAllDebridHostInfo(token: string, host = "rapidgator",
   return new AllDebridClient(token).getHostInfo(host, signal);
 }
 
+export async function fetchDebridLinkHostLimits(apiKeysRaw: string, host = "rapidgator", signal?: AbortSignal): Promise<DebridLinkHostLimitInfo[]> {
+  const apiKeys = parseDebridLinkApiKeys(apiKeysRaw);
+  if (apiKeys.length === 0) {
+    throw new Error("Debrid-Link ist nicht konfiguriert");
+  }
+
+  const results: DebridLinkHostLimitInfo[] = [];
+  for (const apiKey of apiKeys) {
+    results.push(await fetchDebridLinkHostLimitForKey(apiKey, host, signal));
+  }
+  return results;
+}
+
 // ── Debrid-Link Client ──
 
 class DebridLinkClient {
@@ -1330,7 +1468,7 @@ class DebridLinkClient {
     }
 
     if (getAvailableDebridLinkApiKeys(settings).length === 0) {
-      throw new Error(`Debrid-Link: Alle ${this.apiKeys.length} API-Keys haben ihr Tageslimit erreicht`);
+      throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar (deaktiviert oder am Tageslimit)");
     }
 
     let checkedKeys = 0;
@@ -1338,7 +1476,13 @@ class DebridLinkClient {
       const apiKey = this.apiKeys[this.currentKeyIndex];
       checkedKeys += 1;
       const keyLabel = this.apiKeys.length > 1 ? ` (${apiKey.label})` : "";
+      if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
+        logger.info(`Debrid-Link${keyLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Key`);
+        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+        continue;
+      }
       if (isDebridLinkApiKeyDailyLimitReached(settings, apiKey.id)) {
+        logger.info(`Debrid-Link${keyLabel}: uebersprungen (lokales Tageslimit erreicht), pruefe naechsten Key`);
         this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
         continue;
       }
@@ -1364,6 +1508,7 @@ class DebridLinkClient {
             const errorDesc = String(json.error_description || json.error || "Unbekannter Debrid-Link-Fehler");
 
             if (DEBRID_LINK_QUOTA_ERRORS.has(errorCode)) {
+              logger.warn(`Debrid-Link${keyLabel}: API-Quota erreicht (${errorCode}: ${errorDesc}), wechsle zum naechsten Key`);
               logger.warn(`Debrid-Link Quota erreicht${keyLabel}: ${errorCode} – ${errorDesc}`);
               break;
             }
@@ -1411,6 +1556,7 @@ class DebridLinkClient {
           if (/Ungültig|abgelaufen/i.test(lastError)) {
             throw error;
           }
+          logger.warn(`Debrid-Link${keyLabel}: Fehler bei Unrestrict-Versuch ${attempt}/${REQUEST_RETRIES}: ${lastError}`);
           if (attempt < REQUEST_RETRIES) {
             await sleep(retryDelay(attempt), signal);
           }
@@ -1418,9 +1564,14 @@ class DebridLinkClient {
       }
 
       this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+      if (checkedKeys < this.apiKeys.length) {
+        const nextKey = this.apiKeys[this.currentKeyIndex];
+        const nextKeyLabel = this.apiKeys.length > 1 ? ` (${nextKey.label})` : "";
+        logger.info(`Debrid-Link${keyLabel}: kein Erfolg, wechsle zu naechstem Key${nextKeyLabel}`);
+      }
     }
 
-    throw new Error(`Debrid-Link: Alle ${this.apiKeys.length} API-Keys haben ihr Limit erreicht`);
+    throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar");
   }
 }
 
@@ -1948,7 +2099,7 @@ export class DebridService {
   private formatProviderLimitMessage(settings: AppSettings, provider: DebridProvider): string {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
     if (effectiveProvider === "debridlink" && parseDebridLinkApiKeys(settings.debridLinkApiKeys).length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
-      return "Debrid-Link Tageslimit erreicht (alle API-Keys ausgeschopft)";
+      return "Debrid-Link nicht verfuegbar (alle aktiven API-Keys deaktiviert oder ausgeschopft)";
     }
     return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
   }
@@ -2084,11 +2235,13 @@ export class DebridService {
       configuredFound = true;
       if (this.isProviderDailyLimited(settings, provider)) {
         limitReachedFound = true;
+        logger.info(`Provider-Kette: ${PROVIDER_LABELS[provider]} uebersprungen (${this.formatProviderLimitMessage(settings, provider)})`);
         attempts.push(this.formatProviderLimitMessage(settings, provider));
         continue;
       }
 
       try {
+        logger.info(`Provider-Kette: versuche ${PROVIDER_LABELS[provider]}`);
         const result = await this.unrestrictViaProvider(settings, provider, link, signal);
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
@@ -2107,6 +2260,12 @@ export class DebridService {
         const errorText = compactErrorText(error);
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
+        }
+        const nextProvider = order.slice(order.indexOf(provider) + 1).find((candidate) => this.isProviderSelectableFor(settings, candidate));
+        if (nextProvider) {
+          logger.warn(`Provider-Kette: ${PROVIDER_LABELS[provider]} fehlgeschlagen (${errorText}), Fallback auf ${PROVIDER_LABELS[nextProvider]}`);
+        } else {
+          logger.warn(`Provider-Kette: ${PROVIDER_LABELS[provider]} fehlgeschlagen (${errorText}), kein weiterer Provider verfuegbar`);
         }
         attempts.push(`${PROVIDER_LABELS[provider]}: ${compactErrorText(error)}`);
       }

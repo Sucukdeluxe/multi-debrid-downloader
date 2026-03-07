@@ -21,7 +21,7 @@ import {
   UiSnapshot
 } from "../shared/types";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { addDebridLinkApiKeyDailyUsageBytes, addProviderDailyUsageBytes, getProviderUsageDayKey, isDebridLinkApiKeyDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
+import { addDebridLinkApiKeyDailyUsageBytes, addProviderDailyUsageBytes, getProviderUsageDayKey, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS } from "./constants";
 
 // Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
@@ -41,7 +41,7 @@ function releaseTlsSkip(): void {
   }
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -459,6 +459,7 @@ function toWindowsLongPathIfNeeded(filePath: string): string {
 const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
 const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]+$/;
 const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?:[._\-\s]|$)/i;
+const SCENE_EPISODE_JOINED_RE = /s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?:[._\-\s]|$)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
@@ -518,7 +519,8 @@ function hasSceneGroupSuffix(fileName: string): boolean {
 }
 
 export function extractEpisodeToken(fileName: string): string | null {
-  const match = String(fileName || "").match(SCENE_EPISODE_RE);
+  const text = String(fileName || "");
+  const match = text.match(SCENE_EPISODE_RE) || text.match(SCENE_EPISODE_JOINED_RE);
   if (!match) {
     return null;
   }
@@ -4483,7 +4485,7 @@ export class DownloadManager extends EventEmitter {
     }
     if (effectiveProvider === "debridlink") {
       const configuredKeys = parseDebridLinkApiKeys(this.settings.debridLinkApiKeys);
-      return configuredKeys.some((entry) => !isDebridLinkApiKeyDailyLimitReached(this.settings, entry.id));
+      return configuredKeys.length > 0 && getAvailableDebridLinkApiKeys(this.settings).length > 0;
     }
     if (provider === "linksnappy") {
       return Boolean(this.settings.linkSnappyLogin.trim() && this.settings.linkSnappyPassword.trim());

@@ -196,6 +196,25 @@ function normalizeNamedByteMap(raw: unknown, allowedKeys: readonly string[]): Re
   return result;
 }
 
+function normalizeStringList(raw: unknown, allowedKeys: readonly string[]): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const allowed = new Set(allowedKeys);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of raw) {
+    const normalized = String(entry || "").trim();
+    if (!normalized || !allowed.has(normalized) || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
 function normalizeHosterRouting(raw: unknown, megaDebridPreferApi: boolean, megaDebridApiEnabled: boolean, megaDebridWebEnabled: boolean): Record<string, DebridProvider> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const result: Record<string, DebridProvider> = {};
@@ -287,6 +306,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     settings.debridLinkApiKeyDailyUsageBytes,
     debridLinkApiKeyIds
   );
+  const debridLinkDisabledKeyIds = normalizeStringList(settings.debridLinkDisabledKeyIds, debridLinkApiKeyIds);
   const normalized: AppSettings = {
     token: asText(settings.token),
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
@@ -303,6 +323,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     ddownloadPassword: asText(settings.ddownloadPassword),
     oneFichierApiKey: asText(settings.oneFichierApiKey),
     debridLinkApiKeys: String(settings.debridLinkApiKeys ?? "").replace(/\r\n|\r/g, "\n").trim(),
+    debridLinkDisabledKeyIds,
     linkSnappyLogin: asText(settings.linkSnappyLogin),
     linkSnappyPassword: asText(settings.linkSnappyPassword),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),

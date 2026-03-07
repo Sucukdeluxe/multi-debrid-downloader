@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
+import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -377,6 +377,39 @@ describe("debrid service", () => {
     expect(info.quotaMax).toBe(2400);
     expect(info.quotaType).toBe("traffic");
     expect(info.limitSimuDl).toBe(2);
+  });
+
+  it("loads Debrid-Link rapidgator limits per api key", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/limits/all")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            hosters: [
+              {
+                name: "rapidgator",
+                daySize: { current: 0, value: 150323855360 },
+                dayCount: { current: 0, value: 500 }
+              }
+            ]
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const info = await fetchDebridLinkHostLimits("key-a", "rapidgator");
+    expect(info).toHaveLength(1);
+    expect(info[0].keyLabel).toBe("Key 1");
+    expect(info[0].host).toBe("rapidgator");
+    expect(info[0].trafficCurrentBytes).toBe(0);
+    expect(info[0].trafficMaxBytes).toBe(150323855360);
+    expect(info[0].linksCurrent).toBe(0);
+    expect(info[0].linksMax).toBe(500);
   });
 
   it("uses AllDebrid web path when enabled", async () => {
