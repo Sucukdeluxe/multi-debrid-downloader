@@ -1378,7 +1378,7 @@ export function App(): ReactElement {
       // Ignore local persistence failures for optional UI state.
     }
     showToast("Accounts-Spalten zurückgesetzt", 1800);
-  }, [showToast]);
+  }, []);
 
   // Sync column order from settings (value-based comparison to avoid reference issues)
   const columnOrderJson = JSON.stringify(snapshot.settings.columnOrder);
