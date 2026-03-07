@@ -3066,7 +3066,6 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
-    this.sessionDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -3174,7 +3173,6 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
-    this.sessionDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -3304,11 +3302,10 @@ export class DownloadManager extends EventEmitter {
 
     this.session.running = true;
     this.session.paused = false;
-    // By design: runStartedAt and totalDownloadedBytes reset on each start/resume so that
-    // duration, average speed, and ETA are calculated relative to the current run, not cumulative.
+    // Keep cumulative session bytes across stop/resume so the session total stays accurate.
+    // Only runStartedAt resets (for ETA/speed calculations relative to current run).
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
-    this.sessionDownloadedBytes = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
