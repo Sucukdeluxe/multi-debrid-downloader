@@ -3942,7 +3942,10 @@ export class DownloadManager extends EventEmitter {
       const owner = this.reservedTargetPaths.get(key);
       const existsOnDisk = fs.existsSync(candidate);
       const allowExistingCandidate = allowExistingFile && index === 0;
-      if ((!owner || owner === itemId) && (owner === itemId || !existsOnDisk || allowExistingCandidate)) {
+      // If file exists on disk but no other item has reserved this path, allow overwrite.
+      // This prevents "(1)" suffixes after app restart when partial downloads remain on disk.
+      const unclaimedOnDisk = existsOnDisk && !owner && index === 0;
+      if ((!owner || owner === itemId) && (owner === itemId || !existsOnDisk || allowExistingCandidate || unclaimedOnDisk)) {
         this.reservedTargetPaths.set(key, itemId);
         this.claimedTargetPathByItem.set(itemId, candidate);
         return candidate;
