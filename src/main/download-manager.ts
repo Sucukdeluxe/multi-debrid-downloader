@@ -63,6 +63,16 @@ type ActiveTask = {
   blockedOnDiskSince?: number;
 };
 
+type PackageItemDiskState = {
+  diskPath: string | null;
+  exists: boolean;
+  size: number;
+  minBytes: number;
+  fullOnDisk: boolean;
+  persistedBytesReady: boolean;
+  reason: "ok" | "missing_path" | "missing_file" | "too_small" | "persisted_shortfall";
+};
+
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
@@ -86,6 +96,67 @@ const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
 const ALLDEBRID_START_STAGGER_MS = 2500;
 
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
+
+function itemExpectedMinBytes(item: DownloadItem): number {
+  return item.totalBytes && item.totalBytes > 0
+    ? Math.max(10240, item.totalBytes - ALLOCATION_UNIT_SIZE)
+    : 10240;
+}
+
+function resolvePackageItemDiskPath(pkg: PackageEntry, item: DownloadItem): string | null {
+  if (item.targetPath) {
+    return item.targetPath;
+  }
+  if (item.fileName && pkg.outputDir) {
+    return path.join(pkg.outputDir, item.fileName);
+  }
+  return null;
+}
+
+function inspectPackageItemDiskState(pkg: PackageEntry, item: DownloadItem): PackageItemDiskState {
+  const minBytes = itemExpectedMinBytes(item);
+  const diskPath = resolvePackageItemDiskPath(pkg, item);
+  if (!diskPath) {
+    return {
+      diskPath: null,
+      exists: false,
+      size: 0,
+      minBytes,
+      fullOnDisk: false,
+      persistedBytesReady: false,
+      reason: "missing_path"
+    };
+  }
+
+  try {
+    const stat = fs.statSync(diskPath);
+    const fullOnDisk = stat.size >= minBytes;
+    const persistedBytesReady = item.downloadedBytes >= minBytes;
+    return {
+      diskPath,
+      exists: true,
+      size: stat.size,
+      minBytes,
+      fullOnDisk,
+      persistedBytesReady,
+      reason: !fullOnDisk
+        ? "too_small"
+        : !persistedBytesReady
+          ? "persisted_shortfall"
+          : "ok"
+    };
+  } catch {
+    return {
+      diskPath,
+      exists: false,
+      size: 0,
+      minBytes,
+      fullOnDisk: false,
+      persistedBytesReady: false,
+      reason: "missing_file"
+    };
+  }
+}
 
 function getDownloadStallTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_STALL_TIMEOUT_MS ?? NaN);
@@ -4074,10 +4145,18 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
 
+    const corruptArchiveItems = archiveItems
+      .map((item) => ({ item, state: inspectPackageItemDiskState(pkg, item) }))
+      .filter(({ state }) => state.reason !== "ok");
+    if (corruptArchiveItems.length === 0) {
+      logger.warn(`Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - kein lokaler Dateifehler nachweisbar`);
+      return 0;
+    }
+
     const queuedAt = nowMs();
     const reason = "Wartet (Auto-Recovery: Archiv beschädigt/unvollständig)";
     let changed = 0;
-    for (const item of archiveItems) {
+    for (const { item } of corruptArchiveItems) {
       const claimedTargetPath = String(item.targetPath || "").trim();
       if (claimedTargetPath) {
         try {
@@ -4103,9 +4182,14 @@ export class DownloadManager extends EventEmitter {
     if (changed > 0) {
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       pkg.updatedAt = queuedAt;
+      const evidence = corruptArchiveItems
+        .slice(0, 3)
+        .map(({ item, state }) => `${item.fileName}:${state.reason}`)
+        .join(", ");
+      const suffix = corruptArchiveItems.length > 3 ? ` (+${corruptArchiveItems.length - 3} weitere)` : "";
       logger.warn(
         `Auto-Recovery (${scope}): ${failure.archiveName} auf queued gesetzt (${changed} Items), ` +
-        `reason=${compactErrorText(failure.jvmFailureReason || failure.errorText)}`
+        `evidence=${evidence}${suffix}, cause=${compactErrorText(failure.jvmFailureReason || failure.errorText)}`
       );
       this.persistSoon();
       this.emitState();
@@ -7037,10 +7121,14 @@ export class DownloadManager extends EventEmitter {
     // Build lookup: pathKey → item status for pending items.
     // Also map by filename (resolved against outputDir) so items without
     // targetPath (never started) are still found by the disk-fallback check.
+    const packageItems = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter(Boolean) as DownloadItem[];
     const pendingItemStatus = new Map<string, string>();
-    for (const itemId of pkg.itemIds) {
-      const item = this.session.items[itemId];
-      if (!item || item.status === "completed") continue;
+    for (const item of packageItems) {
+      if (item.status === "completed") {
+        continue;
+      }
       if (item.targetPath) {
         pendingItemStatus.set(pathKey(item.targetPath), item.status);
       }
@@ -7064,6 +7152,30 @@ export class DownloadManager extends EventEmitter {
         ready.add(pathKey(candidate));
         continue;
       }
+
+      // Safe disk-fallback: only allow extraction when every tracked archive item
+      // already exists on disk at full size and the persisted byte counters
+      // also indicate a finished download. This recovers stale status after a
+      // crash without letting unrelated .rev files or freshly re-queued items
+      // look "ready".
+      const archiveItems = resolveArchiveItemsFromList(path.basename(candidate), packageItems);
+      if (archiveItems.length === 0) {
+        continue;
+      }
+      const hasActiveArchiveItem = archiveItems.some((item) =>
+        item.status === "downloading" || item.status === "validating" || item.status === "integrity_check"
+      );
+      if (hasActiveArchiveItem) {
+        continue;
+      }
+      const allArchiveItemsReadyOnDisk = archiveItems.every((item) => inspectPackageItemDiskState(pkg, item).reason === "ok");
+      if (!allArchiveItemsReadyOnDisk) {
+        continue;
+      }
+      const nonCompletedCount = archiveItems.filter((item) => item.status !== "completed").length;
+      logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${nonCompletedCount} Part(s) laut Session ohne completed-Status)`);
+      ready.add(pathKey(candidate));
+      continue;
 
       // Disk-fallback: if all parts exist on disk at their full expected size but some
       // items lack "completed" status, allow extraction.  This handles items that finished
