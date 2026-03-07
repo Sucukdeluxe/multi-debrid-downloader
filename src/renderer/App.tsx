@@ -3885,6 +3885,7 @@ export function App(): ReactElement {
                 isEditing={editingPackageId === pkg.id}
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}
+                hideExtractedItems={snapshot.settings.hideExtractedItems}
                 selectedIds={selectedIds}
                 columnOrder={columnOrder}
                 gridTemplate={gridTemplate}
@@ -4574,6 +4575,7 @@ export function App(): ReactElement {
                     </div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Auto-Extract</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSkipExtracted} onChange={(e) => setBool("autoSkipExtracted", e.target.checked)} /> Bereits Entpacktes beim Start überspringen</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hideExtractedItems} onChange={(e) => setBool("hideExtractedItems", e.target.checked)} /> Entpackte Items in Paketliste ausblenden</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (Beta)</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
@@ -5357,6 +5359,7 @@ interface PackageCardProps {
   isEditing: boolean;
   editingName: string;
   collapsed: boolean;
+  hideExtractedItems: boolean;
   selectedIds: Set<string>;
   columnOrder: string[];
   gridTemplate: string;
@@ -5378,7 +5381,7 @@ interface PackageCardProps {
   onDragEnd: () => void;
 }
 
-const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
@@ -5500,7 +5503,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
         <div className="progress-dl" style={{ width: `${dlProgress}%` }} />
         {useExtractSplit && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
       </div>
-      {!collapsed && items.map((item) => (
+      {!collapsed && items.filter((item) => !hideExtractedItems || !item.fullStatus?.startsWith("Entpackt")).map((item) => (
         <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} style={{ gridTemplateColumns: gridTemplate }} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
           {columnOrder.map((col) => {
             switch (col) {
@@ -5570,6 +5573,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
     || prev.isLast !== next.isLast
     || prev.isEditing !== next.isEditing
     || prev.collapsed !== next.collapsed
+    || prev.hideExtractedItems !== next.hideExtractedItems
     || prev.selectedIds !== next.selectedIds
     || prev.columnOrder !== next.columnOrder
     || prev.gridTemplate !== next.gridTemplate) {

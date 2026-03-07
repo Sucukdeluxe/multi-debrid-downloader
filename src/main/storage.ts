@@ -371,6 +371,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       : defaults.accountListShowDetailedDebridLinkKeys,
     autoSortPackagesByProgress: settings.autoSortPackagesByProgress !== undefined ? Boolean(settings.autoSortPackagesByProgress) : defaults.autoSortPackagesByProgress,
     autoSkipExtracted: settings.autoSkipExtracted !== undefined ? Boolean(settings.autoSkipExtracted) : defaults.autoSkipExtracted,
+    hideExtractedItems: settings.hideExtractedItems !== undefined ? Boolean(settings.hideExtractedItems) : defaults.hideExtractedItems,
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
@@ -906,7 +907,7 @@ export async function saveSessionAsync(paths: StoragePaths, session: SessionStat
 
 const MAX_HISTORY_ENTRIES = 500;
 
-function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry | null {
+export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry | null {
   const entry = asRecord(raw);
   if (!entry) return null;
   

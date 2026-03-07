@@ -30,7 +30,7 @@ import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveHistory, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
@@ -444,8 +444,13 @@ export class AppController {
 
     // Restore history (if present in backup)
     if (Array.isArray(parsed.history) && parsed.history.length > 0) {
-      saveHistory(this.storagePaths, parsed.history as HistoryEntry[]);
-      logger.info(`Backup: ${(parsed.history as HistoryEntry[]).length} History-Einträge wiederhergestellt`);
+      const normalizedHistory = (parsed.history as unknown[])
+        .map((raw, idx) => normalizeHistoryEntry(raw, idx))
+        .filter((entry): entry is HistoryEntry => entry !== null);
+      if (normalizedHistory.length > 0) {
+        saveHistory(this.storagePaths, normalizedHistory);
+        logger.info(`Backup: ${normalizedHistory.length} History-Einträge wiederhergestellt`);
+      }
     }
 
     // Prevent prepareForShutdown from overwriting the restored data
