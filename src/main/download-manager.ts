@@ -395,6 +395,15 @@ function providerLabel(provider: DownloadItem["provider"]): string {
   if (provider === "ddownload") {
     return "DDownload";
   }
+  if (provider === "onefichier") {
+    return "1Fichier";
+  }
+  if (provider === "debridlink") {
+    return "Debrid-Link";
+  }
+  if (provider === "linksnappy") {
+    return "LinkSnappy";
+  }
   return "Debrid";
 }
 
@@ -5453,7 +5462,8 @@ export class DownloadManager extends EventEmitter {
         item.totalBytes = unrestricted.fileSize;
         item.status = "downloading";
         const pLabel = unrestricted.providerLabel;
-        item.fullStatus = `Starte... (${pLabel})`;
+        const statusLabel = providerLabel(unrestricted.provider) || pLabel;
+        item.fullStatus = `Starte... (${statusLabel})`;
         item.updatedAt = nowMs();
         this.emitState();
         logger.info(`Download Start: ${item.fileName} (${humanSize(unrestricted.fileSize || 0)}) via ${pLabel}, pkg=${pkg.name}`);
@@ -5464,7 +5474,7 @@ export class DownloadManager extends EventEmitter {
           item.attempts += 1;
           if (item.status !== "downloading") {
             item.status = "downloading";
-            item.fullStatus = `Download läuft (${pLabel})`;
+            item.fullStatus = `Download läuft (${statusLabel})`;
             item.updatedAt = nowMs();
             this.emitState();
           }
@@ -5896,7 +5906,7 @@ export class DownloadManager extends EventEmitter {
     skipTlsVerify?: boolean,
     pLabel?: string
   ): Promise<{ resumable: boolean }> {
-    const label = pLabel || providerLabel(this.session.items[active.itemId]?.provider);
+    const label = providerLabel(this.session.items[active.itemId]?.provider) || pLabel || "Debrid";
     const item = this.session.items[active.itemId];
     if (!item) {
       throw new Error("Download-Item fehlt");
