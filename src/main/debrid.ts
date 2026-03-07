@@ -1461,7 +1461,6 @@ export async function fetchDebridLinkHostLimits(apiKeysRaw: string, host = "rapi
 
 class DebridLinkClient {
   private apiKeys: ReturnType<typeof parseDebridLinkApiKeys>;
-  private currentKeyIndex: number = 0;
 
   public constructor(apiKeysRaw: string) {
     this.apiKeys = parseDebridLinkApiKeys(apiKeysRaw);
@@ -1476,25 +1475,22 @@ class DebridLinkClient {
       throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar (deaktiviert oder am Tageslimit)");
     }
 
-    let checkedKeys = 0;
-    while (checkedKeys < this.apiKeys.length) {
-      const apiKey = this.apiKeys[this.currentKeyIndex];
-      checkedKeys += 1;
+    // Always start from first key — use first available, skip disabled/limited/cooldown.
+    // This ensures all parallel items use the same key until it's actually exhausted.
+    for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
+      const apiKey = this.apiKeys[keyIdx];
       const keyLabel = this.apiKeys.length > 1 ? ` (${apiKey.label})` : "";
       if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Key`);
-        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
         continue;
       }
       if (isDebridLinkApiKeyDailyLimitReached(settings, apiKey.id)) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (lokales Tageslimit erreicht), pruefe naechsten Key`);
-        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
         continue;
       }
       const keyCooldownExpiry = debridLinkKeyCooldowns.get(apiKey.id);
       if (keyCooldownExpiry && Date.now() < keyCooldownExpiry) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${new Date(keyCooldownExpiry).toLocaleTimeString()}), pruefe naechsten Key`);
-        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
         continue;
       }
 
@@ -1579,9 +1575,8 @@ class DebridLinkClient {
         }
       }
 
-      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-      if (checkedKeys < this.apiKeys.length) {
-        const nextKey = this.apiKeys[this.currentKeyIndex];
+      if (keyIdx + 1 < this.apiKeys.length) {
+        const nextKey = this.apiKeys[keyIdx + 1];
         const nextKeyLabel = this.apiKeys.length > 1 ? ` (${nextKey.label})` : "";
         logger.info(`Debrid-Link${keyLabel}: kein Erfolg, wechsle zu naechstem Key${nextKeyLabel}`);
       }
