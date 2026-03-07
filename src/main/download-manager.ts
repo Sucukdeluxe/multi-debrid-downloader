@@ -458,8 +458,8 @@ function toWindowsLongPathIfNeeded(filePath: string): string {
 
 const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
 const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]+$/;
-const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?:[._\-\s]|$)/i;
-const SCENE_EPISODE_JOINED_RE = /s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?:[._\-\s]|$)/i;
+const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
+const SCENE_EPISODE_JOINED_RE = /s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
@@ -2680,6 +2680,37 @@ export class DownloadManager extends EventEmitter {
         skipped += 1;
         continue;
       }
+
+      // Skip 0-byte files from failed/partial extractions
+      let sourceSize = 0;
+      try {
+        const stat = await fs.promises.stat(sourcePath);
+        sourceSize = stat.size;
+      } catch {
+        skipped += 1;
+        continue;
+      }
+      if (sourceSize === 0) {
+        logger.warn(`MKV-Sammelordner: überspringe 0-Byte-Datei ${path.basename(sourcePath)}`);
+        skipped += 1;
+        continue;
+      }
+
+      // Check if identical file already exists in target (same name + same size) → skip instead of creating (2) copy
+      const idealTargetPath = path.join(targetDir, path.basename(sourcePath));
+      try {
+        const existingStat = await fs.promises.stat(idealTargetPath);
+        if (existingStat.size === sourceSize) {
+          logger.info(`MKV-Sammelordner: Duplikat übersprungen (gleiche Größe ${humanSize(sourceSize)}): ${path.basename(sourcePath)}`);
+          // Remove the duplicate source file to avoid future re-processing
+          try { await fs.promises.unlink(sourcePath); } catch { /* ignore */ }
+          skipped += 1;
+          continue;
+        }
+      } catch {
+        // File doesn't exist in target yet — proceed normally
+      }
+
       const targetPath = await this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets);
       if (pathKey(sourcePath) === pathKey(targetPath)) {
         skipped += 1;
