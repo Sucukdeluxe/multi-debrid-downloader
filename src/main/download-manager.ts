@@ -5979,10 +5979,50 @@ export class DownloadManager extends EventEmitter {
           }
           if (active.stallRetries <= maxStallRetries) {
             item.retries += 1;
-            // Reset partial download so next attempt uses a fresh link
+            // Before deleting and retrying, check if the file is actually
+            // complete on disk.  Some servers delay closing the connection
+            // after all data has been sent, which triggers the stall timeout
+            // even though the download finished successfully.
             if (item.downloadedBytes > 0) {
               const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
-              if (targetFile) {
+              const expectedMin = itemExpectedMinBytes(item);
+              let fileAlreadyComplete = false;
+              if (targetFile && expectedMin > 10240) {
+                try {
+                  const stallStat = fs.statSync(targetFile);
+                  if (stallStat.size >= expectedMin) {
+                    fileAlreadyComplete = true;
+                    logger.info(`Stall-Recovery: ${item.fileName} ist bereits vollständig auf Disk (${humanSize(stallStat.size)}, erwartet mind. ${humanSize(expectedMin)}), überspringe Retry`);
+                    item.status = "completed";
+                    item.fullStatus = this.settings.autoExtract
+                      ? "Entpacken - Ausstehend"
+                      : `Fertig (${humanSize(stallStat.size)})`;
+                    item.downloadedBytes = stallStat.size;
+                    if (item.totalBytes && item.totalBytes > 0) {
+                      item.progressPercent = 100;
+                    }
+                    item.speedBps = 0;
+                    item.updatedAt = nowMs();
+                    pkg.updatedAt = nowMs();
+                    this.recordRunOutcome(item.id, "completed");
+                    if (this.session.running && !active.abortController.signal.aborted) {
+                      void this.runPackagePostProcessing(pkg.id).catch((err) => {
+                        logger.warn(`runPackagePostProcessing Fehler (stallRecovery): ${compactErrorText(err)}`);
+                      }).finally(() => {
+                        this.applyCompletedCleanupPolicy(pkg.id, item.id);
+                        this.persistSoon();
+                        this.emitState();
+                      });
+                    }
+                    this.persistSoon();
+                    this.emitState();
+                    this.retryStateByItem.delete(item.id);
+                    return;
+                  }
+                } catch { /* file doesn't exist or not accessible */ }
+              }
+              // Reset partial download so next attempt uses a fresh link
+              if (!fileAlreadyComplete && targetFile) {
                 try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
               }
               this.releaseTargetPath(item.id);
@@ -6716,7 +6756,15 @@ export class DownloadManager extends EventEmitter {
               // the FIN packet, which would trigger the stall timeout even though
               // the file is already complete.  This especially affects small
               // multi-part archives (e.g. 15-20 × 101 MB) on fast connections.
-              if (item.totalBytes && item.totalBytes > 0 && existingBytes + written >= item.totalBytes) {
+              // Use totalBytes (from unrestrict or Content-Length header) as
+              // primary check, fall back to raw contentLength for providers
+              // that don't report fileSize (e.g. Mega-Debrid Web).
+              const expectedTotal = (item.totalBytes && item.totalBytes > 0) ? item.totalBytes : 0;
+              const expectedFromResponse = contentLength > 0 ? contentLength : 0;
+              if (expectedTotal > 0 && existingBytes + written >= expectedTotal) {
+                break;
+              }
+              if (expectedTotal === 0 && expectedFromResponse > 0 && written >= expectedFromResponse) {
                 break;
               }
 
