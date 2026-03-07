@@ -476,15 +476,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.EXPORT_BACKUP, async () => {
     const options = {
-      defaultPath: `mdd-backup-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: "Backup", extensions: ["json"] }]
+      defaultPath: `mdd-backup-${new Date().toISOString().slice(0, 10)}.mdd`,
+      filters: [{ name: "MDD Backup", extensions: ["mdd"] }]
     };
     const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) {
       return { saved: false };
     }
-    const json = controller.exportBackup();
-    await fs.promises.writeFile(result.filePath, json, "utf8");
+    const encrypted = controller.exportBackup();
+    await fs.promises.writeFile(result.filePath, encrypted);
     return { saved: true };
   });
 
@@ -535,7 +535,8 @@ function registerIpcHandlers(): void {
     const options = {
       properties: ["openFile"] as Array<"openFile">,
       filters: [
-        { name: "Backup", extensions: ["json"] },
+        { name: "MDD Backup", extensions: ["mdd"] },
+        { name: "Legacy Backup (JSON)", extensions: ["json"] },
         { name: "Alle Dateien", extensions: ["*"] }
       ]
     };
@@ -549,8 +550,8 @@ function registerIpcHandlers(): void {
     if (stat.size > BACKUP_MAX_BYTES) {
       return { restored: false, message: `Backup-Datei zu groß (max 50 MB, Datei hat ${(stat.size / 1024 / 1024).toFixed(1)} MB)` };
     }
-    const json = await fs.promises.readFile(filePath, "utf8");
-    return controller.importBackup(json);
+    const data = await fs.promises.readFile(filePath);
+    return controller.importBackup(data);
   });
 
   controller.onState = (snapshot) => {
