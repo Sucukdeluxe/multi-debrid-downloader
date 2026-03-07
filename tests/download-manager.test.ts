@@ -5582,4 +5582,103 @@ describe("download manager", () => {
     expect(internal.settings.debridLinkApiKeyDailyUsageBytes[firstKey.id]).toBe(1024);
     expect(internal.settings.debridLinkApiKeyDailyUsageBytes[secondKey.id]).toBe(512);
   });
+
+  it("does not hang when rapid stop, disable provider, start", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(256 * 1024, 7);
+
+    // Slow server: delivers data in chunks with delay
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/slow-dl") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      // Send first half, then delay
+      res.write(binary.subarray(0, Math.floor(binary.length / 4)));
+      const timer = setTimeout(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.end(binary.subarray(Math.floor(binary.length / 4)));
+        }
+      }, 5000);
+      res.on("close", () => clearTimeout(timer));
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/slow-dl`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "test-file.bin",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: false,
+      maxParallel: 1,
+      autoReconnect: false,
+      retryLimit: 1
+    };
+
+    try {
+      const manager = new DownloadManager(
+        settings,
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "hang-test", links: ["https://dummy/hang-test"] }]);
+
+      // Step 1: Start and wait for download to begin
+      await manager.start();
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        return items.some((item) => item.status === "downloading");
+      }, 12000);
+
+      // Step 2: Stop — do NOT wait for running=false
+      manager.stop();
+
+      // Step 3: Immediately disable the active provider
+      manager.setSettings({
+        ...settings,
+        disabledProviders: ["realdebrid"]
+      });
+
+      // Step 4: Start again immediately — must resolve (not hang)
+      const startPromise = manager.start();
+      const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 8000));
+      const result = await Promise.race([startPromise.then(() => "ok" as const), timeout]);
+      expect(result).toBe("ok");
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 30000);
 });

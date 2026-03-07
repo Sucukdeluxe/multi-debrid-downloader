@@ -1060,6 +1060,7 @@ export class DownloadManager extends EventEmitter {
   private activeTasks = new Map<string, ActiveTask>();
 
   private scheduleRunning = false;
+  private schedulerGeneration = 0;
 
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -3348,11 +3349,19 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
+    // Bump scheduler generation so any old scheduler from a previous run exits
+    // instead of continuing with stale state.
+    this.schedulerGeneration += 1;
+
     // Set running early to prevent concurrent start() calls from passing the guard
     // while we await recoverRetryableItems below.
     this.session.running = true;
 
     const recoveredItems = await this.recoverRetryableItems("start");
+
+    // Yield once more to let any pending abort handlers from the previous stop()
+    // complete — they check this.session.running and skip status overwrite if true.
+    await sleep(0);
 
     let recoveredStoppedItems = 0;
     for (const item of Object.values(this.session.items)) {
@@ -3478,6 +3487,7 @@ export class DownloadManager extends EventEmitter {
 
   public stop(): void {
     const keepExtraction = this.settings.autoExtractWhenStopped;
+    this.schedulerGeneration += 1;
     this.session.running = false;
     this.session.paused = false;
     this.session.reconnectUntil = 0;
@@ -5210,9 +5220,10 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     this.scheduleRunning = true;
-    logger.info("Scheduler gestartet");
+    const myGeneration = this.schedulerGeneration;
+    logger.info(`Scheduler gestartet (gen=${myGeneration})`);
     try {
-      while (this.session.running) {
+      while (this.session.running && this.schedulerGeneration === myGeneration) {
         const now = nowMs();
         if (now - this.lastSchedulerHeartbeatAt >= 60000) {
           this.lastSchedulerHeartbeatAt = now;
@@ -5265,7 +5276,7 @@ export class DownloadManager extends EventEmitter {
       }
     } finally {
       this.scheduleRunning = false;
-      logger.info("Scheduler beendet");
+      logger.info(`Scheduler beendet (gen=${myGeneration})`);
     }
   }
 
@@ -5887,9 +5898,13 @@ export class DownloadManager extends EventEmitter {
           this.dropItemContribution(item.id);
           this.retryStateByItem.delete(item.id);
         } else if (reason === "stop") {
-          item.status = "cancelled";
-          item.fullStatus = "Gestoppt";
-          this.recordRunOutcome(item.id, "cancelled");
+          // If a new start() has already re-queued this item, don't overwrite
+          // its status with "cancelled"/"Gestoppt" — the new run owns it now.
+          if (!this.session.running) {
+            item.status = "cancelled";
+            item.fullStatus = "Gestoppt";
+            this.recordRunOutcome(item.id, "cancelled");
+          }
           if (!active.resumable && claimedTargetPath && !fs.existsSync(claimedTargetPath)) {
             item.downloadedBytes = 0;
             item.progressPercent = 0;
