@@ -1073,6 +1073,7 @@ export class DownloadManager extends EventEmitter {
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
     this.resolveExistingQueuedOpaqueFilenames();
+    this.restoreTargetPathReservations();
     this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
   }
@@ -3942,10 +3943,7 @@ export class DownloadManager extends EventEmitter {
       const owner = this.reservedTargetPaths.get(key);
       const existsOnDisk = fs.existsSync(candidate);
       const allowExistingCandidate = allowExistingFile && index === 0;
-      // If file exists on disk but no other item has reserved this path, allow overwrite.
-      // This prevents "(1)" suffixes after app restart when partial downloads remain on disk.
-      const unclaimedOnDisk = existsOnDisk && !owner && index === 0;
-      if ((!owner || owner === itemId) && (owner === itemId || !existsOnDisk || allowExistingCandidate || unclaimedOnDisk)) {
+      if ((!owner || owner === itemId) && (owner === itemId || !existsOnDisk || allowExistingCandidate)) {
         this.reservedTargetPaths.set(key, itemId);
         this.claimedTargetPathByItem.set(itemId, candidate);
         return candidate;
@@ -3969,6 +3967,27 @@ export class DownloadManager extends EventEmitter {
       this.reservedTargetPaths.delete(key);
     }
     this.claimedTargetPathByItem.delete(itemId);
+  }
+
+  /** Restore reservedTargetPaths from persisted session on startup so claimTargetPath
+   *  knows which files belong to which items. Without this, after restart all paths are
+   *  unclaimed and a new download with the same filename would create a "(1)" copy
+   *  instead of reusing its own partial file — or worse, overwrite another item's file. */
+  private restoreTargetPathReservations(): void {
+    let restored = 0;
+    for (const item of Object.values(this.session.items)) {
+      const tp = String(item.targetPath || "").trim();
+      if (!tp) continue;
+      const key = pathKey(tp);
+      if (!this.reservedTargetPaths.has(key)) {
+        this.reservedTargetPaths.set(key, item.id);
+        this.claimedTargetPathByItem.set(item.id, tp);
+        restored += 1;
+      }
+    }
+    if (restored > 0) {
+      logger.info(`restoreTargetPathReservations: ${restored} Pfade aus Session wiederhergestellt`);
+    }
   }
 
   private assignItemTargetPath(item: DownloadItem, targetPath: string): string {
