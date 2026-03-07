@@ -17,17 +17,17 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Supported providers
 
-- Real-Debrid
-- Mega-Debrid API
-- Mega-Debrid Web
-- BestDebrid API
-- BestDebrid Web via cookie import
 - AllDebrid API
 - AllDebrid Web via browser login
+- BestDebrid API
+- BestDebrid Web via cookie import
 - Debrid-Link with multi-key support
 - DDownload login
 - 1fichier API
 - LinkSnappy login
+- Mega-Debrid API
+- Mega-Debrid Web
+- Real-Debrid
 
 ## Core features
 
