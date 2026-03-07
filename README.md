@@ -1,6 +1,6 @@
 # Multi Debrid Downloader
 
-Desktop downloader with fast queue management, automatic extraction, and robust error handling.
+Desktop downloader for Windows with package-based queue management, multi-provider fallback, automatic extraction, auto-rename, provider statistics, and built-in updates.
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
 ![Electron](https://img.shields.io/badge/Electron-31.x-47848F)
@@ -10,83 +10,131 @@ Desktop downloader with fast queue management, automatic extraction, and robust 
 
 ## Why this tool?
 
-- Familiar download-manager workflow: collect links, start, pause, resume, and finish cleanly.
-- Multiple debrid providers in one app, including automatic fallback.
-- Built for stability with large queues: session persistence, reconnect handling, resume support, and integrity verification.
+- JDownloader-style workflow with packages, progress, extraction, history, and clean post-processing.
+- Multiple debrid accounts in one app, including provider order, automatic fallback, and per-hoster routing.
+- Built for large queues with session persistence, retries, reconnect handling, resume support, and integrity checks.
+- Includes an in-app updater for releases published on `git.24-music.de`.
+
+## Supported providers
+
+- Real-Debrid
+- Mega-Debrid API
+- Mega-Debrid Web
+- BestDebrid API
+- BestDebrid Web via cookie import
+- AllDebrid API
+- AllDebrid Web via browser login
+- Debrid-Link with multi-key support
+- DDownload login
+- 1fichier API
+- LinkSnappy login
 
 ## Core features
 
-### Queue and download engine
+### Queue and package handling
 
-- Package-based queue with file status, progress, ETA, speed, and retry counters.
-- Start, pause, stop, and cancel for both single items and full packages.
-- Multi-select via Ctrl+Click for batch operations on packages and items.
+- Package-based queue with item status, retries, ETA, speed, provider, and account label.
+- Start, pause, stop, cancel, reset, rename, and delete for packages and items.
+- Ctrl+Click multi-select and bulk actions.
+- Queue import/export.
 - Duplicate handling when adding links: keep, skip, or overwrite.
-- Session recovery after restart, including optional auto-resume.
-- Circuit breaker with escalating backoff cooldowns to handle provider outages gracefully.
+- Optional start scheduling for a specific time.
+- Session recovery after restart with optional auto-resume.
+- Optional auto-sorting by progress.
 
-### Debrid and link handling
+### Link collection
 
-- Supported providers: `realdebrid`, `megadebrid`, `bestdebrid`, `alldebrid`.
-- Configurable provider order: primary + secondary + tertiary.
-- Optional automatic fallback to alternative providers on failures.
+- Paste links directly into the collector.
+- Clipboard watcher with automatic link detection.
 - `.dlc` import via file picker and drag-and-drop.
+- Drag-and-drop of plain links and supported container files.
 
-### Extraction, cleanup, and quality
+### Provider routing and fallback
 
-- JVM-based extraction backend using SevenZipJBinding + Zip4j (supports RAR, 7z, ZIP, and more).
-- Automatic fallback to legacy UnRAR/7z CLI tools when JVM is unavailable.
-- Auto-extract with separate target directory and conflict strategies.
-- Hybrid extraction: simultaneous downloading and extracting with smart I/O priority throttling.
-- Nested extraction: archives within archives are automatically extracted (one level deep).
-- Pre-extraction disk space validation to prevent incomplete extracts.
-- Right-click "Extract now" on any package with at least one completed item.
-- Post-download integrity checks (`CRC32`, `MD5`, `SHA1`) with auto-retry on failures.
-- Completed-item cleanup policy: `never`, `immediate`, `on_start`, `package_done`.
-- Optional removal of link artifacts and sample files after extraction.
+- Configurable provider order with primary, secondary, and tertiary fallback.
+- Optional automatic provider fallback on unrestrict/download failures.
+- Per-hoster routing override, so specific hosters can always use a specific provider.
+- Providers can be disabled without deleting stored account data.
+- Daily traffic limits per provider.
+- Debrid-Link per-key daily limits and per-key daily usage tracking.
 
-### Auto-rename
+### Accounts and provider tools
 
-- Automatic renaming of extracted files based on series/episode patterns.
-- Multi-episode token parsing for batch renames.
+- Central Accounts view with account type, status, info, access data, and actions.
+- BestDebrid cookie import directly from a Netscape cookies file.
+- AllDebrid browser-login flow and in-app Rapidgator host status display.
+- Debrid-Link multi-key management with optional detailed line-by-line key display.
+- Debrid-Link API-key statistics popup with per-key Rapidgator traffic quota, link quota, reset, activate/deactivate, and click-to-copy masked keys.
+- Reset button for stored account column widths in the Accounts table.
 
-### UI and progress
+### Download engine
 
-- Visual progress bars with percentage overlay for packages and individual items.
-- Real-time bandwidth chart showing current download speeds.
-- Persistent download counters: all-time totals and per-session statistics.
-- Download history for completed packages.
-- Vertical sidebar with organized settings tabs.
-- Hoster display showing both the original source and the debrid provider used.
+- Parallel downloads with resumable transfers when supported.
+- Reconnect handling with configurable wait time.
+- Circuit-breaker style cooldown and retry handling for provider issues.
+- Global speed limit or per-download speed limit mode.
+- Bandwidth schedules with time windows and speed caps.
+- Live bandwidth chart and session statistics.
+- Persistent all-time download counter.
 
-### Convenience and automation
+### Extraction and post-processing
 
-- Clipboard watcher for automatic link detection.
-- Minimize-to-tray with tray menu controls.
-- Speed limits globally or per download.
-- Bandwidth schedules for time-based speed profiles.
-- Built-in auto-updater via `git.24-music.de` Releases.
-- Long path support (>260 characters) on Windows.
+- Automatic extraction after download.
+- Extraction can continue even when the session is stopped or after app restart.
+- Hybrid download + extract workflow.
+- Extraction backend using native tools by default, with JVM sidecar support available.
+- Supports common archive formats including RAR, ZIP, and 7z.
+- Nested extraction for archives found inside extracted output.
+- Conflict handling: overwrite, skip, rename, or ask.
+- Disk-space validation before extraction.
+- Package-scoped password reuse for multi-archive sets.
+- Optional cleanup of downloaded archives after extraction.
+- Optional cleanup of link artifacts and sample files after extraction.
+- Optional flat MKV collection folder after package completion.
+
+### Auto-rename and media cleanup
+
+- Auto-rename for extracted scene-style files based on folder/source naming.
+- Multi-episode token parsing.
+- Handles compact episode tokens like `s02e01` directly attached to the title.
+- Optional skip of already extracted packages on start.
+
+### Integrity, history, and backup
+
+- Optional integrity verification with `CRC32`, `MD5`, and `SHA1`.
+- Download history with package details, duration, size, provider, and target folder.
+- Backup export/import for restoring app state.
+- Persistent config, session, and history files in the Electron `userData` directory.
+
+### UI and desktop integration
+
+- Downloads, history, statistics, and settings tabs.
+- Progress bars for packages and single items.
+- Hoster/provider display showing both source and effective debrid account.
+- Minimize-to-tray support.
+- Dark/light theme setting.
+- Long path support on Windows.
+- Default startup window size of `1920x1080`.
 
 ## Installation
 
-### Option A: prebuilt releases (recommended)
+### Prebuilt releases
 
-1. Download a release from the `git.24-music.de` Releases page.
-2. Run the installer or portable build.
-3. Add your debrid tokens in Settings.
+1. Download the latest installer or portable build from the releases page.
+2. Start the app.
+3. Add your provider credentials in `Settings > Accounts`.
 
-Releases: `https://git.24-music.de/Administrator/real-debrid-downloader/releases`
+Releases: [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases)
 
-### Option B: build from source
+### Build from source
 
 Requirements:
 
-- Node.js `20+` (recommended `22+`)
+- Node.js `20+`
 - npm
-- Windows `10/11` (for packaging and regular desktop use)
-- Java Runtime `8+` (for SevenZipJBinding sidecar backend)
-- Optional fallback: 7-Zip/UnRAR if you force legacy extraction mode
+- Windows `10/11`
+- Java Runtime `8+` for the optional JVM extraction backend
+- Optional native extraction tools: 7-Zip / WinRAR / UnRAR
 
 ```bash
 npm install
@@ -97,106 +145,54 @@ npm run dev
 
 | Command | Description |
 | --- | --- |
-| `npm run dev` | Starts main process, renderer, and Electron in dev mode |
+| `npm run dev` | Starts Vite, tsup watchers, and Electron in development mode |
 | `npm run build` | Builds main and renderer bundles |
-| `npm run start` | Starts the app locally in production mode |
+| `npm run start` | Starts the built app in production mode |
 | `npm test` | Runs Vitest unit tests |
-| `npm run self-check` | Runs integrated end-to-end self-checks |
-| `npm run release:win` | Creates Windows installer and portable build |
-| `npm run release:gitea -- <version> [notes]` | One-command version bump + build + tag + release upload to `git.24-music.de` |
-| `npm run release:codeberg -- <version> [notes]` | Legacy path for old Codeberg workflow |
-
-### One-command git.24-music release
-
-```bash
-npm run release:gitea -- 1.6.31 "- Maintenance update"
-```
-
-This command will:
-
-1. Bump `package.json` version.
-2. Build setup/portable artifacts (`npm run release:win`).
-3. Commit and push `main` to your `git.24-music.de` remote.
-4. Create and push tag `v<version>`.
-5. Create/update the Gitea release and upload required assets.
-
-Required once before release:
-
-```bash
-git remote add gitea https://git.24-music.de/<user>/<repo>.git
-```
-
-PowerShell token setup:
-
-```powershell
-$env:GITEA_TOKEN="<dein-token>"
-```
+| `npm run self-check` | Runs integrated self-checks |
+| `npm run release:win` | Builds Windows installer and portable EXE |
+| `npm run release:gitea -- <version> [notes]` | Builds, tags, and uploads a release to `git.24-music.de` |
+| `npm run release:forgejo -- <version> [notes]` | Alias for the same release workflow |
 
 ## Typical workflow
 
-1. Add provider tokens in Settings.
-2. Paste/import links or `.dlc` containers.
-3. Optionally set package names, target folders, extraction, and cleanup rules.
-4. Start the queue and monitor progress in the Downloads tab.
-5. Review integrity results and summary after completion.
+1. Add one or more provider accounts in `Settings > Accounts`.
+2. Configure provider order, fallback, and optional hoster routing.
+3. Paste links or import `.dlc` files.
+4. Adjust package names, target folders, extraction, and cleanup settings if needed.
+5. Start the queue and monitor downloads, extraction, and provider status.
+6. Review history and statistics after completion.
 
 ## Project structure
 
-- `src/main` - Electron main process, queue/download/provider logic
-- `src/preload` - secure IPC bridge between main and renderer
+- `src/main` - Electron main process, download engine, provider clients, updater, storage
+- `src/preload` - secure IPC bridge
 - `src/renderer` - React UI
 - `src/shared` - shared types and IPC contracts
-- `tests` - unit tests and self-check tests
-- `resources/extractor-jvm` - SevenZipJBinding + Zip4j sidecar JAR and native libraries
+- `tests` - unit and integration-style tests
+- `resources/extractor-jvm` - optional JVM extraction runtime
+- `scripts` - release and build helpers
 
 ## Data and logs
 
-The app stores runtime files in Electron's `userData` directory, including:
+Runtime files are stored in Electron's `userData` directory, including:
 
 - `rd_downloader_config.json`
 - `rd_session_state.json`
+- `rd_history.json`
 - `rd_downloader.log`
 
 ## Troubleshooting
 
-- Download does not start: verify token and selected provider in Settings.
-- Extraction fails: check archive passwords and native extractor installation (7-Zip/WinRAR). Optional JVM extractor can be forced with `RD_EXTRACT_BACKEND=jvm`.
-- Very slow downloads: check active speed limit and bandwidth schedules.
-- Unexpected interruptions: enable reconnect and fallback providers.
-- Stalled downloads: the app auto-detects stalls within 10 seconds and retries automatically.
+- Provider does not work: verify credentials, enabled state, provider order, and daily limits.
+- Debrid-Link quota looks wrong: open the API-key statistics popup and check the Rapidgator quota for the affected key.
+- Extraction fails: verify passwords and installed extraction tools. The native backend is the default; JVM extraction is optional.
+- Downloads stall: check active speed limits, bandwidth schedules, reconnect settings, and provider health.
+- Accounts table looks misaligned on one machine: use `Spalten zuruecksetzen` in the Accounts view to clear the locally stored column widths.
 
 ## Changelog
 
-Release history is available on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
-
-### v1.6.61 (2026-03-05)
-
-- Fixed leftover empty package folders in `Downloader Unfertig` after successful extraction.
-- Resume marker files (`.rd_extract_progress*.json`) are now treated as ignorable for empty-folder cleanup.
-- Deferred post-processing now clears resume markers before running empty-directory removal.
-
-### v1.6.60 (2026-03-05)
-
-- Added package-scoped password cache for extraction: once the first archive in a package is solved, following archives in the same package reuse that password first.
-- Kept fallback behavior intact (`""` and other candidates are still tested), but moved empty-password probing behind the learned password to reduce per-archive delays.
-- Added cache invalidation on real `wrong_password` failures so stale passwords are automatically discarded.
-
-### v1.6.59 (2026-03-05)
-
-- Switched default extraction backend to native tools (`legacy`) for more stable archive-to-archive flow.
-- Prioritized 7-Zip as primary native extractor, with WinRAR/UnRAR as fallback.
-- JVM extractor remains available as opt-in via `RD_EXTRACT_BACKEND=jvm`.
-
-### v1.6.58 (2026-03-05)
-
-- Fixed extraction progress oscillation (`1% -> 100% -> 1%` loops) during password retries.
-- Kept strict archive completion logic, but normalized in-progress archive percent to avoid false visual done states before real completion.
-
-### v1.6.57 (2026-03-05)
-
-- Fixed extraction flow so archives are marked done only on real completion, not on temporary `100%` progress spikes.
-- Improved password handling: after the first successful archive, the discovered password is prioritized for subsequent archives.
-- Fixed progress parsing for password retries (reset/restart handling), reducing visible and real gaps between archive extractions.
+Detailed release history is published on [git.24-music.de Releases](https://git.24-music.de/Administrator/real-debrid-downloader/releases).
 
 ## License
 
