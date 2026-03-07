@@ -6926,33 +6926,38 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      // Disk-fallback: if all parts exist on disk but some items lack "completed" status,
-      // allow extraction if none of those parts are actively downloading/validating.
-      // This handles items that finished downloading but whose status was not updated.
+      // Disk-fallback: if all parts exist on disk at their full expected size but some
+      // items lack "completed" status, allow extraction.  This handles items that finished
+      // downloading but whose status was not updated (crash between write and persist).
       const missingParts = partsOnDisk.filter((part) => !completedPaths.has(pathKey(part)));
-      let allMissingExistOnDisk = true;
+      let allMissingFullOnDisk = true;
       for (const part of missingParts) {
         try {
           const stat = await fs.promises.stat(part);
-          if (stat.size < 10240) {
-            allMissingExistOnDisk = false;
+          // Find the item that owns this file to get its expected totalBytes
+          const ownerItem = this.findItemByDiskPath(pkg, part);
+          const minBytes = ownerItem?.totalBytes && ownerItem.totalBytes > 0
+            ? ownerItem.totalBytes - ALLOCATION_UNIT_SIZE
+            : 10240;
+          if (stat.size < minBytes) {
+            allMissingFullOnDisk = false;
             break;
           }
         } catch {
-          allMissingExistOnDisk = false;
+          allMissingFullOnDisk = false;
           break;
         }
       }
-      if (!allMissingExistOnDisk) {
+      if (!allMissingFullOnDisk) {
         continue;
       }
-      // Any non-completed item blocks extraction — cancelled/stopped items may
+      // Any non-completed item blocks extraction — failed/cancelled/stopped items may
       // have partial files on disk that would corrupt the extraction.
-      const anyActivelyProcessing = missingParts.some((part) => {
+      const anyNonCompletedItem = missingParts.some((part) => {
         const status = pendingItemStatus.get(pathKey(part));
-        return status !== undefined && status !== "failed";
+        return status !== undefined;
       });
-      if (anyActivelyProcessing) {
+      if (anyNonCompletedItem) {
         continue;
       }
       // Safety: if any pending item in the package has neither targetPath nor fileName,
@@ -6973,6 +6978,17 @@ export class DownloadManager extends EventEmitter {
     }
 
     return ready;
+  }
+
+  private findItemByDiskPath(pkg: PackageEntry, diskPath: string): DownloadItem | undefined {
+    const key = pathKey(diskPath);
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+      if (item.targetPath && pathKey(item.targetPath) === key) return item;
+      if (item.fileName && pkg.outputDir && pathKey(path.join(pkg.outputDir, item.fileName)) === key) return item;
+    }
+    return undefined;
   }
 
   private looksLikeArchivePart(fileName: string, entryPointName: string): boolean {
