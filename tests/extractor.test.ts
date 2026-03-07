@@ -7,6 +7,7 @@ import {
   buildExternalExtractArgs,
   collectArchiveCleanupTargets,
   extractPackageArchives,
+  type ExtractArchiveFailureInfo,
   archiveFilenamePasswords,
   detectArchiveSignature,
   classifyExtractionError,
@@ -999,6 +1000,36 @@ describe("extractor", () => {
   });
 
   describe("password discovery", () => {
+    it("reports per-archive failures through onArchiveFailure", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-failure-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "broken.zip"), "not-a-zip", "utf8");
+      const failures: ExtractArchiveFailureInfo[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        onArchiveFailure: (failure) => {
+          failures.push(failure);
+        }
+      });
+
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.archiveName).toBe("broken.zip");
+      expect(failures[0]?.category).toBe("unsupported_format");
+      expect(failures[0]?.suggestRedownload).toBe(false);
+    });
+
     it("extracts first archive serially before parallel pool when multiple passwords", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-pwdisc-"));
       tempDirs.push(root);

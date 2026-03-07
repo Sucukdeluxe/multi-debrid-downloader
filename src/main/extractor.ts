@@ -110,6 +110,7 @@ export interface ExtractOptions {
   hybridMode?: boolean;
   maxParallel?: number;
   extractCpuPriority?: string;
+  onArchiveFailure?: (failure: ExtractArchiveFailureInfo) => void;
 }
 
 export interface ExtractProgressUpdate {
@@ -125,6 +126,14 @@ export interface ExtractProgressUpdate {
   passwordFound?: boolean;
   archiveDone?: boolean;
   archiveSuccess?: boolean;
+}
+
+export interface ExtractArchiveFailureInfo {
+  archiveName: string;
+  errorText: string;
+  category: ExtractErrorCategory;
+  suggestRedownload: boolean;
+  jvmFailureReason?: string;
 }
 
 const MAX_EXTRACT_OUTPUT_BUFFER = 48 * 1024;
@@ -531,6 +540,26 @@ export type ExtractErrorCategory =
   | "aborted"
   | "no_extractor"
   | "unknown";
+
+type ExtractionErrorWithHints = Error & {
+  suggestRedownload?: boolean;
+  jvmFailureReason?: string;
+};
+
+function withExtractionErrorHints(
+  error: unknown,
+  hints: { suggestRedownload?: boolean; jvmFailureReason?: string }
+): Error {
+  const base = error instanceof Error ? error : new Error(String(error || "Entpacken fehlgeschlagen"));
+  const enhanced = base as ExtractionErrorWithHints;
+  if (hints.suggestRedownload) {
+    enhanced.suggestRedownload = true;
+  }
+  if (hints.jvmFailureReason) {
+    enhanced.jvmFailureReason = hints.jvmFailureReason;
+  }
+  return enhanced;
+}
 
 export function classifyExtractionError(errorText: string): ExtractErrorCategory {
   const text = String(errorText || "").toLowerCase();
@@ -1146,6 +1175,20 @@ function finishDaemonRequest(result: JvmExtractResult): void {
   req.resolve(result);
 }
 
+function flushDaemonParseBuffers(req: DaemonRequest | null): void {
+  if (!req) {
+    return;
+  }
+  if (daemonStdoutBuffer.trim()) {
+    parseJvmLine(daemonStdoutBuffer, req.onArchiveProgress, req.parseState);
+    daemonStdoutBuffer = "";
+  }
+  if (daemonStderrBuffer.trim()) {
+    parseJvmLine(daemonStderrBuffer, req.onArchiveProgress, req.parseState);
+    daemonStderrBuffer = "";
+  }
+}
+
 function handleDaemonLine(line: string): void {
   const trimmed = String(line || "").trim();
   if (!trimmed) return;
@@ -1162,27 +1205,41 @@ function handleDaemonLine(line: string): void {
     const code = parseInt(trimmed.slice("RD_REQUEST_DONE ".length).trim(), 10);
     const req = daemonCurrentRequest;
     if (!req) return;
-    const elapsedMs = Date.now() - req.startedAt;
-    logger.info(
-      `JVM Daemon Request Ende: archive=${req.archiveName}, code=${code}, ms=${elapsedMs}, pwCandidates=${req.passwordCount}, ` +
-      `bestPercent=${req.parseState.bestPercent}, backend=${req.parseState.backend || "unknown"}, usedPassword=${req.parseState.usedPassword ? "yes" : "no"}`
-    );
+    const finalize = (): void => {
+      if (daemonCurrentRequest !== req) {
+        return;
+      }
+      flushDaemonParseBuffers(req);
+      const elapsedMs = Date.now() - req.startedAt;
+      logger.info(
+        `JVM Daemon Request Ende: archive=${req.archiveName}, code=${code}, ms=${elapsedMs}, pwCandidates=${req.passwordCount}, ` +
+        `bestPercent=${req.parseState.bestPercent}, backend=${req.parseState.backend || "unknown"}, usedPassword=${req.parseState.usedPassword ? "yes" : "no"}`
+      );
 
-    if (code === 0) {
-      req.onArchiveProgress?.(100);
-      finishDaemonRequest({
-        ok: true, missingCommand: false, missingRuntime: false,
-        aborted: false, timedOut: false, errorText: "",
-        usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
-      });
-    } else {
+      if (code === 0) {
+        req.onArchiveProgress?.(100);
+        finishDaemonRequest({
+          ok: true, missingCommand: false, missingRuntime: false,
+          aborted: false, timedOut: false, errorText: "",
+          usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+        });
+        return;
+      }
+
       const message = cleanErrorText(req.parseState.reportedError || daemonOutput) || `Exit Code ${code}`;
       finishDaemonRequest({
         ok: false, missingCommand: false, missingRuntime: isJvmRuntimeMissingError(message),
         aborted: false, timedOut: false, errorText: message,
         usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
       });
+    };
+
+    if (code !== 0 && !req.parseState.reportedError) {
+      setTimeout(finalize, 40);
+      return;
     }
+
+    finalize();
     return;
   }
 
@@ -1771,6 +1828,7 @@ async function runExternalExtract(
   const archiveName = path.basename(archivePath);
   const totalStartedAt = Date.now();
   let jvmFailureReason = "";
+  let jvmCodecError = false;
   let fallbackFromJvm = false;
   logger.info(`Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
 
@@ -1827,6 +1885,7 @@ async function runExternalExtract(
         const isCodecError = jvmFailureLower.includes("registered codecs")
           || jvmFailureLower.includes("can not open")
           || jvmFailureLower.includes("cannot open archive");
+        jvmCodecError = isCodecError;
         const isWrongPassword = jvmFailureReason.includes("WRONG_PASSWORD")
           || jvmFailureLower.includes("wrong password");
         const shouldFallbackToLegacy = isUnsupportedMethod || isCodecError || isWrongPassword;
@@ -1854,52 +1913,61 @@ async function runExternalExtract(
     let password: string;
     let usedCommand = command;
     try {
-      password = await runExternalExtractInner(
-        command,
-        archivePath,
-        effectiveTargetDir,
-        conflictMode,
-        passwordCandidates,
-        onArchiveProgress,
-        signal,
-        timeoutMs,
-        hybridMode,
-        onPasswordAttempt,
-        forceFlatMode,
-        flatModeResult
-      );
-    } catch (primaryError) {
-      // If the primary extractor (typically 7-Zip) fails on a RAR archive,
-      // try the alternative extractor (UnRAR/WinRAR) which handles RAR natively.
-      const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
-      const errText = String((primaryError as Error)?.message || primaryError || "");
-      const isPasswordOrCorrupt = /wrong.password|checksum error|corrupt/i.test(errText);
-      if (isRar && isPasswordOrCorrupt && !signal?.aborted) {
-        const alt = await findAlternativeExtractor(command);
-        if (alt) {
-          const altName = path.basename(alt).replace(/\.exe$/i, "");
-          logger.info(`Legacy-Fallback: ${path.basename(command)} fehlgeschlagen bei RAR, versuche ${altName}: ${archiveName}`);
-          usedCommand = alt;
-          password = await runExternalExtractInner(
-            alt,
-            archivePath,
-            effectiveTargetDir,
-            conflictMode,
-            passwordCandidates,
-            onArchiveProgress,
-            signal,
-            timeoutMs,
-            hybridMode,
-            onPasswordAttempt,
-            forceFlatMode,
-            flatModeResult
-          );
+      try {
+        password = await runExternalExtractInner(
+          command,
+          archivePath,
+          effectiveTargetDir,
+          conflictMode,
+          passwordCandidates,
+          onArchiveProgress,
+          signal,
+          timeoutMs,
+          hybridMode,
+          onPasswordAttempt,
+          forceFlatMode,
+          flatModeResult
+        );
+      } catch (primaryError) {
+        // If the primary extractor (typically 7-Zip) fails on a RAR archive,
+        // try the alternative extractor (UnRAR/WinRAR) which handles RAR natively.
+        const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
+        const errText = String((primaryError as Error)?.message || primaryError || "");
+        const isPasswordOrCorrupt = /wrong.password|checksum error|corrupt/i.test(errText);
+        if (isRar && isPasswordOrCorrupt && !signal?.aborted) {
+          const alt = await findAlternativeExtractor(command);
+          if (alt) {
+            const altName = path.basename(alt).replace(/\.exe$/i, "");
+            logger.info(`Legacy-Fallback: ${path.basename(command)} fehlgeschlagen bei RAR, versuche ${altName}: ${archiveName}`);
+            usedCommand = alt;
+            password = await runExternalExtractInner(
+              alt,
+              archivePath,
+              effectiveTargetDir,
+              conflictMode,
+              passwordCandidates,
+              onArchiveProgress,
+              signal,
+              timeoutMs,
+              hybridMode,
+              onPasswordAttempt,
+              forceFlatMode,
+              flatModeResult
+            );
+          } else {
+            throw primaryError;
+          }
         } else {
           throw primaryError;
         }
-      } else {
-        throw primaryError;
       }
+    } catch (legacyError) {
+      const legacyText = String((legacyError as Error)?.message || legacyError || "");
+      const suggestRedownload = jvmCodecError && classifyExtractionError(legacyText) === "crc_error";
+      throw withExtractionErrorHints(legacyError, {
+        suggestRedownload,
+        jvmFailureReason: jvmFailureReason || undefined
+      });
     }
     const legacyMs = Date.now() - legacyStartedAt;
     const extractorName = path.basename(usedCommand).replace(/\.exe$/i, "");
@@ -2754,6 +2822,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       failed += 1;
       lastError = errorText;
       const errorCategory = classifyExtractionError(errorText);
+      const hintedError = error as ExtractionErrorWithHints;
+      options.onArchiveFailure?.({
+        archiveName,
+        errorText,
+        category: errorCategory,
+        suggestRedownload: hintedError?.suggestRedownload === true,
+        jvmFailureReason: hintedError?.jvmFailureReason
+      });
       logger.error(`Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
       if (errorCategory === "wrong_password" && learnedPassword) {
         learnedPassword = "";
