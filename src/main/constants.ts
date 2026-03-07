@@ -99,6 +99,7 @@ export function defaultSettings(): AppSettings {
     accountListShowDetailedDebridLinkKeys: false,
     autoSortPackagesByProgress: true,
     autoSkipExtracted: false,
+    hideExtractedItems: true,
     confirmDeleteSelection: true,
     totalDownloadedAllTime: 0,
     bandwidthSchedules: [],

@@ -105,6 +105,7 @@ export interface AppSettings {
   accountListShowDetailedDebridLinkKeys: boolean;
   autoSortPackagesByProgress: boolean;
   autoSkipExtracted: boolean;
+  hideExtractedItems: boolean;
   confirmDeleteSelection: boolean;
   totalDownloadedAllTime: number;
   bandwidthSchedules: BandwidthScheduleEntry[];
