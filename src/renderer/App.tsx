@@ -1,4 +1,5 @@
 import { CSSProperties, DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import type {
   AllDebridHostInfo,
   AppSettings,
@@ -16,7 +17,16 @@ import type {
   UpdateCheckResult,
   UpdateInstallProgress
 } from "../shared/types";
-import { reorderPackageOrderByDrop, sortPackageOrderByName } from "./package-order";
+import {
+  getDebridLinkApiKeyDailyLimitBytes,
+  getDebridLinkApiKeyDailyRemainingBytes,
+  getDebridLinkApiKeyDailyUsageBytes,
+  getProviderDailyLimitBytes,
+  getProviderDailyRemainingBytes,
+  getProviderDailyUsageBytes,
+  getProviderUsageDayKey
+} from "../shared/provider-daily-limits";
+import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
 
 type Tab = "collector" | "downloads" | "history" | "statistics" | "settings";
 type SettingsSubTab = "allgemein" | "accounts" | "entpacken" | "geschwindigkeit" | "bereinigung" | "updates";
@@ -88,17 +98,35 @@ interface AccountDialogState {
   token: string;
   login: string;
   password: string;
+  dailyLimitGb: string;
+  keyDailyLimitGbById: Record<string, string>;
+}
+
+interface DebridLinkAccountKeyEntry {
+  id: string;
+  label: string;
+  masked: string;
+  dailyUsedBytes: number;
+  dailyLimitBytes: number;
+  dailyRemainingBytes: number | null;
+  dailyLimitReached: boolean;
 }
 
 interface ConfiguredAccountEntry {
   kind: AccountKind;
   service: AccountService;
+  provider: DebridProvider;
   serviceLabel: string;
   modeLabel: string;
   statusLabel: string;
   summary: string;
   note: string;
   disabled: boolean;
+  dailyUsedBytes: number;
+  dailyLimitBytes: number;
+  dailyRemainingBytes: number | null;
+  dailyLimitReached: boolean;
+  debridLinkKeys: DebridLinkAccountKeyEntry[];
 }
 
 const ACCOUNT_OPTIONS: AccountOption[] = [
@@ -202,7 +230,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     kind: "linksnappy-login",
     service: "linksnappy",
     serviceLabel: "LinkSnappy",
-    title: "LinkSnappy Login",
+    title: "LinkSnappy Web",
     modeLabel: "Login",
     pickerDescription: "Login für linksnappy.com mit Benutzername und Passwort.",
     needsCredentials: true
@@ -210,6 +238,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
 ];
 
 const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
+const ACCOUNT_LIMIT_BYTES_PER_GIB = 1024 * 1024 * 1024;
 const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths";
 const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
   service: 220,
@@ -251,6 +280,40 @@ function findAccountOption(kind: AccountKind): AccountOption {
     throw new Error(`Unbekannter Account-Typ: ${kind}`);
   }
   return option;
+}
+
+function getAccountServiceProvider(service: AccountService): DebridProvider {
+  return service as DebridProvider;
+}
+
+function formatAccountDailyLimitInput(limitBytes: number): string {
+  if (limitBytes <= 0) {
+    return "";
+  }
+  const gib = limitBytes / ACCOUNT_LIMIT_BYTES_PER_GIB;
+  const precision = gib >= 100 ? 0 : gib >= 10 ? 1 : 2;
+  return gib.toFixed(precision).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+}
+
+function parseAccountDailyLimitInputBytes(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed * ACCOUNT_LIMIT_BYTES_PER_GIB);
+}
+
+function buildDebridLinkKeyLimitInputs(rawKeys: string, values?: Record<string, string>, settings?: AppSettings): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const key of parseDebridLinkApiKeys(rawKeys)) {
+    next[key.id] = values?.[key.id]
+      ?? formatAccountDailyLimitInput(settings?.debridLinkApiKeyDailyLimitBytes?.[key.id] || 0);
+  }
+  return next;
 }
 
 function getAccountPickerFunctionLabel(option: AccountOption): string {
@@ -418,35 +481,47 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       kind: null,
       token: "",
       login: "",
-      password: ""
+      password: "",
+      dailyLimitGb: "",
+      keyDailyLimitGbById: {}
     };
   }
+  const provider = getAccountServiceProvider(findAccountOption(kind).service);
+  const dailyLimitGb = formatAccountDailyLimitInput(getProviderDailyLimitBytes(settings, provider));
   switch (kind) {
     case "realdebrid-api":
-      return { mode, kind, token: settings.token, login: "", password: "" };
+      return { mode, kind, token: settings.token, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "realdebrid-web":
-      return { mode, kind, token: "", login: "", password: "" };
+      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "megadebrid-api":
     case "megadebrid-web":
-      return { mode, kind, token: "", login: settings.megaLogin, password: settings.megaPassword };
+      return { mode, kind, token: "", login: settings.megaLogin, password: settings.megaPassword, dailyLimitGb, keyDailyLimitGbById: {} };
     case "bestdebrid-api":
-      return { mode, kind, token: settings.bestToken, login: "", password: "" };
+      return { mode, kind, token: settings.bestToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "bestdebrid-web":
-      return { mode, kind, token: "", login: "", password: "" };
+      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "alldebrid-api":
-      return { mode, kind, token: settings.allDebridToken, login: "", password: "" };
+      return { mode, kind, token: settings.allDebridToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "alldebrid-web":
-      return { mode, kind, token: "", login: "", password: "" };
+      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "ddownload-login":
-      return { mode, kind, token: "", login: settings.ddownloadLogin, password: settings.ddownloadPassword };
+      return { mode, kind, token: "", login: settings.ddownloadLogin, password: settings.ddownloadPassword, dailyLimitGb, keyDailyLimitGbById: {} };
     case "onefichier-api":
-      return { mode, kind, token: settings.oneFichierApiKey, login: "", password: "" };
+      return { mode, kind, token: settings.oneFichierApiKey, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "debridlink-api":
-      return { mode, kind, token: settings.debridLinkApiKeys || "", login: "", password: "" };
+      return {
+        mode,
+        kind,
+        token: settings.debridLinkApiKeys || "",
+        login: "",
+        password: "",
+        dailyLimitGb,
+        keyDailyLimitGbById: buildDebridLinkKeyLimitInputs(settings.debridLinkApiKeys || "", undefined, settings)
+      };
     case "linksnappy-login":
-      return { mode, kind, token: "", login: settings.linkSnappyLogin || "", password: settings.linkSnappyPassword || "" };
+      return { mode, kind, token: "", login: settings.linkSnappyLogin || "", password: settings.linkSnappyPassword || "", dailyLimitGb, keyDailyLimitGbById: {} };
     default:
-      return { mode, kind, token: "", login: "", password: "" };
+      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
   }
 }
 
@@ -457,60 +532,101 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
   const token = dialog.token.trim();
   const login = dialog.login.trim();
   const password = dialog.password;
+  const provider = getAccountServiceProvider(findAccountOption(dialog.kind).service);
+  const nextProviderDailyLimitBytes = { ...(settings.providerDailyLimitBytes || {}) };
+  const nextDebridLinkApiKeyDailyLimitBytes = dialog.kind === "debridlink-api"
+    ? Object.fromEntries(
+      parseDebridLinkApiKeys(dialog.token).flatMap((entry) => {
+        const limitBytes = parseAccountDailyLimitInputBytes(dialog.keyDailyLimitGbById?.[entry.id] || "");
+        return limitBytes && limitBytes > 0 ? [[entry.id, limitBytes]] : [];
+      })
+    ) as Record<string, number>
+    : { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) };
+  const dailyLimitBytes = parseAccountDailyLimitInputBytes(dialog.dailyLimitGb);
+  if (dailyLimitBytes && dailyLimitBytes > 0) {
+    nextProviderDailyLimitBytes[provider] = dailyLimitBytes;
+  } else {
+    delete nextProviderDailyLimitBytes[provider];
+  }
   switch (dialog.kind) {
     case "realdebrid-api":
-      return { ...settings, token, realDebridUseWebLogin: false };
+      return { ...settings, token, realDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "realdebrid-web":
-      return { ...settings, token: "", realDebridUseWebLogin: true };
+      return { ...settings, token: "", realDebridUseWebLogin: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "megadebrid-api":
-      return { ...settings, megaLogin: login, megaPassword: password, megaDebridApiEnabled: true, megaDebridPreferApi: true };
+      return { ...settings, megaLogin: login, megaPassword: password, megaDebridApiEnabled: true, megaDebridPreferApi: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "megadebrid-web":
-      return { ...settings, megaLogin: login, megaPassword: password, megaDebridWebEnabled: true, megaDebridPreferApi: false };
+      return { ...settings, megaLogin: login, megaPassword: password, megaDebridWebEnabled: true, megaDebridPreferApi: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "bestdebrid-api":
-      return { ...settings, bestToken: token, bestDebridUseWebLogin: false };
+      return { ...settings, bestToken: token, bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "bestdebrid-web":
-      return { ...settings, bestToken: "", bestDebridUseWebLogin: true };
+      return { ...settings, bestToken: "", bestDebridUseWebLogin: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "alldebrid-api":
-      return { ...settings, allDebridToken: token, allDebridUseWebLogin: false };
+      return { ...settings, allDebridToken: token, allDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "alldebrid-web":
-      return { ...settings, allDebridToken: "", allDebridUseWebLogin: true };
+      return { ...settings, allDebridToken: "", allDebridUseWebLogin: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "ddownload-login":
-      return { ...settings, ddownloadLogin: login, ddownloadPassword: password };
+      return { ...settings, ddownloadLogin: login, ddownloadPassword: password, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "onefichier-api":
-      return { ...settings, oneFichierApiKey: token };
+      return { ...settings, oneFichierApiKey: token, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "debridlink-api":
-      return { ...settings, debridLinkApiKeys: token };
+      return {
+        ...settings,
+        debridLinkApiKeys: token,
+        providerDailyLimitBytes: nextProviderDailyLimitBytes,
+        debridLinkApiKeyDailyLimitBytes: nextDebridLinkApiKeyDailyLimitBytes
+      };
     case "linksnappy-login":
-      return { ...settings, linkSnappyLogin: login, linkSnappyPassword: password };
+      return { ...settings, linkSnappyLogin: login, linkSnappyPassword: password, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     default:
       return settings;
   }
 }
 
 function clearAccountServiceFromSettings(settings: AppSettings, service: AccountService): AppSettings {
+  const provider = getAccountServiceProvider(service);
+  const nextProviderDailyLimitBytes = { ...(settings.providerDailyLimitBytes || {}) };
+  const nextProviderDailyUsageBytes = { ...(settings.providerDailyUsageBytes || {}) };
+  const nextDebridLinkApiKeyDailyLimitBytes = { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) };
+  const nextDebridLinkApiKeyDailyUsageBytes = { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) };
+  delete nextProviderDailyLimitBytes[provider];
+  delete nextProviderDailyUsageBytes[provider];
+  if (service === "debridlink") {
+    for (const key of parseDebridLinkApiKeys(settings.debridLinkApiKeys || "")) {
+      delete nextDebridLinkApiKeyDailyLimitBytes[key.id];
+      delete nextDebridLinkApiKeyDailyUsageBytes[key.id];
+    }
+  }
   switch (service) {
     case "realdebrid":
-      return { ...settings, token: "", realDebridUseWebLogin: false };
+      return { ...settings, token: "", realDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "megadebrid-api":
       return settings.megaDebridWebEnabled
-        ? { ...settings, megaDebridApiEnabled: false }
-        : { ...settings, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false };
+        ? { ...settings, megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes }
+        : { ...settings, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "megadebrid-web":
       return settings.megaDebridApiEnabled
-        ? { ...settings, megaDebridWebEnabled: false }
-        : { ...settings, megaLogin: "", megaPassword: "", megaDebridWebEnabled: false };
+        ? { ...settings, megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes }
+        : { ...settings, megaLogin: "", megaPassword: "", megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "bestdebrid":
-      return { ...settings, bestToken: "", bestDebridUseWebLogin: false };
+      return { ...settings, bestToken: "", bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "alldebrid":
-      return { ...settings, allDebridToken: "", allDebridUseWebLogin: false };
+      return { ...settings, allDebridToken: "", allDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "ddownload":
-      return { ...settings, ddownloadLogin: "", ddownloadPassword: "" };
+      return { ...settings, ddownloadLogin: "", ddownloadPassword: "", providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "onefichier":
-      return { ...settings, oneFichierApiKey: "" };
+      return { ...settings, oneFichierApiKey: "", providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "debridlink":
-      return { ...settings, debridLinkApiKeys: "" };
+      return {
+        ...settings,
+        debridLinkApiKeys: "",
+        providerDailyLimitBytes: nextProviderDailyLimitBytes,
+        providerDailyUsageBytes: nextProviderDailyUsageBytes,
+        debridLinkApiKeyDailyLimitBytes: nextDebridLinkApiKeyDailyLimitBytes,
+        debridLinkApiKeyDailyUsageBytes: nextDebridLinkApiKeyDailyUsageBytes
+      };
     case "linksnappy":
-      return { ...settings, linkSnappyLogin: "", linkSnappyPassword: "" };
+      return { ...settings, linkSnappyLogin: "", linkSnappyPassword: "", providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     default:
       return settings;
   }
@@ -530,6 +646,24 @@ function validateAccountDialog(dialog: AccountDialogState): string | null {
     }
     if (!dialog.password) {
       return `${option.title}: Bitte Passwort eintragen.`;
+    }
+  }
+  if (dialog.dailyLimitGb.trim()) {
+    const parsed = Number(dialog.dailyLimitGb.trim().replace(",", "."));
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return `${option.title}: Tageslimit muss eine Zahl >= 0 sein.`;
+    }
+  }
+  if (dialog.kind === "debridlink-api") {
+    for (const key of parseDebridLinkApiKeys(dialog.token)) {
+      const raw = dialog.keyDailyLimitGbById?.[key.id] || "";
+      if (!raw.trim()) {
+        continue;
+      }
+      const parsed = Number(raw.trim().replace(",", "."));
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return `${option.title}: ${key.label} Limit muss eine Zahl >= 0 sein.`;
+      }
     }
   }
   return null;
@@ -556,12 +690,18 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, autoSkipExtracted: false, confirmDeleteSelection: true,
+    theme: "dark", collapseNewPackages: true, autoSortPackagesByProgress: true, autoSkipExtracted: false, confirmDeleteSelection: true,
     bandwidthSchedules: [], totalDownloadedAllTime: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     autoExtractWhenStopped: true,
     disabledProviders: [],
-    hosterRouting: {}
+    hosterRouting: {},
+    providerDailyLimitBytes: {},
+    providerDailyUsageBytes: {},
+    debridLinkApiKeyDailyLimitBytes: {},
+    debridLinkApiKeyDailyUsageBytes: {},
+    providerDailyUsageDay: getProviderUsageDayKey(),
+    scheduledStartEpochMs: 0
   },
   session: {
     version: 2, packageOrder: [], packages: {}, items: {}, runStartedAt: 0,
@@ -917,8 +1057,8 @@ function sortPackageOrderBySize(order: string[], packages: Record<string, Packag
 function sortPackageOrderByHoster(order: string[], packages: Record<string, PackageEntry>, items: Record<string, DownloadItem>, descending: boolean): string[] {
   const sorted = [...order];
   sorted.sort((a, b) => {
-    const hosterA = [...new Set((packages[a]?.itemIds ?? []).map((id) => extractHoster(items[id]?.url ?? "")).filter(Boolean))].join(",").toLowerCase();
-    const hosterB = [...new Set((packages[b]?.itemIds ?? []).map((id) => extractHoster(items[id]?.url ?? "")).filter(Boolean))].join(",").toLowerCase();
+    const hosterA = [...new Set((packages[a]?.itemIds ?? []).map((id) => extractHoster(items[id]?.url || "")).filter(Boolean))].join(",").toLowerCase();
+    const hosterB = [...new Set((packages[b]?.itemIds ?? []).map((id) => extractHoster(items[id]?.url || "")).filter(Boolean))].join(",").toLowerCase();
     const cmp = hosterA.localeCompare(hosterB);
     return descending ? -cmp : cmp;
   });
@@ -1484,41 +1624,13 @@ export function App(): ReactElement {
     ? Math.max(0, totalPackageCount - packages.length)
     : 0;
   const visiblePackages = useMemo(() => {
-    if (!snapshot.session.running || packages.length <= 1) {
-      return packages;
-    }
-    const activeStatuses = new Set(["downloading", "validating", "integrity_check", "extracting"]);
-    const active: PackageEntry[] = [];
-    const rest: PackageEntry[] = [];
-    for (const pkg of packages) {
-      const hasActive = pkg.itemIds.some((id) => {
-        const item = snapshot.session.items[id];
-        return item && activeStatuses.has(item.status);
-      });
-      if (hasActive) {
-        active.push(pkg);
-      } else {
-        rest.push(pkg);
-      }
-    }
-    if (active.length === 0 || active.length === packages.length) {
-      return packages;
-    }
-    // Sort active packages: highest completion percentage first
-    active.sort((a, b) => {
-      const aItems = a.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean);
-      const bItems = b.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean);
-      const aPct = aItems.length > 0 ? aItems.filter((i) => i.status === "completed").length / aItems.length : 0;
-      const bPct = bItems.length > 0 ? bItems.filter((i) => i.status === "completed").length / bItems.length : 0;
-      if (aPct !== bPct) {
-        return bPct - aPct;
-      }
-      const aBytes = aItems.reduce((s, i) => s + (i.downloadedBytes || 0), 0);
-      const bBytes = bItems.reduce((s, i) => s + (i.downloadedBytes || 0), 0);
-      return bBytes - aBytes;
-    });
-    return [...active, ...rest];
-  }, [packages, snapshot.session.running, snapshot.session.items]);
+    return sortPackagesForDisplay(
+      packages,
+      snapshot.session.items,
+      snapshot.session.running,
+      settingsDraft.autoSortPackagesByProgress
+    );
+  }, [packages, settingsDraft.autoSortPackagesByProgress, snapshot.session.running, snapshot.session.items]);
 
   const hasSavedAllDebridAccount = Boolean(snapshot.settings.allDebridUseWebLogin || snapshot.settings.allDebridToken.trim());
   const allDebridSettingsDirty = snapshot.settings.allDebridUseWebLogin !== settingsDraft.allDebridUseWebLogin
@@ -1647,23 +1759,75 @@ export function App(): ReactElement {
         }
       }
       if (kind === "debridlink-api") {
-        const keyCount = (settingsDraft.debridLinkApiKeys || "").split(/[\n,]+/).filter((k: string) => k.trim()).length;
+        const keyCount = parseDebridLinkApiKeys(settingsDraft.debridLinkApiKeys || "").length;
         statusLabel = keyCount > 1 ? `${keyCount} API-Keys` : "Konfiguriert";
       }
-      const isDisabled = (settingsDraft.disabledProviders || []).includes(service as DebridProvider);
+      const provider = getAccountServiceProvider(service);
+      const dailyUsedBytes = getProviderDailyUsageBytes(snapshot.settings, provider);
+      const dailyLimitBytes = getProviderDailyLimitBytes(settingsDraft, provider);
+      const dailyRemainingBytes = getProviderDailyRemainingBytes({
+        providerDailyLimitBytes: settingsDraft.providerDailyLimitBytes,
+        providerDailyUsageBytes: snapshot.settings.providerDailyUsageBytes,
+        providerDailyUsageDay: snapshot.settings.providerDailyUsageDay
+      }, provider);
+      let dailyLimitReached = dailyLimitBytes > 0 && dailyUsedBytes >= dailyLimitBytes;
+      const isDisabled = (settingsDraft.disabledProviders || []).includes(provider);
+      const debridLinkKeys = kind === "debridlink-api"
+        ? parseDebridLinkApiKeys(settingsDraft.debridLinkApiKeys || "").map((key) => {
+          const keyDailyUsedBytes = getDebridLinkApiKeyDailyUsageBytes(snapshot.settings, key.id);
+          const keyDailyLimitBytes = getDebridLinkApiKeyDailyLimitBytes(settingsDraft, key.id);
+          const keyDailyRemainingBytes = getDebridLinkApiKeyDailyRemainingBytes({
+            debridLinkApiKeyDailyLimitBytes: settingsDraft.debridLinkApiKeyDailyLimitBytes,
+            debridLinkApiKeyDailyUsageBytes: snapshot.settings.debridLinkApiKeyDailyUsageBytes,
+            providerDailyLimitBytes: settingsDraft.providerDailyLimitBytes,
+            providerDailyUsageBytes: snapshot.settings.providerDailyUsageBytes,
+            providerDailyUsageDay: snapshot.settings.providerDailyUsageDay
+          }, key.id);
+          return {
+            id: key.id,
+            label: key.label,
+            masked: key.masked,
+            dailyUsedBytes: keyDailyUsedBytes,
+            dailyLimitBytes: keyDailyLimitBytes,
+            dailyRemainingBytes: keyDailyRemainingBytes,
+            dailyLimitReached: keyDailyLimitBytes > 0 && keyDailyUsedBytes >= keyDailyLimitBytes
+          };
+        })
+        : [];
+      if (kind === "debridlink-api" && debridLinkKeys.length > 0) {
+        const limitedCount = debridLinkKeys.filter((entry) => entry.dailyLimitReached).length;
+        if (limitedCount > 0) {
+          const limitNote = `${limitedCount}/${debridLinkKeys.length} API-Keys am Limit.`;
+          note = note ? `${limitNote} ${note}` : limitNote;
+        }
+        if (limitedCount === debridLinkKeys.length) {
+          dailyLimitReached = true;
+        }
+      }
+      if (dailyLimitReached) {
+        note = note
+          ? `Tageslimit erreicht. Neue Links wechseln auf den nächsten Hoster. ${note}`
+          : "Tageslimit erreicht. Neue Links wechseln auf den nächsten Hoster.";
+      }
       entries.push({
         kind,
         service,
+        provider,
         serviceLabel: option.serviceLabel,
         modeLabel: option.modeLabel,
         statusLabel: isDisabled ? "Deaktiviert" : statusLabel,
         summary: summarizeAccount(kind, settingsDraft),
         note,
-        disabled: isDisabled
+        disabled: isDisabled,
+        dailyUsedBytes,
+        dailyLimitBytes,
+        dailyRemainingBytes,
+        dailyLimitReached,
+        debridLinkKeys
       });
     }
     return entries;
-  }, [settingsDraft, allDebridHostInfo, allDebridHostLoading, hasSavedAllDebridAccount, allDebridSettingsDirty]);
+  }, [settingsDraft, snapshot.settings, allDebridHostInfo, allDebridHostLoading, hasSavedAllDebridAccount, allDebridSettingsDirty]);
 
   const configuredAccountServices = useMemo(() => new Set(configuredAccounts.map((entry) => entry.service)), [configuredAccounts]);
   const availableAccountOptions = useMemo(() => (
@@ -1827,6 +1991,21 @@ export function App(): ReactElement {
     applyTheme(result.theme);
   };
 
+  const syncLiveProviderUsageSettings = (result: AppSettings): void => {
+    setSnapshot((prev) => ({ ...prev, settings: result }));
+    if (!settingsDirtyRef.current) {
+      applyPersistedSettings(result);
+      return;
+    }
+    setSettingsDraft((prev) => ({
+      ...prev,
+      totalDownloadedAllTime: Math.max(prev.totalDownloadedAllTime, result.totalDownloadedAllTime),
+      providerDailyUsageDay: result.providerDailyUsageDay,
+      providerDailyUsageBytes: { ...(result.providerDailyUsageBytes || {}) },
+      debridLinkApiKeyDailyUsageBytes: { ...(result.debridLinkApiKeyDailyUsageBytes || {}) }
+    }));
+  };
+
   const persistSpecificSettings = async (nextDraft: AppSettings): Promise<AppSettings> => {
     const normalizedDraft = {
       ...nextDraft,
@@ -1841,16 +2020,16 @@ export function App(): ReactElement {
     switch (action) {
       case "realdebrid-login":
         await window.rd.openRealDebridLogin();
-        showToast("Real-Debrid Login-Fenster geoeffnet", 2200);
+        showToast("Real-Debrid Login-Fenster geöffnet", 2200);
         return;
       case "bestdebrid-cookies": {
         const count = await window.rd.importBestDebridCookies();
-        showToast(count > 0 ? `${count} BestDebrid-Cookies importiert` : "Keine Cookie-Datei ausgewaehlt", 2200);
+        showToast(count > 0 ? `${count} BestDebrid-Cookies importiert` : "Keine Cookie-Datei ausgewählt", 2200);
         return;
       }
       case "alldebrid-login":
         await window.rd.openAllDebridLogin();
-        showToast("AllDebrid Login-Fenster geoeffnet", 2200);
+        showToast("AllDebrid Login-Fenster geöffnet", 2200);
         return;
       case "alldebrid-status":
         await loadAllDebridHostInfo(false);
@@ -1898,6 +2077,7 @@ export function App(): ReactElement {
         next.login = prev.login;
         next.password = prev.password;
       }
+      next.dailyLimitGb = prev.dailyLimitGb;
       return next;
     });
   };
@@ -1951,6 +2131,26 @@ export function App(): ReactElement {
       showToast(`${entry.serviceLabel} entfernt`, 2200);
     }, (error) => {
       showToast(`Account konnte nicht entfernt werden: ${String(error)}`, 3200);
+    });
+  };
+
+  const onResetAccountDailyUsage = async (entry: ConfiguredAccountEntry): Promise<void> => {
+    await performQuickAction(async () => {
+      const result = await window.rd.resetProviderDailyUsage(getAccountServiceProvider(entry.service));
+      syncLiveProviderUsageSettings(result);
+      showToast(`${entry.serviceLabel}: Tageszähler zurückgesetzt`, 2200);
+    }, (error) => {
+      showToast(`${entry.serviceLabel}: Reset fehlgeschlagen: ${String(error)}`, 3200);
+    });
+  };
+
+  const onResetDebridLinkApiKeyDailyUsage = async (entry: ConfiguredAccountEntry, keyId: string, keyLabel: string): Promise<void> => {
+    await performQuickAction(async () => {
+      const result = await window.rd.resetDebridLinkApiKeyDailyUsage(keyId);
+      syncLiveProviderUsageSettings(result);
+      showToast(`${entry.serviceLabel} ${keyLabel}: Tageszähler zurückgesetzt`, 2200);
+    }, (error) => {
+      showToast(`${entry.serviceLabel} ${keyLabel}: Reset fehlgeschlagen: ${String(error)}`, 3200);
     });
   };
 
@@ -2495,7 +2695,7 @@ export function App(): ReactElement {
     pendingPackageOrderRef.current = [...order];
     pendingPackageOrderAtRef.current = Date.now();
     packageOrderRef.current = [...order];
-    // Optimistic UI update — apply the new order immediately so the user
+    // Optimistic UI update ? apply the new order immediately so the user
     // sees the change without waiting for the backend round-trip.
     setSnapshot((prev) => {
       if (!prev) return prev;
@@ -2812,7 +3012,7 @@ export function App(): ReactElement {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
         if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
-          // Don't clear selection if an overlay is open — let the overlay close first
+          // Don't clear selection if an overlay is open ? let the overlay close first
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
           if (tabRef.current === "downloads") setSelectedIds(new Set());
           else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
@@ -3223,8 +3423,8 @@ export function App(): ReactElement {
           <div className="schedule-ctrl">
             {(snapshot.settings.scheduledStartEpochMs || 0) > 0 ? (
               <div className="schedule-active">
-                <span className="schedule-badge" title="Geplanter Start">⏰ {scheduleCountdown || new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <button className="schedule-cancel" title="Geplanten Start abbrechen" onClick={() => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); }}>✕</button>
+                <span className="schedule-badge" title="Geplanter Start">â° {scheduleCountdown || new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                <button className="schedule-cancel" title="Geplanten Start abbrechen" onClick={() => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); }}>?</button>
               </div>
             ) : (
               <button
@@ -3689,6 +3889,7 @@ export function App(): ReactElement {
                     </div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Auto-Resume beim Start</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collapseNewPackages} onChange={(e) => setBool("collapseNewPackages", e.target.checked)} /> Neue Pakete eingeklappt</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSortPackagesByProgress} onChange={(e) => setBool("autoSortPackagesByProgress", e.target.checked)} /> Automatisches Sortieren laufender Pakete nach Fortschritt</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
@@ -3709,22 +3910,22 @@ export function App(): ReactElement {
                       <div className="account-board-header">
                         <div>
                           <h3>Accounts</h3>
-                          <div className="hint">Accounts werden als Liste verwaltet. Neue Eintraege kommen ueber den Dialog oben rechts dazu.</div>
+                          <div className="hint">Accounts werden als Liste verwaltet. Neue Einträge kommen über den Dialog oben rechts dazu.</div>
                         </div>
                         <button className="btn accent" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
-                          Account hinzufuegen
+                          Account hinzufügen
                         </button>
                       </div>
 
                       <div className="account-board-summary">
                         <span className="account-inline-stat">{configuredAccounts.length} aktiv</span>
-                        <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfuegbar</span>
+                        <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfügbar</span>
                       </div>
 
                       {configuredAccounts.length === 0 && (
                         <div className="account-empty-state">
                           <strong>Noch keine Accounts hinterlegt</strong>
-                          <span>Fuege ueber "Account hinzufuegen" den ersten Dienst hinzu. Danach erscheinen hier Status, Zugang und Aktionen als Liste.</span>
+                          <span>Füge über "Account hinzufügen" den ersten Dienst hinzu. Danach erscheinen hier Status, Zugang und Aktionen als Liste.</span>
                         </div>
                       )}
 
@@ -3795,6 +3996,46 @@ export function App(): ReactElement {
                                 <div className="account-cell account-status-cell">
                                   <span className={`account-status-pill${allDebridStateClass}`}>{entry.statusLabel}</span>
                                   {entry.note && <span className="account-note">{entry.note}</span>}
+                                  <div className={`account-usage-stats${entry.dailyLimitReached ? " warning" : ""}`}>
+                                    <span>Heute: {humanSize(entry.dailyUsedBytes)}</span>
+                                    <span>{entry.dailyLimitBytes > 0 ? `Limit: ${humanSize(entry.dailyLimitBytes)}` : "Kein Tageslimit"}</span>
+                                    {entry.dailyLimitBytes > 0 && (
+                                      <span>{entry.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(entry.dailyRemainingBytes || 0)}`}</span>
+                                    )}
+                                    {entry.dailyLimitBytes <= 0 && entry.dailyLimitReached && entry.debridLinkKeys.length > 0 && (
+                                      <span>Fallback aktiv</span>
+                                    )}
+                                  </div>
+                                  {entry.debridLinkKeys.length > 0 && (
+                                    <div className="account-subkey-list">
+                                      {entry.debridLinkKeys.map((key) => (
+                                        <div key={key.id} className={`account-subkey-row${key.dailyLimitReached ? " warning" : ""}`}>
+                                          <div className="account-subkey-main">
+                                            <div className="account-subkey-head">
+                                              <strong>{key.label}</strong>
+                                              <span>{key.masked}</span>
+                                            </div>
+                                            <div className="account-subkey-stats">
+                                              <span>Heute: {humanSize(key.dailyUsedBytes)}</span>
+                                              <span>{key.dailyLimitBytes > 0 ? `Limit: ${humanSize(key.dailyLimitBytes)}` : "Kein Limit"}</span>
+                                              {key.dailyLimitBytes > 0 && (
+                                                <span>{key.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(key.dailyRemainingBytes || 0)}`}</span>
+                                              )}
+                                            </div>
+                                          </div>
+                                          <div className="account-subkey-actions">
+                                            <button
+                                              className="btn"
+                                              disabled={actionBusy || key.dailyUsedBytes <= 0}
+                                              onClick={() => { void onResetDebridLinkApiKeyDailyUsage(entry, key.id, key.label); }}
+                                            >
+                                              Reset
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="account-cell">
                                   <span className="account-secret">{entry.summary}</span>
@@ -3812,6 +4053,9 @@ export function App(): ReactElement {
                                   )}
                                   <button className="btn" disabled={actionBusy} onClick={() => { void onToggleAccountEnabled(entry); }}>
                                     {entry.disabled ? "Aktivieren" : "Deaktivieren"}
+                                  </button>
+                                  <button className="btn" disabled={actionBusy || entry.dailyUsedBytes <= 0} onClick={() => { void onResetAccountDailyUsage(entry); }}>
+                                    Reset Heute
                                   </button>
                                   <button className="btn" disabled={actionBusy} onClick={() => openEditAccountDialog(entry.kind)}>
                                     Bearbeiten
@@ -3855,7 +4099,7 @@ export function App(): ReactElement {
                                     setProviderOrder(next);
                                   }}
                                   title="Nach oben"
-                                >▲</button>
+                                >?</button>
                                 <button
                                   className="btn btn-sm"
                                   disabled={idx === activeProviderOrder.length - 1}
@@ -3865,7 +4109,7 @@ export function App(): ReactElement {
                                     setProviderOrder(next);
                                   }}
                                   title="Nach unten"
-                                >▼</button>
+                                >?</button>
                               </div>
                             </div>
                           ))}
@@ -3955,7 +4199,7 @@ export function App(): ReactElement {
                                 {availableHosters.map((h) => (
                                   <option key={h.id} value={h.id}>{h.label}</option>
                                 ))}
-                                <option value="" disabled>───────────</option>
+                                <option value="" disabled>â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€</option>
                                 <option value="__custom">Eigener Hoster...</option>
                               </select>
                             </div>
@@ -4073,7 +4317,7 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (Beta)</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped ?? true} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Session (bei Stopp / Programmstart)</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Session (bei Stopp / Programmstart)</label>
                     <div><label>Parallele Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /></div>
                     <div><label>Extraktions-Priorität</label><select value={settingsDraft.extractCpuPriority} onChange={(e) => setText("extractCpuPriority", e.target.value)}>
                       <option value="high">Hoch (80% CPU)</option>
@@ -4210,7 +4454,7 @@ export function App(): ReactElement {
             <div className="modal-card" onClick={(e) => e.stopPropagation()}>
               <h3>Bist Du Dir sicher?</h3>
               <p>Möchtest Du wirklich diese Aufräumaktion(en) durchführen?<br />Ausgewählte Links löschen</p>
-              <p><strong>Zu erledigende Aufgaben:</strong><br />{parts.join(" + ")} löschen – {totalRemaining} Link(s) verbleiben!</p>
+              <p><strong>Zu erledigende Aufgaben:</strong><br />{parts.join(" + ")} löschen ? {totalRemaining} Link(s) verbleiben!</p>
               <label className="toggle-line">
                 <input type="checkbox" checked={deleteConfirm.dontAsk} onChange={(e) => setDeleteConfirm((prev) => prev ? { ...prev, dontAsk: e.target.checked } : prev)} />
                 Nicht mehr anzeigen
@@ -4238,7 +4482,7 @@ export function App(): ReactElement {
             <p>
               <strong>{startConflictPrompt.entry.packageName}</strong> ist im Ziel bereits vorhanden.
             </p>
-            <p>Bei "Überspringen" wird nur das erneute Entpacken übersprungen - offene Downloads bleiben in der Queue.</p>
+            <p>Bei "überspringen" wird nur das erneute Entpacken übersprungen - offene Downloads bleiben in der Queue.</p>
             <p className="modal-path" title={startConflictPrompt.entry.extractDir}>{startConflictPrompt.entry.extractDir}</p>
             <label className="toggle-line">
               <input
@@ -4263,7 +4507,7 @@ export function App(): ReactElement {
                 className="btn danger"
                 onClick={() => closeStartConflictPrompt({ policy: "overwrite", applyToAll: startConflictPrompt.applyToAll })}
               >
-                Überschreiben
+                überschreiben
               </button>
             </div>
           </div>
@@ -4275,7 +4519,7 @@ export function App(): ReactElement {
           <div className="modal-card account-modal" onClick={(event) => event.stopPropagation()}>
             <div className="account-modal-header">
               <div>
-                <h3>{accountDialog.mode === "edit" ? "Account bearbeiten" : "Account hinzufuegen"}</h3>
+                <h3>{accountDialog.mode === "edit" ? "Account bearbeiten" : "Account hinzufügen"}</h3>
                 <p>Wie in JDownloader: oben Account-Typ auswaehlen, unten Zugangsdaten direkt eintragen.</p>
               </div>
             </div>
@@ -4299,7 +4543,7 @@ export function App(): ReactElement {
                       <strong>Kein passender Account-Typ gefunden</strong>
                       <span>
                         {accountDialogSelectableOptions.length === 0
-                          ? "Alle verfuegbaren Typen sind bereits vorhanden."
+                          ? "Alle verfügbaren Typen sind bereits vorhanden."
                           : "Passe den Suchbegriff an oder waehle einen Eintrag aus der Liste."}
                       </span>
                     </div>
@@ -4347,7 +4591,17 @@ export function App(): ReactElement {
                         <div>
                           <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" || accountDialogOption.service === "debridlink" ? "API-Key(s)" : "Token"}</label>
                           {accountDialogOption.service === "debridlink" ? (
-                            <textarea rows={4} placeholder="Ein API-Key pro Zeile" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} style={{ fontFamily: "monospace", resize: "vertical" }} />
+                            <textarea
+                              rows={4}
+                              placeholder="Ein API-Key pro Zeile"
+                              value={accountDialog.token}
+                              onChange={(event) => setAccountDialog((prev) => prev ? {
+                                ...prev,
+                                token: event.target.value,
+                                keyDailyLimitGbById: buildDebridLinkKeyLimitInputs(event.target.value, prev.keyDailyLimitGbById, settingsDraft)
+                              } : prev)}
+                              style={{ fontFamily: "monospace", resize: "vertical" }}
+                            />
                           ) : (
                             <input type="password" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
                           )}
@@ -4367,14 +4621,54 @@ export function App(): ReactElement {
                         </div>
                       )}
 
+                      <div>
+                        <label>Tageslimit (GB, optional)</label>
+                        <input
+                          inputMode="decimal"
+                          placeholder="z.B. 250"
+                          value={accountDialog.dailyLimitGb}
+                          onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, dailyLimitGb: event.target.value } : prev)}
+                        />
+                        <div className="account-modal-note">Ab 00:00 wird der Zähler automatisch zurückgesetzt. Wenn das Limit erreicht ist, nutzt die App den nächsten Hoster aus der Reihenfolge.</div>
+                      </div>
+
+                      {accountDialog.kind === "debridlink-api" && parseDebridLinkApiKeys(accountDialog.token).length > 0 && (
+                        <div>
+                          <label>API-Key Limits (GB, optional pro Key)</label>
+                          <div className="account-dl-key-limit-list">
+                            {parseDebridLinkApiKeys(accountDialog.token).map((key) => (
+                              <div key={key.id} className="account-dl-key-limit-row">
+                                <div className="account-dl-key-meta">
+                                  <strong>{key.label}</strong>
+                                  <span>{key.masked}</span>
+                                </div>
+                                <input
+                                  inputMode="decimal"
+                                  placeholder="Kein Limit"
+                                  value={accountDialog.keyDailyLimitGbById[key.id] || ""}
+                                  onChange={(event) => setAccountDialog((prev) => prev ? {
+                                    ...prev,
+                                    keyDailyLimitGbById: {
+                                      ...prev.keyDailyLimitGbById,
+                                      [key.id]: event.target.value
+                                    }
+                                  } : prev)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <div className="account-modal-note">Leer lassen = unbegrenzt. Die Limits gelten pro API-Key und werden täglich um 00:00 zurückgesetzt.</div>
+                        </div>
+                      )}
+
                       {accountDialog.kind === "realdebrid-web" && (
                         <div className="account-modal-note">Nach dem Speichern kannst Du direkt das Browserfenster für den Web-Login öffnen.</div>
                       )}
                       {accountDialog.kind === "bestdebrid-web" && (
-                        <div className="account-modal-note">Der Web-Account arbeitet ueber einen Cookies.txt-Import aus dem Browser.</div>
+                        <div className="account-modal-note">Der Web-Account arbeitet über einen Cookies.txt-Import aus dem Browser.</div>
                       )}
                       {accountDialog.kind === "alldebrid-web" && (
-                        <div className="account-modal-note">Der Web-Login nutzt ein echtes Browserfenster, damit reCAPTCHA sauber laeuft.</div>
+                        <div className="account-modal-note">Der Web-Login nutzt ein echtes Browserfenster, damit reCAPTCHA sauber läuft.</div>
                       )}
                       {accountDialog.kind === "megadebrid-api" && (
                         <div className="account-modal-note">Dieser Account nutzt nur die Mega-Debrid API. Kein Web-Fallback.</div>
@@ -4463,7 +4757,7 @@ export function App(): ReactElement {
           }}>Leeren</button>
         )}
         {snapshot.clipboardActive && (
-          <button className="btn footer-btn btn-active" title="Zwischenablage-Überwachung ist aktiv — kopierte Links werden automatisch erkannt und zur Queue hinzugefügt. Zum Deaktivieren: Einstellungen → Zwischenablage überwachen" disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
+          <button className="btn footer-btn btn-active" title="Zwischenablage-Überwachung ist aktiv ? kopierte Links werden automatisch erkannt und zur Queue hinzugefügt. Zum Deaktivieren: Einstellungen ? Zwischenablage überwachen" disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
             Clipboard: An
           </button>
         )}
@@ -4489,16 +4783,18 @@ export function App(): ReactElement {
       {dragOver && <div className="drop-overlay">Links oder .dlc Dateien hier ablegen</div>}
       {contextMenu && (() => {
         const multi = selectedIds.size > 1;
-        const hasPackages = [...selectedIds].some((id) => snapshot.session.packages[id]);
+        const selectedPackageIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
+        const selectedItemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
+        const hasPackages = selectedPackageIds.length > 0;
         const startableStatuses = new Set(["queued", "cancelled", "reconnect_wait"]);
         const hasStartableItems = [...selectedIds].some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
-        const hasItems = [...selectedIds].some((id) => snapshot.session.items[id]);
+        const hasItems = selectedItemIds.length > 0;
         return (
         <div ref={ctxMenuRef} className="ctx-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
           {(hasPackages || hasStartableItems) && (
             <button className="ctx-menu-item" onClick={() => {
-              const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
-              const itemIds = [...selectedIds].filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
+              const pkgIds = selectedPackageIds;
+              const itemIds = selectedItemIds.filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
               if (pkgIds.length > 0) void window.rd.startPackages(pkgIds).catch(() => {});
               if (itemIds.length > 0) void window.rd.startItems(itemIds).catch(() => {});
               setContextMenu(null);
@@ -4524,29 +4820,26 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>Entfernen</button>
           )}
-          {multi && hasItems && (
+          {selectedItemIds.length > 1 && !hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
               setContextMenu(null);
-              const ids = new Set([...selectedIds].filter((id) => snapshot.session.items[id]));
+              const ids = new Set(selectedItemIds);
               if (settingsDraft.confirmDeleteSelection) { setDeleteConfirm({ ids, dontAsk: false }); }
               else { executeDeleteSelection(ids); }
-            }}>Ausgewählte entfernen ({[...selectedIds].filter((id) => snapshot.session.items[id]).length})</button>
+            }}>Ausgewählte Dateien entfernen ({selectedItemIds.length})</button>
           )}
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
-              const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
-              for (const id of pkgIds) void window.rd.resetPackage(id).catch(() => {});
+              for (const id of selectedPackageIds) void window.rd.resetPackage(id).catch(() => {});
               setContextMenu(null);
-            }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : ""}</button>
+            }}>Zurücksetzen{multi ? ` (${selectedPackageIds.length})` : ""}</button>
           )}
           {contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
-              const itemIds = multi
-                ? [...selectedIds].filter((id) => snapshot.session.items[id])
-                : [contextMenu.itemId!];
+              const itemIds = multi ? selectedItemIds : [contextMenu.itemId!];
               void window.rd.resetItems(itemIds).catch(() => {});
               setContextMenu(null);
-            }}>Zurücksetzen{multi ? ` (${[...selectedIds].filter((id) => snapshot.session.items[id]).length})` : ""}</button>
+            }}>Zurücksetzen{multi ? ` (${selectedItemIds.length})` : ""}</button>
           )}
           {hasPackages && !multi && (() => {
             const pkg = snapshot.session.packages[contextMenu.packageId];
@@ -4561,30 +4854,30 @@ export function App(): ReactElement {
           {hasPackages && !contextMenu.itemId && (<>
             <div className="ctx-menu-sep" />
             <div className="ctx-menu-sub">
-              <button className="ctx-menu-item">Priorität ▸</button>
+              <button className="ctx-menu-item">Priorität ?</button>
               <div className="ctx-menu-sub-items">
                 {(["high", "normal", "low"] as const).map((p) => {
                   const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
-                  const pkgIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
+                  const pkgIds = selectedPackageIds;
                   const allMatch = pkgIds.every((id) => (snapshot.session.packages[id]?.priority || "normal") === p);
-                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `✓ ${label}` : label}</button>;
+                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `? ${label}` : label}</button>;
                 })}
               </div>
             </div>
           </>)}
           {hasItems && (() => {
-            const itemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
+            const itemIds = selectedItemIds;
             const skippable = itemIds.filter((id) => { const it = snapshot.session.items[id]; return it && (it.status === "queued" || it.status === "reconnect_wait"); });
             if (skippable.length === 0) return null;
-            return <button className="ctx-menu-item" onClick={() => { void window.rd.skipItems(skippable).catch(() => {}); setContextMenu(null); }}>Überspringen{skippable.length > 1 ? ` (${skippable.length})` : ""}</button>;
+            return <button className="ctx-menu-item" onClick={() => { void window.rd.skipItems(skippable).catch(() => {}); setContextMenu(null); }}>überspringen{skippable.length > 1 ? ` (${skippable.length})` : ""}</button>;
           })()}
           {hasPackages && (
             <button className="ctx-menu-item ctx-danger" onClick={() => {
               setContextMenu(null);
-              const ids = new Set([...selectedIds].filter((id) => snapshot.session.packages[id]));
+              const ids = new Set(selectedPackageIds);
               if (settingsDraft.confirmDeleteSelection) { setDeleteConfirm({ ids, dontAsk: false }); }
               else { executeDeleteSelection(ids); }
-            }}>{multi ? `Ausgewählte löschen (${[...selectedIds].filter((id) => snapshot.session.packages[id]).length})` : "Löschen"}</button>
+            }}>{multi ? `Ausgewählte entfernen (${selectedPackageIds.length})` : "Paket entfernen"}</button>
           )}
         </div>
         );
@@ -4778,7 +5071,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
 
   return (
     <article
-      className={`package-card${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
+      className={`package-card queue-package-card${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
       draggable
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, undefined, e.clientX, e.clientY); }}
       onClick={(e) => { if (e.ctrlKey) onSelect(pkg.id, true); }}
@@ -4845,7 +5138,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
               );
               case "status": return (
-                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` · ${failed} Fehler` : ""}{cancelled > 0 ? ` · ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}</span>
+                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` ? ${failed} Fehler` : ""}{cancelled > 0 ? ` ? ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}</span>
               );
               case "speed": return (
                 <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>
@@ -4902,7 +5195,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
               case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
               case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
               case "status": return (
-                <span key={col} className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} · R${item.retries}` : item.fullStatus}>
+                <span key={col} className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} ? R${item.retries}` : item.fullStatus}>
                   {item.fullStatus}
                 </span>
               );
@@ -4975,3 +5268,5 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
   }
   return true;
 });
+
+
