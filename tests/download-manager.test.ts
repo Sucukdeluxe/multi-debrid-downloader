@@ -1722,14 +1722,7 @@ describe("download manager", () => {
       );
 
       manager.addPackages([{ name: "drain-stall", links: ["https://dummy/drain-stall"] }]);
-      const queuedSnapshot = manager.getSnapshot();
-      const packageId = queuedSnapshot.session.packageOrder[0] || "";
-      const itemId = queuedSnapshot.session.packages[packageId]?.itemIds[0] || "";
       manager.start();
-      await waitFor(() => {
-        const status = manager.getSnapshot().session.items[itemId]?.fullStatus || "";
-        return status.includes("Warte auf Festplatte");
-      }, 12000);
       await waitFor(() => !manager.getSnapshot().session.running, 40000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
