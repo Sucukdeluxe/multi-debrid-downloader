@@ -1215,6 +1215,7 @@ export class DownloadManager extends EventEmitter {
   private allDebridHostInfoCache = new Map<string, { info: AllDebridHostInfo; cachedAt: number }>();
 
   private providerStartReservations = new Map<string, number>();
+  private pacedStartReservationByItem = new Map<string, number>();
 
   private lastStaleResetAt = 0;
 
@@ -1715,6 +1716,7 @@ export class DownloadManager extends EventEmitter {
     this.historyRecordedPackages.clear();
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
@@ -3397,6 +3399,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -3505,6 +3508,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -3617,6 +3621,7 @@ export class DownloadManager extends EventEmitter {
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
       this.providerStartReservations.clear();
+      this.pacedStartReservationByItem.clear();
       this.retryStateByItem.clear();
       this.reservedTargetPaths.clear();
       this.claimedTargetPathByItem.clear();
@@ -3645,6 +3650,8 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
+    this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -3692,6 +3699,7 @@ export class DownloadManager extends EventEmitter {
     this.session.reconnectReason = "";
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
@@ -3804,6 +3812,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
     // Persist synchronously on shutdown to guarantee data is written before process exits
@@ -3842,6 +3851,7 @@ export class DownloadManager extends EventEmitter {
     if (wasPaused && !this.session.paused) {
       this.retryAfterByItem.clear();
       this.providerStartReservations.clear();
+      this.pacedStartReservationByItem.clear();
       // Reset provider circuit breaker so items don't sit in cooldown after unpause
       this.providerFailures.clear();
 
@@ -5537,17 +5547,36 @@ export class DownloadManager extends EventEmitter {
       return false;
     }
 
+    const existingReadyAt = this.retryAfterByItem.get(item.id) || 0;
+    const existingPacedAt = this.pacedStartReservationByItem.get(item.id) || 0;
+    if (existingPacedAt > 0 && existingPacedAt <= now) {
+      this.pacedStartReservationByItem.delete(item.id);
+      return false;
+    }
+    if (existingPacedAt > now) {
+      const scheduledAt = Math.max(existingReadyAt, existingPacedAt);
+      this.retryAfterByItem.set(item.id, scheduledAt);
+      item.status = "queued";
+      item.speedBps = 0;
+      item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
+      item.updatedAt = now;
+      return true;
+    }
+
     const nextAllowedAt = this.providerStartReservations.get(paceKey) || 0;
     if (nextAllowedAt <= now) {
+      this.pacedStartReservationByItem.delete(item.id);
       return false;
     }
 
-    const existingReadyAt = this.retryAfterByItem.get(item.id) || 0;
     const scheduledAt = Math.max(existingReadyAt, nextAllowedAt);
     if (scheduledAt <= now) {
+      this.pacedStartReservationByItem.delete(item.id);
       return false;
     }
     this.retryAfterByItem.set(item.id, scheduledAt);
+    this.pacedStartReservationByItem.set(item.id, scheduledAt);
+    this.providerStartReservations.set(paceKey, scheduledAt + ALLDEBRID_START_STAGGER_MS);
     item.status = "queued";
     item.speedBps = 0;
     item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
@@ -5558,6 +5587,12 @@ export class DownloadManager extends EventEmitter {
   private notePacedStartForItem(item: DownloadItem, now: number): void {
     const paceKey = this.getPacedStartKeyForItem(item);
     if (!paceKey) {
+      return;
+    }
+
+    const reservedAt = this.pacedStartReservationByItem.get(item.id) || 0;
+    if (reservedAt > 0) {
+      this.pacedStartReservationByItem.delete(item.id);
       return;
     }
 
@@ -9438,6 +9473,7 @@ export class DownloadManager extends EventEmitter {
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
       this.retryAfterByItem.delete(itemId);
+      this.pacedStartReservationByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(packageId, []);
@@ -9502,6 +9538,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
+    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();

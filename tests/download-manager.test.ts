@@ -4709,6 +4709,7 @@ describe("download manager", () => {
         {
           ...defaultSettings(),
           allDebridToken: "ad-token",
+          providerOrder: [],
           providerPrimary: "alldebrid",
           providerSecondary: "none",
           providerTertiary: "none",
@@ -4854,7 +4855,7 @@ describe("download manager", () => {
         res.setHeader("Accept-Ranges", "bytes");
         res.setHeader("Content-Length", String(binary.length));
         res.end(binary);
-      }, 1800);
+      }, 6500);
     });
 
     server.listen(0, "127.0.0.1");
@@ -4903,6 +4904,7 @@ describe("download manager", () => {
         {
           ...defaultSettings(),
           allDebridToken: "ad-token",
+          providerOrder: [],
           providerPrimary: "alldebrid",
           providerSecondary: "none",
           providerTertiary: "none",
@@ -4930,9 +4932,8 @@ describe("download manager", () => {
       const secondDelay = readyTimes[1] - now;
       expect(firstDelay).toBeGreaterThan(1500);
       expect(firstDelay).toBeLessThan(6500);
-      expect(secondDelay).toBeGreaterThan(1500);
-      expect(secondDelay).toBeLessThan(6500);
-      expect(Math.abs(secondDelay - firstDelay)).toBeLessThan(3500);
+      expect(secondDelay).toBeGreaterThan(firstDelay + 1200);
+      expect(secondDelay).toBeLessThan(firstDelay + 4500);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
