@@ -51,6 +51,7 @@ export interface ElectronApi {
   importBackup: () => Promise<{ restored: boolean; message: string }>;
   openLog: () => Promise<void>;
   openSessionLog: () => Promise<void>;
+  openPackageLog: (packageId: string) => Promise<void>;
   openRealDebridLogin: () => Promise<void>;
   openAllDebridLogin: () => Promise<void>;
   importBestDebridCookies: () => Promise<number>;

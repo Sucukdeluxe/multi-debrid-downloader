@@ -5098,6 +5098,14 @@ export function App(): ReactElement {
           <button className="ctx-menu-item" onClick={() => { void window.rd.start().catch(() => {}); setContextMenu(null); }}>Alle Downloads starten</button>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
+          {hasPackages && !contextMenu.itemId && (
+            <button className="ctx-menu-item" onClick={() => {
+              for (const id of selectedPackageIds) {
+                void window.rd.openPackageLog(id).catch(() => {});
+              }
+              setContextMenu(null);
+            }}>Log öffnen{multi ? ` (${selectedPackageIds.length})` : ""}</button>
+          )}
           <div className="ctx-menu-sep" />
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
