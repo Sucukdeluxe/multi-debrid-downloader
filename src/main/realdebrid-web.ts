@@ -79,6 +79,31 @@ function looksLikeHtmlResponse(text: string): boolean {
   return trimmed.startsWith("<!") || trimmed.startsWith("<html") || trimmed.startsWith("<HTML");
 }
 
+export function extractPrivateTokenFromHtml(html: string): string | null {
+  const normalized = String(html || "");
+  if (!normalized.trim()) {
+    return null;
+  }
+
+  const patterns = [
+    /private_token['"]\]\[0\]\.value\s*=\s*['"]([^'"]+)['"]/i,
+    /getElementsByName\(\s*['"]private_token['"]\s*\)\s*\[\s*0\s*\]\.value\s*=\s*['"]([^'"]+)['"]/i,
+    /querySelector(?:All)?\(\s*['"][^'"]*private_token[^'"]*['"]\s*\)(?:\s*\[\s*0\s*\])?\.value\s*=\s*['"]([^'"]+)['"]/i,
+    /name=['"]private_token['"][^>]*value=['"]([^'"]+)['"]/i,
+    /value=['"]([^'"]+)['"][^>]*name=['"]private_token['"]/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const token = match?.[1]?.trim();
+    if (token) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
 export class RealDebridWebFallback {
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -119,6 +144,7 @@ export class RealDebridWebFallback {
     }
     window.show();
     window.focus();
+    void this.primeTokenFromWindow(window);
   }
 
   public async clearSessions(): Promise<void> {
@@ -161,7 +187,7 @@ export class RealDebridWebFallback {
 
   private async runExclusive<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const queuedAt = Date.now();
-    const queueWaitTimeoutMs = 90_000;
+    const queueWaitTimeoutMs = 10 * 60 * 1000 + 30_000;
     const guardedJob = async (): Promise<T> => {
       throwIfAborted(signal);
       const waited = Date.now() - queuedAt;
@@ -201,6 +227,15 @@ export class RealDebridWebFallback {
     });
     window.setMenuBarVisibility(false);
     window.webContents.setUserAgent(RD_USER_AGENT);
+    const primeFromWindow = (): void => {
+      void this.primeTokenFromWindow(window);
+    };
+    window.webContents.on("did-finish-load", primeFromWindow);
+    window.webContents.on("did-navigate", primeFromWindow);
+    window.webContents.on("did-navigate-in-page", primeFromWindow);
+    window.on("close", () => {
+      void this.primeTokenFromWindow(window);
+    });
     window.on("closed", () => {
       if (this.loginWindow === window) {
         this.loginWindow = null;
@@ -213,12 +248,106 @@ export class RealDebridWebFallback {
     return window;
   }
 
+  private rememberToken(token: string): string {
+    this.cachedToken = token;
+    this.cachedTokenAt = Date.now();
+    return token;
+  }
+
+  private getActiveLoginWindow(): BrowserWindow | null {
+    const window = this.loginWindow;
+    if (!window || window.isDestroyed()) {
+      return null;
+    }
+    if (this.loginWindowPartition !== this.getPartition()) {
+      return null;
+    }
+    return window;
+  }
+
+  private async extractApiTokenFromWindow(window: BrowserWindow, signal?: AbortSignal): Promise<string | null> {
+    throwIfAborted(signal);
+
+    try {
+      const rawResult = await window.webContents.executeJavaScript(`
+        (async () => {
+          const readTokenFromHtml = (html) => {
+            const text = String(html || "");
+            const patterns = [
+              /private_token['"]\\]\\[0\\]\\.value\\s*=\\s*['"]([^'"]+)['"]/i,
+              /getElementsByName\\(\\s*['"]private_token['"]\\s*\\)\\s*\\[\\s*0\\s*\\]\\.value\\s*=\\s*['"]([^'"]+)['"]/i,
+              /querySelector(?:All)?\\(\\s*['"][^'"]*private_token[^'"]*['"]\\s*\\)(?:\\s*\\[\\s*0\\s*\\])?\\.value\\s*=\\s*['"]([^'"]+)['"]/i,
+              /name=['"]private_token['"][^>]*value=['"]([^'"]+)['"]/i,
+              /value=['"]([^'"]+)['"][^>]*name=['"]private_token['"]/i
+            ];
+            for (const pattern of patterns) {
+              const match = text.match(pattern);
+              if (match && match[1]) {
+                return String(match[1]).trim();
+              }
+            }
+            return "";
+          };
+
+          const directInput = document.querySelector('input[name="private_token"]');
+          if (directInput instanceof HTMLInputElement && directInput.value.trim()) {
+            return directInput.value.trim();
+          }
+
+          const html = document.documentElement ? document.documentElement.outerHTML : "";
+          const directToken = readTokenFromHtml(html);
+          if (directToken) {
+            return directToken;
+          }
+
+          try {
+            const response = await fetch(${JSON.stringify(RD_APITOKEN_URL)}, {
+              credentials: "include",
+              cache: "no-store",
+              headers: {
+                "X-Requested-With": "XMLHttpRequest"
+              }
+            });
+            const tokenHtml = await response.text();
+            return readTokenFromHtml(tokenHtml);
+          } catch {
+            return "";
+          }
+        })();
+      `, true);
+      const token = String(rawResult || "").trim();
+      if (token) {
+        return this.rememberToken(token);
+      }
+    } catch {
+      // ignore window scraping errors and fall back to session fetch
+    }
+
+    return null;
+  }
+
+  private async primeTokenFromWindow(window: BrowserWindow): Promise<void> {
+    try {
+      await this.extractApiTokenFromWindow(window);
+    } catch {
+      // ignore best-effort token warmup failures
+    }
+  }
+
   private async extractApiToken(signal?: AbortSignal): Promise<string | null> {
     throwIfAborted(signal);
 
     // Return cached token if fresh (max 30 min)
     if (this.cachedToken && Date.now() - this.cachedTokenAt < 30 * 60 * 1000) {
       return this.cachedToken;
+    }
+
+    const activeLoginWindow = this.getActiveLoginWindow();
+    if (activeLoginWindow) {
+      const windowToken = await this.extractApiTokenFromWindow(activeLoginWindow, signal);
+      if (windowToken) {
+        return windowToken;
+      }
     }
 
     const currentSession = session.fromPartition(this.getPartition());
@@ -236,21 +365,9 @@ export class RealDebridWebFallback {
       return null;
     }
 
-    // Real-Debrid sets the token via inline JS:
-    //   document.querySelectorAll('input[name=private_token]')[0].value = 'TOKEN_HERE';
-    const tokenMatch = html.match(/private_token['"]\]\[0\]\.value\s*=\s*'([^']+)'/);
-    if (tokenMatch && tokenMatch[1]) {
-      this.cachedToken = tokenMatch[1];
-      this.cachedTokenAt = Date.now();
-      return this.cachedToken;
-    }
-
-    // Fallback: look for the token in an input value attribute
-    const inputMatch = html.match(/name=['"]private_token['"][^>]*value=['"]([^'"]+)['"]/);
-    if (inputMatch && inputMatch[1]) {
-      this.cachedToken = inputMatch[1];
-      this.cachedTokenAt = Date.now();
-      return this.cachedToken;
+    const token = extractPrivateTokenFromHtml(html);
+    if (token) {
+      return this.rememberToken(token);
     }
 
     return null;
