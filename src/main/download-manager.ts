@@ -5561,13 +5561,14 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const activeCount = this.getProviderActiveTaskCount("alldebrid");
-    if (activeCount <= 0) {
+    if (this.getProviderActiveTaskCount("alldebrid") <= 0) {
       this.providerStartReservations.delete(paceKey);
       return;
     }
 
-    this.providerStartReservations.set(paceKey, now + activeCount * ALLDEBRID_START_STAGGER_MS);
+    const existingReservation = this.providerStartReservations.get(paceKey) || 0;
+    const baseReservation = Math.max(now, existingReservation);
+    this.providerStartReservations.set(paceKey, baseReservation + ALLDEBRID_START_STAGGER_MS);
   }
 
   private getConfiguredAllDebridStartLimit(): number {
