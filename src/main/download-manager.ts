@@ -5541,6 +5541,35 @@ export class DownloadManager extends EventEmitter {
     return provider;
   }
 
+  private countVisiblePacedStarts(paceKey: string, now: number, excludeItemId?: string): number {
+    let count = 0;
+    for (const [itemId, reservedAt] of this.pacedStartReservationByItem.entries()) {
+      if (excludeItemId && itemId === excludeItemId) {
+        continue;
+      }
+      if (reservedAt <= now) {
+        continue;
+      }
+      const item = this.session.items[itemId];
+      if (!item) {
+        continue;
+      }
+      if (this.getPacedStartKeyForItem(item) !== paceKey) {
+        continue;
+      }
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        continue;
+      }
+      count += 1;
+    }
+    return count;
+  }
+
+  private getVisiblePacedStartBudget(): number {
+    const maxParallel = Math.max(1, Number(this.settings.maxParallel) || 1);
+    return Math.max(0, maxParallel - this.activeTasks.size);
+  }
+
   private delayPacedStartForItem(item: DownloadItem, now: number): boolean {
     const paceKey = this.getPacedStartKeyForItem(item);
     if (!paceKey) {
@@ -5567,6 +5596,17 @@ export class DownloadManager extends EventEmitter {
     if (nextAllowedAt <= now) {
       this.pacedStartReservationByItem.delete(item.id);
       return false;
+    }
+
+    const visibleBudget = this.getVisiblePacedStartBudget();
+    const visibleReservations = this.countVisiblePacedStarts(paceKey, now, item.id);
+    if (visibleBudget <= 0 || visibleReservations >= visibleBudget) {
+      this.pacedStartReservationByItem.delete(item.id);
+      if ((item.fullStatus || "").startsWith("AllDebrid Start in ")) {
+        item.fullStatus = "Wartet";
+        item.updatedAt = now;
+      }
+      return true;
     }
 
     const scheduledAt = Math.max(existingReadyAt, nextAllowedAt);
