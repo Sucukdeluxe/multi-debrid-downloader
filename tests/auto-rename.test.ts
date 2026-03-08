@@ -735,4 +735,13 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBe("Burning.Promise.S01E03.GERMAN.DL.720p.WEB.H264-WvF");
   });
+
+  it("renames abbreviated 4SF source amilllt.de.dl.web.7p-s03e10 via season folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["A.Million.Little.Things.S03.GERMAN.DL.720p.WEB.H264-4SF"],
+      "4sf-amilllt.de.dl.web.7p-s03e10",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("A.Million.Little.Things.S03E10.GERMAN.DL.720p.WEB.H264-4SF");
+  });
 });

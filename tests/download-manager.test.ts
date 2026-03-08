@@ -685,6 +685,83 @@ describe("download manager", () => {
     expect(fs.statSync(item.targetPath).size).toBe(binary.length);
   });
 
+  it("retries HTTP 416 in-session when using Debrid-Link API and then completes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(160 * 1024, 57);
+    let unrestrictCalls = 0;
+    let downloadCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            success: true,
+            value: {
+              downloadUrl: `https://dummy/debridlink-direct-${unrestrictCalls}`,
+              name: "debridlink-416-retry.mkv",
+              size: binary.length
+            }
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        debridLinkApiKeys: "dl-test-key",
+        providerOrder: ["debridlink"],
+        providerPrimary: "debridlink",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 2,
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).downloadToFile = async (_active: unknown, _directUrl: string, targetPath: string) => {
+      downloadCalls += 1;
+      if (downloadCalls === 1) {
+        throw new Error("direct_link_retry_exhausted:HTTP 416");
+      }
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, binary);
+      const item = Object.values((manager as any).session.items)[0] as { downloadedBytes: number; totalBytes: number; progressPercent: number } | undefined;
+      if (item) {
+        item.downloadedBytes = binary.length;
+        item.totalBytes = binary.length;
+        item.progressPercent = 100;
+      }
+      return { resumable: true };
+    };
+
+    manager.addPackages([{ name: "debridlink-416-retry", links: ["https://dummy/debridlink-416-retry"] }]);
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item?.status).toBe("completed");
+    expect(item?.provider).toBe("debridlink");
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.downloadedBytes).toBe(binary.length);
+    expect(unrestrictCalls).toBe(2);
+    expect(downloadCalls).toBe(2);
+    expect(fs.existsSync(item.targetPath)).toBe(true);
+    expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+  });
+
   it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -1952,6 +2029,159 @@ describe("download manager", () => {
       expect(item?.status).toBe("completed");
       expect(item?.targetPath).toBe(existingTargetPath);
       expect(item?.downloadedBytes).toBe(binary.length);
+      expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("refreshes Debrid-Link API direct links immediately after HTTP 416 instead of retrying the same link", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(256 * 1024, 29);
+    const pkgDir = path.join(root, "downloads", "debridlink-range-reset");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const existingTargetPath = path.join(pkgDir, "debridlink-range-reset.mkv");
+    const partialSize = 96 * 1024;
+    fs.writeFileSync(existingTargetPath, binary.subarray(0, partialSize));
+
+    let unrestrictCalls = 0;
+    let badCalls = 0;
+    let goodCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+
+      if (route === "/bad-416") {
+        badCalls += 1;
+        res.statusCode = 416;
+        res.setHeader("Content-Range", `bytes */${partialSize - 1024}`);
+        res.end("");
+        return;
+      }
+
+      if (route === "/good") {
+        goodCalls += 1;
+        const chunk = binary.subarray(start);
+        if (start > 0) {
+          res.statusCode = 206;
+          res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+        } else {
+          res.statusCode = 200;
+        }
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(chunk.length));
+        res.end(chunk);
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end("not-found");
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const badUrl = `http://127.0.0.1:${address.port}/bad-416`;
+    const goodUrl = `http://127.0.0.1:${address.port}/good`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            success: true,
+            value: {
+              downloadUrl: unrestrictCalls === 1 ? badUrl : goodUrl,
+              name: "debridlink-range-reset.mkv",
+              size: binary.length
+            }
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "debridlink-range-reset-pkg";
+      const itemId = "debridlink-range-reset-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "debridlink-range-reset",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "debridlink-range-reset"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/debridlink-range-reset",
+        provider: "debridlink",
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: binary.length,
+        progressPercent: Math.floor((partialSize / binary.length) * 100),
+        fileName: "debridlink-range-reset.mkv",
+        targetPath: existingTargetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          debridLinkApiKeys: "dl-test-key",
+          providerOrder: ["debridlink"],
+          providerPrimary: "debridlink",
+          providerSecondary: "none",
+          providerTertiary: "none",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 2,
+          autoExtract: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.provider).toBe("debridlink");
+      expect(item?.downloadedBytes).toBe(binary.length);
+      expect(unrestrictCalls).toBe(2);
+      expect(badCalls).toBe(1);
+      expect(goodCalls).toBeGreaterThanOrEqual(1);
       expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
     } finally {
       server.close();

@@ -7009,6 +7009,14 @@ export class DownloadManager extends EventEmitter {
           item.fullStatus = `Range-Konflikt (HTTP 416), starte neu ${attempt}/${retryDisplayLimit}`;
           item.updatedAt = nowMs();
           this.emitState();
+          if (item.provider === "debridlink") {
+            logAttemptEvent("WARN", "Debrid-Link HTTP 416: Direktlink sofort verwerfen", {
+              attempt,
+              existingBytes,
+              expectedTotal: expectedTotal || null
+            });
+            throw new Error("direct_link_retry_exhausted:HTTP 416");
+          }
           if (attempt < maxAttempts) {
             item.retries += 1;
             await sleep(retryDelayWithJitter(attempt, 200));
