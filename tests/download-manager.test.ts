@@ -473,6 +473,151 @@ describe("download manager", () => {
     }
   });
 
+  it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(256 * 1024, 23);
+    const pkgDir = path.join(root, "downloads", "resume-underflow");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const existingTargetPath = path.join(pkgDir, "resume-underflow.mkv");
+    const partialSize = 96 * 1024;
+    fs.writeFileSync(existingTargetPath, binary.subarray(0, partialSize));
+
+    let unrestrictCalls = 0;
+    const starts: number[] = [];
+
+    const server = http.createServer((req, res) => {
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+      starts.push(start);
+
+      if (start > 0) {
+        const chunk = binary.subarray(start, Math.min(start + 8192, binary.length));
+        res.statusCode = 206;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes ${start}-${start + chunk.length - 1}/${binary.length}`);
+        res.setHeader("Content-Length", String(chunk.length));
+        res.end(chunk);
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/resume-underflow`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "resume-underflow.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "resume-underflow-pkg";
+      const itemId = "resume-underflow-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "resume-underflow",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "resume-underflow"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/resume-underflow",
+        provider: null,
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: binary.length,
+        progressPercent: Math.floor((partialSize / binary.length) * 100),
+        fileName: "resume-underflow.mkv",
+        targetPath: existingTargetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 4,
+          autoExtract: false,
+          autoReconnect: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      if (item?.status !== "completed") {
+        throw new Error(JSON.stringify({
+          status: item?.status,
+          downloadedBytes: item?.downloadedBytes,
+          totalBytes: item?.totalBytes,
+          retries: item?.retries,
+          lastError: item?.lastError,
+          fullStatus: item?.fullStatus,
+          starts,
+          unrestrictCalls
+        }));
+      }
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(binary.length);
+      expect(unrestrictCalls).toBeGreaterThanOrEqual(2);
+      expect(starts).toContain(partialSize);
+      expect(starts).toContain(0);
+      expect(fs.readFileSync(existingTargetPath).equals(binary)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("assigns unique target paths for same filenames in parallel", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

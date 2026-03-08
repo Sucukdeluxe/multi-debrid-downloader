@@ -64,6 +64,7 @@ type ActiveTask = {
   resumable: boolean;
   nonResumableCounted: boolean;
   freshRetryUsed?: boolean;
+  resumeHardResetUsed?: boolean;
   stallRetries?: number;
   genericErrorRetries?: number;
   unrestrictRetries?: number;
@@ -392,6 +393,11 @@ function shouldRejectSuspiciousSmallDownload(
 function isFetchFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
+}
+
+function isResumeHardResetReason(errorText: string): boolean {
+  const text = String(errorText || "");
+  return text.startsWith("resume_download_underflow:");
 }
 
 function isPermanentLinkError(errorText: string): boolean {
@@ -1170,6 +1176,7 @@ export class DownloadManager extends EventEmitter {
 
   private retryStateByItem = new Map<string, {
     freshRetryUsed: boolean;
+    resumeHardResetUsed: boolean;
     stallRetries: number;
     genericErrorRetries: number;
     unrestrictRetries: number;
@@ -5539,6 +5546,7 @@ export class DownloadManager extends EventEmitter {
         retryState.unrestrictRetries = 0;
         retryState.genericErrorRetries = 0;
         retryState.freshRetryUsed = false;
+        retryState.resumeHardResetUsed = false;
         logger.info(`Soft-Reset: Retry-Counter zurückgesetzt für ${item.fileName || itemId} (${Math.floor(staleMs / 60000)} min stale)`);
       }
     }
@@ -5897,6 +5905,7 @@ export class DownloadManager extends EventEmitter {
     active.abortReason = "none";
     this.retryStateByItem.set(item.id, {
       freshRetryUsed: Boolean(active.freshRetryUsed),
+      resumeHardResetUsed: Boolean(active.resumeHardResetUsed),
       stallRetries: Number(active.stallRetries || 0),
       genericErrorRetries: Number(active.genericErrorRetries || 0),
       unrestrictRetries: Number(active.unrestrictRetries || 0)
@@ -5907,7 +5916,8 @@ export class DownloadManager extends EventEmitter {
       stallRetries: Number(active.stallRetries || 0),
       unrestrictRetries: Number(active.unrestrictRetries || 0),
       genericRetries: Number(active.genericErrorRetries || 0),
-      freshRetryUsed: Boolean(active.freshRetryUsed)
+      freshRetryUsed: Boolean(active.freshRetryUsed),
+      resumeHardResetUsed: Boolean(active.resumeHardResetUsed)
     });
     // Caller returns immediately after this; startItem().finally releases the active slot,
     // so the retry backoff never blocks a worker.
@@ -5987,12 +5997,14 @@ export class DownloadManager extends EventEmitter {
 
     const retryState = this.retryStateByItem.get(item.id) || {
       freshRetryUsed: false,
+      resumeHardResetUsed: false,
       stallRetries: 0,
       genericErrorRetries: 0,
       unrestrictRetries: 0
     };
     this.retryStateByItem.set(item.id, retryState);
     active.freshRetryUsed = retryState.freshRetryUsed;
+    active.resumeHardResetUsed = retryState.resumeHardResetUsed;
     active.stallRetries = retryState.stallRetries;
     active.genericErrorRetries = retryState.genericErrorRetries;
     active.unrestrictRetries = retryState.unrestrictRetries;
@@ -6471,11 +6483,36 @@ export class DownloadManager extends EventEmitter {
             error: errorText,
             abortReason: reason || "none"
           });
-          const directLinkRetryMatch = errorText.match(/^direct_link_retry_exhausted:(.+)$/);
+          const directLinkRetryMatch = errorText.match(/^(?:Error:\s*)?direct_link_retry_exhausted:(.+)$/);
+          if (directLinkRetryMatch) {
+            const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
+            if (isResumeHardResetReason(exhaustedReason) && !active.resumeHardResetUsed) {
+              active.resumeHardResetUsed = true;
+              item.retries += 1;
+              logger.warn(`Resume-Neustart: item=${item.fileName || item.id}, error=${exhaustedReason}, provider=${item.provider || "?"}`);
+              if (claimedTargetPath) {
+                try {
+                  fs.rmSync(claimedTargetPath, { force: true });
+                } catch {
+                  // ignore
+                }
+              }
+              this.releaseTargetPath(item.id);
+              this.dropItemContribution(item.id);
+              item.lastError = exhaustedReason;
+              item.downloadedBytes = 0;
+              item.totalBytes = null;
+              item.progressPercent = 0;
+              this.queueRetry(item, active, 300, "Resume-Fehler erkannt, kompletter Neuversuch");
+              this.persistSoon();
+              this.emitState();
+              return;
+            }
+          }
           if (directLinkRetryMatch && active.genericErrorRetries < maxGenericErrorRetries) {
             active.genericErrorRetries += 1;
             item.retries += 1;
-            const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText);
+            const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
             const refreshDelayMs = retryDelayWithJitter(active.genericErrorRetries, 200);
             logger.warn(
               `Direktlink erschöpft: item=${item.fileName || item.id}, ` +
@@ -7486,13 +7523,14 @@ export class DownloadManager extends EventEmitter {
           throw error;
         }
         lastError = compactErrorText(error);
+        const normalizedLastError = lastError.replace(/^Error:\s*/i, "");
         logAttemptEvent("WARN", "HTTP-Download-Versuch fehlgeschlagen", {
           attempt,
           error: lastError,
           targetPath: effectiveTargetPath
         });
-        if (lastError.startsWith("range_ignored_on_resume:")) {
-          throw new Error(`direct_link_retry_exhausted:${lastError}`);
+        if (normalizedLastError.startsWith("range_ignored_on_resume:")) {
+          throw new Error(`direct_link_retry_exhausted:${normalizedLastError}`);
         }
         if (attempt < maxAttempts) {
           item.retries += 1;
@@ -7502,9 +7540,12 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         if (maxAttemptsBySetting > maxAttempts) {
-          throw new Error(`direct_link_retry_exhausted:${lastError || "Download fehlgeschlagen"}`);
+          const exhaustedError = existingBytes > 0 && normalizedLastError.startsWith("download_underflow:")
+            ? `resume_download_underflow:${normalizedLastError.slice("download_underflow:".length)}`
+            : (normalizedLastError || lastError || "Download fehlgeschlagen");
+          throw new Error(`direct_link_retry_exhausted:${exhaustedError}`);
         }
-        throw new Error(lastError || "Download fehlgeschlagen");
+        throw new Error(normalizedLastError || lastError || "Download fehlgeschlagen");
       }
     }
 
