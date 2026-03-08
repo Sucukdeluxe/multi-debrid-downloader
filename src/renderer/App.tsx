@@ -3805,7 +3805,7 @@ export function App(): ReactElement {
             <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 20l7-7h-4.5V4h-5v9H5z" fill="currentColor" /></svg>
           </button>
         </div>
-        {snapshot.reconnectSeconds > 0 && (
+        {snapshot.reconnectSeconds > 0 && tab !== "downloads" && (
           <div className="reconnect-badge" style={{ marginLeft: "auto" }}>Reconnect: {snapshot.reconnectSeconds}s</div>
         )}
       </section>

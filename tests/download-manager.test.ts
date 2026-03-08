@@ -5,7 +5,7 @@ import http from "node:http";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
-import { DownloadManager } from "../src/main/download-manager";
+import { DownloadManager, getAuthoritativeRealDebridTotal } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -473,6 +473,187 @@ describe("download manager", () => {
       server.close();
       await once(server, "close");
     }
+  });
+
+  it("treats tiny Real-Debrid resume size mismatches as completed instead of looping", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const actual = Buffer.alloc(192 * 1024, 17);
+    const advertisedSize = actual.length + 5000;
+    const pkgDir = path.join(root, "downloads", "rd-mismatch");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const existingTargetPath = path.join(pkgDir, "rd-mismatch.part01.rar");
+    fs.writeFileSync(existingTargetPath, actual);
+
+    let unrestrictCalls = 0;
+    let resumeCalls = 0;
+    const resumeStarts: number[] = [];
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/rd-mismatch") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      resumeCalls += 1;
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+      resumeStarts.push(start);
+
+      if (start >= actual.length) {
+        res.statusCode = 206;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes 0-${actual.length - 1}/${actual.length}`);
+        res.setHeader("Content-Length", "0");
+        res.end();
+        return;
+      }
+
+      const chunk = actual.subarray(start);
+      if (start > 0) {
+        res.statusCode = 206;
+        res.setHeader("Content-Range", `bytes ${start}-${actual.length - 1}/${actual.length}`);
+      } else {
+        res.statusCode = 200;
+      }
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      res.end(chunk);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/rd-mismatch`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "rd-mismatch.part01.rar",
+            filesize: advertisedSize
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "rd-mismatch-pkg";
+      const itemId = "rd-mismatch-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "rd-mismatch",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "rd-mismatch"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/rd-mismatch",
+        provider: "realdebrid",
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: actual.length,
+        totalBytes: advertisedSize,
+        progressPercent: Math.floor((actual.length / advertisedSize) * 100),
+        fileName: "rd-mismatch.part01.rar",
+        targetPath: existingTargetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 1,
+          autoExtract: false,
+          autoReconnect: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(actual.length);
+      expect(item?.totalBytes).toBe(actual.length);
+      expect(unrestrictCalls).toBe(1);
+      expect(resumeCalls).toBeGreaterThanOrEqual(1);
+      expect(resumeStarts).toContain(actual.length);
+      expect(fs.statSync(existingTargetPath).size).toBe(actual.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("accepts the smaller Real-Debrid full response after a resume hard reset", () => {
+    const actualSize = 224 * 1024;
+    const advertisedSize = actualSize + 5000;
+    const partialSize = actualSize - 48 * 1024;
+
+    expect(
+      getAuthoritativeRealDebridTotal(
+        "realdebrid",
+        advertisedSize,
+        partialSize,
+        200,
+        actualSize,
+        null,
+        true
+      )
+    ).toEqual({
+      totalBytes: actualSize,
+      source: "content-length",
+      mismatchBytes: 5000
+    });
+
+    expect(
+      getAuthoritativeRealDebridTotal(
+        "realdebrid",
+        advertisedSize,
+        partialSize,
+        200,
+        actualSize,
+        null,
+        false
+      )
+    ).toBeNull();
   });
 
   it("does not renew direct links when the file is already complete on disk", async () => {
