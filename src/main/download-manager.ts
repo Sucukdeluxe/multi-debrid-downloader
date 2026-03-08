@@ -7022,7 +7022,12 @@ export class DownloadManager extends EventEmitter {
               item.totalBytes = null;
               this.dropItemContribution(item.id);
             }
-            this.queueRetry(item, active, unrestrictDelayMs, `Unrestrict-Fehler, Retry ${active.unrestrictRetries}/${retryDisplayLimit} (${Math.ceil(unrestrictDelayMs / 1000)}s)`);
+            this.queueRetry(
+              item,
+              active,
+              unrestrictDelayMs,
+              `Link-Umwandlung erneut, Versuch ${active.unrestrictRetries}/${retryDisplayLimit} (${Math.ceil(unrestrictDelayMs / 1000)}s)`
+            );
             item.lastError = errorText;
             this.persistSoon();
             this.emitState();
