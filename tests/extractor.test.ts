@@ -68,6 +68,11 @@ describe("extractor", () => {
     expect(unrarRename[2]).toBe("-p-");
     expect(unrarRename[3]).toBe("-y");
     expect(unrarRename[unrarRename.length - 2]).toBe("archive.rar");
+
+    const rarCliArgs = buildExternalExtractArgs("Rar.exe", "archive.rar", "C:\\target", "overwrite", "serienjunkies.org");
+    expect(rarCliArgs.slice(0, 4)).toEqual(["x", "-o+", "-pserienjunkies.org", "-y"]);
+    expect(rarCliArgs[rarCliArgs.length - 2]).toBe("archive.rar");
+    expect(rarCliArgs[rarCliArgs.length - 1]).toBe("C:\\target\\");
   });
 
   it("deletes only successfully extracted archives", async () => {
@@ -1174,13 +1179,13 @@ describe("extractor", () => {
   });
 
   describe("orderExtractorCandidatesForArchive", () => {
-    it("prefers WinRAR/UnRAR over 7-Zip for rar archives", () => {
+    it("prefers RAR-native CLIs over 7-Zip for rar archives", () => {
       const ordered = orderExtractorCandidatesForArchive(
-        ["7z.exe", "UnRAR.exe", "WinRAR.exe"],
+        ["7z.exe", "Rar.exe", "UnRAR.exe", "WinRAR.exe"],
         "C:\\Downloads\\archive.part01.rar"
       );
-      expect(ordered.slice(0, 2)).toEqual(["UnRAR.exe", "WinRAR.exe"]);
-      expect(ordered[2]).toBe("7z.exe");
+      expect(ordered.slice(0, 3)).toEqual(["Rar.exe", "UnRAR.exe", "WinRAR.exe"]);
+      expect(ordered[3]).toBe("7z.exe");
     });
 
     it("keeps 7-Zip first for non-rar archives", () => {

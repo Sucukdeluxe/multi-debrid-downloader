@@ -694,11 +694,14 @@ function nativeExtractorCandidates(archivePath = ""): string[] {
   }
 
   const winRarInstalled = [
+    path.join(programFiles, "WinRAR", "Rar.exe"),
+    path.join(programFilesX86, "WinRAR", "Rar.exe"),
     path.join(programFiles, "WinRAR", "UnRAR.exe"),
     path.join(programFilesX86, "WinRAR", "UnRAR.exe")
   ];
 
   if (localAppData) {
+    winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "Rar.exe"));
     winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
   }
 
@@ -711,6 +714,8 @@ function nativeExtractorCandidates(archivePath = ""): string[] {
       "7za.exe",
       "7za",
       ...winRarInstalled,
+      "Rar.exe",
+      "rar",
       "UnRAR.exe",
       "unrar"
     ]
@@ -721,6 +726,8 @@ function nativeExtractorCandidates(archivePath = ""): string[] {
       "7za.exe",
       "7za",
       ...winRarInstalled,
+      "Rar.exe",
+      "rar",
       "UnRAR.exe",
       "unrar"
     ];
@@ -1763,8 +1770,7 @@ export function buildExternalExtractArgs(
   flatMode = false
 ): string[] {
   const mode = effectiveConflictMode(conflictMode);
-  const lower = command.toLowerCase();
-  if (lower.includes("unrar") || lower.includes("winrar")) {
+  if (isRarNativeCommand(command)) {
     // "e" extracts without paths (flat). Used as fallback when the archive stores paths with a
     // leading \ (absolute-style), which causes UnRAR to produce invalid \\ double-separators.
     const extractCmd = flatMode ? "e" : "x";
@@ -1804,8 +1810,7 @@ async function resolveExtractorCommandInternal(archivePath = ""): Promise<string
     if (isAbsoluteCommand(command) && !fs.existsSync(command)) {
       continue;
     }
-    const lower = command.toLowerCase();
-    const probeArgs = (lower.includes("winrar") || lower.includes("unrar")) ? ["-?"] : ["?"];
+    const probeArgs = extractorProbeArgs(command);
     const probe = await runExtractCommand(command, probeArgs, undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
     if (probe.ok || (!probe.missingCommand && !probe.timedOut)) {
       resolvedExtractorCommand = command;
@@ -1845,15 +1850,19 @@ function is7zCommand(command: string): boolean {
   return lower.includes("7z") && !lower.includes("unrar") && !lower.includes("winrar");
 }
 
-function isUnrarCommand(command: string): boolean {
-  const lower = command.toLowerCase();
-  return lower.includes("unrar") || lower.includes("winrar");
+function isRarNativeCommand(command: string): boolean {
+  const base = path.basename(String(command || "")).toLowerCase();
+  return base === "unrar.exe"
+    || base === "unrar"
+    || base === "winrar.exe"
+    || base === "rar.exe"
+    || base === "rar";
 }
 
 type ExtractorCommandKind = "rar_native" | "seven_zip" | "other";
 
 function extractorCommandKind(command: string): ExtractorCommandKind {
-  if (isUnrarCommand(command)) {
+  if (isRarNativeCommand(command)) {
     return "rar_native";
   }
   if (is7zCommand(command)) {
@@ -1913,20 +1922,27 @@ export function orderExtractorCandidatesForArchive(
     .map((entry) => entry.command);
 }
 
+function extractorProbeArgs(command: string): string[] {
+  return isRarNativeCommand(command) ? ["-?"] : ["?"];
+}
+
 async function findAlternativeExtractor(currentCommand: string, archivePath = ""): Promise<string | null> {
   const candidates = nativeExtractorCandidates(archivePath);
-  const currentIs7z = is7zCommand(currentCommand);
-  for (const candidate of candidates) {
-    if (candidate === currentCommand) continue;
-    // If current is 7z, look for UnRAR/WinRAR. If current is UnRAR, look for 7z.
-    if (currentIs7z && !isUnrarCommand(candidate)) continue;
-    if (!currentIs7z && !is7zCommand(candidate)) continue;
-    if (isAbsoluteCommand(candidate) && !fs.existsSync(candidate)) continue;
-    const lower = candidate.toLowerCase();
-    const probeArgs = (lower.includes("winrar") || lower.includes("unrar")) ? ["-?"] : ["?"];
-    const probe = await runExtractCommand(candidate, probeArgs, undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
-    if (probe.ok || (!probe.missingCommand && !probe.timedOut)) {
-      return candidate;
+  const currentKind = extractorCommandKind(currentCommand);
+  const preferredKinds: ExtractorCommandKind[] = currentKind === "seven_zip"
+    ? ["rar_native"]
+    : isRarArchivePath(archivePath)
+      ? ["rar_native", "seven_zip"]
+      : ["seven_zip", "rar_native"];
+  for (const kind of preferredKinds) {
+    for (const candidate of candidates) {
+      if (candidate === currentCommand) continue;
+      if (extractorCommandKind(candidate) !== kind) continue;
+      if (isAbsoluteCommand(candidate) && !fs.existsSync(candidate)) continue;
+      const probe = await runExtractCommand(candidate, extractorProbeArgs(candidate), undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
+      if (probe.ok || (!probe.missingCommand && !probe.timedOut)) {
+        return candidate;
+      }
     }
   }
   return null;
@@ -2194,6 +2210,7 @@ async function runExternalExtractInner(
   let bestPercent = 0;
   let passwordAttempt = 0;
   let usePerformanceFlags = externalExtractorSupportsPerfFlags && shouldUseExtractorPerformanceFlags();
+  const summarizeResultError = (errorText: string): string => cleanErrorText(errorText).slice(0, 280);
 
   // Skip normal extraction loop if flat mode is already known to be needed for this package
   if (forceFlatMode) {
@@ -2270,11 +2287,18 @@ async function runExternalExtractInner(
       }, signal, timeoutMs);
     }
 
-    logger.info(
-      `Legacy-Passwort-Versuch Ergebnis: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, ` +
-      `ms=${Date.now() - attemptStartedAt}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`
-    );
-    onLog?.("INFO", `Legacy-Passwort-Versuch Ergebnis: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, ms=${Date.now() - attemptStartedAt}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
+      logger.info(
+        `Legacy-Passwort-Versuch Ergebnis: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, ` +
+        `ms=${Date.now() - attemptStartedAt}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`
+      );
+      onLog?.("INFO", `Legacy-Passwort-Versuch Ergebnis: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, ms=${Date.now() - attemptStartedAt}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
+      if (!result.ok) {
+        const errorSummary = summarizeResultError(result.errorText);
+        if (errorSummary) {
+          logger.info(`Legacy-Passwort-Versuch Fehlertext: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, error=${errorSummary}`);
+          onLog?.("INFO", `Legacy-Passwort-Versuch Fehlertext: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, error=${errorSummary}`);
+        }
+      }
 
     if (result.ok) {
       onArchiveProgress?.(100);
