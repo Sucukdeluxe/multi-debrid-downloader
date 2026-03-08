@@ -459,6 +459,82 @@ describe("debrid service", () => {
     expect(addCalls).toBe(2);
   });
 
+  it("fails fast on provider-wide Debrid-Link notDebrid errors without rotating through all keys", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const authHeaders: string[] = [];
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      authHeaders.push(String((init?.headers as Record<string, string> | undefined)?.Authorization || ""));
+      return new Response(JSON.stringify({
+        success: false,
+        error: "notDebrid",
+        error_description: "notDebrid"
+      }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/not-debrid.bin")).rejects.toThrow("Link kann aktuell nicht generiert werden (notDebrid: notDebrid)");
+    expect(authHeaders).toEqual(["Bearer dl-key-one"]);
+  });
+
+  it("continues to the next Debrid-Link key for non-provider-wide skip errors without caching a cooldown", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const authHeaders: string[] = [];
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const authHeader = String((init?.headers as Record<string, string> | undefined)?.Authorization || "");
+      authHeaders.push(authHeader);
+      if (authHeader === "Bearer dl-key-one") {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "noServerHost",
+          error_description: "host temporarily unavailable"
+        }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          downloadUrl: "https://debrid-link.example/second-key.bin",
+          name: "second-key.bin",
+          size: 4096
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://hoster.example/skip-key.bin");
+    expect(result.directUrl).toBe("https://debrid-link.example/second-key.bin");
+    expect(result.sourceAccountLabel).toBe("Key 2");
+    expect(authHeaders).toEqual(["Bearer dl-key-one", "Bearer dl-key-two"]);
+  });
+
   it("uses BestDebrid auth header without token query fallback", async () => {
     const settings = {
       ...defaultSettings(),

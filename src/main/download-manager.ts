@@ -470,6 +470,9 @@ function isTemporaryUnrestrictError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("server error")
     || text.includes("internal server error")
+    || text.includes("notdebrid")
+    || text.includes("unable to generate link")
+    || text.includes("kann aktuell nicht generiert werden")
     || text.includes("temporarily unavailable")
     || text.includes("temporary unavailable")
     || text.includes("temporarily disabled")
