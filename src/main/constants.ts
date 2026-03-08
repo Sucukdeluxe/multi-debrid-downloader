@@ -21,7 +21,8 @@ export const WRITE_BUFFER_SIZE = 512 * 1024;       // 512 KB write buffer (JDown
 export const WRITE_FLUSH_TIMEOUT_MS = 2000;         // 2s flush timeout
 export const ALLOCATION_UNIT_SIZE = 4096;           // 4 KB NTFS alignment
 export const STREAM_HIGH_WATER_MARK = 512 * 1024;       // 512 KB stream buffer — lower than before (2 MB) so backpressure triggers sooner when disk is slow
-export const DISK_BUSY_THRESHOLD_MS = 300;               // Show "Warte auf Festplatte" if writableLength > 0 for this long
+export const DISK_BUSY_THRESHOLD_MS = 300;               // Internal detection threshold for disk backpressure
+export const DISK_BUSY_STATUS_THRESHOLD_MS = 500;        // Delay UI/log display for brief disk-write spikes
 
 export const SAMPLE_DIR_NAMES = new Set(["sample", "samples"]);
 export const SAMPLE_VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".m2ts", ".webm"]);

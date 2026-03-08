@@ -3959,6 +3959,7 @@ export function App(): ReactElement {
                 editingName={editingName}
                 collapsed={collapsedPackages[pkg.id] ?? false}
                 hideExtractedItems={snapshot.settings.hideExtractedItems}
+                sessionRunning={snapshot.session.running}
                 selectedIds={selectedIds}
                 columnOrder={columnOrder}
                 gridTemplate={gridTemplate}
@@ -5476,6 +5477,7 @@ interface PackageCardProps {
   editingName: string;
   collapsed: boolean;
   hideExtractedItems: boolean;
+  sessionRunning: boolean;
   selectedIds: Set<string>;
   columnOrder: string[];
   gridTemplate: string;
@@ -5497,7 +5499,7 @@ interface PackageCardProps {
   onDragEnd: () => void;
 }
 
-const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripeVariant, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripeVariant, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, sessionRunning, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
@@ -5531,6 +5533,23 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
     if (e.key === "Escape") { onFinishEdit(pkg.id, pkg.name, pkg.name); }
+  };
+
+  const getDisplayedItemStatus = (item: DownloadItem): string => {
+    const statusText = String(item.fullStatus || "").trim();
+    if (sessionRunning) {
+      return statusText;
+    }
+    if (item.status !== "queued" && item.status !== "reconnect_wait") {
+      return statusText;
+    }
+    if (statusText === "Paket gestoppt") {
+      return statusText;
+    }
+    if (/^Entpacken\b/i.test(statusText) || /^Entpackt\b/i.test(statusText) || /^Entpack-Fehler\b/i.test(statusText) || /^Fertig\b/i.test(statusText)) {
+      return statusText;
+    }
+    return "";
   };
 
   return (
@@ -5659,8 +5678,14 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
               case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
               case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
               case "status": return (
-                <span key={col} className="pkg-col pkg-col-status" title={item.retries > 0 ? `${item.fullStatus} ? R${item.retries}` : item.fullStatus}>
-                  {item.fullStatus}
+                <span key={col} className="pkg-col pkg-col-status" title={(() => {
+                  const displayStatus = getDisplayedItemStatus(item);
+                  if (!displayStatus) {
+                    return "";
+                  }
+                  return item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus;
+                })()}>
+                  {getDisplayedItemStatus(item)}
                 </span>
               );
               case "speed": return <span key={col} className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;

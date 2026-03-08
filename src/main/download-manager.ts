@@ -29,7 +29,7 @@ import {
   getProviderUsageDayKey,
   isProviderDailyLimitReached
 } from "../shared/provider-daily-limits";
-import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS } from "./constants";
+import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS, DISK_BUSY_STATUS_THRESHOLD_MS } from "./constants";
 
 // Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
 // when multiple parallel downloads need TLS verification disabled (e.g. DDownload).
@@ -7216,6 +7216,13 @@ export class DownloadManager extends EventEmitter {
         const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));
         let lastDiskBusyEmitAt = 0;
         let diskBusySince = 0;  // timestamp when writableLength first became > 0
+        const diskBusyStatusVisible = (nowTick: number): boolean => {
+          const blockedSince = active.blockedOnDiskSince || 0;
+          if (blockedSince > 0 && nowTick - blockedSince >= DISK_BUSY_STATUS_THRESHOLD_MS) {
+            return true;
+          }
+          return diskBusySince > 0 && nowTick - diskBusySince >= DISK_BUSY_STATUS_THRESHOLD_MS;
+        };
 
         const waitDrain = (): Promise<void> => new Promise((resolve, reject) => {
           if (active.abortController.signal.aborted) {
@@ -7227,7 +7234,7 @@ export class DownloadManager extends EventEmitter {
           active.blockedOnDiskSince = nowMs();
           if (item.status !== "paused" && !this.session.paused) {
             const nowTick = nowMs();
-              if (nowTick - lastDiskBusyEmitAt >= 1200) {
+              if (diskBusyStatusVisible(nowTick) && nowTick - lastDiskBusyEmitAt >= 1200) {
                 item.status = "downloading";
                 item.speedBps = 0;
                 item.fullStatus = `Warte auf Festplatte (${label})`;
@@ -7342,7 +7349,7 @@ export class DownloadManager extends EventEmitter {
               if (item.status === "paused" || this.session.paused) {
                 return;
               }
-              if (nowTick - lastIdleEmitAt >= idlePulseMs) {
+              if (diskBusyStatusVisible(nowTick) && nowTick - lastIdleEmitAt >= idlePulseMs) {
                 item.status = "downloading";
                 item.speedBps = 0;
                 item.fullStatus = `Warte auf Festplatte (${label})`;
@@ -7469,7 +7476,7 @@ export class DownloadManager extends EventEmitter {
               if (stream.writableLength > 0) {
                 if (diskBusySince === 0) diskBusySince = nowMs();
                 const busyMs = nowMs() - diskBusySince;
-                if (busyMs >= DISK_BUSY_THRESHOLD_MS && item.status !== "paused" && !this.session.paused) {
+                if (busyMs >= DISK_BUSY_STATUS_THRESHOLD_MS && item.status !== "paused" && !this.session.paused) {
                   const nowTick = nowMs();
                   if (nowTick - lastDiskBusyEmitAt >= 1200) {
                     item.status = "downloading";
@@ -7537,7 +7544,7 @@ export class DownloadManager extends EventEmitter {
               item.downloadedBytes = written;
               item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
               // Keep "Warte auf Festplatte" label if disk is busy; otherwise show normal status
-              const diskBusy = diskBusySince > 0 && nowMs() - diskBusySince >= DISK_BUSY_THRESHOLD_MS;
+              const diskBusy = diskBusyStatusVisible(nowMs());
               if (diskBusy) {
                 item.speedBps = 0;
                 item.fullStatus = `Warte auf Festplatte (${label})`;
