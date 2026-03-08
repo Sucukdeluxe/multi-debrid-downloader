@@ -4838,7 +4838,7 @@ describe("download manager", () => {
     }
   }, 20000);
 
-  it("shows AllDebrid countdowns only for the next visible start wave", async () => {
+  it("shows only the next AllDebrid item with a visible countdown", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const chunk = Buffer.alloc(256 * 1024, 9);
@@ -4926,7 +4926,8 @@ describe("download manager", () => {
       const countdownItems = items.filter((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""));
       const plainQueuedItems = items.filter((item) => (item.status === "queued" || item.status === "reconnect_wait") && item.fullStatus === "Wartet");
 
-      expect(countdownItems.length).toBeLessThanOrEqual(Math.max(0, 5 - activeCount));
+      expect(activeCount).toBeGreaterThan(0);
+      expect(countdownItems.length).toBeLessThanOrEqual(1);
       expect(plainQueuedItems.length).toBeGreaterThan(0);
 
       manager.stop();
@@ -5021,14 +5022,18 @@ describe("download manager", () => {
       manager.addPackages([{ name: "ad-paced", links: [link1, link2, link3] }]);
       await manager.start();
 
-      const managerInternals = manager as unknown as { retryAfterByItem: Map<string, number> };
-      await waitFor(() => managerInternals.retryAfterByItem.size >= 2, 5000);
+      const managerInternals = manager as unknown as {
+        retryAfterByItem: Map<string, number>;
+        providerStartReservations: Map<string, number>;
+      };
+      await waitFor(() => managerInternals.retryAfterByItem.size >= 1 && managerInternals.providerStartReservations.size >= 1, 5000);
 
       const now = Date.now();
       const readyTimes = [...managerInternals.retryAfterByItem.values()].sort((a, b) => a - b);
-      expect(readyTimes.length).toBeGreaterThanOrEqual(2);
+      expect(readyTimes.length).toBeGreaterThanOrEqual(1);
       const firstDelay = readyTimes[0] - now;
-      const secondDelay = readyTimes[1] - now;
+      const nextReservation = managerInternals.providerStartReservations.get("alldebrid") || 0;
+      const secondDelay = nextReservation - now;
       expect(firstDelay).toBeGreaterThan(1500);
       expect(firstDelay).toBeLessThan(6500);
       expect(secondDelay).toBeGreaterThan(firstDelay + 1200);
