@@ -500,6 +500,14 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_PACKAGE_LOG, async (_event: IpcMainInvokeEvent, packageId: string) => {
+    validateString(packageId, "packageId");
+    const logPath = controller.getPackageLogPath(packageId);
+    if (logPath) {
+      await shell.openPath(logPath);
+    }
+  });
+
   ipcMain.handle(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async () => {
     await controller.openRealDebridLoginWindow();
   });
