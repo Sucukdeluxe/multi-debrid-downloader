@@ -5570,16 +5570,25 @@ export class DownloadManager extends EventEmitter {
     this.providerStartReservations.set(paceKey, now + activeCount * ALLDEBRID_START_STAGGER_MS);
   }
 
+  private getConfiguredAllDebridStartLimit(): number {
+    const configured = Math.floor(Number(this.settings.maxParallel || 1));
+    if (Number.isFinite(configured) && configured > 0) {
+      return configured;
+    }
+    return 1;
+  }
+
   private getAllDebridStartLimit(hosterKey: string): number {
     if (hosterKey !== "rapidgator") {
       return Number.MAX_SAFE_INTEGER;
     }
+    const configuredLimit = this.getConfiguredAllDebridStartLimit();
     const cached = this.allDebridHostInfoCache.get(hosterKey);
     const apiLimit = cached?.info.limitSimuDl;
     if (Number.isFinite(apiLimit) && (apiLimit as number) > 0) {
-      return Math.max(1, Math.min(2, Math.floor(apiLimit as number)));
+      return Math.max(1, Math.min(configuredLimit, Math.floor(apiLimit as number)));
     }
-    return 1;
+    return configuredLimit;
   }
 
   private shouldDelayStartForItem(item: DownloadItem): boolean {
