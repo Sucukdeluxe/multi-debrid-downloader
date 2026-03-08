@@ -4838,6 +4838,105 @@ describe("download manager", () => {
     }
   }, 20000);
 
+  it("shows AllDebrid countdowns only for the next visible start wave", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const chunk = Buffer.alloc(256 * 1024, 9);
+    const totalLinks = 8;
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (!/^\/ad-web-\d+$/.test(route)) {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      let sent = 0;
+      const totalChunks = 10;
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length * totalChunks));
+      const timer = setInterval(() => {
+        if (sent >= totalChunks) {
+          clearInterval(timer);
+          res.end();
+          return;
+        }
+        res.write(chunk);
+        sent += 1;
+      }, 700);
+      res.on("close", () => clearInterval(timer));
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+
+    const links = Array.from({ length: totalLinks }, (_, index) => `https://rapidgator.net/file/web-${index + 1}/sample.part${index + 1}.rar.html`);
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          allDebridToken: "ad-token",
+          allDebridUseWebLogin: true,
+          providerOrder: [],
+          providerPrimary: "alldebrid",
+          providerSecondary: "none",
+          providerTertiary: "none",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: false,
+          maxParallel: 5
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state")),
+        {
+          allDebridWebUnrestrict: async (link) => {
+            const match = link.match(/web-(\d+)/);
+            const slot = Number(match?.[1] || 1);
+            return {
+              fileName: `ad-web-${slot}.bin`,
+              directUrl: `http://127.0.0.1:${address.port}/ad-web-${slot}`,
+              fileSize: chunk.length * 10,
+              retriesUsed: 0
+            };
+          }
+        }
+      );
+
+      manager.addPackages([{ name: "ad-web-visibility", links }]);
+      await manager.start();
+
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        return items.some((item) => item.status === "downloading");
+      }, 10000);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const items = Object.values(manager.getSnapshot().session.items);
+      const activeCount = items.filter((item) => item.status === "downloading" || item.status === "validating").length;
+      const countdownItems = items.filter((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""));
+      const plainQueuedItems = items.filter((item) => (item.status === "queued" || item.status === "reconnect_wait") && item.fullStatus === "Wartet");
+
+      expect(countdownItems.length).toBeLessThanOrEqual(Math.max(0, 5 - activeCount));
+      expect(plainQueuedItems.length).toBeGreaterThan(0);
+
+      manager.stop();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 20000);
+
   it("staggeres AllDebrid starts by 2.5 seconds per active download", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
