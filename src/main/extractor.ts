@@ -694,14 +694,11 @@ function nativeExtractorCandidates(archivePath = ""): string[] {
   }
 
   const winRarInstalled = [
-    path.join(programFiles, "WinRAR", "WinRAR.exe"),
-    path.join(programFilesX86, "WinRAR", "WinRAR.exe"),
     path.join(programFiles, "WinRAR", "UnRAR.exe"),
     path.join(programFilesX86, "WinRAR", "UnRAR.exe")
   ];
 
   if (localAppData) {
-    winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "WinRAR.exe"));
     winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
   }
 
@@ -714,8 +711,6 @@ function nativeExtractorCandidates(archivePath = ""): string[] {
       "7za.exe",
       "7za",
       ...winRarInstalled,
-      "WinRAR.exe",
-      "winrar",
       "UnRAR.exe",
       "unrar"
     ]
@@ -726,8 +721,6 @@ function nativeExtractorCandidates(archivePath = ""): string[] {
       "7za.exe",
       "7za",
       ...winRarInstalled,
-      "WinRAR.exe",
-      "winrar",
       "UnRAR.exe",
       "unrar"
     ];
