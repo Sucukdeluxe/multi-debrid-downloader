@@ -2475,6 +2475,37 @@ describe("download manager", () => {
     expect((manager as any).session.items[itemId].fullStatus).toBe("Entpacken - Error");
   });
 
+  it("does not auto-reschedule extraction for completed items already marked as entpack-fehler", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const {
+      session,
+      packageId,
+      itemId
+    } = createCompletedArchiveSession(root, "hybrid-entpack-fehler-hold", "episode.mkv");
+    session.items[itemId]!.fullStatus = "Entpack-Fehler: Checksum error in encrypted file";
+    session.packages[packageId]!.status = "queued";
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        hybridExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).triggerPendingExtractions();
+
+    expect((manager as any).packagePostProcessTasks.has(packageId)).toBe(false);
+    expect((manager as any).session.items[itemId].fullStatus).toBe("Entpack-Fehler: Checksum error in encrypted file");
+  });
+
   it("detects start conflicts when extract output already exists", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

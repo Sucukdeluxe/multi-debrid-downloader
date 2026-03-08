@@ -102,6 +102,12 @@ const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
 
 const ALLDEBRID_START_STAGGER_MS = 2500;
 
+const ARCHIVE_SETTLE_MIN_DELAY_MS = 1500;
+
+const ARCHIVE_SETTLE_POLL_MS = 250;
+
+const ARCHIVE_SETTLE_MAX_WAIT_MS = 5000;
+
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
 function itemExpectedMinBytes(item: DownloadItem): number {
@@ -445,7 +451,9 @@ function isExtractedLabel(statusText: string): boolean {
 
 function isExtractErrorLabel(statusText: string): boolean {
   const text = String(statusText || "").trim();
-  return /^entpacken\b/i.test(text) && /\berror\b/i.test(text);
+  return /^entpacken\b/i.test(text) && /\berror\b/i.test(text)
+    || /^entpack-fehler\b/i.test(text)
+    || /^entpacken\b.*\btimeout\b/i.test(text);
 }
 
 function shouldAutoRetryExtraction(statusText: string): boolean {
@@ -3847,7 +3855,7 @@ export class DownloadManager extends EventEmitter {
       if (item.status === "completed") {
         const statusText = (item.fullStatus || "").trim();
         // Preserve extraction-related statuses (Ausstehend, Warten auf Parts, etc.)
-        if (/^Entpacken\b/i.test(statusText) || isExtractedLabel(statusText) || /^Fertig\b/i.test(statusText)) {
+        if (/^Entpacken\b/i.test(statusText) || isExtractErrorLabel(statusText) || isExtractedLabel(statusText) || /^Fertig\b/i.test(statusText)) {
           // keep as-is
         } else {
           item.fullStatus = this.settings.autoExtract
@@ -4391,25 +4399,12 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (hasValidSignature) {
-        // Valid signature + suggestRedownload means both JVM and legacy extractors failed
-        // (CRC/password error).  Even with a valid header the content can be corrupt –
-        // encrypted RAR5 produces "Checksum error" indistinguishable from wrong password.
-        // Force re-download ONCE; use autoRecoveredForRedownload Set for loop protection.
-        const redownloadKey = `${pkg.id}::${failure.archiveName}`;
-        if (this.autoRecoveredForRedownload.has(redownloadKey)) {
-          logger.warn(
-            `Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - ` +
-            `wurde bereits einmal per Re-Download versucht (Loop-Schutz)`
-          );
-          return 0;
-        }
-        this.autoRecoveredForRedownload.add(redownloadKey);
         logger.warn(
-          `Auto-Recovery (${scope}): ${failure.archiveName} - Signatur gueltig, ` +
-          `beide Extraktoren fehlgeschlagen (suggestRedownload). ` +
-          `Erzwinge Re-Download aller ${archiveItems.length} Parts`
+          `Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - ` +
+          `Dateien haben korrekte Groesse und gueltige Archiv-Signatur, ` +
+          `wahrscheinlicher Passwort-/Extractor-Fall statt defektem Download`
         );
-        corruptArchiveItems.push(...inspectedArchiveItems);
+        return 0;
       }
 
       logger.warn(
@@ -4462,6 +4457,125 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
     }
     return changed;
+  }
+
+  private async waitForCompletedArchiveFilesToSettle(
+    pkg: PackageEntry,
+    items: DownloadItem[],
+    signal: AbortSignal | undefined,
+    scope: "hybrid" | "full"
+  ): Promise<void> {
+    const archiveItems = items.filter((item) =>
+      item.status === "completed" && isArchiveLikePath(item.targetPath || item.fileName || "")
+    );
+    if (archiveItems.length === 0) {
+      return;
+    }
+
+    const startedAt = nowMs();
+    const newestCompletionAt = archiveItems.reduce((maxTs, item) => Math.max(maxTs, Number(item.updatedAt || 0)), 0);
+    const minDelayMs = newestCompletionAt > 0
+      ? Math.max(0, ARCHIVE_SETTLE_MIN_DELAY_MS - Math.max(0, startedAt - newestCompletionAt))
+      : 0;
+
+    if (minDelayMs > 0) {
+      logger.info(
+        `Extract-Settle (${scope}): warte ${minDelayMs}ms nach letztem Downloadabschluss ` +
+        `vor Entpacken: pkg=${pkg.name}, archiveItems=${archiveItems.length}`
+      );
+      this.logPackageForPackage(pkg, "INFO", "Archiv-Stabilisierung wartet", {
+        scope,
+        waitMs: minDelayMs,
+        archiveItems: archiveItems.length,
+        reason: "recent_completion"
+      });
+      pkg.postProcessLabel = "Archive stabilisieren...";
+      this.emitState();
+      let remainingMs = minDelayMs;
+      while (remainingMs > 0) {
+        if (signal?.aborted) {
+          return;
+        }
+        const sleepMs = Math.min(ARCHIVE_SETTLE_POLL_MS, remainingMs);
+        await sleep(sleepMs);
+        remainingMs -= sleepMs;
+      }
+    }
+
+    const deadlineAt = nowMs() + ARCHIVE_SETTLE_MAX_WAIT_MS;
+    const requiredStableRounds = minDelayMs > 0 ? 2 : 1;
+    let stableRounds = 0;
+    let lastSnapshot = "";
+    let pollCount = 0;
+    let lastPending = "";
+
+    while (stableRounds < requiredStableRounds && nowMs() < deadlineAt) {
+      if (signal?.aborted) {
+        return;
+      }
+
+      const snapshotParts: string[] = [];
+      const pending: string[] = [];
+      for (const item of archiveItems) {
+        const state = inspectPackageItemDiskState(pkg, item);
+        const label = item.fileName || item.id;
+        snapshotParts.push(`${item.id}:${state.reason}:${state.size}`);
+        if (state.reason !== "ok" || !state.diskPath) {
+          pending.push(`${label}:${state.reason}`);
+          continue;
+        }
+        try {
+          const fd = await fs.promises.open(state.diskPath, "r");
+          await fd.close();
+        } catch {
+          pending.push(`${label}:open_failed`);
+        }
+      }
+
+      pollCount += 1;
+      lastPending = pending.join(", ");
+      const snapshot = snapshotParts.join("|");
+      if (pending.length === 0) {
+        stableRounds = snapshot === lastSnapshot ? stableRounds + 1 : 1;
+      } else {
+        stableRounds = 0;
+      }
+      lastSnapshot = snapshot;
+
+      if (stableRounds >= requiredStableRounds) {
+        break;
+      }
+
+      await sleep(ARCHIVE_SETTLE_POLL_MS);
+    }
+
+    const settleMs = nowMs() - startedAt;
+    if (stableRounds >= requiredStableRounds) {
+      if (pollCount > 1 || minDelayMs > 0) {
+        logger.info(
+          `Extract-Settle (${scope}) abgeschlossen: pkg=${pkg.name}, archiveItems=${archiveItems.length}, ` +
+          `waitMs=${settleMs}, polls=${pollCount}`
+        );
+        this.logPackageForPackage(pkg, "INFO", "Archiv-Stabilisierung abgeschlossen", {
+          scope,
+          archiveItems: archiveItems.length,
+          waitMs: settleMs,
+          polls: pollCount
+        });
+      }
+      return;
+    }
+
+    logger.warn(
+      `Extract-Settle (${scope}) Timeout: pkg=${pkg.name}, archiveItems=${archiveItems.length}, ` +
+      `waitMs=${settleMs}, pending=${lastPending || "none"}`
+    );
+    this.logPackageForPackage(pkg, "WARN", "Archiv-Stabilisierung Timeout", {
+      scope,
+      archiveItems: archiveItems.length,
+      waitMs: settleMs,
+      pending: lastPending || "none"
+    });
   }
 
   /** Detect items whose targetPath has a " (N)" suffix from a previous bug and rename
@@ -7995,6 +8109,11 @@ export class DownloadManager extends EventEmitter {
     }
 
     try {
+      await this.waitForCompletedArchiveFilesToSettle(pkg, hybridItems, signal, "hybrid");
+      if (signal?.aborted) {
+        return 0;
+      }
+
       const result = await extractPackageArchives({
         packageDir: pkg.outputDir,
         targetDir: pkg.extractDir,
@@ -8445,6 +8564,16 @@ export class DownloadManager extends EventEmitter {
         const fullResolvedItems = new Map<string, DownloadItem[]>();
         const fullStartTimes = new Map<string, number>();
         let fullLastProgressCurrent: number | null = null;
+
+        await this.waitForCompletedArchiveFilesToSettle(
+          pkg,
+          completedItems,
+          extractAbortController.signal,
+          "full"
+        );
+        if (extractAbortController.signal.aborted) {
+          throw new Error(String(extractAbortController.signal.reason || "aborted:extract"));
+        }
 
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
