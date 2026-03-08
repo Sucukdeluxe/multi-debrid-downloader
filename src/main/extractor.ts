@@ -22,7 +22,6 @@ const JVM_EXTRACTOR_REQUIRED_LIBS = [
 ];
 
 // ── subst drive mapping for long paths on Windows ──
-const SUBST_THRESHOLD = 200;
 const activeSubstDrives = new Set<string>();
 
 function findFreeSubstDrive(): string | null {
@@ -43,7 +42,7 @@ function findFreeSubstDrive(): string | null {
 interface SubstMapping { drive: string; original: string; }
 
 function createSubstMapping(targetDir: string): SubstMapping | null {
-  if (process.platform !== "win32" || targetDir.length < SUBST_THRESHOLD) return null;
+  if (process.platform !== "win32" || !path.isAbsolute(targetDir)) return null;
   const drive = findFreeSubstDrive();
   if (!drive) return null;
   const result = spawnSync("subst", [`${drive}:`, targetDir], { stdio: "pipe", timeout: 5000 });
@@ -2046,9 +2045,15 @@ async function runExternalExtract(
       }
     }
 
-    // subst only needed for legacy UnRAR/7z (MAX_PATH limit)
+    // Use a short drive mapping for legacy native extractors on Windows.
+    // This avoids MAX_PATH issues and native CLI path handling edge-cases.
     subst = createSubstMapping(targetDir);
     const effectiveTargetDir = subst ? `${subst.drive}:\\` : targetDir;
+    if (subst) {
+      onLog?.("INFO", `Legacy-Zielpfad verkuerzt via subst: archive=${archiveName}, originalTargetDir=${targetDir}, effectiveTargetDir=${effectiveTargetDir}`);
+    } else {
+      onLog?.("INFO", `Legacy-Zielpfad unveraendert: archive=${archiveName}, effectiveTargetDir=${effectiveTargetDir}`);
+    }
 
     const command = await resolveExtractorCommand(archivePath);
     const legacyStartedAt = Date.now();
@@ -2211,6 +2216,8 @@ async function runExternalExtractInner(
   let passwordAttempt = 0;
   let usePerformanceFlags = externalExtractorSupportsPerfFlags && shouldUseExtractorPerformanceFlags();
   const summarizeResultError = (errorText: string): string => cleanErrorText(errorText).slice(0, 280);
+  let createErrorText = "";
+  let createErrorPassword = "";
 
   // Skip normal extraction loop if flat mode is already known to be needed for this package
   if (forceFlatMode) {
@@ -2305,6 +2312,13 @@ async function runExternalExtractInner(
       return password;
     }
 
+    if (!createErrorText && result.errorText.includes("Cannot create")) {
+      createErrorText = result.errorText;
+      createErrorPassword = password;
+      logger.warn(`Entpack-Pfadfehler gemerkt: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, password=${quotedPw}`);
+      onLog?.("WARN", `Entpack-Pfadfehler gemerkt: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, password=${quotedPw}`);
+    }
+
     if (result.aborted) {
       throw new Error("aborted:extract");
     }
@@ -2327,16 +2341,22 @@ async function runExternalExtractInner(
   // Some archives (e.g. created by certain scene groups) store internal paths with a leading \,
   // causing UnRAR to construct invalid \\ double-separator paths on Windows. Retry in flat mode
   // ("e" instead of "x") which strips all archive paths and extracts files directly to targetDir.
-  const isAbsoluteArchivePath = lastError.includes("Cannot create") && lastError.includes("\\\\");
-  if (isAbsoluteArchivePath) {
-    logger.warn(`Entpack-Pfadfehler: absoluter Archivpfad erkannt, Wiederholung mit flachem Modus: ${path.basename(archivePath)}`);
+  const pathCreateError = createErrorText || (lastError.includes("Cannot create") ? lastError : "");
+  if (pathCreateError) {
+    const flatPasswords = createErrorPassword
+      ? prioritizePassword(passwords, createErrorPassword)
+      : passwords;
+    logger.warn(`Entpack-Pfadfehler: Wiederholung mit flachem Modus: ${path.basename(archivePath)}`);
+    onLog?.("WARN", `Entpack-Pfadfehler: Wiederholung mit flachem Modus: ${path.basename(archivePath)}`);
     bestPercent = 0;
     passwordAttempt = 0;
-    for (const password of passwords) {
+    lastError = pathCreateError;
+    for (const password of flatPasswords) {
       if (signal?.aborted) throw new Error("aborted:extract");
       passwordAttempt += 1;
       const quotedPw = password === "" ? '""' : `"${password}"`;
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
+      onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, password=${quotedPw}`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
       const result = await runExtractCommand(command, args, (chunk) => {
         const parsed = parseProgressPercent(chunk);
@@ -2345,6 +2365,7 @@ async function runExternalExtractInner(
         if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
       }, signal, timeoutMs);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
+      onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
       if (result.aborted) throw new Error("aborted:extract");
       if (result.timedOut || result.missingCommand) break;
