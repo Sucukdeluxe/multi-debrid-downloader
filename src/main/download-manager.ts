@@ -108,6 +108,8 @@ const ARCHIVE_SETTLE_POLL_MS = 250;
 
 const ARCHIVE_SETTLE_MAX_WAIT_MS = 5000;
 
+const MAX_SAME_DIRECT_URL_ATTEMPTS = 3;
+
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
 function itemExpectedMinBytes(item: DownloadItem): number {
@@ -6422,6 +6424,27 @@ export class DownloadManager extends EventEmitter {
             error: errorText,
             abortReason: reason || "none"
           });
+          const directLinkRetryMatch = errorText.match(/^direct_link_retry_exhausted:(.+)$/);
+          if (directLinkRetryMatch && active.genericErrorRetries < maxGenericErrorRetries) {
+            active.genericErrorRetries += 1;
+            item.retries += 1;
+            const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText);
+            const refreshDelayMs = retryDelayWithJitter(active.genericErrorRetries, 200);
+            logger.warn(
+              `Direktlink erschöpft: item=${item.fileName || item.id}, ` +
+              `retry=${active.genericErrorRetries}/${retryDisplayLimit}, error=${exhaustedReason}, provider=${item.provider || "?"}`
+            );
+            this.queueRetry(
+              item,
+              active,
+              refreshDelayMs,
+              `Direktlink erneuern, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`
+            );
+            item.lastError = exhaustedReason;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           const shouldFreshRetry = !active.freshRetryUsed && isFetchFailure(errorText);
           const isHttp416 = /(^|\D)416(\D|$)/.test(errorText);
           if (isHttp416) {
@@ -6623,7 +6646,8 @@ export class DownloadManager extends EventEmitter {
 
     const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
     const retryDisplayLimit = retryLimitLabel(configuredRetryLimit);
-    const maxAttempts = configuredRetryLimit <= 0 ? Number.MAX_SAFE_INTEGER : configuredRetryLimit + 1;
+    const maxAttemptsBySetting = configuredRetryLimit <= 0 ? Number.MAX_SAFE_INTEGER : configuredRetryLimit + 1;
+    const maxAttempts = Math.max(1, Math.min(MAX_SAME_DIRECT_URL_ATTEMPTS, maxAttemptsBySetting));
 
     let lastError = "";
     let effectiveTargetPath = targetPath;
@@ -7414,15 +7438,21 @@ export class DownloadManager extends EventEmitter {
         });
         if (attempt < maxAttempts) {
           item.retries += 1;
-          item.fullStatus = `Downloadfehler, retry ${attempt}/${retryDisplayLimit}`;
+          item.fullStatus = `Downloadfehler, retry ${attempt}/${maxAttempts} (Direktlink)`;
           this.emitState();
           await sleep(retryDelayWithJitter(attempt, 250));
           continue;
+        }
+        if (maxAttemptsBySetting > maxAttempts) {
+          throw new Error(`direct_link_retry_exhausted:${lastError || "Download fehlgeschlagen"}`);
         }
         throw new Error(lastError || "Download fehlgeschlagen");
       }
     }
 
+    if (maxAttemptsBySetting > maxAttempts) {
+      throw new Error(`direct_link_retry_exhausted:${lastError || "Download fehlgeschlagen"}`);
+    }
     throw new Error(lastError || "Download fehlgeschlagen");
   }
 

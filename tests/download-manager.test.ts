@@ -210,6 +210,120 @@ describe("download manager", () => {
     }
   });
 
+  it("requests a fresh direct link after repeated same-link download failures", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(256 * 1024, 17);
+    let badCalls = 0;
+    let goodCalls = 0;
+    let unrestrictCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (route === "/bad") {
+        badCalls += 1;
+        const range = String(req.headers.range || "");
+        const match = range.match(/bytes=(\d+)-/i);
+        const start = match ? Number(match[1]) : 0;
+        const end = Math.min(binary.length, start + 64 * 1024);
+        const chunk = binary.subarray(start, end);
+        if (start > 0) {
+          res.statusCode = 206;
+          res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+        } else {
+          res.statusCode = 200;
+        }
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(chunk.length));
+        res.write(chunk);
+        res.socket?.destroy();
+        return;
+      }
+
+      if (route === "/good") {
+        goodCalls += 1;
+        const range = String(req.headers.range || "");
+        const match = range.match(/bytes=(\d+)-/i);
+        const start = match ? Number(match[1]) : 0;
+        const chunk = binary.subarray(start);
+        if (start > 0) {
+          res.statusCode = 206;
+          res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+        } else {
+          res.statusCode = 200;
+        }
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(chunk.length));
+        res.end(chunk);
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end("not-found");
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const badUrl = `http://127.0.0.1:${address.port}/bad`;
+    const goodUrl = `http://127.0.0.1:${address.port}/good`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: unrestrictCalls === 1 ? badUrl : goodUrl,
+            filename: "refresh-link.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          retryLimit: 0
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "fresh-link", links: ["https://dummy/fresh-link"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(binary.length);
+      expect(unrestrictCalls).toBeGreaterThanOrEqual(2);
+      expect(badCalls).toBe(3);
+      expect(goodCalls).toBeGreaterThanOrEqual(1);
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+      expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("assigns unique target paths for same filenames in parallel", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
