@@ -12,6 +12,7 @@ import {
   detectArchiveSignature,
   classifyExtractionError,
   findArchiveCandidates,
+  orderExtractorCandidatesForArchive,
   resolveExtractorBackendMode,
 } from "../src/main/extractor";
 
@@ -1169,6 +1170,35 @@ describe("extractor", () => {
       expect(resolveExtractorBackendMode("legacy", false)).toBe("legacy");
       expect(resolveExtractorBackendMode("jvm", false)).toBe("jvm");
       expect(resolveExtractorBackendMode("auto", false)).toBe("auto");
+    });
+  });
+
+  describe("orderExtractorCandidatesForArchive", () => {
+    it("prefers WinRAR/UnRAR over 7-Zip for rar archives", () => {
+      const ordered = orderExtractorCandidatesForArchive(
+        ["7z.exe", "UnRAR.exe", "WinRAR.exe"],
+        "C:\\Downloads\\archive.part01.rar"
+      );
+      expect(ordered.slice(0, 2)).toEqual(["UnRAR.exe", "WinRAR.exe"]);
+      expect(ordered[2]).toBe("7z.exe");
+    });
+
+    it("keeps 7-Zip first for non-rar archives", () => {
+      const ordered = orderExtractorCandidatesForArchive(
+        ["UnRAR.exe", "7z.exe", "WinRAR.exe"],
+        "C:\\Downloads\\archive.zip"
+      );
+      expect(ordered[0]).toBe("7z.exe");
+    });
+
+    it("prefers the remembered command within the matching archive class", () => {
+      const ordered = orderExtractorCandidatesForArchive(
+        ["UnRAR.exe", "WinRAR.exe", "7z.exe"],
+        "C:\\Downloads\\archive.part01.rar",
+        "WinRAR.exe"
+      );
+      expect(ordered[0]).toBe("WinRAR.exe");
+      expect(ordered[1]).toBe("UnRAR.exe");
     });
   });
 });

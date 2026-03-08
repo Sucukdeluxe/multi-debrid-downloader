@@ -679,7 +679,7 @@ function prioritizePassword(passwords: string[], successful: string): string[] {
   return next;
 }
 
-function nativeExtractorCandidates(): string[] {
+function nativeExtractorCandidates(archivePath = ""): string[] {
   const programFiles = process.env.ProgramFiles || "C:\\Program Files";
   const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const localAppData = process.env.LOCALAPPDATA || "";
@@ -694,11 +694,14 @@ function nativeExtractorCandidates(): string[] {
   }
 
   const winRarInstalled = [
+    path.join(programFiles, "WinRAR", "WinRAR.exe"),
+    path.join(programFilesX86, "WinRAR", "WinRAR.exe"),
     path.join(programFiles, "WinRAR", "UnRAR.exe"),
     path.join(programFilesX86, "WinRAR", "UnRAR.exe")
   ];
 
   if (localAppData) {
+    winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "WinRAR.exe"));
     winRarInstalled.push(path.join(localAppData, "Programs", "WinRAR", "UnRAR.exe"));
   }
 
@@ -711,6 +714,8 @@ function nativeExtractorCandidates(): string[] {
       "7za.exe",
       "7za",
       ...winRarInstalled,
+      "WinRAR.exe",
+      "winrar",
       "UnRAR.exe",
       "unrar"
     ]
@@ -721,10 +726,12 @@ function nativeExtractorCandidates(): string[] {
       "7za.exe",
       "7za",
       ...winRarInstalled,
+      "WinRAR.exe",
+      "winrar",
       "UnRAR.exe",
       "unrar"
     ];
-  return Array.from(new Set(ordered.filter(Boolean)));
+  return orderExtractorCandidatesForArchive(ordered, archivePath, resolvedExtractorCommand || "");
 }
 
 function isAbsoluteCommand(command: string): boolean {
@@ -1786,7 +1793,7 @@ export function buildExternalExtractArgs(
   return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
 }
 
-async function resolveExtractorCommandInternal(): Promise<string> {
+async function resolveExtractorCommandInternal(archivePath = ""): Promise<string> {
   if (resolvedExtractorCommand) {
     return resolvedExtractorCommand;
   }
@@ -1799,7 +1806,7 @@ async function resolveExtractorCommandInternal(): Promise<string> {
     resolveFailureAt = 0;
   }
 
-  const candidates = nativeExtractorCandidates();
+  const candidates = nativeExtractorCandidates(archivePath);
   for (const command of candidates) {
     if (isAbsoluteCommand(command) && !fs.existsSync(command)) {
       continue;
@@ -1821,15 +1828,15 @@ async function resolveExtractorCommandInternal(): Promise<string> {
   throw new Error(resolveFailureReason);
 }
 
-async function resolveExtractorCommand(): Promise<string> {
-  if (resolvedExtractorCommand) {
+async function resolveExtractorCommand(archivePath = ""): Promise<string> {
+  if (resolvedExtractorCommand && cachedExtractorFitsArchive(resolvedExtractorCommand, archivePath)) {
     return resolvedExtractorCommand;
   }
   if (resolveExtractorCommandInFlight) {
     return resolveExtractorCommandInFlight;
   }
 
-  const pending = resolveExtractorCommandInternal();
+  const pending = resolveExtractorCommandInternal(archivePath);
   resolveExtractorCommandInFlight = pending;
   try {
     return await pending;
@@ -1850,8 +1857,71 @@ function isUnrarCommand(command: string): boolean {
   return lower.includes("unrar") || lower.includes("winrar");
 }
 
-async function findAlternativeExtractor(currentCommand: string): Promise<string | null> {
-  const candidates = nativeExtractorCandidates();
+type ExtractorCommandKind = "rar_native" | "seven_zip" | "other";
+
+function extractorCommandKind(command: string): ExtractorCommandKind {
+  if (isUnrarCommand(command)) {
+    return "rar_native";
+  }
+  if (is7zCommand(command)) {
+    return "seven_zip";
+  }
+  return "other";
+}
+
+function isRarArchivePath(filePath: string): boolean {
+  return /\.(?:rar|r\d{2,3})$/i.test(String(filePath || ""));
+}
+
+function cachedExtractorFitsArchive(command: string, archivePath: string): boolean {
+  if (!archivePath) {
+    return true;
+  }
+  const kind = extractorCommandKind(command);
+  if (isRarArchivePath(archivePath)) {
+    return kind === "rar_native";
+  }
+  return kind === "seven_zip";
+}
+
+export function orderExtractorCandidatesForArchive(
+  candidates: string[],
+  archivePath: string,
+  preferredCommand = ""
+): string[] {
+  const unique = Array.from(new Set(candidates.filter(Boolean)));
+  const preferRarNative = isRarArchivePath(archivePath);
+  const rank = (command: string): number => {
+    const kind = extractorCommandKind(command);
+    if (preferRarNative) {
+      if (kind === "rar_native") return 0;
+      if (kind === "seven_zip") return 1;
+      return 2;
+    }
+    if (kind === "seven_zip") return 0;
+    if (kind === "rar_native") return 1;
+    return 2;
+  };
+
+  return unique
+    .map((command, index) => ({ command, index }))
+    .sort((left, right) => {
+      const rankDiff = rank(left.command) - rank(right.command);
+      if (rankDiff !== 0) {
+        return rankDiff;
+      }
+      const leftPreferred = preferredCommand && left.command === preferredCommand;
+      const rightPreferred = preferredCommand && right.command === preferredCommand;
+      if (leftPreferred !== rightPreferred) {
+        return leftPreferred ? -1 : 1;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.command);
+}
+
+async function findAlternativeExtractor(currentCommand: string, archivePath = ""): Promise<string | null> {
+  const candidates = nativeExtractorCandidates(archivePath);
   const currentIs7z = is7zCommand(currentCommand);
   for (const candidate of candidates) {
     if (candidate === currentCommand) continue;
@@ -1971,7 +2041,7 @@ async function runExternalExtract(
     subst = createSubstMapping(targetDir);
     const effectiveTargetDir = subst ? `${subst.drive}:\\` : targetDir;
 
-    const command = await resolveExtractorCommand();
+    const command = await resolveExtractorCommand(archivePath);
     const legacyStartedAt = Date.now();
     let password: string;
     let usedCommand = command;
@@ -1999,7 +2069,7 @@ async function runExternalExtract(
         const errText = String((primaryError as Error)?.message || primaryError || "");
         const isPasswordOrCorrupt = /wrong.password|checksum error|corrupt/i.test(errText);
         if (isRar && isPasswordOrCorrupt && !signal?.aborted) {
-          const alt = await findAlternativeExtractor(command);
+          const alt = await findAlternativeExtractor(command, archivePath);
           if (alt) {
             const altName = path.basename(alt).replace(/\.exe$/i, "");
             onLog?.("INFO", `Legacy-Fallback: primary=${path.basename(command)}, alternative=${altName}, archive=${archiveName}`);
@@ -2121,10 +2191,11 @@ async function runExternalExtractInner(
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
+  const extractorName = path.basename(command).replace(/\.exe$/i, "") || command;
 
   const quotedPasswords = passwords.map((p) => p === "" ? '""' : `"${p}"`);
-  onLog?.("INFO", `Legacy-Extractor Start: archive=${path.basename(archivePath)}, passwordCount=${passwords.length}, forceFlatMode=${forceFlatMode}, targetDir=${targetDir}`);
-  logger.info(`Legacy-Extractor: ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${quotedPasswords.join(", ")}]${forceFlatMode ? " (flat-mode cached)" : ""}`);
+  onLog?.("INFO", `Legacy-Extractor Start: archive=${path.basename(archivePath)}, extractor=${extractorName}, passwordCount=${passwords.length}, forceFlatMode=${forceFlatMode}, targetDir=${targetDir}`);
+  logger.info(`Legacy-Extractor (${extractorName}): ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${quotedPasswords.join(", ")}]${forceFlatMode ? " (flat-mode cached)" : ""}`);
 
   let announcedStart = false;
   let bestPercent = 0;
