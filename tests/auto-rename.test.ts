@@ -744,4 +744,22 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBe("A.Million.Little.Things.S03E10.GERMAN.DL.720p.WEB.H264-4SF");
   });
+
+  it("renames abbreviated source jkl.web.7p-s01e13 via season folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["9JKL.S01.GERMAN.720p.WEB.x264-WvF"],
+      "jkl.web.7p-s01e13",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("9JKL.S01E13.GERMAN.720p.WEB.x264-WvF");
+  });
+
+  it("renames abbreviated source jkl.web.7p-s01e14 via season folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["9JKL.S01.GERMAN.720p.WEB.x264-WvF"],
+      "jkl.web.7p-s01e14",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("9JKL.S01E14.GERMAN.720p.WEB.x264-WvF");
+  });
 });

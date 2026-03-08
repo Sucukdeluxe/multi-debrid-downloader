@@ -5,6 +5,7 @@ import AdmZip from "adm-zip";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildExternalExtractArgs,
+  cleanErrorText,
   collectArchiveCleanupTargets,
   extractPackageArchives,
   type ExtractArchiveFailureInfo,
@@ -1037,6 +1038,13 @@ describe("extractor", () => {
 
     it("returns unknown for unrecognized errors", () => {
       expect(classifyExtractionError("something weird happened")).toBe("unknown");
+    });
+
+    it("keeps important tail markers when long extractor output is trimmed", () => {
+      const noisy = `Extracting from archive.rar ${"x".repeat(700)} Unexpected end of archive`;
+      const cleaned = cleanErrorText(noisy);
+      expect(cleaned).toContain("Unexpected end of archive");
+      expect(classifyExtractionError(cleaned)).toBe("missing_parts");
     });
   });
 

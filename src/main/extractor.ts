@@ -457,8 +457,14 @@ function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip"
   return "skip";
 }
 
-function cleanErrorText(text: string): string {
-  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+export function cleanErrorText(text: string): string {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= 500) {
+    return normalized;
+  }
+  const head = normalized.slice(0, 240).trimEnd();
+  const tail = normalized.slice(-240).trimStart();
+  return `${head} ... ${tail}`;
 }
 
 function appendLimited(base: string, chunk: string, maxLen = MAX_EXTRACT_OUTPUT_BUFFER): string {
@@ -2342,7 +2348,7 @@ async function runExternalExtractInner(
   let bestPercent = 0;
   let passwordAttempt = 0;
   let usePerformanceFlags = externalExtractorSupportsPerfFlags && shouldUseExtractorPerformanceFlags();
-  const summarizeResultError = (errorText: string): string => cleanErrorText(errorText).slice(0, 280);
+  const summarizeResultError = (errorText: string): string => cleanErrorText(errorText);
   let createErrorText = "";
   let createErrorPassword = "";
 
