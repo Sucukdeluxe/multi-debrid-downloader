@@ -4339,6 +4339,103 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private tryFinalizeItemFromDisk(
+    pkg: PackageEntry,
+    item: DownloadItem,
+    source: string,
+    errorText = ""
+  ): boolean {
+    const diskState = inspectPackageItemDiskState(pkg, item);
+    const normalizedError = compactErrorText(errorText).replace(/^Error:\s*/i, "");
+    const knownShortfall = item.totalBytes != null && item.totalBytes > 0
+      ? Math.max(0, item.totalBytes - diskState.size)
+      : 0;
+    const underflowIndicated = normalizedError.includes("download_underflow")
+      || normalizedError.includes("resume_download_underflow");
+    const archiveLikeTarget = String(item.fileName || diskState.diskPath || "").toLowerCase();
+    const archiveLike = /(?:\.part\d+\.rar|\.rar|\.r\d{2,3}|\.zip(?:\.\d+)?|\.7z(?:\.\d+)?|\.(?:tar(?:\.(?:gz|bz2|xz))?|tgz|tbz2|txz)|\.\d{3})$/i.test(archiveLikeTarget);
+    const looksComplete = diskState.exists
+      && diskState.fullOnDisk
+      && (
+        diskState.reason === "ok"
+        || item.progressPercent >= 100
+        || item.downloadedBytes >= diskState.minBytes
+        || (item.totalBytes != null && item.totalBytes > 0 && diskState.size >= item.totalBytes - ALLOCATION_UNIT_SIZE)
+      );
+    if (!looksComplete || (knownShortfall > 0 && (underflowIndicated || archiveLike))) {
+      return false;
+    }
+
+    logger.info(
+      `${source}: ${item.fileName || item.id} ist bereits vollstaendig auf Disk ` +
+      `(${humanSize(diskState.size)}, erwartet mind. ${humanSize(diskState.minBytes)})`
+    );
+    this.logPackageForItem(item, "INFO", `${source}: Datei bereits vollstaendig`, {
+      fileSize: diskState.size,
+      expectedMin: diskState.minBytes,
+      diskReason: diskState.reason,
+      error: errorText || undefined
+    });
+
+    item.status = "completed";
+    item.fullStatus = this.settings.autoExtract
+      ? "Entpacken - Ausstehend"
+      : `Fertig (${humanSize(diskState.size)})`;
+    item.downloadedBytes = diskState.size;
+    if (!item.totalBytes || item.totalBytes < diskState.size) {
+      item.totalBytes = diskState.size;
+    }
+    item.progressPercent = 100;
+    item.speedBps = 0;
+    item.updatedAt = nowMs();
+    pkg.updatedAt = nowMs();
+    this.recordRunOutcome(item.id, "completed");
+
+    if (this.session.running) {
+      void this.runPackagePostProcessing(pkg.id).catch((err) => {
+        logger.warn(`runPackagePostProcessing Fehler (${source}): ${compactErrorText(err)}`);
+      }).finally(() => {
+        this.applyCompletedCleanupPolicy(pkg.id, item.id);
+        this.persistSoon();
+        this.emitState();
+      });
+    }
+
+    this.persistSoon();
+    this.emitState();
+    this.retryStateByItem.delete(item.id);
+    return true;
+  }
+
+  private areAllPackageItemRefsFinished(pkg: PackageEntry): boolean {
+    return pkg.itemIds.every((itemId) => {
+      const item = this.session.items[itemId];
+      return item != null && isFinishedStatus(item.status);
+    });
+  }
+
+  private async findFullExtractArchiveSet(pkg: PackageEntry, completedItems: DownloadItem[]): Promise<Set<string>> {
+    const relevant = new Set<string>();
+    if (!pkg.outputDir || completedItems.length === 0) {
+      return relevant;
+    }
+
+    const candidates = await findArchiveCandidates(pkg.outputDir);
+    for (const candidate of candidates) {
+      const archiveItems = resolveArchiveItemsFromList(path.basename(candidate), completedItems);
+      if (archiveItems.length === 0) {
+        continue;
+      }
+      const hasPendingExtract = archiveItems.some((item) => !isExtractedLabel(item.fullStatus || ""));
+      if (!hasPendingExtract) {
+        continue;
+      }
+      relevant.add(pathKey(candidate));
+    }
+
+    return relevant;
+  }
+
   private clearHybridArchiveState(packageId: string, archiveKey?: string): void {
     if (!archiveKey) {
       this.hybridExtractedPaths.delete(packageId);
@@ -4872,7 +4969,14 @@ export class DownloadManager extends EventEmitter {
       const success = items.filter((item) => item.status === "completed").length;
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
-      const allDone = success + failed + cancelled >= items.length;
+      const allDone = this.areAllPackageItemRefsFinished(pkg);
+      if (!allDone && success + failed + cancelled >= items.length) {
+        logger.warn(
+          `Post-Processing wartet trotz gefiltert fertiger Items: ` +
+          `pkg=${pkg.name}, tracked=${pkg.itemIds.length}, resolved=${items.length}, ` +
+          `success=${success}, failed=${failed}, cancelled=${cancelled}`
+        );
+      }
 
       // Hybrid extraction recovery: not all items done, but some completed
       // with pending extraction status → re-label and trigger post-processing
@@ -4956,7 +5060,14 @@ export class DownloadManager extends EventEmitter {
       const success = items.filter((item) => item.status === "completed").length;
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
-      const allDone = success + failed + cancelled >= items.length;
+      const allDone = this.areAllPackageItemRefsFinished(pkg);
+      if (!allDone && success + failed + cancelled >= items.length) {
+        logger.warn(
+          `Post-Processing wartet trotz gefiltert fertiger Items: ` +
+          `pkg=${pkg.name}, tracked=${pkg.itemIds.length}, resolved=${items.length}, ` +
+          `success=${success}, failed=${failed}, cancelled=${cancelled}`
+        );
+      }
 
       // Full extraction: all items done, no failures
       if (allDone && failed === 0 && success > 0) {
@@ -6404,48 +6515,10 @@ export class DownloadManager extends EventEmitter {
             // even though the download finished successfully.
             if (item.downloadedBytes > 0) {
               const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
-              const expectedMin = itemExpectedMinBytes(item);
-              let fileAlreadyComplete = false;
-              if (targetFile && expectedMin > 10240) {
-                try {
-                  const stallStat = fs.statSync(targetFile);
-                  if (stallStat.size >= expectedMin) {
-                    fileAlreadyComplete = true;
-                  logger.info(`Stall-Recovery: ${item.fileName} ist bereits vollständig auf Disk (${humanSize(stallStat.size)}, erwartet mind. ${humanSize(expectedMin)}), überspringe Retry`);
-                    this.logPackageForItem(item, "INFO", "Stall-Recovery: Datei bereits vollständig", {
-                      fileSize: stallStat.size,
-                      expectedMin
-                    });
-                    item.status = "completed";
-                    item.fullStatus = this.settings.autoExtract
-                      ? "Entpacken - Ausstehend"
-                      : `Fertig (${humanSize(stallStat.size)})`;
-                    item.downloadedBytes = stallStat.size;
-                    if (item.totalBytes && item.totalBytes > 0) {
-                      item.progressPercent = 100;
-                    }
-                    item.speedBps = 0;
-                    item.updatedAt = nowMs();
-                    pkg.updatedAt = nowMs();
-                    this.recordRunOutcome(item.id, "completed");
-                    if (this.session.running && !active.abortController.signal.aborted) {
-                      void this.runPackagePostProcessing(pkg.id).catch((err) => {
-                        logger.warn(`runPackagePostProcessing Fehler (stallRecovery): ${compactErrorText(err)}`);
-                      }).finally(() => {
-                        this.applyCompletedCleanupPolicy(pkg.id, item.id);
-                        this.persistSoon();
-                        this.emitState();
-                      });
-                    }
-                    this.persistSoon();
-                    this.emitState();
-                    this.retryStateByItem.delete(item.id);
-                    return;
-                  }
-                } catch { /* file doesn't exist or not accessible */ }
+              if (this.tryFinalizeItemFromDisk(pkg, item, "Stall-Recovery", stallErrorText)) {
+                return;
               }
-              // Reset partial download so next attempt uses a fresh link
-              if (!fileAlreadyComplete && targetFile) {
+              if (targetFile) {
                 try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
               }
               this.releaseTargetPath(item.id);
@@ -6479,6 +6552,9 @@ export class DownloadManager extends EventEmitter {
           this.retryStateByItem.delete(item.id);
         } else {
           const errorText = compactErrorText(error);
+          if (this.tryFinalizeItemFromDisk(pkg, item, "Error-Recovery", errorText)) {
+            return;
+          }
           this.logPackageForItem(item, "WARN", "Download-Fehlerpfad erreicht", {
             error: errorText,
             abortReason: reason || "none"
@@ -8596,7 +8672,14 @@ export class DownloadManager extends EventEmitter {
       recoveryMs
     });
 
-    const allDone = success + failed + cancelled >= items.length;
+    const allDone = this.areAllPackageItemRefsFinished(pkg);
+      if (!allDone && success + failed + cancelled >= items.length) {
+        logger.warn(
+          `Post-Processing wartet trotz gefiltert fertiger Items: ` +
+          `pkg=${pkg.name}, tracked=${pkg.itemIds.length}, resolved=${items.length}, ` +
+          `success=${success}, failed=${failed}, cancelled=${cancelled}`
+        );
+      }
 
     if (!allDone && this.settings.hybridExtract && this.settings.autoExtract && failed === 0 && success > 0) {
       pkg.postProcessLabel = "Entpacken vorbereiten...";
@@ -8713,6 +8796,7 @@ export class DownloadManager extends EventEmitter {
           throw new Error(String(extractAbortController.signal.reason || "aborted:extract"));
         }
 
+        const fullArchiveSet = await this.findFullExtractArchiveSet(pkg, completedItems);
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
           targetDir: pkg.extractDir,
@@ -8723,6 +8807,7 @@ export class DownloadManager extends EventEmitter {
           passwordList: this.settings.archivePasswordList,
           signal: extractAbortController.signal,
           packageId,
+          onlyArchives: fullArchiveSet,
           skipPostCleanup: true,
           maxParallel: this.settings.maxParallelExtract || 2,
           // All downloads finished — use NORMAL OS priority so extraction runs at

@@ -594,11 +594,18 @@ export type ExtractErrorCategory =
 type ExtractionErrorWithHints = Error & {
   suggestRedownload?: boolean;
   jvmFailureReason?: string;
+  legacyBestPercent?: number;
+  legacyExtractor?: string;
 };
 
 function withExtractionErrorHints(
   error: unknown,
-  hints: { suggestRedownload?: boolean; jvmFailureReason?: string }
+  hints: {
+    suggestRedownload?: boolean;
+    jvmFailureReason?: string;
+    legacyBestPercent?: number;
+    legacyExtractor?: string;
+  }
 ): Error {
   const base = error instanceof Error ? error : new Error(String(error || "Entpacken fehlgeschlagen"));
   const enhanced = base as ExtractionErrorWithHints;
@@ -607,6 +614,12 @@ function withExtractionErrorHints(
   }
   if (hints.jvmFailureReason) {
     enhanced.jvmFailureReason = hints.jvmFailureReason;
+  }
+  if (Number.isFinite(hints.legacyBestPercent)) {
+    enhanced.legacyBestPercent = Math.max(Number(enhanced.legacyBestPercent || 0), Number(hints.legacyBestPercent || 0));
+  }
+  if (hints.legacyExtractor) {
+    enhanced.legacyExtractor = hints.legacyExtractor;
   }
   return enhanced;
 }
@@ -622,6 +635,37 @@ export function classifyExtractionError(errorText: string): ExtractErrorCategory
   if (text.includes("kein rar-archiv") || text.includes("not a rar archive") || text.includes("unsupported") || text.includes("unsupportedmethod")) return "unsupported_format";
   if (text.includes("disk full") || text.includes("speicherplatz") || text.includes("no space left") || text.includes("not enough space")) return "disk_full";
   return "unknown";
+}
+
+export function shouldFallbackLegacyRarToJvm(
+  archivePath: string,
+  configuredMode: ExtractBackendMode,
+  backendMode: ExtractBackendMode,
+  errorText: string,
+  bestPercent = 0,
+  platform = process.platform
+): boolean {
+  if (configuredMode !== "auto" || backendMode !== "legacy") {
+    return false;
+  }
+  if (String(platform || "").toLowerCase() !== "win32") {
+    return false;
+  }
+  if (!isRarArchivePath(archivePath)) {
+    return false;
+  }
+
+  const category = classifyExtractionError(errorText);
+  if (category === "aborted" || category === "timeout" || category === "no_extractor" || category === "missing_parts" || category === "disk_full") {
+    return false;
+  }
+
+  const text = String(errorText || "").toLowerCase();
+  if (text.includes("cannot create")) {
+    return false;
+  }
+
+  return bestPercent > 0 || category === "unknown";
 }
 
 function isExtractAbortError(errorText: string): boolean {
@@ -2136,22 +2180,22 @@ async function runExternalExtract(
         }
       }
     } catch (legacyError) {
-      const legacyText = String((legacyError as Error)?.message || legacyError || "");
-      const legacyCategory = classifyExtractionError(legacyText);
-      const isCrcOrWrongPw = legacyCategory === "crc_error" || legacyCategory === "wrong_password";
+      const initialLegacyText = String((legacyError as Error)?.message || legacyError || "");
+      const initialLegacyCategory = classifyExtractionError(initialLegacyText);
+      const initialLegacyHints = legacyError as ExtractionErrorWithHints;
+      const initialLegacyBestPercent = Number.isFinite(initialLegacyHints.legacyBestPercent)
+        ? Number(initialLegacyHints.legacyBestPercent || 0)
+        : 0;
+      const isCrcOrWrongPw = initialLegacyCategory === "crc_error" || initialLegacyCategory === "wrong_password";
+      let finalLegacyError: Error;
 
-      // ── Retry once after 2s delay ──
-      // On Windows, freshly completed downloads may still have file handles not
-      // fully released by the OS.  Encrypted RAR5 headers are especially sensitive:
-      // even a single unreadable byte causes "Checksum error in the encrypted file"
-      // at bestPercent=0, indistinguishable from a wrong password.
-      // A short delay allows the OS to finalise all handles and flush caches.
+      // Retry once after a short delay to let Windows flush freshly completed archive parts.
       if (isCrcOrWrongPw && !signal?.aborted) {
         const retryDelayMs = 2500;
         logger.warn(
-          `Legacy-Extraktion fehlgeschlagen (${legacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`
+          `Legacy-Extraktion fehlgeschlagen (${initialLegacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`
         );
-        onLog?.("WARN", `Legacy-Extraktion fehlgeschlagen (${legacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`);
+        onLog?.("WARN", `Legacy-Extraktion fehlgeschlagen (${initialLegacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`);
         await extractRetryDelay(retryDelayMs);
         if (!signal?.aborted) {
           try {
@@ -2175,27 +2219,86 @@ async function runExternalExtract(
             onLog?.("INFO", `Legacy-Retry erfolgreich: ${archiveName}`);
             password = retryPassword;
             usedCommand = retryCmd;
+            const retryExtractorName = path.basename(retryCmd).replace(/\.exe$/i, "");
+            const retryLegacyMs = Date.now() - legacyStartedAt;
+            if (jvmFailureReason) {
+              logger.info(`Entpackt via legacy/${retryExtractorName} (nach JVM-Fehler): ${archiveName}`);
+            } else {
+              logger.info(`Entpackt via legacy/${retryExtractorName} (nach Legacy-Retry): ${archiveName}`);
+            }
+            logger.info(`Extract-Backend Ende: archive=${archiveName}, backend=legacy/${retryExtractorName}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, legacyMs=${retryLegacyMs}, fallbackFromJvm=${fallbackFromJvm}, usedPassword=${password ? "yes" : "no"}`);
+            onLog?.("INFO", `Extract-Backend Ende: archive=${archiveName}, backend=legacy/${retryExtractorName}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, legacyMs=${retryLegacyMs}, fallbackFromJvm=${fallbackFromJvm}, usedPassword=${password ? "yes" : "no"}`);
+            return password;
           } catch (retryError) {
             const retryText = String((retryError as Error)?.message || retryError || "");
             const retryCategory = classifyExtractionError(retryText);
             logger.warn(`Legacy-Retry ebenfalls fehlgeschlagen (${retryCategory}): ${archiveName}`);
             onLog?.("WARN", `Legacy-Retry ebenfalls fehlgeschlagen (${retryCategory}): ${archiveName}`);
             const suggestRedownload = jvmCodecError && (retryCategory === "crc_error" || retryCategory === "wrong_password");
-            throw withExtractionErrorHints(retryError, {
+            finalLegacyError = withExtractionErrorHints(retryError, {
               suggestRedownload,
               jvmFailureReason: jvmFailureReason || undefined
             });
           }
         } else {
-          throw legacyError;
+          finalLegacyError = withExtractionErrorHints(legacyError, {
+            jvmFailureReason: jvmFailureReason || undefined
+          });
         }
       } else {
         const suggestRedownload = jvmCodecError && isCrcOrWrongPw;
-        throw withExtractionErrorHints(legacyError, {
+        finalLegacyError = withExtractionErrorHints(legacyError, {
           suggestRedownload,
           jvmFailureReason: jvmFailureReason || undefined
         });
       }
+
+      const finalLegacyHints = finalLegacyError as ExtractionErrorWithHints;
+      const finalLegacyText = String(finalLegacyError?.message || finalLegacyError || "");
+      const finalLegacyBestPercent = Number.isFinite(finalLegacyHints.legacyBestPercent)
+        ? Number(finalLegacyHints.legacyBestPercent || 0)
+        : initialLegacyBestPercent;
+
+      if (!signal?.aborted && shouldFallbackLegacyRarToJvm(archivePath, configuredBackendMode, backendMode, finalLegacyText, finalLegacyBestPercent)) {
+        const layout = resolveJvmExtractorLayout();
+        if (layout) {
+          logger.warn(`Legacy->JVM-Fallback: archive=${archiveName}, bestPercent=${finalLegacyBestPercent}, reason=${cleanErrorText(finalLegacyText)}`);
+          onLog?.("WARN", `Legacy->JVM-Fallback: archive=${archiveName}, bestPercent=${finalLegacyBestPercent}, reason=${cleanErrorText(finalLegacyText)}`);
+          const jvmStartedAt = Date.now();
+          const jvmResult = await runJvmExtractCommand(
+            layout,
+            archivePath,
+            targetDir,
+            conflictMode,
+            passwordCandidates,
+            onArchiveProgress,
+            signal,
+            timeoutMs
+          );
+          const jvmMs = Date.now() - jvmStartedAt;
+          logger.info(`JVM-Extractor Ergebnis (nach Legacy-Fallback): archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
+          onLog?.("INFO", `JVM-Extractor Ergebnis (nach Legacy-Fallback): archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
+          if (jvmResult.ok) {
+            logger.info(`Entpackt via ${jvmResult.backend || "jvm"} (nach Legacy-Fallback): ${archiveName}`);
+            logger.info(`Extract-Backend Ende: archive=${archiveName}, backend=${jvmResult.backend || "jvm"}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, fallbackFromJvm=${fallbackFromJvm}, fallbackFromLegacy=true, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
+            onLog?.("INFO", `Extract-Backend Ende: archive=${archiveName}, backend=${jvmResult.backend || "jvm"}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, fallbackFromJvm=${fallbackFromJvm}, fallbackFromLegacy=true, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
+            return jvmResult.usedPassword;
+          }
+          if (jvmResult.aborted) {
+            throw new Error("aborted:extract");
+          }
+          finalLegacyError = withExtractionErrorHints(finalLegacyError, {
+            jvmFailureReason: jvmResult.errorText || "JVM-Extractor fehlgeschlagen"
+          });
+          logger.warn(`Legacy->JVM-Fallback ebenfalls fehlgeschlagen: ${archiveName} (${cleanErrorText(jvmResult.errorText || "JVM-Extractor fehlgeschlagen")})`);
+          onLog?.("WARN", `Legacy->JVM-Fallback ebenfalls fehlgeschlagen: archive=${archiveName}, error=${cleanErrorText(jvmResult.errorText || "JVM-Extractor fehlgeschlagen")}`);
+        } else {
+          logger.warn(`Legacy->JVM-Fallback uebersprungen: JVM-Extractor nicht verfuegbar fuer ${archiveName}`);
+          onLog?.("WARN", `Legacy->JVM-Fallback uebersprungen: archive=${archiveName}, reason=no_jvm_extractor`);
+        }
+      }
+
+      throw finalLegacyError;
     }
     const legacyMs = Date.now() - legacyStartedAt;
     const extractorName = path.basename(usedCommand).replace(/\.exe$/i, "");
@@ -2267,7 +2370,7 @@ async function runExternalExtractInner(
       if (result.timedOut || result.missingCommand) break;
       lastError = result.errorText;
     }
-    throw new Error(lastError || "Entpacken fehlgeschlagen (flat-mode)");
+    throw withExtractionErrorHints(new Error(lastError || "Entpacken fehlgeschlagen (flat-mode)"), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
   }
 
   for (const password of passwords) {
@@ -2356,7 +2459,7 @@ async function runExternalExtractInner(
       resolvedExtractorCommand = null;
       resolveFailureReason = NO_EXTRACTOR_MESSAGE;
       resolveFailureAt = Date.now();
-      throw new Error(NO_EXTRACTOR_MESSAGE);
+      throw withExtractionErrorHints(new Error(NO_EXTRACTOR_MESSAGE), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
     }
 
     lastError = result.errorText;
@@ -2397,7 +2500,7 @@ async function runExternalExtractInner(
     }
   }
 
-  throw new Error(lastError || "Entpacken fehlgeschlagen");
+  throw withExtractionErrorHints(new Error(lastError || "Entpacken fehlgeschlagen"), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
 }
 
 // Delay helper for extraction retries (allows file handles to be released on Windows)

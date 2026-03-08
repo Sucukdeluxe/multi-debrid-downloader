@@ -15,6 +15,7 @@ import {
   orderExtractorCandidatesForArchive,
   resolveExtractorBackendModeForArchive,
   resolveExtractorBackendMode,
+  shouldFallbackLegacyRarToJvm,
 } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
@@ -1181,6 +1182,25 @@ describe("extractor", () => {
     it("prefers legacy for rar archives in auto mode on Windows", () => {
       expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.part01.rar", undefined, false, "win32")).toBe("legacy");
       expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.r00", undefined, false, "win32")).toBe("legacy");
+    });
+
+    it("falls back from legacy rar to jvm after partial-progress failure in auto mode on Windows", () => {
+      expect(
+        shouldFallbackLegacyRarToJvm(
+          "C:\\Downloads\\episode.part01.rar",
+          "auto",
+          "legacy",
+          "Error: Extracting from C:\\Downloads\\episode.part01.rar",
+          38,
+          "win32"
+        )
+      ).toBe(true);
+    });
+
+    it("skips legacy rar to jvm fallback for explicit legacy mode and non-rar cases", () => {
+      expect(shouldFallbackLegacyRarToJvm("C:\\Downloads\\episode.part01.rar", "legacy", "legacy", "checksum error", 38, "win32")).toBe(false);
+      expect(shouldFallbackLegacyRarToJvm("C:\\Downloads\\episode.zip", "auto", "legacy", "unknown failure", 38, "win32")).toBe(false);
+      expect(shouldFallbackLegacyRarToJvm("C:\\Downloads\\episode.part01.rar", "auto", "legacy", "timeout", 38, "win32")).toBe(false);
     });
 
     it("keeps auto for non-rar archives and respects explicit overrides", () => {
