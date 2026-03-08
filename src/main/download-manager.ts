@@ -108,7 +108,7 @@ const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 5 * 1024;
 
 const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
 
-const ALLDEBRID_START_STAGGER_MS = 2500;
+const ALLDEBRID_START_STAGGER_MS = 3000;
 
 const ARCHIVE_SETTLE_MIN_DELAY_MS = 1500;
 
@@ -5541,7 +5541,7 @@ export class DownloadManager extends EventEmitter {
     return provider;
   }
 
-  private countVisiblePacedStarts(paceKey: string, now: number, excludeItemId?: string): number {
+  private countFuturePacedStarts(paceKey: string, now: number, excludeItemId?: string): number {
     let count = 0;
     for (const [itemId, reservedAt] of this.pacedStartReservationByItem.entries()) {
       if (excludeItemId && itemId === excludeItemId) {
@@ -5563,11 +5563,6 @@ export class DownloadManager extends EventEmitter {
       count += 1;
     }
     return count;
-  }
-
-  private getVisiblePacedStartBudget(): number {
-    const maxParallel = Math.max(1, Number(this.settings.maxParallel) || 1);
-    return this.activeTasks.size < maxParallel ? 1 : 0;
   }
 
   private delayPacedStartForItem(item: DownloadItem, now: number): boolean {
@@ -5592,15 +5587,17 @@ export class DownloadManager extends EventEmitter {
       return true;
     }
 
-    const nextAllowedAt = this.providerStartReservations.get(paceKey) || 0;
-    if (nextAllowedAt <= now) {
-      this.pacedStartReservationByItem.delete(item.id);
-      return false;
-    }
-
-    const visibleBudget = this.getVisiblePacedStartBudget();
-    const visibleReservations = this.countVisiblePacedStarts(paceKey, now, item.id);
-    if (visibleBudget <= 0 || visibleReservations >= visibleBudget) {
+    const failureKey = this.getProviderFailureKeyForItem(item, "alldebrid");
+    const startLimit = this.getAllDebridStartLimit(extractHosterKey(item.url));
+    const activeProviderTasks = this.activeTasks.size;
+    const activeHosterTasks = this.getActiveTaskCountForFailureKey(failureKey);
+    const futureReservations = this.countFuturePacedStarts(paceKey, now, item.id);
+    const remainingGlobalSlots = Math.max(0, Math.max(1, Number(this.settings.maxParallel) || 1) - activeProviderTasks - futureReservations);
+    const remainingHosterSlots = Number.isFinite(startLimit)
+      ? Math.max(0, startLimit - activeHosterTasks - futureReservations)
+      : Number.MAX_SAFE_INTEGER;
+    const availableReservationSlots = Math.min(remainingGlobalSlots, remainingHosterSlots);
+    if (availableReservationSlots <= 0) {
       this.pacedStartReservationByItem.delete(item.id);
       if ((item.fullStatus || "").startsWith("AllDebrid Start in ")) {
         item.fullStatus = "Wartet";
@@ -5609,14 +5606,13 @@ export class DownloadManager extends EventEmitter {
       return true;
     }
 
-    const scheduledAt = Math.max(existingReadyAt, nextAllowedAt);
+    const scheduledAt = Math.max(existingReadyAt, now + ALLDEBRID_START_STAGGER_MS);
     if (scheduledAt <= now) {
       this.pacedStartReservationByItem.delete(item.id);
       return false;
     }
     this.retryAfterByItem.set(item.id, scheduledAt);
     this.pacedStartReservationByItem.set(item.id, scheduledAt);
-    this.providerStartReservations.set(paceKey, scheduledAt + ALLDEBRID_START_STAGGER_MS);
     item.status = "queued";
     item.speedBps = 0;
     item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
@@ -5633,17 +5629,10 @@ export class DownloadManager extends EventEmitter {
     const reservedAt = this.pacedStartReservationByItem.get(item.id) || 0;
     if (reservedAt > 0) {
       this.pacedStartReservationByItem.delete(item.id);
-      return;
     }
-
-    if (this.getProviderActiveTaskCount("alldebrid") <= 0) {
+    if (this.countFuturePacedStarts(paceKey, now) <= 0) {
       this.providerStartReservations.delete(paceKey);
-      return;
     }
-
-    const existingReservation = this.providerStartReservations.get(paceKey) || 0;
-    const baseReservation = Math.max(now, existingReservation);
-    this.providerStartReservations.set(paceKey, baseReservation + ALLDEBRID_START_STAGGER_MS);
   }
 
   private getConfiguredAllDebridStartLimit(): number {
