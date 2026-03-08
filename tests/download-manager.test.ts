@@ -4838,7 +4838,7 @@ describe("download manager", () => {
     }
   }, 20000);
 
-  it("shows only the next AllDebrid item with a visible countdown", async () => {
+  it("shows the same AllDebrid countdown for all immediately free slots", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const chunk = Buffer.alloc(256 * 1024, 9);
@@ -4917,18 +4917,18 @@ describe("download manager", () => {
 
       await waitFor(() => {
         const items = Object.values(manager.getSnapshot().session.items);
-        return items.some((item) => item.status === "downloading");
+        const countdownItems = items.filter((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""));
+        return countdownItems.length === 5;
       }, 10000);
-      await new Promise((resolve) => setTimeout(resolve, 500));
 
       const items = Object.values(manager.getSnapshot().session.items);
       const activeCount = items.filter((item) => item.status === "downloading" || item.status === "validating").length;
       const countdownItems = items.filter((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""));
-      const plainQueuedItems = items.filter((item) => (item.status === "queued" || item.status === "reconnect_wait") && item.fullStatus === "Wartet");
+      const uniqueCountdowns = new Set(countdownItems.map((item) => item.fullStatus || ""));
 
-      expect(activeCount).toBeGreaterThan(0);
-      expect(countdownItems.length).toBeLessThanOrEqual(1);
-      expect(plainQueuedItems.length).toBeGreaterThan(0);
+      expect(activeCount).toBe(0);
+      expect(countdownItems.length).toBe(5);
+      expect(uniqueCountdowns.size).toBe(1);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
@@ -4938,7 +4938,7 @@ describe("download manager", () => {
     }
   }, 20000);
 
-  it("staggeres AllDebrid starts by 2.5 seconds per active download", async () => {
+  it("starts immediately free AllDebrid slots after the same 3 second delay", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(512 * 1024, 5);
@@ -5024,20 +5024,17 @@ describe("download manager", () => {
 
       const managerInternals = manager as unknown as {
         retryAfterByItem: Map<string, number>;
-        providerStartReservations: Map<string, number>;
       };
-      await waitFor(() => managerInternals.retryAfterByItem.size >= 1 && managerInternals.providerStartReservations.size >= 1, 5000);
+      await waitFor(() => managerInternals.retryAfterByItem.size >= 3, 5000);
 
       const now = Date.now();
       const readyTimes = [...managerInternals.retryAfterByItem.values()].sort((a, b) => a - b);
-      expect(readyTimes.length).toBeGreaterThanOrEqual(1);
+      expect(readyTimes.length).toBe(3);
       const firstDelay = readyTimes[0] - now;
-      const nextReservation = managerInternals.providerStartReservations.get("alldebrid") || 0;
-      const secondDelay = nextReservation - now;
-      expect(firstDelay).toBeGreaterThan(1500);
-      expect(firstDelay).toBeLessThan(6500);
-      expect(secondDelay).toBeGreaterThan(firstDelay + 1200);
-      expect(secondDelay).toBeLessThan(firstDelay + 4500);
+      const lastDelay = readyTimes[readyTimes.length - 1] - now;
+      expect(firstDelay).toBeGreaterThan(2000);
+      expect(firstDelay).toBeLessThan(4500);
+      expect(lastDelay - firstDelay).toBeLessThan(500);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
@@ -5046,6 +5043,106 @@ describe("download manager", () => {
       await once(server, "close");
     }
   }, 20000);
+
+  it("tops up newly freed AllDebrid slots with a fresh 3 second countdown", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const shortBinary = Buffer.alloc(64 * 1024, 7);
+    const longBinary = Buffer.alloc(512 * 1024, 8);
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (route === "/ad-1") {
+        setTimeout(() => {
+          res.statusCode = 200;
+          res.setHeader("Accept-Ranges", "bytes");
+          res.setHeader("Content-Length", String(shortBinary.length));
+          res.end(shortBinary);
+        }, 150);
+        return;
+      }
+      if (route === "/ad-2" || route === "/ad-3" || route === "/ad-4") {
+        setTimeout(() => {
+          res.statusCode = 200;
+          res.setHeader("Accept-Ranges", "bytes");
+          res.setHeader("Content-Length", String(longBinary.length));
+          res.end(longBinary);
+        }, 6000);
+        return;
+      }
+      res.statusCode = 404;
+      res.end("not-found");
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+
+    const links = [
+      "https://rapidgator.net/file/ad-topup-1",
+      "https://rapidgator.net/file/ad-topup-2",
+      "https://rapidgator.net/file/ad-topup-3",
+      "https://rapidgator.net/file/ad-topup-4"
+    ];
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          allDebridToken: "ad-token",
+          allDebridUseWebLogin: true,
+          providerOrder: [],
+          providerPrimary: "alldebrid",
+          providerSecondary: "none",
+          providerTertiary: "none",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: false,
+          maxParallel: 3
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state")),
+        {
+          allDebridWebUnrestrict: async (link) => {
+            const slot = links.indexOf(link) + 1;
+            return {
+              fileName: `ad-topup-${slot}.bin`,
+              directUrl: `http://127.0.0.1:${address.port}/ad-${slot}`,
+              fileSize: slot === 1 ? shortBinary.length : longBinary.length,
+              retriesUsed: 0
+            };
+          }
+        }
+      );
+
+      manager.addPackages([{ name: "ad-topup", links }]);
+      await manager.start();
+
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        return items.filter((item) => item.status === "downloading").length === 3;
+      }, 12000);
+
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        const completedCount = items.filter((item) => item.status === "completed").length;
+        const countdownItems = items.filter((item) => /^AllDebrid Start in [123]s$/.test(item.fullStatus || ""));
+        return completedCount >= 1 && countdownItems.length === 1;
+      }, 12000);
+
+      manager.stop();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 25000);
 
   it("creates extract directory only at extraction and marks items as Entpackt", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
