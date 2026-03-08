@@ -41,7 +41,8 @@ export interface BandwidthScheduleEntry {
 export interface DownloadStats {
   totalDownloaded: number;
   totalDownloadedAllTime: number;
-  totalFiles: number;
+  totalFilesSession: number;
+  totalFilesAllTime: number;
   totalPackages: number;
   sessionStartedAt: number;
 }
@@ -108,6 +109,7 @@ export interface AppSettings {
   hideExtractedItems: boolean;
   confirmDeleteSelection: boolean;
   totalDownloadedAllTime: number;
+  totalCompletedFilesAllTime: number;
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   extractCpuPriority: ExtractCpuPriority;
@@ -116,8 +118,10 @@ export interface AppSettings {
   hosterRouting: Record<string, DebridProvider>;
   providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;
   providerDailyUsageBytes: Partial<Record<DebridProvider, number>>;
+  providerTotalUsageBytes: Partial<Record<DebridProvider, number>>;
   debridLinkApiKeyDailyLimitBytes: Record<string, number>;
   debridLinkApiKeyDailyUsageBytes: Record<string, number>;
+  debridLinkApiKeyTotalUsageBytes: Record<string, number>;
   providerDailyUsageDay: string;
   scheduledStartEpochMs: number;
 }

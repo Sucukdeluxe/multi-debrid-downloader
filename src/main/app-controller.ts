@@ -179,13 +179,18 @@ export class AppController {
       return previousSettings;
     }
 
-    // Preserve the live totalDownloadedAllTime from the download manager
+    // Preserve the live all-time counters from the download manager
     const liveSettings = this.manager.getSettings();
     nextSettings.totalDownloadedAllTime = Math.max(nextSettings.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
+    nextSettings.totalCompletedFilesAllTime = Math.max(nextSettings.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);
     nextSettings.providerDailyUsageDay = liveSettings.providerDailyUsageDay;
     nextSettings.providerDailyUsageBytes = { ...(liveSettings.providerDailyUsageBytes || {}) };
+    nextSettings.providerTotalUsageBytes = { ...(liveSettings.providerTotalUsageBytes || {}) };
     nextSettings.debridLinkApiKeyDailyUsageBytes = Object.fromEntries(
       Object.entries(liveSettings.debridLinkApiKeyDailyUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
+    );
+    nextSettings.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
+      Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
     );
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
@@ -377,6 +382,15 @@ export class AppController {
 
   public getSessionStats(): SessionStats {
     return this.manager.getSessionStats();
+  }
+
+  public resetSessionStats(): void {
+    this.manager.resetSessionStats();
+  }
+
+  public resetDownloadStats(): void {
+    this.manager.resetDownloadStats();
+    this.settings = this.manager.getSettings();
   }
 
   public exportBackup(): Buffer {

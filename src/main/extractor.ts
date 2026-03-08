@@ -1038,8 +1038,31 @@ export function resolveExtractorBackendMode(
   return "auto";
 }
 
+export function resolveExtractorBackendModeForArchive(
+  archivePath: string,
+  rawValue?: string | null,
+  isVitestEnv = Boolean(process.env.VITEST),
+  platform = process.platform
+): ExtractBackendMode {
+  const requestedMode = resolveExtractorBackendMode(rawValue, isVitestEnv);
+  if (requestedMode !== "auto") {
+    return requestedMode;
+  }
+  // On Windows, multipart RAR extraction feels significantly snappier with the
+  // native CLI path than with the JVM backend, and we already harden that path
+  // with subst + flat-mode fallback.
+  if (String(platform || "").toLowerCase() === "win32" && isRarArchivePath(archivePath)) {
+    return "legacy";
+  }
+  return requestedMode;
+}
+
 function extractorBackendMode(): ExtractBackendMode {
   return resolveExtractorBackendMode(process.env.RD_EXTRACT_BACKEND);
+}
+
+function extractorBackendModeForArchive(archivePath: string): ExtractBackendMode {
+  return resolveExtractorBackendModeForArchive(archivePath, process.env.RD_EXTRACT_BACKEND);
 }
 
 function isJvmRuntimeMissingError(errorText: string): boolean {
@@ -1961,14 +1984,15 @@ async function runExternalExtract(
   onLog?: ExtractOptions["onLog"]
 ): Promise<string> {
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
-  const backendMode = extractorBackendMode();
+  const configuredBackendMode = extractorBackendMode();
+  const backendMode = extractorBackendModeForArchive(archivePath);
   const archiveName = path.basename(archivePath);
   const totalStartedAt = Date.now();
   let jvmFailureReason = "";
   let jvmCodecError = false;
   let fallbackFromJvm = false;
-  logger.info(`Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
-  onLog?.("INFO", `Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
+  logger.info(`Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, configuredMode=${configuredBackendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
+  onLog?.("INFO", `Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, configuredMode=${configuredBackendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
 
   await fs.promises.mkdir(targetDir, { recursive: true });
 

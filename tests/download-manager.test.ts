@@ -324,6 +324,155 @@ describe("download manager", () => {
     }
   });
 
+  it("preserves partial files and requests a fresh direct link when resume gets HTTP 200", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(256 * 1024, 21);
+    const pkgDir = path.join(root, "downloads", "resume-ignored");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const existingTargetPath = path.join(pkgDir, "resume-ignored.mkv");
+    const partialSize = 96 * 1024;
+    fs.writeFileSync(existingTargetPath, binary.subarray(0, partialSize));
+
+    let unrestrictCalls = 0;
+    let ignoredRangeCalls = 0;
+    let resumeCalls = 0;
+    const resumeStarts: number[] = [];
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+
+      if (route === "/ignored-range") {
+        ignoredRangeCalls += 1;
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length));
+        res.end(binary);
+        return;
+      }
+
+      if (route === "/resume-ok") {
+        resumeCalls += 1;
+        resumeStarts.push(start);
+        const chunk = binary.subarray(start);
+        if (start > 0) {
+          res.statusCode = 206;
+          res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+        } else {
+          res.statusCode = 200;
+        }
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(chunk.length));
+        res.end(chunk);
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end("not-found");
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const ignoredRangeUrl = `http://127.0.0.1:${address.port}/ignored-range`;
+    const resumeUrl = `http://127.0.0.1:${address.port}/resume-ok`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: unrestrictCalls === 1 ? ignoredRangeUrl : resumeUrl,
+            filename: "resume-ignored.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "resume-ignored-pkg";
+      const itemId = "resume-ignored-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "resume-ignored",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "resume-ignored"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/resume-ignored",
+        provider: null,
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: binary.length,
+        progressPercent: Math.floor((partialSize / binary.length) * 100),
+        fileName: "resume-ignored.mkv",
+        targetPath: existingTargetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 1,
+          autoExtract: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(binary.length);
+      expect(unrestrictCalls).toBeGreaterThanOrEqual(2);
+      expect(ignoredRangeCalls).toBeGreaterThanOrEqual(1);
+      expect(resumeCalls).toBeGreaterThanOrEqual(1);
+      expect(resumeStarts).toContain(partialSize);
+      expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("assigns unique target paths for same filenames in parallel", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -3431,6 +3580,86 @@ describe("download manager", () => {
     expect(snapshot.session.runStartedAt).toBe(0);
   });
 
+  it("keeps cumulative session totals when completed items are removed from the queue", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "pkg-complete-remove";
+    const itemId = "item-complete-remove";
+    const now = Date.now() - 1000;
+    const outputDir = path.join(root, "downloads", "pkg-complete-remove");
+    const extractDir = path.join(root, "extract", "pkg-complete-remove");
+    const targetPath = path.join(outputDir, "episode.mkv");
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "pkg-complete-remove",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/item-complete-remove",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 3 * 1024,
+      totalBytes: 3 * 1024,
+      progressPercent: 100,
+      fileName: "episode.mkv",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (3 KB)",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const internal = manager as unknown as {
+      session: { totalDownloadedBytes: number };
+      sessionDownloadedBytes: number;
+      sessionCompletedFiles: number;
+      itemContributedBytes: Map<string, number>;
+      removePackageFromSession: (packageId: string, itemIds: string[], reason?: "completed" | "deleted") => void;
+    };
+
+    internal.session.totalDownloadedBytes = 16 * 1024 * 1024 * 1024;
+    internal.sessionDownloadedBytes = 16 * 1024 * 1024 * 1024;
+    internal.sessionCompletedFiles = 1;
+    internal.itemContributedBytes.set(itemId, 3 * 1024 * 1024 * 1024);
+
+    internal.removePackageFromSession(packageId, [itemId], "completed");
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.stats.totalPackages).toBe(0);
+    expect(snapshot.stats.totalDownloaded).toBe(16 * 1024 * 1024 * 1024);
+    expect(snapshot.stats.totalFilesSession).toBe(1);
+    expect(snapshot.session.totalDownloadedBytes).toBe(16 * 1024 * 1024 * 1024);
+  });
+
   it("does not start a run when queue is empty", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -5681,7 +5910,8 @@ describe("download manager", () => {
         megaPassword: "mega-pass",
         megaDebridApiEnabled: true,
         providerDailyUsageDay: getProviderUsageDayKey(),
-        providerDailyUsageBytes: { realdebrid: 512 }
+        providerDailyUsageBytes: { realdebrid: 512 },
+        providerTotalUsageBytes: { realdebrid: 2048 }
       },
       emptySession(),
       createStoragePaths(path.join(root, "state"))
@@ -5697,6 +5927,9 @@ describe("download manager", () => {
     expect(internal.settings.providerDailyUsageBytes.realdebrid).toBe(512);
     expect(internal.settings.providerDailyUsageBytes["megadebrid-api"]).toBe(1024);
     expect((internal.settings.providerDailyUsageBytes as Record<string, number>).megadebrid).toBeUndefined();
+    expect(internal.settings.providerTotalUsageBytes.realdebrid).toBe(2048);
+    expect(internal.settings.providerTotalUsageBytes["megadebrid-api"]).toBe(1024);
+    expect((internal.settings.providerTotalUsageBytes as Record<string, number>).megadebrid).toBeUndefined();
   });
 
   it("tracks daily usage on the actual Debrid-Link key without touching other keys", () => {
@@ -5710,7 +5943,9 @@ describe("download manager", () => {
         debridLinkApiKeys: "dl-key-one\ndl-key-two",
         providerDailyUsageDay: getProviderUsageDayKey(),
         providerDailyUsageBytes: { debridlink: 256 },
-        debridLinkApiKeyDailyUsageBytes: { [secondKey.id]: 512 }
+        providerTotalUsageBytes: { debridlink: 4096 },
+        debridLinkApiKeyDailyUsageBytes: { [secondKey.id]: 512 },
+        debridLinkApiKeyTotalUsageBytes: { [secondKey.id]: 2048 }
       },
       emptySession(),
       createStoragePaths(path.join(root, "state"))
@@ -5724,8 +5959,11 @@ describe("download manager", () => {
     internal.recordProviderDownloadedBytes("debridlink", 1024, firstKey.id);
 
     expect(internal.settings.providerDailyUsageBytes.debridlink).toBe(1280);
+    expect(internal.settings.providerTotalUsageBytes.debridlink).toBe(5120);
     expect(internal.settings.debridLinkApiKeyDailyUsageBytes[firstKey.id]).toBe(1024);
     expect(internal.settings.debridLinkApiKeyDailyUsageBytes[secondKey.id]).toBe(512);
+    expect(internal.settings.debridLinkApiKeyTotalUsageBytes[firstKey.id]).toBe(1024);
+    expect(internal.settings.debridLinkApiKeyTotalUsageBytes[secondKey.id]).toBe(2048);
   });
 
   it("does not hang when rapid stop, disable provider, start", async () => {

@@ -19,11 +19,13 @@ import type {
   UpdateInstallProgress
 } from "../shared/types";
 import {
+  getDebridLinkApiKeyTotalUsageBytes,
   getDebridLinkApiKeyDailyLimitBytes,
   getDebridLinkApiKeyDailyRemainingBytes,
   getDebridLinkApiKeyDailyUsageBytes,
   getProviderDailyLimitBytes,
   getProviderDailyRemainingBytes,
+  getProviderTotalUsageBytes,
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
@@ -110,6 +112,7 @@ interface DebridLinkAccountKeyEntry {
   masked: string;
   disabled: boolean;
   dailyUsedBytes: number;
+  totalUsedBytes: number;
   dailyLimitBytes: number;
   dailyRemainingBytes: number | null;
   dailyLimitReached: boolean;
@@ -127,6 +130,7 @@ interface ConfiguredAccountEntry {
   note: string;
   disabled: boolean;
   dailyUsedBytes: number;
+  totalUsedBytes: number;
   dailyLimitBytes: number;
   dailyRemainingBytes: number | null;
   dailyLimitReached: boolean;
@@ -686,7 +690,8 @@ function validateAccountDialog(dialog: AccountDialogState): string | null {
 const emptyStats = (): DownloadStats => ({
   totalDownloaded: 0,
   totalDownloadedAllTime: 0,
-  totalFiles: 0,
+  totalFilesSession: 0,
+  totalFilesAllTime: 0,
   totalPackages: 0,
   sessionStartedAt: 0
 });
@@ -707,15 +712,17 @@ const emptySnapshot = (): UiSnapshot => ({
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, autoSortPackagesByProgress: true, autoSkipExtracted: false, confirmDeleteSelection: true,
     accountListShowDetailedDebridLinkKeys: false,
-    bandwidthSchedules: [], totalDownloadedAllTime: 0,
+    bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     autoExtractWhenStopped: true,
     disabledProviders: [],
     hosterRouting: {},
     providerDailyLimitBytes: {},
     providerDailyUsageBytes: {},
+    providerTotalUsageBytes: {},
     debridLinkApiKeyDailyLimitBytes: {},
     debridLinkApiKeyDailyUsageBytes: {},
+    debridLinkApiKeyTotalUsageBytes: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   },
@@ -1163,11 +1170,11 @@ type PkgSortColumn = "name" | "size" | "hoster" | "progress";
 const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
 const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "added"];
 const COLUMN_DEFS: Record<string, { label: string; width: string; sortable?: PkgSortColumn }> = {
-  name:     { label: "Name",            width: "1fr",   sortable: "name" },
+  name:     { label: "Name",            width: "minmax(0, 0.92fr)", sortable: "name" },
   size:     { label: "Geladen / Größe", width: "160px", sortable: "size" },
   progress: { label: "Fortschritt",     width: "80px",  sortable: "progress" },
   hoster:   { label: "Hoster",          width: "110px", sortable: "hoster" },
-  account:  { label: "Service",         width: "110px" },
+  account:  { label: "Service",         width: "132px" },
   prio:     { label: "Priorität",       width: "70px" },
   status:   { label: "Status",          width: "160px" },
   speed:    { label: "Geschwindigkeit", width: "90px" },
@@ -1252,6 +1259,8 @@ export function App(): ReactElement {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onImportDlcRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [dragOver, setDragOver] = useState(false);
+  const [draggedProvider, setDraggedProvider] = useState<DebridProvider | null>(null);
+  const [providerDropTarget, setProviderDropTarget] = useState<DebridProvider | null>(null);
   const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [collectorTabs, setCollectorTabs] = useState<CollectorTab[]>([
@@ -1946,6 +1955,43 @@ export function App(): ReactElement {
     }));
   }, []);
 
+  const onProviderDragStart = useCallback((event: DragEvent<HTMLDivElement>, provider: DebridProvider): void => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", provider);
+    setDraggedProvider(provider);
+    setProviderDropTarget(provider);
+  }, []);
+
+  const onProviderDragOver = useCallback((event: DragEvent<HTMLDivElement>, provider: DebridProvider): void => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (providerDropTarget !== provider) {
+      setProviderDropTarget(provider);
+    }
+  }, [providerDropTarget]);
+
+  const onProviderDrop = useCallback((event: DragEvent<HTMLDivElement>, provider: DebridProvider): void => {
+    event.preventDefault();
+    if (!draggedProvider || draggedProvider === provider) {
+      return;
+    }
+    const currentOrder = [...activeProviderOrder];
+    const fromIndex = currentOrder.indexOf(draggedProvider);
+    const toIndex = currentOrder.indexOf(provider);
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) {
+      return;
+    }
+    currentOrder.splice(fromIndex, 1);
+    currentOrder.splice(toIndex, 0, draggedProvider);
+    setProviderOrder(currentOrder);
+    setProviderDropTarget(provider);
+  }, [activeProviderOrder, draggedProvider, setProviderOrder]);
+
+  const onProviderDragEnd = useCallback((): void => {
+    setDraggedProvider(null);
+    setProviderDropTarget(null);
+  }, []);
+
   const normalizedSettingsDraft: AppSettings = useMemo(() => ({
     ...settingsDraft,
     ...normalizeProviderSelectionForSettings(settingsDraft)
@@ -1989,6 +2035,7 @@ export function App(): ReactElement {
       }
       const provider = getAccountServiceProvider(service);
       const dailyUsedBytes = getProviderDailyUsageBytes(snapshot.settings, provider);
+      const totalUsedBytes = getProviderTotalUsageBytes(snapshot.settings, provider);
       const dailyLimitBytes = getProviderDailyLimitBytes(settingsDraft, provider);
       const dailyRemainingBytes = getProviderDailyRemainingBytes({
         providerDailyLimitBytes: settingsDraft.providerDailyLimitBytes,
@@ -2015,6 +2062,7 @@ export function App(): ReactElement {
             masked: key.masked,
             disabled: (settingsDraft.debridLinkDisabledKeyIds || []).includes(key.id),
             dailyUsedBytes: keyDailyUsedBytes,
+            totalUsedBytes: getDebridLinkApiKeyTotalUsageBytes(snapshot.settings, key.id),
             dailyLimitBytes: keyDailyLimitBytes,
             dailyRemainingBytes: keyDailyRemainingBytes,
             dailyLimitReached: keyDailyLimitBytes > 0 && keyDailyUsedBytes >= keyDailyLimitBytes
@@ -2056,6 +2104,7 @@ export function App(): ReactElement {
         note,
         disabled: isDisabled,
         dailyUsedBytes,
+        totalUsedBytes,
         dailyLimitBytes,
         dailyRemainingBytes,
         dailyLimitReached,
@@ -2238,7 +2287,9 @@ export function App(): ReactElement {
       totalDownloadedAllTime: Math.max(prev.totalDownloadedAllTime, result.totalDownloadedAllTime),
       providerDailyUsageDay: result.providerDailyUsageDay,
       providerDailyUsageBytes: { ...(result.providerDailyUsageBytes || {}) },
-      debridLinkApiKeyDailyUsageBytes: { ...(result.debridLinkApiKeyDailyUsageBytes || {}) }
+      providerTotalUsageBytes: { ...(result.providerTotalUsageBytes || {}) },
+      debridLinkApiKeyDailyUsageBytes: { ...(result.debridLinkApiKeyDailyUsageBytes || {}) },
+      debridLinkApiKeyTotalUsageBytes: { ...(result.debridLinkApiKeyTotalUsageBytes || {}) }
     }));
   };
 
@@ -2973,7 +3024,94 @@ export function App(): ReactElement {
   }, [selectedIds, snapshot.session.packages, showToast]);
 
   const onPackageToggle = useCallback((packageId: string): void => {
+    let previousEnabled: boolean | null = null;
+    setSnapshot((prev) => {
+      const pkg = prev.session.packages[packageId];
+      if (!pkg) {
+        return prev;
+      }
+      previousEnabled = pkg.enabled;
+      const nextEnabled = !pkg.enabled;
+      const nextItems = { ...prev.session.items };
+      if (!nextEnabled) {
+        for (const itemId of pkg.itemIds) {
+          const item = nextItems[itemId];
+          if (!item) {
+            continue;
+          }
+          if (item.status === "queued" || item.status === "reconnect_wait") {
+            nextItems[itemId] = {
+              ...item,
+              fullStatus: "Paket gestoppt",
+              updatedAt: Date.now()
+            };
+          }
+        }
+      } else {
+        for (const itemId of pkg.itemIds) {
+          const item = nextItems[itemId];
+          if (!item) {
+            continue;
+          }
+          if (item.status === "queued" && item.fullStatus === "Paket gestoppt") {
+            nextItems[itemId] = {
+              ...item,
+              fullStatus: "Wartet",
+              updatedAt: Date.now()
+            };
+          }
+        }
+      }
+      const nextPkgStatus = !nextEnabled
+        ? (pkg.status === "downloading" || pkg.status === "extracting" ? "paused" : pkg.status)
+        : (pkg.status === "paused" ? "queued" : pkg.status);
+      const nextSnapshot: UiSnapshot = {
+        ...prev,
+        session: {
+          ...prev.session,
+          items: nextItems,
+          packages: {
+            ...prev.session.packages,
+            [packageId]: {
+              ...pkg,
+              enabled: nextEnabled,
+              status: nextPkgStatus,
+              updatedAt: Date.now()
+            }
+          },
+          updatedAt: Date.now()
+        }
+      };
+      latestStateRef.current = nextSnapshot;
+      return nextSnapshot;
+    });
     void window.rd.togglePackage(packageId).catch((error) => {
+      if (previousEnabled !== null) {
+        setSnapshot((prev) => {
+          const pkg = prev.session.packages[packageId];
+          if (!pkg) {
+            return prev;
+          }
+          const revertedSnapshot: UiSnapshot = {
+            ...prev,
+            session: {
+              ...prev.session,
+              packages: {
+                ...prev.session.packages,
+                [packageId]: {
+                  ...pkg,
+                  enabled: previousEnabled,
+                  status: previousEnabled && pkg.status === "paused" ? "queued" : pkg.status,
+                  updatedAt: Date.now()
+                }
+              },
+              updatedAt: Date.now()
+            }
+          };
+          latestStateRef.current = revertedSnapshot;
+          return revertedSnapshot;
+        });
+      }
       showToast(`Paket-Umschalten fehlgeschlagen: ${String(error)}`, 2400);
     });
   }, [showToast]);
@@ -3913,6 +4051,7 @@ export function App(): ReactElement {
                 pkg={pkg}
                 items={itemsByPackage.get(pkg.id) ?? []}
                 packageSpeed={packageSpeedMap.get(pkg.id) ?? 0}
+                stripeVariant={idx % 2 === 0 ? "a" : "b"}
                 isFirst={idx === 0}
                 isLast={idx === visiblePackages.length - 1}
                 isEditing={editingPackageId === pkg.id}
@@ -4064,6 +4203,22 @@ export function App(): ReactElement {
           <section className="statistics-view">
             <article className="card stats-overview">
               <h3>Session-Übersicht</h3>
+              <div className="stats-actions">
+                <button className="btn btn-sm" onClick={() => {
+                  void window.rd.resetSessionStats().then(() => {
+                    showToast("Session-Statistik zurückgesetzt", 1800);
+                  }).catch((error) => {
+                    showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
+                  });
+                }}>Session zurücksetzen</button>
+                <button className="btn btn-sm" onClick={() => {
+                  void window.rd.resetDownloadStats().then(() => {
+                    showToast("Gesamt-Downloadstatistik zurückgesetzt", 1800);
+                  }).catch((error) => {
+                    showToast(`Download-Reset fehlgeschlagen: ${String(error)}`, 2400);
+                  });
+                }}>Heruntergeladen zurücksetzen</button>
+              </div>
               <div className="stats-grid">
                 <div className="stat-item">
                   <span className="stat-label">Aktuelle Geschwindigkeit</span>
@@ -4078,8 +4233,12 @@ export function App(): ReactElement {
                   <span className="stat-value">{humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
                 </div>
                 <div className="stat-item">
-                  <span className="stat-label">Fertige Dateien</span>
-                  <span className="stat-value">{snapshot.stats.totalFiles}</span>
+                  <span className="stat-label">Fertige Dateien (Gesamt)</span>
+                  <span className="stat-value">{snapshot.stats.totalFilesAllTime}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Fertige Dateien (Session)</span>
+                  <span className="stat-value">{snapshot.stats.totalFilesSession}</span>
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">Pakete</span>
@@ -4310,16 +4469,22 @@ export function App(): ReactElement {
                                 </div>
                                 <div className="account-cell account-info-cell">
                                   {entry.debridLinkKeys.length > 0 ? (
-                                    <button className="btn btn-sm" onClick={() => setKeyStatsPopup(entry.service)}>
-                                      Statistik
-                                    </button>
+                                    <div className="account-usage-stack">
+                                      <button className="btn btn-sm" onClick={() => setKeyStatsPopup(entry.service)}>
+                                        Statistik
+                                      </button>
+                                      <span className="account-usage-total">Insgesamt: {humanSize(entry.totalUsedBytes)}</span>
+                                    </div>
                                   ) : (
-                                    <div className={`account-usage-stats${entry.dailyLimitReached ? " warning" : ""}`}>
-                                      <span>Heute: {humanSize(entry.dailyUsedBytes)}</span>
-                                      <span>{entry.dailyLimitBytes > 0 ? `Limit: ${humanSize(entry.dailyLimitBytes)}` : "Kein Tageslimit"}</span>
-                                      {entry.dailyLimitBytes > 0 && (
-                                        <span>{entry.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(entry.dailyRemainingBytes || 0)}`}</span>
-                                      )}
+                                    <div className="account-usage-stack">
+                                      <div className={`account-usage-stats${entry.dailyLimitReached ? " warning" : ""}`}>
+                                        <span>Heute: {humanSize(entry.dailyUsedBytes)}</span>
+                                        <span>{entry.dailyLimitBytes > 0 ? `Limit: ${humanSize(entry.dailyLimitBytes)}` : "Kein Tageslimit"}</span>
+                                        {entry.dailyLimitBytes > 0 && (
+                                          <span>{entry.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(entry.dailyRemainingBytes || 0)}`}</span>
+                                        )}
+                                      </div>
+                                      <span className="account-usage-total">Insgesamt: {humanSize(entry.totalUsedBytes)}</span>
                                     </div>
                                   )}
                                 </div>
@@ -4380,7 +4545,15 @@ export function App(): ReactElement {
                       {activeProviderOrder.length > 0 && (
                         <div className="provider-order-list">
                           {activeProviderOrder.map((provider, idx) => (
-                            <div key={provider} className="provider-order-row">
+                            <div
+                              key={provider}
+                              className={`provider-order-row${draggedProvider === provider ? " dragging" : ""}${providerDropTarget === provider && draggedProvider !== provider ? " drag-target" : ""}`}
+                              draggable
+                              onDragStart={(event) => onProviderDragStart(event, provider)}
+                              onDragOver={(event) => onProviderDragOver(event, provider)}
+                              onDrop={(event) => onProviderDrop(event, provider)}
+                              onDragEnd={onProviderDragEnd}
+                            >
                               <span className="provider-order-num">{idx + 1}.</span>
                               <span className="provider-order-label">{providerLabelWithMode(provider, settingsDraft)}</span>
                               <div className="provider-order-actions">
@@ -5109,7 +5282,7 @@ export function App(): ReactElement {
           <div className="ctx-menu-sep" />
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
-              for (const id of selectedIds) { if (snapshot.session.packages[id]) void window.rd.togglePackage(id).catch(() => {}); }
+              for (const id of selectedIds) { if (snapshot.session.packages[id]) onPackageToggle(id); }
               setContextMenu(null);
             }}>
               {multi ? `Alle ${selectedIds.size} umschalten` : (snapshot.session.packages[contextMenu.packageId]?.enabled ? "Deaktivieren" : "Aktivieren")}
@@ -5157,13 +5330,13 @@ export function App(): ReactElement {
           {hasPackages && !contextMenu.itemId && (<>
             <div className="ctx-menu-sep" />
             <div className="ctx-menu-sub">
-              <button className="ctx-menu-item">Priorität ?</button>
+              <button className="ctx-menu-item">Priorität &gt;</button>
               <div className="ctx-menu-sub-items">
                 {(["high", "normal", "low"] as const).map((p) => {
                   const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
                   const pkgIds = selectedPackageIds;
                   const allMatch = pkgIds.every((id) => (snapshot.session.packages[id]?.priority || "normal") === p);
-                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `? ${label}` : label}</button>;
+                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `[Aktiv] ${label}` : label}</button>;
                 })}
               </div>
             </div>
@@ -5395,6 +5568,7 @@ interface PackageCardProps {
   pkg: PackageEntry;
   items: DownloadItem[];
   packageSpeed: number;
+  stripeVariant: "a" | "b";
   isFirst: boolean;
   isLast: boolean;
   isEditing: boolean;
@@ -5422,7 +5596,7 @@ interface PackageCardProps {
   onDragEnd: () => void;
 }
 
-const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripeVariant, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
   const done = items.filter((item) => item.status === "completed").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const cancelled = items.filter((item) => item.status === "cancelled").length;
@@ -5460,7 +5634,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
 
   return (
     <article
-      className={`package-card queue-package-card${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
+      className={`package-card queue-package-card pkg-stripe-${stripeVariant}${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
       draggable
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, undefined, e.clientX, e.clientY); }}
       onClick={(e) => { if (e.ctrlKey || e.shiftKey) onSelect(pkg.id, e.ctrlKey, e.shiftKey); }}
@@ -5527,7 +5701,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, isFirs
                 <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
               );
               case "status": return (
-                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` ? ${failed} Fehler` : ""}{cancelled > 0 ? ` ? ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}</span>
+                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` | ${failed} Fehler` : ""}{cancelled > 0 ? ` | ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}</span>
               );
               case "speed": return (
                 <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>

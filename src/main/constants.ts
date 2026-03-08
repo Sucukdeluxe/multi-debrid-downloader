@@ -102,6 +102,7 @@ export function defaultSettings(): AppSettings {
     hideExtractedItems: true,
     confirmDeleteSelection: true,
     totalDownloadedAllTime: 0,
+    totalCompletedFilesAllTime: 0,
     bandwidthSchedules: [],
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     extractCpuPriority: "high",
@@ -110,8 +111,10 @@ export function defaultSettings(): AppSettings {
     hosterRouting: {},
     providerDailyLimitBytes: {},
     providerDailyUsageBytes: {},
+    providerTotalUsageBytes: {},
     debridLinkApiKeyDailyLimitBytes: {},
     debridLinkApiKeyDailyUsageBytes: {},
+    debridLinkApiKeyTotalUsageBytes: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   };

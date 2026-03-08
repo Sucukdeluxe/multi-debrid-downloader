@@ -21,7 +21,14 @@ import {
   UiSnapshot
 } from "../shared/types";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { addDebridLinkApiKeyDailyUsageBytes, addProviderDailyUsageBytes, getProviderUsageDayKey, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
+import {
+  addDebridLinkApiKeyDailyUsageBytes,
+  addDebridLinkApiKeyTotalUsageBytes,
+  addProviderDailyUsageBytes,
+  addProviderTotalUsageBytes,
+  getProviderUsageDayKey,
+  isProviderDailyLimitReached
+} from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS } from "./constants";
 
 // Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
@@ -289,8 +296,10 @@ function cloneSettings(settings: AppSettings): AppSettings {
     bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry })),
     providerDailyLimitBytes: { ...(settings.providerDailyLimitBytes || {}) },
     providerDailyUsageBytes: { ...(settings.providerDailyUsageBytes || {}) },
+    providerTotalUsageBytes: { ...(settings.providerTotalUsageBytes || {}) },
     debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
-    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) }
+    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) },
+    debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) }
   };
 }
 
@@ -573,7 +582,7 @@ const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
 const SCENE_PART_TOKEN_RE = /(?:^|[._\-\s])(?:teil|part)\s*0*(\d{1,3})(?=[._\-\s]|$)/i;
-const SCENE_COMPACT_EPISODE_CODE_RE = /(?:^|[._\-\s])(\d{3,4})(?=$|[._\-\s])/;
+const SCENE_COMPACT_EPISODE_CODE_RE = /(?:^|[._\-\s])(\d{3,4})([a-z])?(?=$|[._\-\s])/i;
 const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
@@ -705,6 +714,7 @@ function extractCompactEpisodeToken(fileName: string, seasonHint: number | null)
   }
 
   const code = match[1];
+  const episodeSuffix = String(match[2] || "").toLowerCase();
   if (code === "4320" || code === "2160" || code === "1440" || code === "1080"
     || code === "0720" || code === "720" || code === "0576" || code === "576"
     || code === "0540" || code === "540" || code === "0480" || code === "480"
@@ -712,11 +722,18 @@ function extractCompactEpisodeToken(fileName: string, seasonHint: number | null)
     return null;
   }
 
+  const letterOffset = episodeSuffix
+    ? episodeSuffix.charCodeAt(0) - "a".charCodeAt(0)
+    : 0;
   const toToken = (season: number, episode: number): string | null => {
-    if (!Number.isFinite(season) || !Number.isFinite(episode) || season < 0 || season > 99 || episode <= 0 || episode > 999) {
+    const effectiveEpisode = episode + Math.max(0, letterOffset);
+    if (episodeSuffix && (letterOffset < 0 || letterOffset > 25)) {
       return null;
     }
-    return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+    if (!Number.isFinite(season) || !Number.isFinite(effectiveEpisode) || season < 0 || season > 99 || effectiveEpisode <= 0 || effectiveEpisode > 999) {
+      return null;
+    }
+    return `S${String(season).padStart(2, "0")}E${String(effectiveEpisode).padStart(2, "0")}`;
   };
 
   if (seasonHint !== null && Number.isFinite(seasonHint) && seasonHint >= 0 && seasonHint <= 99) {
@@ -1087,6 +1104,7 @@ export class DownloadManager extends EventEmitter {
   private speedBytesLastWindow = 0;
 
   private sessionDownloadedBytes = 0;
+  private sessionCompletedFiles = 0;
 
   private statsCache: DownloadStats | null = null;
 
@@ -1254,6 +1272,7 @@ export class DownloadManager extends EventEmitter {
   public setSettings(next: AppSettings): void {
     const previous = this.settings;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
+    next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
     this.settings = next;
     this.ensureProviderDailyUsageFresh(nowMs());
     this.debridService.setSettings(next);
@@ -1397,23 +1416,22 @@ export class DownloadManager extends EventEmitter {
 
     this.resetSessionTotalsIfQueueEmpty();
 
-    let totalFiles = 0;
-    for (const item of Object.values(this.session.items)) {
-      if (item.status === "completed") {
-        totalFiles += 1;
-      }
-    }
-
     const stats = {
       totalDownloaded: this.sessionDownloadedBytes,
       totalDownloadedAllTime: this.settings.totalDownloadedAllTime,
-      totalFiles,
+      totalFilesSession: this.sessionCompletedFiles,
+      totalFilesAllTime: this.settings.totalCompletedFilesAllTime,
       totalPackages: this.session.packageOrder.length,
       sessionStartedAt: this.session.runStartedAt
     };
     this.statsCache = stats;
     this.statsCacheAt = now;
     return stats;
+  }
+
+  private invalidateStatsCache(): void {
+    this.statsCache = null;
+    this.statsCacheAt = 0;
   }
 
   private resetSessionTotalsIfQueueEmpty(): void {
@@ -1423,18 +1441,35 @@ export class DownloadManager extends EventEmitter {
     if (Object.keys(this.session.items).length > 0 || Object.keys(this.session.packages).length > 0) {
       return;
     }
+  }
 
+  public resetSessionStats(): void {
     this.session.totalDownloadedBytes = 0;
     this.sessionDownloadedBytes = 0;
-    this.session.runStartedAt = 0;
+    this.sessionCompletedFiles = 0;
+    this.session.runStartedAt = this.session.running ? nowMs() : 0;
+    this.session.summaryText = "";
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
     this.speedEvents = [];
     this.speedEventsHead = 0;
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
-    this.statsCache = null;
-    this.statsCacheAt = 0;
+    this.summary = null;
+    this.invalidateStatsCache();
+    this.persistSoon();
+    this.emitState(true);
+  }
+
+  public resetDownloadStats(): void {
+    this.settings.totalDownloadedAllTime = 0;
+    this.settings.totalCompletedFilesAllTime = 0;
+    this.settings.providerTotalUsageBytes = {};
+    this.settings.debridLinkApiKeyTotalUsageBytes = {};
+    this.lastSettingsPersistAt = nowMs();
+    saveSettings(this.storagePaths, this.settings);
+    this.invalidateStatsCache();
+    this.emitState(true);
   }
 
   public renamePackage(packageId: string, newName: string): void {
@@ -3335,6 +3370,7 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
+    this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -3442,6 +3478,7 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
+    this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -3552,6 +3589,7 @@ export class DownloadManager extends EventEmitter {
       this.session.paused = false;
       this.session.runStartedAt = 0;
       this.session.totalDownloadedBytes = 0;
+      this.sessionCompletedFiles = 0;
       this.session.summaryText = "";
       this.session.reconnectUntil = 0;
       this.session.reconnectReason = "";
@@ -3583,6 +3621,7 @@ export class DownloadManager extends EventEmitter {
     // Only runStartedAt resets (for ETA/speed calculations relative to current run).
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
+    this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
@@ -4146,16 +4185,20 @@ export class DownloadManager extends EventEmitter {
     if (!this.runItemIds.has(itemId)) {
       return;
     }
+    const previous = this.runOutcomes.get(itemId);
     this.runOutcomes.set(itemId, status);
+    if (status === "completed" && previous !== "completed") {
+      this.sessionCompletedFiles += 1;
+      this.settings.totalCompletedFilesAllTime = Math.max(0, Number(this.settings.totalCompletedFilesAllTime || 0)) + 1;
+      this.invalidateStatsCache();
+    }
   }
 
   private dropItemContribution(itemId: string): void {
-    const contributed = this.itemContributedBytes.get(itemId) || 0;
-    if (contributed > 0) {
-      this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - contributed);
-      this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes - contributed);
-    }
     this.itemContributedBytes.delete(itemId);
+    // Session totals are cumulative for the current app run and must not shrink
+    // just because an item/package is removed from the queue after completion.
+    this.invalidateStatsCache();
   }
 
   private claimTargetPath(itemId: string, preferredPath: string, allowExistingFile = false): string {
@@ -5180,12 +5223,16 @@ export class DownloadManager extends EventEmitter {
     }
     const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
     const nextUsage = addProviderDailyUsageBytes(this.settings, effectiveProvider, byteDelta);
+    const nextTotalUsage = addProviderTotalUsageBytes(this.settings, effectiveProvider, byteDelta);
     this.settings.providerDailyUsageDay = nextUsage.providerDailyUsageDay;
     this.settings.providerDailyUsageBytes = nextUsage.providerDailyUsageBytes;
+    this.settings.providerTotalUsageBytes = nextTotalUsage.providerTotalUsageBytes;
     if (effectiveProvider === "debridlink" && providerAccountId) {
       const nextKeyUsage = addDebridLinkApiKeyDailyUsageBytes(this.settings, providerAccountId, byteDelta);
+      const nextKeyTotalUsage = addDebridLinkApiKeyTotalUsageBytes(this.settings, providerAccountId, byteDelta);
       this.settings.providerDailyUsageDay = nextKeyUsage.providerDailyUsageDay;
       this.settings.debridLinkApiKeyDailyUsageBytes = nextKeyUsage.debridLinkApiKeyDailyUsageBytes;
+      this.settings.debridLinkApiKeyTotalUsageBytes = nextKeyTotalUsage.debridLinkApiKeyTotalUsageBytes;
     }
   }
 
@@ -6438,7 +6485,9 @@ export class DownloadManager extends EventEmitter {
               item,
               active,
               refreshDelayMs,
-              `Direktlink erneuern, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`
+              exhaustedReason.startsWith("range_ignored_on_resume:")
+                ? `Resume-Link erneuern, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`
+                : `Direktlink erneuern, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`
             );
             item.lastError = exhaustedReason;
             this.persistSoon();
@@ -6838,20 +6887,26 @@ export class DownloadManager extends EventEmitter {
         const resumable = response.status === 206 || acceptRanges;
         active.resumable = resumable;
 
-        // CRITICAL: If we sent Range header but server responded 200 (not 206),
-        // it's sending the full file. We MUST write in truncate mode, not append.
-        const serverIgnoredRange = existingBytes > 0 && response.status === 200;
-        if (serverIgnoredRange) {
-          logger.warn(`Server ignorierte Range-Header (HTTP 200 statt 206), starte von vorne: ${item.fileName}`);
-          logAttemptEvent("WARN", "Server ignorierte Range-Header", {
-            attempt,
-            existingBytes
-          });
-        }
-
         const rawContentLength = Number(response.headers.get("content-length") || 0);
         const contentLength = Number.isFinite(rawContentLength) && rawContentLength > 0 ? rawContentLength : 0;
         const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
+        const serverIgnoredRange = existingBytes > 0 && response.status === 200;
+        if (serverIgnoredRange) {
+          logger.warn(`Server ignorierte Range-Header (HTTP 200 statt 206), verwerfe Direktlink und behalte Teil-Datei: ${item.fileName}`);
+          logAttemptEvent("WARN", "Server ignorierte Range-Header beim Resume", {
+            attempt,
+            existingBytes,
+            contentLength,
+            directUrl
+          });
+          try {
+            await response.body?.cancel();
+          } catch {
+            // ignore
+          }
+          throw new Error(`range_ignored_on_resume:${existingBytes}/${contentLength || 0}`);
+        }
+
         if (knownTotal && knownTotal > 0) {
           item.totalBytes = knownTotal;
         } else if (totalFromRange) {
@@ -7436,6 +7491,9 @@ export class DownloadManager extends EventEmitter {
           error: lastError,
           targetPath: effectiveTargetPath
         });
+        if (lastError.startsWith("range_ignored_on_resume:")) {
+          throw new Error(`direct_link_retry_exhausted:${lastError}`);
+        }
         if (attempt < maxAttempts) {
           item.retries += 1;
           item.fullStatus = `Downloadfehler, retry ${attempt}/${maxAttempts} (Direktlink)`;
@@ -8250,12 +8308,15 @@ export class DownloadManager extends EventEmitter {
                 ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
                 : "";
               const archivePct = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
+              const isFinalizing = archivePct >= 99;
               let label: string;
               if (progress.passwordFound) {
                 label = `Passwort gefunden · ${progress.archiveName}`;
               } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
                 const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
                 label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
+              } else if (isFinalizing) {
+                label = `Finalisieren${archiveLabel}${elapsed}`;
               } else {
                 label = `Entpacken ${archivePct}%${archiveLabel}${elapsed}`;
               }
@@ -8276,6 +8337,12 @@ export class DownloadManager extends EventEmitter {
           } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
             const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
             pkg.postProcessLabel = `Passwort knacken: ${pwPct}%`;
+          } else if (Number(progress.archivePercent ?? 0) >= 99) {
+            const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
+            const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
+              ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
+              : "";
+            pkg.postProcessLabel = `Finalisieren (${currentDisplay}/${progress.total})${archive}${elapsed}`;
           } else {
             pkg.postProcessLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})`;
           }
@@ -8698,12 +8765,15 @@ export class DownloadManager extends EventEmitter {
                   ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
                   : "";
                 const archivePct = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
+                const isFinalizing = archivePct >= 99;
                 let label: string;
                 if (progress.passwordFound) {
                   label = `Passwort gefunden · ${progress.archiveName}`;
                 } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
                   const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
                   label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
+                } else if (isFinalizing) {
+                  label = `Finalisieren${archiveTag}${elapsed}`;
                 } else {
                   label = `Entpacken ${archivePct}%${archiveTag}${elapsed}`;
                 }
@@ -8729,6 +8799,8 @@ export class DownloadManager extends EventEmitter {
             } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
               const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
               overallLabel = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName || ""}`;
+            } else if (Number(progress.archivePercent ?? 0) >= 99) {
+              overallLabel = `Finalisieren (${currentDisplay}/${progress.total})${archive}${elapsed}`;
             } else {
               overallLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
             }

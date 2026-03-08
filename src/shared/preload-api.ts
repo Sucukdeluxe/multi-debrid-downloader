@@ -45,6 +45,8 @@ export interface ElectronApi {
   pickFolder: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   getSessionStats: () => Promise<SessionStats>;
+  resetSessionStats: () => Promise<void>;
+  resetDownloadStats: () => Promise<void>;
   restart: () => Promise<void>;
   quit: () => Promise<void>;
   exportBackup: () => Promise<{ saved: boolean }>;

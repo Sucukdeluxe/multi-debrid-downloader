@@ -192,6 +192,10 @@ describe("settings storage", () => {
         realdebrid: 1024,
         megadebrid: 2048
       } as AppSettings["providerDailyLimitBytes"],
+      providerTotalUsageBytes: {
+        realdebrid: 16384,
+        megadebrid: 32768
+      } as AppSettings["providerTotalUsageBytes"],
       debridLinkApiKeyDailyLimitBytes: {
         [debridLinkKey.id]: 3072,
         stale: 1234
@@ -204,6 +208,10 @@ describe("settings storage", () => {
       debridLinkApiKeyDailyUsageBytes: {
         [debridLinkKey.id]: 8192,
         stale: 9999
+      },
+      debridLinkApiKeyTotalUsageBytes: {
+        [debridLinkKey.id]: 12288,
+        stale: 9999
       }
     });
 
@@ -212,9 +220,16 @@ describe("settings storage", () => {
     expect(normalized.debridLinkApiKeyDailyLimitBytes).toEqual({
       [debridLinkKey.id]: 3072
     });
+    expect(normalized.providerTotalUsageBytes).toEqual({
+      realdebrid: 16384,
+      "megadebrid-api": 32768
+    });
     expect(normalized.providerDailyUsageDay).toBe(getProviderUsageDayKey());
     expect(normalized.providerDailyUsageBytes).toEqual({});
     expect(normalized.debridLinkApiKeyDailyUsageBytes).toEqual({});
+    expect(normalized.debridLinkApiKeyTotalUsageBytes).toEqual({
+      [debridLinkKey.id]: 12288
+    });
   });
 
   it("normalizes archive password list line endings", () => {

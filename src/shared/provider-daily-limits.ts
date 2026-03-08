@@ -7,6 +7,10 @@ type ProviderDailySettings =
   Pick<AppSettings, "providerDailyLimitBytes" | "providerDailyUsageBytes" | "providerDailyUsageDay">
   & Partial<Pick<AppSettings, "debridLinkApiKeyDailyLimitBytes" | "debridLinkApiKeyDailyUsageBytes">>;
 
+type ProviderUsageSettings =
+  ProviderDailySettings
+  & Partial<Pick<AppSettings, "providerTotalUsageBytes" | "debridLinkApiKeyTotalUsageBytes">>;
+
 function normalizePositiveBytes(value: unknown): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) {
@@ -57,6 +61,10 @@ export function isProviderDailyLimitReached(
 ): boolean {
   const limit = getProviderDailyLimitBytes(settings, provider);
   return limit > 0 && getProviderDailyUsageBytes(settings, provider, epochMs) >= limit;
+}
+
+export function getProviderTotalUsageBytes(settings: ProviderUsageSettings, provider: DebridProvider): number {
+  return normalizePositiveBytes(settings.providerTotalUsageBytes?.[provider]);
 }
 
 export function resetProviderDailyUsage(
@@ -110,6 +118,26 @@ export function addProviderDailyUsageBytes(
   };
 }
 
+export function addProviderTotalUsageBytes(
+  settings: ProviderUsageSettings,
+  provider: DebridProvider,
+  byteDelta: number
+): Pick<AppSettings, "providerTotalUsageBytes"> {
+  const increment = normalizePositiveBytes(byteDelta);
+  const currentUsageBytes = { ...(settings.providerTotalUsageBytes || {}) };
+  if (increment <= 0) {
+    return {
+      providerTotalUsageBytes: currentUsageBytes
+    };
+  }
+
+  currentUsageBytes[provider] = normalizePositiveBytes(currentUsageBytes[provider]) + increment;
+
+  return {
+    providerTotalUsageBytes: currentUsageBytes
+  };
+}
+
 export function getDebridLinkApiKeyDailyLimitBytes(settings: ProviderDailySettings, keyId: string): number {
   return normalizePositiveBytes(settings.debridLinkApiKeyDailyLimitBytes?.[keyId]);
 }
@@ -144,6 +172,10 @@ export function isDebridLinkApiKeyDailyLimitReached(
 ): boolean {
   const limit = getDebridLinkApiKeyDailyLimitBytes(settings, keyId);
   return limit > 0 && getDebridLinkApiKeyDailyUsageBytes(settings, keyId, epochMs) >= limit;
+}
+
+export function getDebridLinkApiKeyTotalUsageBytes(settings: ProviderUsageSettings, keyId: string): number {
+  return normalizePositiveBytes(settings.debridLinkApiKeyTotalUsageBytes?.[keyId]);
 }
 
 export function resetDebridLinkApiKeyDailyUsage(
@@ -193,5 +225,25 @@ export function addDebridLinkApiKeyDailyUsageBytes(
   return {
     providerDailyUsageDay: dayKey,
     debridLinkApiKeyDailyUsageBytes: currentUsageBytes
+  };
+}
+
+export function addDebridLinkApiKeyTotalUsageBytes(
+  settings: ProviderUsageSettings,
+  keyId: string,
+  byteDelta: number
+): Pick<AppSettings, "debridLinkApiKeyTotalUsageBytes"> {
+  const increment = normalizePositiveBytes(byteDelta);
+  const currentUsageBytes = { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) };
+  if (increment <= 0) {
+    return {
+      debridLinkApiKeyTotalUsageBytes: currentUsageBytes
+    };
+  }
+
+  currentUsageBytes[keyId] = normalizePositiveBytes(currentUsageBytes[keyId]) + increment;
+
+  return {
+    debridLinkApiKeyTotalUsageBytes: currentUsageBytes
   };
 }
