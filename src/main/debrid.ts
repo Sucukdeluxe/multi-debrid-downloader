@@ -38,12 +38,60 @@ const DEBRID_LINK_SKIP_KEY_ERRORS = new Set([
 const DEBRID_LINK_FATAL_LINK_ERRORS = new Set(["badArguments", "badFileUrl", "badFilePassword", "fileNotFound", "hostNotValid"]);
 /** Per-key cooldown cache: keyId → expiry timestamp. Parallel items skip keys that recently failed. */
 const debridLinkKeyCooldowns = new Map<string, number>();
+type DebridLinkCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary" | "skip";
+type DebridLinkCooldownDetail = { message: string; category: DebridLinkCooldownCategory };
+const debridLinkKeyCooldownDetails = new Map<string, DebridLinkCooldownDetail>();
 const DEBRID_LINK_KEY_COOLDOWN_MS = 120_000; // 2 min cooldown per failed key
 const DEBRID_LINK_INVALID_KEY_COOLDOWN_MS = 60 * 60 * 1000;
 const DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 
 export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyCooldowns.clear();
+  debridLinkKeyCooldownDetails.clear();
+}
+
+export function primeDebridLinkRuntimeCooldownForTests(keyId: string, cooldownMs: number, message = "Debrid-Link Key im Cooldown"): void {
+  setDebridLinkKeyCooldownState(keyId, cooldownMs, message, "temporary");
+}
+
+function clearDebridLinkKeyCooldownState(keyId: string): void {
+  debridLinkKeyCooldowns.delete(keyId);
+  debridLinkKeyCooldownDetails.delete(keyId);
+}
+
+function setDebridLinkKeyCooldownState(
+  keyId: string,
+  cooldownMs: number,
+  message: string,
+  category: DebridLinkCooldownCategory
+): void {
+  if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) {
+    clearDebridLinkKeyCooldownState(keyId);
+    return;
+  }
+  debridLinkKeyCooldowns.set(keyId, Date.now() + Math.max(1000, Math.floor(cooldownMs)));
+  debridLinkKeyCooldownDetails.set(keyId, { message, category });
+}
+
+function getDebridLinkKeyCooldownState(
+  keyId: string,
+  now = Date.now()
+): { until: number; remainingMs: number; message: string; category: DebridLinkCooldownCategory } | null {
+  const until = Number(debridLinkKeyCooldowns.get(keyId) || 0);
+  if (!until) {
+    return null;
+  }
+  if (until <= now) {
+    clearDebridLinkKeyCooldownState(keyId);
+    return null;
+  }
+  const detail = debridLinkKeyCooldownDetails.get(keyId);
+  return {
+    until,
+    remainingMs: until - now,
+    message: detail?.message || "Debrid-Link Key im Cooldown",
+    category: detail?.category || "temporary"
+  };
 }
 
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
@@ -488,19 +536,19 @@ async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: strin
         const hostEntry = findDebridLinkHostEntry(payload, hostLabel);
         if (!hostEntry) {
           if (endpoint.endsWith("/all")) {
-            return {
-              keyId: apiKey.id,
-              keyLabel: apiKey.label,
-              host: hostLabel,
-              fetchedAt: Date.now(),
-              trafficCurrentBytes: null,
-              trafficMaxBytes: null,
-              linksCurrent: null,
-              linksMax: null,
-              note: `${hostLabel} nicht in der Debrid-Link-Limits-Antwort vorhanden.`
-            };
+            break;
           }
-          break;
+          return {
+            keyId: apiKey.id,
+            keyLabel: apiKey.label,
+            host: hostLabel,
+            fetchedAt: Date.now(),
+            trafficCurrentBytes: null,
+            trafficMaxBytes: null,
+            linksCurrent: null,
+            linksMax: null,
+            note: `${hostLabel} nicht in der Debrid-Link-Limits-Antwort vorhanden.`
+          };
         }
 
         const daySize = asRecord(hostEntry.daySize);
@@ -1567,6 +1615,8 @@ class DebridLinkClient {
 
     const failures: string[] = [];
     let usableKeySeen = false;
+    const cooldownFailures: string[] = [];
+    let earliestCooldownUntil = 0;
 
     // Always start from first key — use first available, skip disabled/limited/cooldown.
     // This ensures all parallel items use the same key until it's actually exhausted.
@@ -1581,15 +1631,20 @@ class DebridLinkClient {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (lokales Tageslimit erreicht), pruefe naechsten Key`);
         continue;
       }
-      const keyCooldownExpiry = debridLinkKeyCooldowns.get(apiKey.id);
-      if (keyCooldownExpiry && Date.now() < keyCooldownExpiry) {
-        logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${new Date(keyCooldownExpiry).toLocaleTimeString()}), pruefe naechsten Key`);
+      const keyCooldownState = getDebridLinkKeyCooldownState(apiKey.id);
+      if (keyCooldownState) {
+        logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${new Date(keyCooldownState.until).toLocaleTimeString()}), pruefe naechsten Key`);
+        cooldownFailures.push(`Debrid-Link${keyLabel}: ${keyCooldownState.message}`);
+        if (!earliestCooldownUntil || keyCooldownState.until < earliestCooldownUntil) {
+          earliestCooldownUntil = keyCooldownState.until;
+        }
         continue;
       }
 
       usableKeySeen = true;
       try {
         const result = await this.unrestrictWithKey(apiKey, link, signal);
+        clearDebridLinkKeyCooldownState(apiKey.id);
         logger.info(`Debrid-Link${keyLabel}: Unrestrict OK -> ${result.fileName || "?"}`);
         return {
           ...result,
@@ -1601,7 +1656,9 @@ class DebridLinkClient {
         const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         failures.push(`Debrid-Link${keyLabel}: ${failure.message}`);
         if (failure.cooldownMs > 0) {
-          debridLinkKeyCooldowns.set(apiKey.id, Date.now() + failure.cooldownMs);
+          setDebridLinkKeyCooldownState(apiKey.id, failure.cooldownMs, failure.message, failure.category || "temporary");
+        } else {
+          clearDebridLinkKeyCooldownState(apiKey.id);
         }
         if (failure.fatal) {
           throw new Error(`Debrid-Link${keyLabel}: ${failure.message}`);
@@ -1702,6 +1759,10 @@ class DebridLinkClient {
     }
 
     if (!usableKeySeen) {
+      if (cooldownFailures.length > 0 && earliestCooldownUntil > Date.now()) {
+        const retryMs = Math.max(1000, earliestCooldownUntil - Date.now() + 1000);
+        throw new Error(`debrid_link_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
+      }
       throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar");
     }
     throw new Error(failures.join(" | ") || "Debrid-Link: Kein aktiver API-Key verfuegbar");
@@ -1893,7 +1954,7 @@ class DebridLinkClient {
     apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
     link: string,
     signal?: AbortSignal
-  ): Promise<{ fatal: boolean; cooldownMs: number; message: string }> {
+  ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory }> {
     const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
     if (error instanceof DebridLinkApiError) {
       const code = String(error.code || "").trim() || `HTTP ${error.status}`;
@@ -1903,14 +1964,16 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_INVALID_KEY_COOLDOWN_MS,
-          message: `ungueltiger oder deaktivierter API-Key (${code}: ${description})`
+          message: `ungueltiger oder deaktivierter API-Key (${code}: ${description})`,
+          category: "invalid"
         };
       }
       if (DEBRID_LINK_RATE_LIMIT_ERRORS.has(code) || error.status === 429) {
         return {
           fatal: false,
           cooldownMs: error.retryAfterMs || DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS,
-          message: `API-Rate-Limit erreicht (${code}: ${description})`
+          message: `API-Rate-Limit erreicht (${code}: ${description})`,
+          category: "rate_limit"
         };
       }
       if (DEBRID_LINK_QUOTA_ERRORS.has(code)) {
@@ -1919,21 +1982,24 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs,
-          message: `Quota erreicht fuer ${hoster} (${code}: ${description})`
+          message: `Quota erreicht fuer ${hoster} (${code}: ${description})`,
+          category: "quota"
         };
       }
       if (DEBRID_LINK_SKIP_KEY_ERRORS.has(code)) {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
-          message: `Key kann Link aktuell nicht verarbeiten (${code}: ${description})`
+          message: `Key kann Link aktuell nicht verarbeiten (${code}: ${description})`,
+          category: "skip"
         };
       }
       if (DEBRID_LINK_FATAL_LINK_ERRORS.has(code)) {
         return {
           fatal: true,
           cooldownMs: 0,
-          message: description
+          message: description,
+          category: "temporary"
         };
       }
       if (DEBRID_LINK_RETRYABLE_ERRORS.has(code) || error.status >= 500) {

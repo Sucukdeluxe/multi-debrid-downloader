@@ -1507,112 +1507,13 @@ export function App(): ReactElement {
       if (apiKeys.length === 0) {
         throw new Error("Debrid-Link ist nicht konfiguriert");
       }
-
-      let loadedAny = false;
-      let firstError = "";
-      for (let index = 0; index < apiKeys.length; index += 1) {
-        if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
-          return;
-        }
-
-        const apiKey = apiKeys[index];
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 8000);
-        let info: DebridLinkHostLimitInfo;
-        try {
-          const readLimitsPayload = async (path: "limits" | "limits/all") => {
-            const response = await fetch(`https://debrid-link.com/api/v2/downloader/${path}`, {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${apiKey.token}`
-              },
-              signal: controller.signal
-            });
-            const payload = await response.json() as {
-              success?: boolean;
-              value?: {
-                hosters?: Array<{
-                  name?: string;
-                  displayName?: string;
-                  daySize?: { current?: number; value?: number };
-                  dayCount?: { current?: number; value?: number };
-                }>;
-              };
-              error?: string;
-              error_description?: string;
-            };
-            if (!response.ok || !payload?.success) {
-              throw new Error(String(payload?.error_description || payload?.error || `HTTP ${response.status}`));
-            }
-            return payload;
-          };
-
-          let payload = await readLimitsPayload("limits/all");
-          let hostEntry = (payload.value?.hosters || []).find((entry) => String(entry.name || "").toLowerCase() === "rapidgator");
-          if (!hostEntry) {
-            payload = await readLimitsPayload("limits");
-            hostEntry = (payload.value?.hosters || []).find((entry) => String(entry.name || "").toLowerCase() === "rapidgator");
-          }
-          if (!hostEntry) {
-            info = {
-              keyId: apiKey.id,
-              keyLabel: apiKey.label,
-              host: "rapidgator",
-              fetchedAt: Date.now(),
-              trafficCurrentBytes: null,
-              trafficMaxBytes: null,
-              linksCurrent: null,
-              linksMax: null,
-              note: "Rapidgator nicht in der API-Antwort gefunden."
-            };
-          } else {
-            info = {
-              keyId: apiKey.id,
-              keyLabel: apiKey.label,
-              host: String(hostEntry.displayName || hostEntry.name || "rapidgator"),
-              fetchedAt: Date.now(),
-              trafficCurrentBytes: typeof hostEntry.daySize?.current === "number" ? hostEntry.daySize.current : null,
-              trafficMaxBytes: typeof hostEntry.daySize?.value === "number" ? hostEntry.daySize.value : null,
-              linksCurrent: typeof hostEntry.dayCount?.current === "number" ? hostEntry.dayCount.current : null,
-              linksMax: typeof hostEntry.dayCount?.value === "number" ? hostEntry.dayCount.value : null,
-              note: ""
-            };
-          }
-        } catch (error) {
-          const message = String(error || "Quota konnte nicht geladen werden");
-          if (!firstError) {
-            firstError = message;
-          }
-          info = {
-            keyId: apiKey.id,
-            keyLabel: apiKey.label,
-            host: "rapidgator",
-            fetchedAt: Date.now(),
-            trafficCurrentBytes: null,
-            trafficMaxBytes: null,
-            linksCurrent: null,
-            linksMax: null,
-            note: message
-          };
-        } finally {
-          window.clearTimeout(timer);
-        }
-
-        if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
-          return;
-        }
-
-        loadedAny = true;
-        setDebridLinkHostLimits((prev) => ({
-          ...prev,
-          [info.keyId]: info
-        }));
-
+      const limits = await window.rd.getDebridLinkHostLimits();
+      if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
+        return;
       }
-
-      if (!loadedAny && firstError) {
-        throw new Error(firstError);
-      }
+      setDebridLinkHostLimits(
+        Object.fromEntries(limits.map((info) => [info.keyId, info]))
+      );
     } catch (error) {
       if (!mountedRef.current || debridLinkHostLimitsRequestRef.current !== requestId) {
         return;

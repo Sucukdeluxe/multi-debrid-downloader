@@ -424,6 +424,41 @@ describe("debrid service", () => {
     expect(authHeaders).toEqual(["Bearer dl-key-one"]);
   });
 
+  it("returns a cooldown marker when all Debrid-Link keys are temporarily cooling down", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    let addCalls = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.includes("debrid-link.com/api/v2/downloader/add")) {
+        return new Response("not-found", { status: 404 });
+      }
+      addCalls += 1;
+      return new Response(JSON.stringify({
+        success: false,
+        error: "floodDetected",
+        error_description: "too many requests"
+      }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/cooldown.bin")).rejects.toThrow("API-Rate-Limit erreicht");
+    await expect(service.unrestrictLink("https://hoster.example/cooldown.bin")).rejects.toThrow(/debrid_link_cooldown:\d+:/i);
+    expect(addCalls).toBe(2);
+  });
+
   it("uses BestDebrid auth header without token query fallback", async () => {
     const settings = {
       ...defaultSettings(),
@@ -657,6 +692,61 @@ describe("debrid service", () => {
     expect(info[0].trafficMaxBytes).toBe(150323855360);
     expect(info[0].linksCurrent).toBe(0);
     expect(info[0].linksMax).toBe(500);
+  });
+
+  it("falls back from Debrid-Link limits/all to limits when the host is only present in limits", async () => {
+    const calledUrls: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
+      if (url.includes("debrid-link.com/api/v2/downloader/limits/all")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            hosters: [
+              {
+                name: "uploaded",
+                daySize: { current: 1, value: 2 },
+                dayCount: { current: 3, value: 4 }
+              }
+            ]
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("debrid-link.com/api/v2/downloader/limits")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            hosters: [
+              {
+                name: "rapidgator",
+                displayName: "Rapidgator",
+                daySize: { current: 2147483648, value: 150323855360 },
+                dayCount: { current: 42, value: 500 }
+              }
+            ]
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const info = await fetchDebridLinkHostLimits("key-a", "rapidgator");
+    expect(info).toHaveLength(1);
+    expect(info[0].host).toBe("rapidgator");
+    expect(info[0].trafficCurrentBytes).toBe(2147483648);
+    expect(info[0].trafficMaxBytes).toBe(150323855360);
+    expect(info[0].linksCurrent).toBe(42);
+    expect(info[0].linksMax).toBe(500);
+    expect(calledUrls.some((url) => url.includes("/limits/all"))).toBe(true);
+    expect(calledUrls.some((url) => url.includes("/limits"))).toBe(true);
   });
 
   it("uses AllDebrid web path when enabled", async () => {

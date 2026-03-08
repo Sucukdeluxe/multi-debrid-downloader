@@ -435,6 +435,19 @@ function isUnrestrictFailure(errorText: string): boolean {
     || text.includes("login required") || text.includes("login failed");
 }
 
+function parseDebridLinkCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
+  const match = String(errorText || "").match(/debrid_link_cooldown:(\d+):(.*)$/i);
+  if (!match) {
+    return null;
+  }
+  const delayMs = Math.max(1000, Math.min(15 * 60 * 1000, Number(match[1]) || 0));
+  const detail = String(match[2] || "").trim();
+  if (!delayMs) {
+    return null;
+  }
+  return { delayMs, detail };
+}
+
 function isProviderBusyUnrestrictError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("too many active")
@@ -6788,6 +6801,30 @@ export class DownloadManager extends EventEmitter {
           }
 
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
+            const debridLinkCooldown = parseDebridLinkCooldownRetry(errorText);
+            if (debridLinkCooldown) {
+              active.unrestrictRetries += 1;
+              item.retries += 1;
+              const failureProvider = this.getProviderFailureKeyForItem(item);
+              this.recordProviderFailure(failureProvider);
+              this.applyProviderBusyBackoff(failureProvider, debridLinkCooldown.delayMs);
+              logger.warn(
+                `Debrid-Link-Cooldown: item=${item.fileName || item.id}, ` +
+                `retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${debridLinkCooldown.delayMs}ms, ` +
+                `detail=${debridLinkCooldown.detail || errorText}, link=${item.url.slice(0, 80)}`
+              );
+              this.queueRetry(
+                item,
+                active,
+                debridLinkCooldown.delayMs,
+                `Debrid-Link Cooldown, Retry ${active.unrestrictRetries}/${retryDisplayLimit} (${Math.ceil(debridLinkCooldown.delayMs / 1000)}s)`
+              );
+              item.lastError = debridLinkCooldown.detail || errorText;
+              this.persistSoon();
+              this.emitState();
+              return;
+            }
+
             active.unrestrictRetries += 1;
             item.retries += 1;
             const failureProvider = this.getProviderFailureKeyForItem(item);

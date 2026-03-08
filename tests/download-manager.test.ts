@@ -10,6 +10,7 @@ import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { createStoragePaths, emptySession } from "../src/main/storage";
+import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -42,6 +43,7 @@ async function removeDirWithRetries(dir: string): Promise<void> {
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
+  resetDebridLinkRuntimeStateForTests();
   for (const dir of tempDirs.splice(0)) {
     await removeDirWithRetries(dir);
   }
@@ -760,6 +762,57 @@ describe("download manager", () => {
     expect(downloadCalls).toBe(2);
     expect(fs.existsSync(item.targetPath)).toBe(true);
     expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+  });
+
+  it("queues Debrid-Link cooldown retries when wrapped unrestrict errors carry the cooldown marker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    let fetchCalls = 0;
+
+    globalThis.fetch = async (): Promise<Response> => {
+      fetchCalls += 1;
+      return new Response("not-found", { status: 404 });
+    };
+
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      retryLimit: 2,
+      autoExtract: false
+    };
+
+    const keys = parseDebridLinkApiKeys(settings.debridLinkApiKeys);
+    for (const key of keys) {
+      primeDebridLinkRuntimeCooldownForTests(key.id, 60_000, `${key.label} im Cooldown`);
+    }
+
+    const manager = new DownloadManager(
+      settings,
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "debridlink-cooldown", links: ["https://rapidgator.net/file/example.part1.rar.html"] }]);
+    await manager.start();
+    await waitFor(() => {
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      return Boolean(item && item.status === "queued" && /debrid-link cooldown/i.test(item.fullStatus || ""));
+    }, 12000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item?.status).toBe("queued");
+    expect(item?.fullStatus).toContain("Debrid-Link Cooldown");
+    expect(item?.lastError).toContain("im Cooldown");
+    expect(item?.retries).toBe(1);
+    expect(fetchCalls).toBe(0);
+
+    await manager.stop();
   });
 
   it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
