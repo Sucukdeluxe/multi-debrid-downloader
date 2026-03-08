@@ -2682,6 +2682,13 @@ export class DownloadManager extends EventEmitter {
         forceEpisodeForSeasonFolder: true
       });
       if (!targetBaseName) {
+        if (pkg) {
+          this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: kein Zielname", {
+            sourceName,
+            sourceBaseName,
+            folders: folderCandidates.join(", ")
+          });
+        }
         logger.info(`Auto-Rename: kein Zielname für ${sourceName} (folders=${folderCandidates.join(", ")})`);
         continue;
       }
@@ -2706,6 +2713,13 @@ export class DownloadManager extends EventEmitter {
         }
       }
       if (!targetPath) {
+        if (pkg) {
+          this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: Zielpfad ungültig", {
+            sourceName,
+            sourceBaseName,
+            targetBaseName
+          });
+        }
         logger.warn(`Auto-Rename übersprungen (Zielpfad zu lang/ungültig): ${sourcePath}`);
         continue;
       }
@@ -2713,6 +2727,12 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       if (await this.existsAsync(targetPath)) {
+        if (pkg) {
+          this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: Ziel existiert", {
+            sourceName,
+            targetPath
+          });
+        }
         logger.warn(`Auto-Rename übersprungen (Ziel existiert): ${targetPath}`);
         continue;
       }
@@ -2758,6 +2778,12 @@ export class DownloadManager extends EventEmitter {
           }
         }
         logger.warn(`Auto-Rename fehlgeschlagen (${sourceName}): ${compactErrorText(error)}`);
+        if (pkg) {
+          this.logPackageForPackage(pkg, "WARN", "Auto-Rename fehlgeschlagen", {
+            sourceName,
+            error: compactErrorText(error)
+          });
+        }
       }
     }
 
