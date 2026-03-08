@@ -464,6 +464,8 @@ function registerIpcHandlers(): void {
     return result.canceled ? [] : result.filePaths;
   });
   ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
+  ipcMain.handle(IPC_CHANNELS.RESET_SESSION_STATS, () => controller.resetSessionStats());
+  ipcMain.handle(IPC_CHANNELS.RESET_DOWNLOAD_STATS, () => controller.resetDownloadStats());
 
   ipcMain.handle(IPC_CHANNELS.RESTART, () => {
     app.relaunch();

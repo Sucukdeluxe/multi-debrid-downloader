@@ -13,6 +13,7 @@ import {
   classifyExtractionError,
   findArchiveCandidates,
   orderExtractorCandidatesForArchive,
+  resolveExtractorBackendModeForArchive,
   resolveExtractorBackendMode,
 } from "../src/main/extractor";
 
@@ -1175,6 +1176,17 @@ describe("extractor", () => {
       expect(resolveExtractorBackendMode("legacy", false)).toBe("legacy");
       expect(resolveExtractorBackendMode("jvm", false)).toBe("jvm");
       expect(resolveExtractorBackendMode("auto", false)).toBe("auto");
+    });
+
+    it("prefers legacy for rar archives in auto mode on Windows", () => {
+      expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.part01.rar", undefined, false, "win32")).toBe("legacy");
+      expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.r00", undefined, false, "win32")).toBe("legacy");
+    });
+
+    it("keeps auto for non-rar archives and respects explicit overrides", () => {
+      expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.zip", undefined, false, "win32")).toBe("auto");
+      expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.part01.rar", "jvm", false, "win32")).toBe("jvm");
+      expect(resolveExtractorBackendModeForArchive("C:\\Downloads\\episode.part01.rar", "legacy", false, "win32")).toBe("legacy");
     });
   });
 

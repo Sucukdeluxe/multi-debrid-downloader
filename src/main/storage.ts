@@ -298,12 +298,21 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
     "sum"
   );
+  const providerTotalUsageBytes = normalizeProviderByteMap(
+    settings.providerTotalUsageBytes,
+    megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
+    "sum"
+  );
   const debridLinkApiKeyDailyLimitBytes = normalizeNamedByteMap(
     settings.debridLinkApiKeyDailyLimitBytes,
     debridLinkApiKeyIds
   );
   const debridLinkApiKeyDailyUsageBytes = normalizeNamedByteMap(
     settings.debridLinkApiKeyDailyUsageBytes,
+    debridLinkApiKeyIds
+  );
+  const debridLinkApiKeyTotalUsageBytes = normalizeNamedByteMap(
+    settings.debridLinkApiKeyTotalUsageBytes,
     debridLinkApiKeyIds
   );
   const debridLinkDisabledKeyIds = normalizeStringList(settings.debridLinkDisabledKeyIds, debridLinkApiKeyIds);
@@ -374,6 +383,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     hideExtractedItems: settings.hideExtractedItems !== undefined ? Boolean(settings.hideExtractedItems) : defaults.hideExtractedItems,
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
+    totalCompletedFilesAllTime: typeof settings.totalCompletedFilesAllTime === "number" && settings.totalCompletedFilesAllTime >= 0 ? settings.totalCompletedFilesAllTime : defaults.totalCompletedFilesAllTime,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
     columnOrder: normalizeColumnOrder(settings.columnOrder),
@@ -387,8 +397,10 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       "max"
     ),
     providerDailyUsageBytes: providerDailyUsageDay === currentUsageDay ? providerDailyUsageBytes : {},
+    providerTotalUsageBytes,
     debridLinkApiKeyDailyLimitBytes,
     debridLinkApiKeyDailyUsageBytes: providerDailyUsageDay === currentUsageDay ? debridLinkApiKeyDailyUsageBytes : {},
+    debridLinkApiKeyTotalUsageBytes,
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };

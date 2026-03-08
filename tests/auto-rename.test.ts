@@ -551,6 +551,28 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     expect(result).toBe("Lethal.Weapon.S02E11.German.DD51.Dubbed.DL.720p.AmazonHD.x264-TVS");
   });
 
+  it("maps compact code 319a to episode 19 in season 3 folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Die.Bergpolizei.-.Ganz.nah.am.Himmel.S03.GERMAN.AC3.720p.HDTV.x264-hrs"
+      ],
+      "hrs-bpol.hdtv.7p-319a",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Die.Bergpolizei.-.Ganz.nah.am.Himmel.S03E19.GERMAN.AC3.720p.HDTV.x264-hrs");
+  });
+
+  it("maps compact code 319b to next episode in season 3 folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "Die.Bergpolizei.-.Ganz.nah.am.Himmel.S03.GERMAN.AC3.720p.HDTV.x264-hrs"
+      ],
+      "hrs-bpol.hdtv.7p-319b",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Die.Bergpolizei.-.Ganz.nah.am.Himmel.S03E20.GERMAN.AC3.720p.HDTV.x264-hrs");
+  });
+
   it("maps episode-only token e01 via season folder hint and keeps REPACK", () => {
     const result = buildAutoRenameBaseNameFromFoldersWithOptions(
       [

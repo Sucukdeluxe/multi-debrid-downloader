@@ -76,8 +76,10 @@ function cloneSettings(settings: AppSettings): AppSettings {
     debridLinkDisabledKeyIds: [...(settings.debridLinkDisabledKeyIds || [])],
     providerDailyLimitBytes: { ...(settings.providerDailyLimitBytes || {}) },
     providerDailyUsageBytes: { ...(settings.providerDailyUsageBytes || {}) },
+    providerTotalUsageBytes: { ...(settings.providerTotalUsageBytes || {}) },
     debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
-    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) }
+    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) },
+    debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) }
   };
 }
 
