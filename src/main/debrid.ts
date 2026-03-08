@@ -24,9 +24,9 @@ const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "
 const DEBRID_LINK_INVALID_TOKEN_ERRORS = new Set(["badToken", "hidedToken", "expired_token"]);
 const DEBRID_LINK_RATE_LIMIT_ERRORS = new Set(["floodDetected"]);
 const DEBRID_LINK_RETRYABLE_ERRORS = new Set(["internalError", "server_error"]);
+const DEBRID_LINK_PROVIDER_WIDE_ERRORS = new Set(["notDebrid"]);
 /** Errors where the key can't handle this link — skip to next key immediately, no retries */
 const DEBRID_LINK_SKIP_KEY_ERRORS = new Set([
-  "notDebrid",
   "disabledServerHost",
   "notFreeHost",
   "serverNotAllowed",
@@ -1986,10 +1986,18 @@ class DebridLinkClient {
           category: "quota"
         };
       }
+      if (DEBRID_LINK_PROVIDER_WIDE_ERRORS.has(code)) {
+        return {
+          fatal: true,
+          cooldownMs: 0,
+          message: `Link kann aktuell nicht generiert werden (${code}: ${description})`,
+          category: "skip"
+        };
+      }
       if (DEBRID_LINK_SKIP_KEY_ERRORS.has(code)) {
         return {
           fatal: false,
-          cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
+          cooldownMs: 0,
           message: `Key kann Link aktuell nicht verarbeiten (${code}: ${description})`,
           category: "skip"
         };
