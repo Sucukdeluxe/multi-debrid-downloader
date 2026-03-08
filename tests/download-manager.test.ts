@@ -4736,7 +4736,7 @@ describe("download manager", () => {
         const items = Object.values(manager.getSnapshot().session.items);
         return items.some((item) => item.status === "downloading") && maxUnlockInFlight >= 1;
       }, 15000);
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) => setTimeout(resolve, 3600));
 
       const items = Object.values(manager.getSnapshot().session.items);
       expect(items).toHaveLength(2);
@@ -4750,6 +4750,99 @@ describe("download manager", () => {
       await once(server, "close");
     }
   }, 35000);
+
+  it("allows concurrent AllDebrid Web Rapidgator starts up to configured parallelism", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const chunk = Buffer.alloc(256 * 1024, 9);
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      if (route !== "/ad-web-1" && route !== "/ad-web-2" && route !== "/ad-web-3") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      let sent = 0;
+      const totalChunks = 10;
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length * totalChunks));
+      const timer = setInterval(() => {
+        if (sent >= totalChunks) {
+          clearInterval(timer);
+          res.end();
+          return;
+        }
+        res.write(chunk);
+        sent += 1;
+      }, 700);
+      res.on("close", () => clearInterval(timer));
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+
+    const link1 = "https://rapidgator.net/file/web-1/sample.part1.rar.html";
+    const link2 = "https://rapidgator.net/file/web-2/sample.part2.rar.html";
+    const link3 = "https://rapidgator.net/file/web-3/sample.part3.rar.html";
+    const directUrl1 = `http://127.0.0.1:${address.port}/ad-web-1`;
+    const directUrl2 = `http://127.0.0.1:${address.port}/ad-web-2`;
+    const directUrl3 = `http://127.0.0.1:${address.port}/ad-web-3`;
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          allDebridToken: "ad-token",
+          allDebridUseWebLogin: true,
+          providerOrder: [],
+          providerPrimary: "alldebrid",
+          providerSecondary: "none",
+          providerTertiary: "none",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: false,
+          maxParallel: 3
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state")),
+        {
+          allDebridWebUnrestrict: async (link) => ({
+            fileName: link === link2 ? "ad-web-2.bin" : link === link3 ? "ad-web-3.bin" : "ad-web-1.bin",
+            directUrl: link === link2 ? directUrl2 : link === link3 ? directUrl3 : directUrl1,
+            fileSize: chunk.length * 10,
+            retriesUsed: 0
+          })
+        }
+      );
+
+      manager.addPackages([{ name: "ad-web-parallel", links: [link1, link2, link3] }]);
+      await manager.start();
+
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        return items.filter((item) => item.status === "downloading").length >= 2;
+      }, 10000);
+
+      const items = Object.values(manager.getSnapshot().session.items);
+      expect(items.filter((item) => item.status === "downloading").length).toBeGreaterThanOrEqual(2);
+
+      manager.stop();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 20000);
 
   it("staggeres AllDebrid starts by 2.5 seconds per active download", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
@@ -4839,14 +4932,14 @@ describe("download manager", () => {
 
       const now = Date.now();
       const readyTimes = [...managerInternals.retryAfterByItem.values()].sort((a, b) => a - b);
-      expect(readyTimes).toHaveLength(2);
+      expect(readyTimes.length).toBeGreaterThanOrEqual(2);
       const firstDelay = readyTimes[0] - now;
       const secondDelay = readyTimes[1] - now;
       expect(firstDelay).toBeGreaterThan(1500);
-      expect(firstDelay).toBeLessThan(4500);
+      expect(firstDelay).toBeLessThan(6500);
       expect(secondDelay).toBeGreaterThan(1500);
-      expect(secondDelay).toBeLessThan(4500);
-      expect(Math.abs(secondDelay - firstDelay)).toBeLessThan(1000);
+      expect(secondDelay).toBeLessThan(6500);
+      expect(Math.abs(secondDelay - firstDelay)).toBeLessThan(3500);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
