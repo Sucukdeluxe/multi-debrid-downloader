@@ -95,7 +95,7 @@ const DEFAULT_LOW_THROUGHPUT_TIMEOUT_MS = 120000;
 
 const DEFAULT_LOW_THROUGHPUT_MIN_BYTES = 64 * 1024;
 
-const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 100 * 1024;
+const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 5 * 1024;
 
 const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
 
@@ -1105,6 +1105,9 @@ export class DownloadManager extends EventEmitter {
   // Tracks failed hybrid archives together with a lightweight state marker so unchanged
   // archives are not retried on every subsequent post-processing wake-up.
   private hybridFailedArchives = new Map<string, Map<string, HybridFailedArchiveState>>();
+
+  /** Archives already auto-recovered via forced re-download (loop protection). */
+  private autoRecoveredForRedownload = new Set<string>();
 
   private reservedTargetPaths = new Map<string, string>();
 
@@ -4169,6 +4172,10 @@ export class DownloadManager extends EventEmitter {
     if (!archiveKey) {
       this.hybridExtractedPaths.delete(packageId);
       this.hybridFailedArchives.delete(packageId);
+      // Also clear re-download loop protection for this package
+      for (const key of this.autoRecoveredForRedownload) {
+        if (key.startsWith(`${packageId}::`)) this.autoRecoveredForRedownload.delete(key);
+      }
       return;
     }
 
@@ -4273,24 +4280,25 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (hasValidSignature) {
-        // Check if other archives in this package were successfully extracted.
-        // If a known password worked for siblings but NOT for this archive,
-        // the file is very likely corrupt despite having a valid header.
-        const otherItemsExtracted = items.some((item) =>
-          item.status === "completed" && isExtractedLabel(item.fullStatus)
-          && !archiveItems.includes(item)
-        );
-        if (otherItemsExtracted) {
+        // Valid signature + suggestRedownload means both JVM and legacy extractors failed
+        // (CRC/password error).  Even with a valid header the content can be corrupt –
+        // encrypted RAR5 produces "Checksum error" indistinguishable from wrong password.
+        // Force re-download ONCE; use autoRecoveredForRedownload Set for loop protection.
+        const redownloadKey = `${pkg.id}::${failure.archiveName}`;
+        if (this.autoRecoveredForRedownload.has(redownloadKey)) {
           logger.warn(
-            `Auto-Recovery (${scope}): ${failure.archiveName} - Signatur gueltig aber ` +
-            `andere Archive im Paket bereits entpackt (bekanntes Passwort existiert). ` +
-            `Erzwinge Re-Download aller ${archiveItems.length} Parts (wahrscheinliche Korruption)`
+            `Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - ` +
+            `wurde bereits einmal per Re-Download versucht (Loop-Schutz)`
           );
-          corruptArchiveItems.push(...inspectedArchiveItems);
-        } else {
-          logger.warn(`Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - Dateien korrekte Groesse, Archiv-Signatur gueltig (vermutlich falsches Passwort)`);
           return 0;
         }
+        this.autoRecoveredForRedownload.add(redownloadKey);
+        logger.warn(
+          `Auto-Recovery (${scope}): ${failure.archiveName} - Signatur gueltig, ` +
+          `beide Extraktoren fehlgeschlagen (suggestRedownload). ` +
+          `Erzwinge Re-Download aller ${archiveItems.length} Parts`
+        );
+        corruptArchiveItems.push(...inspectedArchiveItems);
       }
 
       logger.warn(
