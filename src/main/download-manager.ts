@@ -118,6 +118,8 @@ const ARCHIVE_SETTLE_MAX_WAIT_MS = 5000;
 
 const MAX_SAME_DIRECT_URL_ATTEMPTS = 3;
 
+const REALDEBRID_TOTAL_MISMATCH_TOLERANCE_BYTES = 64 * 1024;
+
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
 function itemExpectedMinBytes(item: DownloadItem): number {
@@ -410,6 +412,67 @@ function shouldPreflightFinalizeItemFromDisk(item: DownloadItem): boolean {
 function isResumeHardResetReason(errorText: string): boolean {
   const text = String(errorText || "");
   return text.startsWith("resume_download_underflow:");
+}
+
+function isRealDebridProvider(provider: string | null | undefined): boolean {
+  return String(provider || "").trim().toLowerCase() === "realdebrid";
+}
+
+export function getAuthoritativeRealDebridTotal(
+  provider: string | null | undefined,
+  knownTotal: number,
+  existingBytes: number,
+  responseStatus: number,
+  contentLength: number,
+  totalFromRange: number | null,
+  resumeHardResetUsed: boolean
+): { totalBytes: number; source: "content-range" | "content-length"; mismatchBytes: number } | null {
+  if (!isRealDebridProvider(provider) || !knownTotal || knownTotal <= 0) {
+    return null;
+  }
+
+  const evaluateCandidate = (
+    candidateTotal: number,
+    source: "content-range" | "content-length"
+  ): { totalBytes: number; source: "content-range" | "content-length"; mismatchBytes: number } | null => {
+    if (!Number.isFinite(candidateTotal) || candidateTotal <= 0 || candidateTotal >= knownTotal) {
+      return null;
+    }
+
+    const mismatchBytes = knownTotal - candidateTotal;
+    if (mismatchBytes > REALDEBRID_TOTAL_MISMATCH_TOLERANCE_BYTES) {
+      return null;
+    }
+
+    if (candidateTotal + ALLOCATION_UNIT_SIZE < existingBytes) {
+      return null;
+    }
+
+    if (responseStatus === 206) {
+      if (existingBytes <= 0) {
+        return null;
+      }
+      const maxReachableBytes = existingBytes + Math.max(0, contentLength);
+      if (candidateTotal > maxReachableBytes + ALLOCATION_UNIT_SIZE) {
+        return null;
+      }
+    } else if (responseStatus === 200) {
+      if (!resumeHardResetUsed || source !== "content-length") {
+        return null;
+      }
+    } else {
+      return null;
+    }
+
+    return {
+      totalBytes: candidateTotal,
+      source,
+      mismatchBytes
+    };
+  };
+
+  return evaluateCandidate(totalFromRange || 0, "content-range")
+    || evaluateCandidate(contentLength, "content-length");
 }
 
 function isPermanentLinkError(errorText: string): boolean {
@@ -6755,9 +6818,10 @@ export class DownloadManager extends EventEmitter {
               active.resumeHardResetUsed = true;
               item.retries += 1;
               logger.warn(`Resume-Neustart: item=${item.fileName || item.id}, error=${exhaustedReason}, provider=${item.provider || "?"}`);
-              if (claimedTargetPath) {
+              const resetTargetPath = claimedTargetPath || String(item.targetPath || "").trim();
+              if (resetTargetPath) {
                 try {
-                  fs.rmSync(claimedTargetPath, { force: true });
+                  fs.rmSync(resetTargetPath, { force: true });
                 } catch {
                   // ignore
                 }
@@ -7219,7 +7283,10 @@ export class DownloadManager extends EventEmitter {
         const contentLength = Number.isFinite(rawContentLength) && rawContentLength > 0 ? rawContentLength : 0;
         const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
         const serverIgnoredRange = existingBytes > 0 && response.status === 200;
-        if (serverIgnoredRange) {
+        const allowFreshOverwriteAfterResumeReset = serverIgnoredRange
+          && active.resumeHardResetUsed
+          && isRealDebridProvider(item.provider);
+        if (serverIgnoredRange && !allowFreshOverwriteAfterResumeReset) {
           logger.warn(`Server ignorierte Range-Header (HTTP 200 statt 206), verwerfe Direktlink und behalte Teil-Datei: ${item.fileName}`);
           logAttemptEvent("WARN", "Server ignorierte Range-Header beim Resume", {
             attempt,
@@ -7234,8 +7301,45 @@ export class DownloadManager extends EventEmitter {
           }
           throw new Error(`range_ignored_on_resume:${existingBytes}/${contentLength || 0}`);
         }
+        if (allowFreshOverwriteAfterResumeReset) {
+          logger.warn(
+            `Server ignorierte Range-Header nach Resume-Reset, ueberschreibe alte Teil-Datei frisch: ${item.fileName}`
+          );
+          logAttemptEvent("WARN", "Range ignoriert nach Resume-Reset, frischer Vollstart erlaubt", {
+            attempt,
+            existingBytes,
+            contentLength,
+            directUrl
+          });
+        }
 
-        if (knownTotal && knownTotal > 0) {
+        const correctedRealDebridTotal = getAuthoritativeRealDebridTotal(
+          item.provider,
+          knownTotal || 0,
+          existingBytes,
+          response.status,
+          contentLength,
+          totalFromRange,
+          Boolean(active.resumeHardResetUsed)
+        );
+        if (correctedRealDebridTotal) {
+          item.totalBytes = correctedRealDebridTotal.totalBytes;
+          logger.warn(
+            `Real-Debrid-Zielgroesse korrigiert: ${item.fileName} ` +
+            `known=${knownTotal}, corrected=${correctedRealDebridTotal.totalBytes}, ` +
+            `source=${correctedRealDebridTotal.source}`
+          );
+          logAttemptEvent("WARN", "Real-Debrid-Zielgroesse aus HTTP korrigiert", {
+            attempt,
+            source: correctedRealDebridTotal.source,
+            knownTotal,
+            correctedTotal: correctedRealDebridTotal.totalBytes,
+            mismatchBytes: correctedRealDebridTotal.mismatchBytes,
+            existingBytes,
+            contentLength,
+            totalFromRange
+          });
+        } else if (knownTotal && knownTotal > 0) {
           item.totalBytes = knownTotal;
         } else if (totalFromRange) {
           item.totalBytes = totalFromRange;
