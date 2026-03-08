@@ -5537,6 +5537,9 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
 
   const getDisplayedItemStatus = (item: DownloadItem): string => {
     const statusText = String(item.fullStatus || "").trim();
+    if (statusText === "Wartet") {
+      return "";
+    }
     if (sessionRunning) {
       return statusText;
     }

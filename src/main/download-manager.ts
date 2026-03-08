@@ -5567,7 +5567,7 @@ export class DownloadManager extends EventEmitter {
 
   private getVisiblePacedStartBudget(): number {
     const maxParallel = Math.max(1, Number(this.settings.maxParallel) || 1);
-    return Math.max(0, maxParallel - this.activeTasks.size);
+    return this.activeTasks.size < maxParallel ? 1 : 0;
   }
 
   private delayPacedStartForItem(item: DownloadItem, now: number): boolean {
