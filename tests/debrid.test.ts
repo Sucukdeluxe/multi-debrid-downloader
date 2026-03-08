@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, normalizeResolvedFilename } from "../src/main/debrid";
+import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, normalizeResolvedFilename, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  resetDebridLinkRuntimeStateForTests();
   vi.restoreAllMocks();
 });
 
@@ -175,6 +176,252 @@ describe("debrid service", () => {
     expect(usedAuthHeader).toBe("Bearer dl-key-two");
     expect(result.provider).toBe("debridlink");
     expect(result.providerLabel).toContain("Key 2");
+  });
+
+  it("uses JSON add payload and refreshes missing Debrid-Link downloadUrl via downloader/list", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    let addBody = "";
+    let addContentType = "";
+    let addAccept = "";
+    const calledUrls: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        const headers = init?.headers;
+        if (headers instanceof Headers) {
+          addContentType = headers.get("Content-Type") || "";
+          addAccept = headers.get("Accept") || "";
+        } else if (Array.isArray(headers)) {
+          addContentType = headers.find(([key]) => key.toLowerCase() === "content-type")?.[1] || "";
+          addAccept = headers.find(([key]) => key.toLowerCase() === "accept")?.[1] || "";
+        } else {
+          addContentType = String((headers as Record<string, unknown> | undefined)?.["Content-Type"] || "");
+          addAccept = String((headers as Record<string, unknown> | undefined)?.Accept || "");
+        }
+        addBody = String(init?.body || "");
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            id: "dl-link-1",
+            url: "https://hoster.example/file.bin",
+            name: "file.bin",
+            expired: true
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("debrid-link.com/api/v2/downloader/list?ids=dl-link-1")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: [
+            {
+              id: "dl-link-1",
+              url: "https://hoster.example/file.bin",
+              name: "file.bin",
+              downloadUrl: "https://debrid-link.example/file.bin",
+              size: 1234,
+              expired: false
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://hoster.example/file.bin");
+
+    expect(addContentType).toBe("application/json");
+    expect(addAccept).toBe("application/json");
+    expect(addBody).toBe(JSON.stringify({ url: "https://hoster.example/file.bin" }));
+    expect(result.provider).toBe("debridlink");
+    expect(result.directUrl).toBe("https://debrid-link.example/file.bin");
+    expect(calledUrls.some((url) => url.includes("debrid-link.com/api/v2/downloader/list?ids=dl-link-1"))).toBe(true);
+  });
+
+  it("rotates to the next Debrid-Link key when the first key is invalid", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const authHeaders: string[] = [];
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const headers = init?.headers;
+      let authHeader = "";
+      if (headers instanceof Headers) {
+        authHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        authHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+      authHeaders.push(authHeader);
+      if (authHeader === "Bearer dl-key-one") {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "badToken",
+          error_description: "token expired"
+        }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          downloadUrl: "https://debrid-link.example/valid.bin",
+          name: "valid.bin",
+          size: 2048
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://hoster.example/needs-rotation.bin");
+
+    expect(authHeaders).toEqual(["Bearer dl-key-one", "Bearer dl-key-two"]);
+    expect(result.provider).toBe("debridlink");
+    expect(result.providerLabel).toContain("Key 2");
+    expect(result.directUrl).toBe("https://debrid-link.example/valid.bin");
+  });
+
+  it("looks up limits and rotates keys when Debrid-Link host quota is reached", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    let limitCalls = 0;
+    const authHeaders: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const headers = init?.headers;
+      let authHeader = "";
+      if (headers instanceof Headers) {
+        authHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        authHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+
+      if (url.includes("debrid-link.com/api/v2/downloader/limits")) {
+        limitCalls += 1;
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            nextResetSeconds: { value: 900 }
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      authHeaders.push(authHeader);
+      if (authHeader === "Bearer dl-key-one") {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "maxDataHost",
+          error_description: "host quota reached"
+        }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          downloadUrl: "https://debrid-link.example/quota-ok.bin",
+          name: "quota-ok.bin",
+          size: 4096
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://rapidgator.net/file/quota-test");
+
+    expect(limitCalls).toBe(1);
+    expect(authHeaders).toEqual(["Bearer dl-key-one", "Bearer dl-key-two"]);
+    expect(result.provider).toBe("debridlink");
+    expect(result.providerLabel).toContain("Key 2");
+    expect(result.directUrl).toBe("https://debrid-link.example/quota-ok.bin");
+  });
+
+  it("treats bad Debrid-Link file passwords as fatal and does not rotate keys", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const authHeaders: string[] = [];
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const headers = init?.headers;
+      let authHeader = "";
+      if (headers instanceof Headers) {
+        authHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        authHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+      authHeaders.push(authHeader);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "badFilePassword",
+        error_description: "wrong password"
+      }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/protected.bin")).rejects.toThrow("wrong password");
+    expect(authHeaders).toEqual(["Bearer dl-key-one"]);
   });
 
   it("uses BestDebrid auth header without token query fallback", async () => {

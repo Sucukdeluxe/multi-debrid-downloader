@@ -20,12 +20,31 @@ const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
-const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "maxDataHost", "maxAttempts", "maxTransfer"]);
+const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "maxDataHost"]);
+const DEBRID_LINK_INVALID_TOKEN_ERRORS = new Set(["badToken", "hidedToken", "expired_token"]);
+const DEBRID_LINK_RATE_LIMIT_ERRORS = new Set(["floodDetected"]);
+const DEBRID_LINK_RETRYABLE_ERRORS = new Set(["internalError", "server_error"]);
 /** Errors where the key can't handle this link — skip to next key immediately, no retries */
-const DEBRID_LINK_SKIP_KEY_ERRORS = new Set(["notDebrid", "disabledServerHost", "notFree"]);
+const DEBRID_LINK_SKIP_KEY_ERRORS = new Set([
+  "notDebrid",
+  "disabledServerHost",
+  "notFreeHost",
+  "serverNotAllowed",
+  "freeServerOverload",
+  "maintenanceHost",
+  "noServerHost",
+  "fileNotAvailable"
+]);
+const DEBRID_LINK_FATAL_LINK_ERRORS = new Set(["badArguments", "badFileUrl", "badFilePassword", "fileNotFound", "hostNotValid"]);
 /** Per-key cooldown cache: keyId → expiry timestamp. Parallel items skip keys that recently failed. */
 const debridLinkKeyCooldowns = new Map<string, number>();
 const DEBRID_LINK_KEY_COOLDOWN_MS = 120_000; // 2 min cooldown per failed key
+const DEBRID_LINK_INVALID_KEY_COOLDOWN_MS = 60 * 60 * 1000;
+const DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+
+export function resetDebridLinkRuntimeStateForTests(): void {
+  debridLinkKeyCooldowns.clear();
+}
 
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 
@@ -356,6 +375,75 @@ function findDebridLinkHostEntry(payload: Record<string, unknown> | null, host: 
     }
   }
   return null;
+}
+
+function parseDebridLinkErrorCode(payload: Record<string, unknown> | null): string {
+  return pickString(payload, ["error", "ERR"]);
+}
+
+function parseDebridLinkErrorDescription(payload: Record<string, unknown> | null): string {
+  return pickString(payload, ["error_description", "message", "detail", "response_text", "error", "ERR"]);
+}
+
+function looksLikeHtmlResponse(contentType: string, body: string): boolean {
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("text/html") || type.includes("application/xhtml+xml")) {
+    return true;
+  }
+  return /^\s*<(!doctype\s+html|html\b)/i.test(String(body || ""));
+}
+
+function parsePositiveNumber(value: unknown): number | null {
+  const numeric = Number(value ?? NaN);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.floor(numeric);
+}
+
+function parseDebridLinkNextResetMs(payload: Record<string, unknown> | null): number {
+  const value = asRecord(payload?.value);
+  const nextReset = value?.nextResetSeconds;
+  const nextResetRecord = asRecord(nextReset);
+  const seconds = parsePositiveNumber(nextReset)
+    ?? parsePositiveNumber(nextResetRecord?.current)
+    ?? parsePositiveNumber(nextResetRecord?.value);
+  if (!seconds) {
+    return 0;
+  }
+  return Math.min(24 * 60 * 60 * 1000, seconds * 1000);
+}
+
+function parseDebridLinkLinkEntries(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => asRecord(entry))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  }
+  const entry = asRecord(value);
+  return entry ? [entry] : [];
+}
+
+class DebridLinkApiError extends Error {
+  public readonly status: number;
+  public readonly code: string;
+  public readonly retryAfterMs: number;
+  public readonly payload: Record<string, unknown> | null;
+
+  public constructor(
+    status: number,
+    code: string,
+    description: string,
+    retryAfterMs: number,
+    payload: Record<string, unknown> | null
+  ) {
+    super(description || code || `HTTP ${status || 0}`);
+    this.name = "DebridLinkApiError";
+    this.status = status;
+    this.code = code;
+    this.retryAfterMs = retryAfterMs;
+    this.payload = payload;
+  }
 }
 
 async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: string; token: string }, host: string, signal?: AbortSignal): Promise<DebridLinkHostLimitInfo> {
@@ -1477,6 +1565,9 @@ class DebridLinkClient {
       throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar (deaktiviert oder am Tageslimit)");
     }
 
+    const failures: string[] = [];
+    let usableKeySeen = false;
+
     // Always start from first key — use first available, skip disabled/limited/cooldown.
     // This ensures all parallel items use the same key until it's actually exhausted.
     for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
@@ -1495,6 +1586,32 @@ class DebridLinkClient {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${new Date(keyCooldownExpiry).toLocaleTimeString()}), pruefe naechsten Key`);
         continue;
       }
+
+      usableKeySeen = true;
+      try {
+        const result = await this.unrestrictWithKey(apiKey, link, signal);
+        logger.info(`Debrid-Link${keyLabel}: Unrestrict OK -> ${result.fileName || "?"}`);
+        return {
+          ...result,
+          sourceLabel: apiKey.label,
+          sourceAccountId: apiKey.id,
+          sourceAccountLabel: apiKey.label
+        };
+      } catch (error) {
+        const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
+        failures.push(`Debrid-Link${keyLabel}: ${failure.message}`);
+        if (failure.cooldownMs > 0) {
+          debridLinkKeyCooldowns.set(apiKey.id, Date.now() + failure.cooldownMs);
+        }
+        if (failure.fatal) {
+          throw new Error(`Debrid-Link${keyLabel}: ${failure.message}`);
+        }
+        const cooldownInfo = failure.cooldownMs > 0
+          ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
+          : "";
+        logger.warn(`Debrid-Link${keyLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Key`);
+      }
+      continue;
 
       let lastError = "";
       for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
@@ -1584,7 +1701,268 @@ class DebridLinkClient {
       }
     }
 
-    throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar");
+    if (!usableKeySeen) {
+      throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar");
+    }
+    throw new Error(failures.join(" | ") || "Debrid-Link: Kein aktiver API-Key verfuegbar");
+  }
+
+  private async unrestrictWithKey(
+    apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
+    link: string,
+    signal?: AbortSignal
+  ): Promise<UnrestrictedLink> {
+    const payload = await this.requestPayload(apiKey, "POST", "/downloader/add", { url: link }, signal);
+    const entry = await this.resolveDownloaderEntry(apiKey, payload.value, link, signal);
+    const directUrl = pickString(entry, ["downloadUrl"]);
+    const expired = Boolean(entry.expired === true);
+    if (!directUrl || expired) {
+      throw new Error("Debrid-Link: Keine gueltige Download-URL in Antwort");
+    }
+    return {
+      fileName: pickString(entry, ["name"]) || filenameFromUrl(directUrl) || filenameFromUrl(link),
+      directUrl,
+      fileSize: pickNumber(entry, ["size"]),
+      retriesUsed: 0
+    };
+  }
+
+  private async requestPayload(
+    apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
+    method: "GET" | "POST" | "DELETE",
+    apiPath: string,
+    body: Record<string, unknown> | undefined,
+    signal?: AbortSignal,
+    maxAttempts = REQUEST_RETRIES
+  ): Promise<Record<string, unknown>> {
+    let lastTransportError = "";
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const headers: Record<string, string> = {
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey.token}`,
+          "User-Agent": DEBRID_USER_AGENT
+        };
+        let payloadBody: string | undefined;
+        if (method !== "GET" && method !== "DELETE" && body) {
+          headers["Content-Type"] = "application/json";
+          payloadBody = JSON.stringify(body);
+        }
+
+        const response = await fetch(`${DEBRID_LINK_API_BASE}${apiPath}`, {
+          method,
+          headers,
+          body: payloadBody,
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+        const responseText = await response.text();
+        const payload = parseJsonSafe(responseText);
+        if (!payload) {
+          const description = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
+            ? `Debrid-Link lieferte HTML statt JSON (HTTP ${response.status})`
+            : compactErrorText(responseText) || `Debrid-Link lieferte kein JSON (HTTP ${response.status})`;
+          const error = new DebridLinkApiError(
+            response.status,
+            "requestError",
+            description,
+            parseRetryAfterMs(response.headers.get("retry-after")),
+            null
+          );
+          if (this.shouldRetryApiError(error, attempt, maxAttempts)) {
+            await sleepWithSignal(this.retryDelayForApiError(error, attempt), signal);
+            continue;
+          }
+          throw error;
+        }
+
+        if (!response.ok || !parseDebridLinkSuccess(payload)) {
+          const error = new DebridLinkApiError(
+            response.status,
+            parseDebridLinkErrorCode(payload) || `HTTP ${response.status}`,
+            parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
+            parseRetryAfterMs(response.headers.get("retry-after")),
+            payload
+          );
+          if (this.shouldRetryApiError(error, attempt, maxAttempts)) {
+            await sleepWithSignal(this.retryDelayForApiError(error, attempt), signal);
+            continue;
+          }
+          throw error;
+        }
+
+        return payload;
+      } catch (error) {
+        if (error instanceof DebridLinkApiError) {
+          throw error;
+        }
+        lastTransportError = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastTransportError) && !/timeout/i.test(lastTransportError))) {
+          throw error;
+        }
+        if (attempt >= maxAttempts || !isRetryableErrorText(lastTransportError)) {
+          throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
+        }
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+    throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
+  }
+
+  private shouldRetryApiError(error: DebridLinkApiError, attempt: number, maxAttempts: number): boolean {
+    if (attempt >= maxAttempts) {
+      return false;
+    }
+    if (error.status === 429 || error.status >= 500) {
+      return true;
+    }
+    return DEBRID_LINK_RETRYABLE_ERRORS.has(error.code);
+  }
+
+  private retryDelayForApiError(error: DebridLinkApiError, attempt: number): number {
+    if (error.retryAfterMs > 0) {
+      return error.retryAfterMs;
+    }
+    return retryDelay(attempt);
+  }
+
+  private async resolveDownloaderEntry(
+    apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
+    rawValue: unknown,
+    originalLink: string,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    const entries = parseDebridLinkLinkEntries(rawValue);
+    if (entries.length === 0) {
+      throw new Error("Debrid-Link: Keine Daten in Antwort");
+    }
+
+    const matchingEntries = entries.filter((entry) => {
+      const url = pickString(entry, ["url"]);
+      return url ? canonicalLink(url) === canonicalLink(originalLink) : false;
+    });
+    const chosen = matchingEntries.length === 1
+      ? matchingEntries[0]
+      : entries.length === 1
+        ? entries[0]
+        : null;
+    if (!chosen) {
+      throw new Error(`Debrid-Link: Link lieferte ${entries.length} Dateien statt einer Einzeldatei`);
+    }
+
+    const needsRefresh = !pickString(chosen, ["downloadUrl"]) || chosen.expired === true;
+    if (!needsRefresh) {
+      return chosen;
+    }
+
+    const id = pickString(chosen, ["id"]);
+    if (!id) {
+      return chosen;
+    }
+    const refreshed = await this.fetchDownloaderEntry(apiKey, id, signal);
+    return refreshed || chosen;
+  }
+
+  private async fetchDownloaderEntry(
+    apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
+    id: string,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown> | null> {
+    const query = new URLSearchParams({ ids: id });
+    const payload = await this.requestPayload(apiKey, "GET", `/downloader/list?${query.toString()}`, undefined, signal);
+    const entries = parseDebridLinkLinkEntries(payload.value);
+    if (entries.length === 0) {
+      return null;
+    }
+    return entries.find((entry) => pickString(entry, ["id"]) === id) || entries[0] || null;
+  }
+
+  private async fetchQuotaCooldownMs(
+    apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
+    signal?: AbortSignal
+  ): Promise<number> {
+    try {
+      const payload = await this.requestPayload(apiKey, "GET", "/downloader/limits", undefined, signal, 1);
+      return parseDebridLinkNextResetMs(payload) || DEBRID_LINK_KEY_COOLDOWN_MS;
+    } catch {
+      return DEBRID_LINK_KEY_COOLDOWN_MS;
+    }
+  }
+
+  private async classifyKeyFailure(
+    error: unknown,
+    apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
+    link: string,
+    signal?: AbortSignal
+  ): Promise<{ fatal: boolean; cooldownMs: number; message: string }> {
+    const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
+    if (error instanceof DebridLinkApiError) {
+      const code = String(error.code || "").trim() || `HTTP ${error.status}`;
+      const description = error.message || code;
+
+      if (DEBRID_LINK_INVALID_TOKEN_ERRORS.has(code)) {
+        return {
+          fatal: false,
+          cooldownMs: DEBRID_LINK_INVALID_KEY_COOLDOWN_MS,
+          message: `ungueltiger oder deaktivierter API-Key (${code}: ${description})`
+        };
+      }
+      if (DEBRID_LINK_RATE_LIMIT_ERRORS.has(code) || error.status === 429) {
+        return {
+          fatal: false,
+          cooldownMs: error.retryAfterMs || DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS,
+          message: `API-Rate-Limit erreicht (${code}: ${description})`
+        };
+      }
+      if (DEBRID_LINK_QUOTA_ERRORS.has(code)) {
+        const cooldownMs = await this.fetchQuotaCooldownMs(apiKey, signal);
+        const hoster = extractHosterFromUrl(link) || "host";
+        return {
+          fatal: false,
+          cooldownMs,
+          message: `Quota erreicht fuer ${hoster} (${code}: ${description})`
+        };
+      }
+      if (DEBRID_LINK_SKIP_KEY_ERRORS.has(code)) {
+        return {
+          fatal: false,
+          cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
+          message: `Key kann Link aktuell nicht verarbeiten (${code}: ${description})`
+        };
+      }
+      if (DEBRID_LINK_FATAL_LINK_ERRORS.has(code)) {
+        return {
+          fatal: true,
+          cooldownMs: 0,
+          message: description
+        };
+      }
+      if (DEBRID_LINK_RETRYABLE_ERRORS.has(code) || error.status >= 500) {
+        return {
+          fatal: false,
+          cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
+          message: `temporärer API-Fehler (${code}: ${description})`
+        };
+      }
+      return {
+        fatal: true,
+        cooldownMs: 0,
+        message: description
+      };
+    }
+
+    if (isRetryableErrorText(errorText) || /debrid-link.*(json|html)/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
+        message: errorText || "temporärer Transportfehler"
+      };
+    }
+
+    return {
+      fatal: true,
+      cooldownMs: 0,
+      message: errorText || "Unbekannter Debrid-Link-Fehler"
+    };
   }
 }
 
