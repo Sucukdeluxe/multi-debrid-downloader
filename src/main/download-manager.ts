@@ -395,6 +395,18 @@ function isFetchFailure(errorText: string): boolean {
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
 }
 
+function isHttp416Text(errorText: string): boolean {
+  return /(^|\D)416(\D|$)/.test(String(errorText || ""));
+}
+
+function shouldPreflightFinalizeItemFromDisk(item: DownloadItem): boolean {
+  const text = `${item.fullStatus || ""} ${item.lastError || ""}`.toLowerCase();
+  return text.includes("resume-link erneuern")
+    || text.includes("resume link erneuern")
+    || text.includes("range_ignored_on_resume")
+    || text.includes("server ignorierte range");
+}
+
 function isResumeHardResetReason(errorText: string): boolean {
   const text = String(errorText || "");
   return text.startsWith("resume_download_underflow:");
@@ -3883,16 +3895,24 @@ export class DownloadManager extends EventEmitter {
         || item.status === "validating"
         || item.status === "paused"
         || item.status === "reconnect_wait") {
+        const preserveRecoveryStatus = shouldPreflightFinalizeItemFromDisk(item);
         item.status = "queued";
-        const itemPkg = this.session.packages[item.packageId];
-        item.fullStatus = (itemPkg && itemPkg.enabled === false) ? "Paket gestoppt" : "Wartet";
+        if (preserveRecoveryStatus) {
+          item.fullStatus = (item.fullStatus || "").trim() || "Wartet";
+        } else {
+          const itemPkg = this.session.packages[item.packageId];
+          item.fullStatus = (itemPkg && itemPkg.enabled === false) ? "Paket gestoppt" : "Wartet";
+        }
         item.speedBps = 0;
         item.updatedAt = nowMs();
       }
       // Clear stale transient status texts from previous session
       if (item.status === "queued") {
         const statusText = (item.fullStatus || "").trim();
-        if (statusText !== "Wartet" && statusText !== "Paket gestoppt" && statusText !== "Online") {
+        if (statusText !== "Wartet"
+          && statusText !== "Paket gestoppt"
+          && statusText !== "Online"
+          && !shouldPreflightFinalizeItemFromDisk(item)) {
           item.fullStatus = "Wartet";
         }
       }
@@ -6035,6 +6055,37 @@ export class DownloadManager extends EventEmitter {
     this.retryAfterByItem.set(item.id, nowMs() + waitMs);
   }
 
+  private scheduleHttp416Retry(
+    item: DownloadItem,
+    active: ActiveTask,
+    retryDisplayLimit: string,
+    errorText: string,
+    claimedTargetPath: string
+  ): void {
+    active.genericErrorRetries += 1;
+    item.retries += 1;
+    if (claimedTargetPath) {
+      try {
+        fs.rmSync(claimedTargetPath, { force: true });
+      } catch {
+        // ignore
+      }
+    }
+    this.releaseTargetPath(item.id);
+    this.dropItemContribution(item.id);
+    item.lastError = errorText;
+    item.downloadedBytes = 0;
+    item.totalBytes = null;
+    item.progressPercent = 0;
+    item.speedBps = 0;
+    const delayMs = retryDelayWithJitter(active.genericErrorRetries, 200);
+    logger.warn(
+      `HTTP 416 erkannt: item=${item.fileName || item.id}, ` +
+      `retry=${active.genericErrorRetries}/${retryDisplayLimit}, error=${errorText}, provider=${item.provider || "?"}`
+    );
+    this.queueRetry(item, active, delayMs, `HTTP 416 erkannt, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
+  }
+
   private startItem(packageId: string, itemId: string): void {
     const item = this.session.items[itemId];
     const pkg = this.session.packages[packageId];
@@ -6054,6 +6105,15 @@ export class DownloadManager extends EventEmitter {
     }
 
     this.retryAfterByItem.delete(itemId);
+
+    const preflightReason = `${item.fullStatus || ""} ${item.lastError || ""}`.trim();
+    if (shouldPreflightFinalizeItemFromDisk(item)
+      && this.tryFinalizeItemFromDisk(pkg, item, "Start-Preflight", preflightReason)) {
+      this.retryStateByItem.delete(item.id);
+      this.refreshPackageStatus(pkg);
+      this.persistSoon();
+      return;
+    }
 
     item.status = "validating";
     item.fullStatus = "Link wird umgewandelt";
@@ -6126,8 +6186,15 @@ export class DownloadManager extends EventEmitter {
     const maxGenericErrorRetries = maxItemRetries;
     const maxUnrestrictRetries = maxItemRetries;
     const maxStallRetries = maxItemRetries;
+    const maxHttp416Retries = configuredRetryLimit <= 0 ? 3 : Math.max(1, Math.min(maxItemRetries, 3));
     while (true) {
       try {
+        const preflightReason = `${item.fullStatus || ""} ${item.lastError || ""}`.trim();
+        if (shouldPreflightFinalizeItemFromDisk(item)
+          && this.tryFinalizeItemFromDisk(pkg, item, "Process-Preflight", preflightReason)) {
+          this.retryStateByItem.delete(item.id);
+          return;
+        }
         this.logPackageForItem(item, "INFO", "Link-Umwandlung gestartet", {
           url: item.url,
           retryLimit: retryDisplayLimit
@@ -6562,6 +6629,12 @@ export class DownloadManager extends EventEmitter {
           const directLinkRetryMatch = errorText.match(/^(?:Error:\s*)?direct_link_retry_exhausted:(.+)$/);
           if (directLinkRetryMatch) {
             const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
+            if (isHttp416Text(exhaustedReason) && active.genericErrorRetries < maxHttp416Retries) {
+              this.scheduleHttp416Retry(item, active, retryDisplayLimit, exhaustedReason, claimedTargetPath);
+              this.persistSoon();
+              this.emitState();
+              return;
+            }
             if (isResumeHardResetReason(exhaustedReason) && !active.resumeHardResetUsed) {
               active.resumeHardResetUsed = true;
               item.retries += 1;
@@ -6608,20 +6681,14 @@ export class DownloadManager extends EventEmitter {
             return;
           }
           const shouldFreshRetry = !active.freshRetryUsed && isFetchFailure(errorText);
-          const isHttp416 = /(^|\D)416(\D|$)/.test(errorText);
+          const isHttp416 = isHttp416Text(errorText);
           if (isHttp416) {
-            if (claimedTargetPath) {
-              try {
-                fs.rmSync(claimedTargetPath, { force: true });
-              } catch {
-                // ignore
-              }
+            if (active.genericErrorRetries < maxHttp416Retries) {
+              this.scheduleHttp416Retry(item, active, retryDisplayLimit, errorText, claimedTargetPath);
+              this.persistSoon();
+              this.emitState();
+              return;
             }
-            this.releaseTargetPath(item.id);
-            item.downloadedBytes = 0;
-            item.totalBytes = null;
-            item.progressPercent = 0;
-            this.dropItemContribution(item.id);
             item.status = "failed";
             this.recordRunOutcome(item.id, "failed");
             item.lastError = errorText;
@@ -7633,6 +7700,7 @@ export class DownloadManager extends EventEmitter {
 
   private async recoverRetryableItems(trigger: "startup" | "start"): Promise<number> {
     let recovered = 0;
+    let finalized = 0;
     const touchedPackages = new Set<string>();
     const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
     const maxAutoRetryFailures = retryLimitToMaxRetries(configuredRetryLimit);
@@ -7650,6 +7718,21 @@ export class DownloadManager extends EventEmitter {
         }
         // Only check failed or completed items — skip queued/cancelled to avoid
         // expensive fs.stat calls on hundreds of items (caused 5-10s freeze on start).
+        const canFinalizeFromDisk = item.status === "failed"
+          || item.status === "completed"
+          || item.status === "queued"
+          || item.status === "reconnect_wait";
+        if (canFinalizeFromDisk) {
+          const recoveryReason = `${item.fullStatus || ""} ${item.lastError || ""}`.trim();
+          if (shouldPreflightFinalizeItemFromDisk(item)
+            && this.tryFinalizeItemFromDisk(pkg, item, `Recovery-${trigger}`, recoveryReason)) {
+            finalized += 1;
+            touchedPackages.add(pkg.id);
+            this.retryAfterByItem.delete(item.id);
+            this.retryStateByItem.delete(item.id);
+            continue;
+          }
+        }
         if (item.status !== "failed" && item.status !== "completed") {
           continue;
         }
@@ -7690,7 +7773,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    if (recovered > 0) {
+    if (recovered > 0 || finalized > 0) {
       for (const packageId of touchedPackages) {
         const pkg = this.session.packages[packageId];
         if (!pkg) {
@@ -7698,12 +7781,15 @@ export class DownloadManager extends EventEmitter {
         }
         this.refreshPackageStatus(pkg);
       }
-      logger.warn(`Auto-Retry-Recovery (${trigger}): ${recovered} Item(s) wieder in Queue gesetzt`);
+      logger.warn(
+        `Auto-Retry-Recovery (${trigger}): ${recovered} Item(s) wieder in Queue gesetzt, ` +
+        `${finalized} Item(s) direkt von Disk vervollstaendigt`
+      );
       this.persistSoon();
       this.emitState();
     }
 
-    return recovered;
+    return recovered + finalized;
   }
 
   private queueItemForRetry(item: DownloadItem, options: { hardReset: boolean; reason: string }): void {

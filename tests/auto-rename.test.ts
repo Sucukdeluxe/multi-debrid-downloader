@@ -726,4 +726,13 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     );
     expect(result).toBe("Carter.S02E01.GERMAN.DL.720p.HDTV.x264-MDGP");
   });
+
+  it("renames abbreviated source bupr.de.dl.web.7p-s01e03 via season folder", () => {
+    const result = buildAutoRenameBaseNameFromFoldersWithOptions(
+      ["Burning.Promise.S01.GERMAN.DL.720p.WEB.H264-WvF"],
+      "bupr.de.dl.web.7p-s01e03",
+      { forceEpisodeForSeasonFolder: true }
+    );
+    expect(result).toBe("Burning.Promise.S01E03.GERMAN.DL.720p.WEB.H264-WvF");
+  });
 });
