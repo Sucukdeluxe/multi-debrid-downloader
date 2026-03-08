@@ -534,6 +534,157 @@ describe("download manager", () => {
     expect(fs.statSync(item.targetPath).size).toBe(binary.length);
   });
 
+  it("completes queued full files during start preflight without unrestricting again", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(192 * 1024, 17);
+    const pkgDir = path.join(root, "downloads", "queued-complete");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const targetPath = path.join(pkgDir, "queued-complete.rar");
+    fs.writeFileSync(targetPath, binary);
+    let unrestrictCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        throw new Error(`unexpected unrestrict ${url}`);
+      }
+      return originalFetch(input, init);
+    };
+
+    const session = emptySession();
+    const packageId = "queued-complete-pkg";
+    const itemId = "queued-complete-item";
+    const createdAt = Date.now() - 10_000;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "queued-complete",
+      outputDir: pkgDir,
+      extractDir: path.join(root, "extract", "queued-complete"),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/queued-complete",
+      provider: "megadebrid-web",
+      status: "queued",
+      retries: 2,
+      speedBps: 0,
+      downloadedBytes: binary.length,
+      totalBytes: binary.length,
+      progressPercent: 100,
+      fileName: "queued-complete.rar",
+      targetPath,
+      resumable: true,
+      attempts: 0,
+      lastError: "direct_link_retry_exhausted:HTTP 416",
+      fullStatus: "Resume-Link erneuern, Retry 1/3",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 2,
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+    const item = manager.getSnapshot().session.items[itemId];
+    expect(item?.status).toBe("completed");
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.downloadedBytes).toBe(binary.length);
+    expect(item?.fullStatus).toContain("Fertig");
+    expect(unrestrictCalls).toBe(0);
+  });
+
+  it("retries direct-link exhaustion caused by HTTP 416 in-session and then completes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(160 * 1024, 41);
+    let unrestrictCalls = 0;
+    let downloadCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: `https://dummy/direct-416-${unrestrictCalls}`,
+            filename: "direct-416-retry.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 2,
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).downloadToFile = async (_active: unknown, _directUrl: string, targetPath: string) => {
+      downloadCalls += 1;
+      if (downloadCalls === 1) {
+        throw new Error("direct_link_retry_exhausted:HTTP 416");
+      }
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, binary);
+      const item = Object.values((manager as any).session.items)[0] as { downloadedBytes: number; totalBytes: number; progressPercent: number } | undefined;
+      if (item) {
+        item.downloadedBytes = binary.length;
+        item.totalBytes = binary.length;
+        item.progressPercent = 100;
+      }
+      return { resumable: true };
+    };
+
+    manager.addPackages([{ name: "direct-416-retry", links: ["https://dummy/direct-416-retry"] }]);
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item?.status).toBe("completed");
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.downloadedBytes).toBe(binary.length);
+    expect(unrestrictCalls).toBe(2);
+    expect(downloadCalls).toBe(2);
+    expect(fs.existsSync(item.targetPath)).toBe(true);
+    expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+  });
+
   it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -2214,7 +2365,7 @@ describe("download manager", () => {
     expect(snapshot.canStart).toBe(true);
   });
 
-  it("requeues failed HTTP 416 items automatically on startup", () => {
+  it("requeues failed HTTP 416 items automatically on startup", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -2272,6 +2423,8 @@ describe("download manager", () => {
       session,
       createStoragePaths(path.join(root, "state"))
     );
+
+    await waitFor(() => manager.getSnapshot().session.items[itemId]?.status === "queued", 12000);
 
     const snapshot = manager.getSnapshot();
     const item = snapshot.session.items[itemId];
