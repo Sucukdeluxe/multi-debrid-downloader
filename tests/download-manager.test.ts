@@ -473,6 +473,67 @@ describe("download manager", () => {
     }
   });
 
+  it("does not renew direct links when the file is already complete on disk", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(256 * 1024, 31);
+    let unrestrictCalls = 0;
+    let downloadCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: "https://dummy/direct-complete",
+            filename: "direct-complete.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 1,
+        autoExtract: false,
+        autoReconnect: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).downloadToFile = async (_active: unknown, _directUrl: string, targetPath: string) => {
+      downloadCalls += 1;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, binary);
+      throw new Error(`direct_link_retry_exhausted:range_ignored_on_resume:${binary.length}/${binary.length}`);
+    };
+
+    manager.addPackages([{ name: "direct-complete", links: ["https://dummy/direct-complete"] }]);
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item?.status).toBe("completed");
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.downloadedBytes).toBe(binary.length);
+    expect(unrestrictCalls).toBe(1);
+    expect(downloadCalls).toBe(1);
+    expect(fs.existsSync(item.targetPath)).toBe(true);
+    expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+  });
+
   it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -762,7 +823,7 @@ describe("download manager", () => {
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
       expect(item?.status).toBe("failed");
-      expect(item?.fullStatus || item?.lastError || "").toContain("download_underflow");
+      expect(item?.fullStatus || item?.lastError || "").toMatch(/download_underflow|range_ignored_on_resume/);
       expect(item?.downloadedBytes).toBe(actual.length);
     } finally {
       server.close();
