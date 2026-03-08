@@ -950,6 +950,39 @@ describe("extractor", () => {
       // .zip.001 should appear once from zipSplit detection, not duplicated by genericSplit
       expect(names.filter((n) => n === "movie.zip.001")).toHaveLength(1);
     });
+
+    it("ignores duplicate-suffixed multipart rar volumes as standalone candidates", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rar-dup-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "Sanctuary720-01x07.part1.rar"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "Sanctuary720-01x07.part2.rar"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "Sanctuary720-01x07.part1 (1).rar"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "Sanctuary720-01x07.part2 (1).rar"), "data", "utf8");
+      fs.writeFileSync(path.join(packageDir, "Sanctuary720-01x07.part5 (1).rar"), "data", "utf8");
+
+      const candidates = await findArchiveCandidates(packageDir);
+      const names = candidates.map((c) => path.basename(c));
+
+      expect(names).toContain("Sanctuary720-01x07.part1.rar");
+      expect(names).not.toContain("Sanctuary720-01x07.part1 (1).rar");
+      expect(names).not.toContain("Sanctuary720-01x07.part2 (1).rar");
+      expect(names).not.toContain("Sanctuary720-01x07.part5 (1).rar");
+    });
+
+    it("keeps single rar files with duplicate suffix as valid candidates", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-single-rar-dup-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      fs.writeFileSync(path.join(packageDir, "Movie (1).rar"), "data", "utf8");
+
+      const candidates = await findArchiveCandidates(packageDir);
+      expect(candidates.map((c) => path.basename(c))).toContain("Movie (1).rar");
+    });
   });
 
   describe("classifyExtractionError", () => {

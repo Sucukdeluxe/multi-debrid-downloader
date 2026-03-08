@@ -299,8 +299,36 @@ function archiveNameKey(fileName: string): string {
   return process.platform === "win32" ? String(fileName || "").toLowerCase() : String(fileName || "");
 }
 
+function stripDuplicateSuffixBeforeExtension(fileName: string): string {
+  return String(fileName || "").replace(/ \(\d+\)(?=\.[^.]+$)/, "");
+}
+
+function hasDuplicateSuffixBeforeExtension(fileName: string): boolean {
+  return stripDuplicateSuffixBeforeExtension(fileName) !== String(fileName || "");
+}
+
+function archiveDetectionName(fileName: string): string {
+  return stripDuplicateSuffixBeforeExtension(path.basename(String(fileName || "")));
+}
+
+function archiveCandidateIdentity(filePath: string): string {
+  const normalizedPath = path.join(path.dirname(filePath), archiveDetectionName(filePath));
+  return pathSetKey(normalizedPath);
+}
+
+function prefersArchiveCandidate(nextCandidate: string, currentCandidate: string): boolean {
+  const nextName = path.basename(nextCandidate);
+  const currentName = path.basename(currentCandidate);
+  const nextHasDuplicateSuffix = hasDuplicateSuffixBeforeExtension(nextName);
+  const currentHasDuplicateSuffix = hasDuplicateSuffixBeforeExtension(currentName);
+  if (nextHasDuplicateSuffix !== currentHasDuplicateSuffix) {
+    return !nextHasDuplicateSuffix;
+  }
+  return ARCHIVE_SORT_COLLATOR.compare(nextName, currentName) < 0;
+}
+
 function archiveSortKey(filePath: string): string {
-  const fileName = path.basename(filePath).toLowerCase();
+  const fileName = archiveDetectionName(filePath).toLowerCase();
   return fileName
     .replace(/\.part0*1\.rar$/i, "")
     .replace(/\.zip\.\d{3}$/i, "")
@@ -314,7 +342,7 @@ function archiveSortKey(filePath: string): string {
 }
 
 function archiveTypeRank(filePath: string): number {
-  const fileName = path.basename(filePath).toLowerCase();
+  const fileName = archiveDetectionName(filePath).toLowerCase();
   if (/\.part0*1\.rar$/i.test(fileName)) {
     return 0;
   }
@@ -359,20 +387,23 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
     return [];
   }
 
-  const fileNamesLower = new Set(files.map((filePath) => path.basename(filePath).toLowerCase()));
-  const multipartRar = files.filter((filePath) => /\.part0*1\.rar$/i.test(filePath));
-  const singleRar = files.filter((filePath) => /\.rar$/i.test(filePath) && !/\.part\d+\.rar$/i.test(filePath));
-  const zipSplit = files.filter((filePath) => /\.zip\.001$/i.test(filePath));
+  const fileNamesLower = new Set(files.map((filePath) => archiveDetectionName(filePath).toLowerCase()));
+  const multipartRar = files.filter((filePath) => /\.part0*1\.rar$/i.test(archiveDetectionName(filePath)));
+  const singleRar = files.filter((filePath) => {
+    const fileName = archiveDetectionName(filePath);
+    return /\.rar$/i.test(fileName) && !/\.part\d+\.rar$/i.test(fileName);
+  });
+  const zipSplit = files.filter((filePath) => /\.zip\.001$/i.test(archiveDetectionName(filePath)));
   const zip = files.filter((filePath) => {
-    const fileName = path.basename(filePath);
+    const fileName = archiveDetectionName(filePath);
     if (!/\.zip$/i.test(fileName)) {
       return false;
     }
     return !fileNamesLower.has(`${fileName}.001`.toLowerCase());
   });
-  const sevenSplit = files.filter((filePath) => /\.7z\.001$/i.test(filePath));
+  const sevenSplit = files.filter((filePath) => /\.7z\.001$/i.test(archiveDetectionName(filePath)));
   const seven = files.filter((filePath) => {
-    const fileName = path.basename(filePath);
+    const fileName = archiveDetectionName(filePath);
     if (!/\.7z$/i.test(fileName)) {
       return false;
     }
@@ -381,20 +412,24 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
   const tarCompressed = files.filter((filePath) => /\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i.test(filePath));
   // Generic .001 splits (HJSplit etc.) — exclude already-recognized .zip.001 and .7z.001
   const genericSplit = files.filter((filePath) => {
-    const fileName = path.basename(filePath).toLowerCase();
+    const fileName = archiveDetectionName(filePath).toLowerCase();
     if (!/\.001$/.test(fileName)) return false;
     if (/\.zip\.001$/.test(fileName) || /\.7z\.001$/.test(fileName)) return false;
     return true;
   });
 
   const unique: string[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   for (const candidate of [...multipartRar, ...singleRar, ...zipSplit, ...zip, ...sevenSplit, ...seven, ...tarCompressed, ...genericSplit]) {
-    const key = pathSetKey(candidate);
-    if (seen.has(key)) {
+    const key = archiveCandidateIdentity(candidate);
+    const existingIndex = seen.get(key);
+    if (existingIndex !== undefined) {
+      if (prefersArchiveCandidate(candidate, unique[existingIndex])) {
+        unique[existingIndex] = candidate;
+      }
       continue;
     }
-    seen.add(key);
+    seen.set(key, unique.length);
     unique.push(candidate);
   }
 
