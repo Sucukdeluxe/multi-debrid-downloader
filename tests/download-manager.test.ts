@@ -7246,6 +7246,179 @@ describe("download manager", () => {
     expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt (Quelle fehlt)");
   });
 
+  it("resumes deferred startup cleanup for already extracted packages and removes them when package_done is active", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "startup-deferred-cleanup";
+    const {
+      session,
+      packageId,
+      itemId,
+      outputDir,
+      extractDir
+    } = createCompletedArchiveSessionFromArchive(root, packageName, [
+      { name: "Season 1/Episode01.mkv", data: Buffer.from("video") },
+      { name: "Season 1/episode.links.txt", data: Buffer.from("https://example.com/file") },
+      { name: "Season 1/sample/sample.mkv", data: Buffer.from("sample-video") },
+      { name: "Season 1/sample/readme.txt", data: Buffer.from("sample-text") }
+    ]);
+
+    session.packages[packageId].status = "completed";
+    session.items[itemId].fullStatus = "Entpackt - Done (<1s)";
+    fs.mkdirSync(path.join(extractDir, "Season 1", "sample"), { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "Season 1", "Episode01.mkv"), "video", "utf8");
+    fs.writeFileSync(path.join(extractDir, "Season 1", "episode.links.txt"), "https://example.com/file", "utf8");
+    fs.writeFileSync(path.join(extractDir, "Season 1", "sample", "sample.mkv"), "sample-video", "utf8");
+    fs.writeFileSync(path.join(extractDir, "Season 1", "sample", "readme.txt"), "sample-text", "utf8");
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        removeLinkFilesAfterExtract: true,
+        removeSamplesAfterExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete",
+        completedCleanupPolicy: "package_done"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const flattenedPath = path.join(mkvLibraryDir, "Episode01.mkv");
+    await waitFor(() => fs.existsSync(flattenedPath), 12000);
+    await waitFor(() => manager.getSnapshot().session.packageOrder.length === 0, 12000);
+
+    expect(fs.existsSync(flattenedPath)).toBe(true);
+    expect(fs.existsSync(extractDir)).toBe(false);
+    expect(fs.existsSync(outputDir)).toBe(false);
+    expect(manager.getSnapshot().session.items[itemId]).toBeUndefined();
+  }, 20000);
+
+  it("resumes deferred startup auto-rename for already extracted packages", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Asbest.S02.GERMAN.720p.WEB.AVC-4SF";
+    const sourceFileName = "4sf-asbest.web.7p-s02e01.mkv";
+    const expectedFileName = "Asbest.S02E01.GERMAN.720p.WEB.AVC-4SF.mkv";
+    const {
+      session,
+      packageId,
+      itemId,
+      extractDir,
+      originalExtractedPath
+    } = createCompletedArchiveSession(root, packageName, sourceFileName);
+
+    session.packages[packageId].status = "completed";
+    session.items[itemId].fullStatus = "Entpackt - Done (<1s)";
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(originalExtractedPath, "video", "utf8");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const expectedPath = path.join(extractDir, expectedFileName);
+    await waitFor(() => fs.existsSync(expectedPath), 12000);
+
+    expect(fs.existsSync(expectedPath)).toBe(true);
+    expect(fs.existsSync(originalExtractedPath)).toBe(false);
+    expect(manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
+  }, 20000);
+
+  it("does not requeue already extracted items on startup when source archives were intentionally removed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "startup-extracted-without-source";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "Episode01.mkv"), "video", "utf8");
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const itemId = `${packageName}-item`;
+    const createdAt = Date.now() - 20_000;
+    const targetPath = path.join(outputDir, "episode.zip");
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: `https://dummy/${packageName}`,
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 12_345,
+      totalBytes: 12_345,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Done (<1s)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: false,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete",
+        completedCleanupPolicy: "never"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(manager.getSnapshot().session.items[itemId]?.status).toBe("completed");
+    expect(manager.getSnapshot().session.items[itemId]?.fullStatus).toBe("Entpackt - Done (<1s)");
+    expect(manager.getSnapshot().session.packages[packageId]?.status).toBe("completed");
+  }, 20000);
+
   it("stops deferred post-extraction cleanup after package reset", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -7900,6 +8073,41 @@ describe("download manager", () => {
     );
 
     const flattenedPath = path.join(mkvLibraryDir, "Episode01.mkv");
+    await waitFor(() => fs.existsSync(flattenedPath), 12000);
+
+    expect(manager.getSnapshot().session.packages[packageId]?.status).toBe("completed");
+    expect(manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
+    expect(fs.existsSync(flattenedPath)).toBe(true);
+    expect(fs.existsSync(originalExtractedPath)).toBe(false);
+  }, 20000);
+
+  it("moves extracted AVI files into a flat library folder per completed package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Flat-Pack-AVI";
+    const sourceFileName = "Season 1/Episode01.avi";
+    const { session, packageId, itemId, originalExtractedPath } = createCompletedArchiveSession(root, packageName, sourceFileName);
+    const mkvLibraryDir = path.join(root, "mkv-library");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const flattenedPath = path.join(mkvLibraryDir, "Episode01.avi");
     await waitFor(() => fs.existsSync(flattenedPath), 12000);
 
     expect(manager.getSnapshot().session.packages[packageId]?.status).toBe("completed");
