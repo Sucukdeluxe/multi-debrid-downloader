@@ -36,7 +36,8 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 - Package-based queue with item status, retries, ETA, speed, provider, and account label.
 - Start, pause, stop, cancel, reset, rename, and delete for packages and items.
 - Ctrl+Click multi-select and bulk actions.
-- Queue import/export.
+- Queue backup import/export as JSON.
+- Context-menu export for selected packages or selected items as structured TXT re-import files.
 - Duplicate handling when adding links: keep, skip, or overwrite.
 - Optional start scheduling for a specific time.
 - Session recovery after restart with optional auto-resume.
@@ -45,9 +46,10 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 ### Link collection
 
 - Paste links directly into the collector.
+- Import `.txt` export files that preserve package names and optional per-file names.
 - Clipboard watcher with automatic link detection.
 - `.dlc` import via file picker and drag-and-drop.
-- Drag-and-drop of plain links and supported container files.
+- Drag-and-drop of plain links, `.txt` export files, and supported container files.
 
 ### Provider routing and fallback
 
@@ -162,6 +164,29 @@ npm run dev
 4. Adjust package names, target folders, extraction, and cleanup settings if needed.
 5. Start the queue and monitor downloads, extraction, and provider status.
 6. Review history and statistics after completion.
+
+## Link export format
+
+Selected packages or items can be exported from the context menu as a structured text file. Re-importing that file restores the original package grouping, even if it only contains a subset of items from a larger package.
+
+Example:
+
+```txt
+# rd-link-export: 1
+# package: Dave Staffel 1
+# file: Dave.S01E01.rar
+https://example.com/e01
+# file: Dave.S01E02.rar
+https://example.com/e02
+```
+
+Supported import sources:
+
+- collector text input
+- `Datei importieren`
+- drag-and-drop of `.txt` and `.json`
+
+The optional `# file:` marker preserves the original item name so the imported subset can be rebuilt with the same package name and per-item filename hints.
 
 ## Project structure
 

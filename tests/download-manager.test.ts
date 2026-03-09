@@ -6890,6 +6890,40 @@ describe("download manager", () => {
     expect(() => manager.importQueue("{not-json")).toThrow(/Ungultige Queue-Datei/i);
   });
 
+  it("imports structured text exports and preserves package names and file hints", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const result = manager.importQueue([
+      "# rd-link-export: 1",
+      "# package: Dave Staffel 1",
+      "# file: Dave.S01E01.rar",
+      "https://example.com/e01",
+      "# file: Dave.S01E02.rar",
+      "https://example.com/e02"
+    ].join("\n"));
+
+    expect(result).toEqual({ addedPackages: 1, addedLinks: 2 });
+
+    const snapshot = manager.getSnapshot();
+    const packageId = snapshot.session.packageOrder[0];
+    const pkg = snapshot.session.packages[packageId];
+    expect(pkg?.name).toBe("Dave Staffel 1");
+    const importedItems = pkg?.itemIds.map((itemId) => snapshot.session.items[itemId]);
+    expect(importedItems?.map((item) => item?.fileName)).toEqual(["Dave.S01E01.rar", "Dave.S01E02.rar"]);
+  });
+
   it("applies global speed limit path when global mode is enabled", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

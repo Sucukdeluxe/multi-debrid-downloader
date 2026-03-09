@@ -38,6 +38,7 @@ import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-ser
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { getDebugSetupCheck } from "./debug-setup";
+import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
@@ -460,12 +461,44 @@ export class AppController {
     this.manager.togglePackage(packageId);
   }
 
+  public exportPackageSelection(packageIds: string[]): { text: string; defaultFileName: string; packageCount: number; linkCount: number } {
+    const selection = buildLinkExportSelection(this.manager.getSnapshot(), packageIds, []);
+    this.audit("INFO", "Paket-Auswahl exportiert", {
+      packageCount: selection.packageCount,
+      linkCount: selection.linkCount,
+      packageIds
+    });
+    return {
+      text: serializeLinkExportText(selection.packages),
+      defaultFileName: selection.defaultFileName,
+      packageCount: selection.packageCount,
+      linkCount: selection.linkCount
+    };
+  }
+
+  public exportItemSelection(itemIds: string[]): { text: string; defaultFileName: string; packageCount: number; linkCount: number } {
+    const selection = buildLinkExportSelection(this.manager.getSnapshot(), [], itemIds);
+    this.audit("INFO", "Item-Auswahl exportiert", {
+      packageCount: selection.packageCount,
+      linkCount: selection.linkCount,
+      itemIds
+    });
+    return {
+      text: serializeLinkExportText(selection.packages),
+      defaultFileName: selection.defaultFileName,
+      packageCount: selection.packageCount,
+      linkCount: selection.linkCount
+    };
+  }
+
   public exportQueue(): string {
     return this.manager.exportQueue();
   }
 
   public importQueue(json: string): { addedPackages: number; addedLinks: number } {
-    return this.manager.importQueue(json);
+    const result = this.manager.importQueue(json);
+    this.audit("INFO", "Import-Datei verarbeitet", result);
+    return result;
   }
 
   public getSessionStats(): SessionStats {

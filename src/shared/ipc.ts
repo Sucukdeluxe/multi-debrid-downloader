@@ -22,6 +22,8 @@ export const IPC_CHANNELS = {
   REORDER_PACKAGES: "queue:reorder-packages",
   REMOVE_ITEM: "queue:remove-item",
   TOGGLE_PACKAGE: "queue:toggle-package",
+  EXPORT_PACKAGE_SELECTION: "queue:export-package-selection",
+  EXPORT_ITEM_SELECTION: "queue:export-item-selection",
   EXPORT_QUEUE: "queue:export",
   IMPORT_QUEUE: "queue:import",
   PICK_FOLDER: "dialog:pick-folder",

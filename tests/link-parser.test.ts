@@ -33,6 +33,18 @@ describe("link-parser", () => {
       // "Valid?Name*" becomes "Valid Name " -> trimmed to "Valid Name"
       expect(result.map(p => p.name).sort()).toEqual(["Valid Name", "Valid_Name"]);
     });
+
+    it("preserves file name hints when merging packages", () => {
+      const input = [
+        { name: "Package A", links: ["http://link1", "http://link2"], fileNames: ["one.rar", "two.rar"] },
+        { name: "Package A", links: ["http://link3", "http://link1"], fileNames: ["three.rar", "ignored.rar"] }
+      ];
+
+      const result = mergePackageInputs(input);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.links).toEqual(["http://link1", "http://link2", "http://link3"]);
+      expect(result[0]?.fileNames).toEqual(["one.rar", "two.rar", "three.rar"]);
+    });
   });
 
   describe("parseCollectorInput", () => {

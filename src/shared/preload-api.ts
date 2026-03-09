@@ -41,6 +41,8 @@ export interface ElectronApi {
   reorderPackages: (packageIds: string[]) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
   togglePackage: (packageId: string) => Promise<void>;
+  exportPackageSelection: (packageIds: string[]) => Promise<{ saved: boolean; packageCount: number; linkCount: number; filePath?: string }>;
+  exportItemSelection: (itemIds: string[]) => Promise<{ saved: boolean; packageCount: number; linkCount: number; filePath?: string }>;
   exportQueue: () => Promise<{ saved: boolean }>;
   importQueue: (json: string) => Promise<{ addedPackages: number; addedLinks: number }>;
   toggleClipboard: () => Promise<boolean>;
