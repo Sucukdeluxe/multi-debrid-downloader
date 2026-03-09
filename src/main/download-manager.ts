@@ -5702,10 +5702,11 @@ export class DownloadManager extends EventEmitter {
     this.clearHybridArchiveState(packageId);
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
     const completedItems = items.filter((item) => item.status === "completed");
-    if (completedItems.length === 0) return;
+    const targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus));
+    if (targetItems.length === 0) return;
     pkg.status = "queued";
     pkg.updatedAt = nowMs();
-    for (const item of completedItems) {
+    for (const item of targetItems) {
       if (!isExtractedLabel(item.fullStatus)) {
         item.fullStatus = "Entpacken - Ausstehend";
         item.updatedAt = nowMs();
@@ -5713,7 +5714,8 @@ export class DownloadManager extends EventEmitter {
     }
     logger.info(`Extraktion manuell wiederholt: pkg=${pkg.name}`);
     this.logPackageForPackage(pkg, "INFO", "Extraktion manuell wiederholt", {
-      completedItems: completedItems.length
+      completedItems: completedItems.length,
+      targetedItems: targetItems.length
     });
     this.persistSoon();
     this.emitState(true);
@@ -5730,16 +5732,18 @@ export class DownloadManager extends EventEmitter {
     }
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
     const completedItems = items.filter((item) => item.status === "completed");
-    if (completedItems.length === 0) return;
+    const targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus));
+    if (targetItems.length === 0) return;
     pkg.status = "queued";
     pkg.updatedAt = nowMs();
-    for (const item of completedItems) {
+    for (const item of targetItems) {
       item.fullStatus = "Entpacken - Ausstehend";
       item.updatedAt = nowMs();
     }
-    logger.info(`Jetzt entpacken: pkg=${pkg.name}, completed=${completedItems.length}`);
+    logger.info(`Jetzt entpacken: pkg=${pkg.name}, completed=${completedItems.length}, targeted=${targetItems.length}`);
     this.logPackageForPackage(pkg, "INFO", "Jetzt entpacken ausgelöst", {
-      completedItems: completedItems.length
+      completedItems: completedItems.length,
+      targetedItems: targetItems.length
     });
     this.persistSoon();
     this.emitState(true);
