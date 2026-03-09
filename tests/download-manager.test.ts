@@ -66,6 +66,69 @@ afterEach(async () => {
 });
 
 describe("download manager", () => {
+  it("records history duration from the first actual package start", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-history-"));
+    tempDirs.push(root);
+    const historyEntries: Array<{ durationSeconds: number; downloadedBytes: number }> = [];
+    const manager = new DownloadManager(
+      defaultSettings(),
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        onHistoryEntry: (entry) => {
+          historyEntries.push({
+            durationSeconds: entry.durationSeconds,
+            downloadedBytes: entry.downloadedBytes
+          });
+        }
+      }
+    );
+
+    const packageId = "history-pkg";
+    const itemId = "history-item";
+    const pkg = {
+      id: packageId,
+      name: "History Test",
+      outputDir: path.join(root, "downloads", "History Test"),
+      extractDir: path.join(root, "extract", "History Test"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      priority: "normal",
+      createdAt: 1_000,
+      updatedAt: 61_000,
+      downloadStartedAt: 15_000,
+      downloadCompletedAt: 60_000
+    };
+    const item = {
+      id: itemId,
+      packageId,
+      url: "https://example.com/history.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 90 * 1024 * 1024,
+      totalBytes: 90 * 1024 * 1024,
+      progressPercent: 100,
+      fileName: "history.rar",
+      targetPath: path.join(pkg.outputDir, "history.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt: 15_000,
+      updatedAt: 60_000
+    };
+
+    (manager as any).recordPackageHistory(packageId, pkg, [item]);
+
+    expect(historyEntries).toHaveLength(1);
+    expect(historyEntries[0]?.durationSeconds).toBe(45);
+    expect(historyEntries[0]?.downloadedBytes).toBe(90 * 1024 * 1024);
+  });
+
   function createCompletedArchiveSession(root: string, packageName: string, extractedFileName: string): {
     session: ReturnType<typeof emptySession>;
     packageId: string;

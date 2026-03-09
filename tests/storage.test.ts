@@ -6,7 +6,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
-import { createStoragePaths, emptySession, loadSession, loadSettings, normalizeSettings, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
+import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 
@@ -273,6 +273,65 @@ describe("settings storage", () => {
     expect(normalizedDisabled.allDebridUseWebLogin).toBe(false);
   });
 
+  it("defaults history retention to permanent and normalizes invalid values", () => {
+    expect(defaultSettings().historyRetentionMode).toBe("permanent");
+
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      historyRetentionMode: "broken" as unknown as AppSettings["historyRetentionMode"]
+    });
+
+    expect(normalized.historyRetentionMode).toBe("permanent");
+  });
+
+  it("skips adding persisted history entries when history retention is never", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const result = addHistoryEntryForRetention(paths, "never", {
+      id: "hist-1",
+      name: "ignored",
+      totalBytes: 1024,
+      downloadedBytes: 1024,
+      fileCount: 1,
+      provider: "realdebrid",
+      completedAt: Date.now(),
+      durationSeconds: 12,
+      status: "completed",
+      outputDir: path.join(dir, "out"),
+      urls: ["https://example.com/file.rar"]
+    });
+
+    expect(result).toEqual([]);
+    expect(loadHistory(paths)).toEqual([]);
+    expect(loadHistoryForRetention(paths, "never")).toEqual([]);
+  });
+
+  it("clears persisted history for session retention mode", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    saveHistory(paths, [{
+      id: "hist-2",
+      name: "kept",
+      totalBytes: 2048,
+      downloadedBytes: 2048,
+      fileCount: 1,
+      provider: "realdebrid",
+      completedAt: Date.now(),
+      durationSeconds: 20,
+      status: "completed",
+      outputDir: path.join(dir, "out"),
+      urls: ["https://example.com/file2.rar"]
+    }]);
+
+    resetHistoryForRetention(paths, "session");
+
+    expect(loadHistory(paths)).toEqual([]);
+  });
+
   it("assigns and preserves bandwidth schedule ids", () => {
     const normalized = normalizeSettings({
       ...defaultSettings(),
@@ -305,6 +364,8 @@ describe("settings storage", () => {
       itemIds: ["item1", "item2", "item3", "item4"],
       cancelled: false,
       enabled: true,
+      downloadStartedAt: 0,
+      downloadCompletedAt: 0,
       createdAt: Date.now(),
       updatedAt: Date.now()
     };
@@ -438,6 +499,8 @@ describe("settings storage", () => {
       itemIds: ["item-backup"],
       cancelled: false,
       enabled: true,
+      downloadStartedAt: 0,
+      downloadCompletedAt: 0,
       createdAt: Date.now(),
       updatedAt: Date.now()
     };

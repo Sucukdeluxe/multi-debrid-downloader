@@ -785,7 +785,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, autoSortPackagesByProgress: true, autoSkipExtracted: false, confirmDeleteSelection: true,
+    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
@@ -812,6 +812,12 @@ const emptySnapshot = (): UiSnapshot => ({
 
 const cleanupLabels: Record<string, string> = {
   never: "Nie", immediate: "Sofort", on_start: "Beim App-Start", package_done: "Sobald Paket fertig ist"
+};
+
+const historyRetentionLabels: Record<AppSettings["historyRetentionMode"], string> = {
+  never: "Nie",
+  session: "Nur aktuelle Session",
+  permanent: "Dauerhaft"
 };
 
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
@@ -979,6 +985,10 @@ function formatRuntimeDuration(durationMs: number): string {
   const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
   const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
   return `${formatUnit(months, "Monat", "Monate")}, ${formatUnit(weeks, "Woche", "Wochen")}, ${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
+}
+
+function formatHistoryDuration(durationSeconds: number): string {
+  return formatRuntimeDuration(Math.max(0, durationSeconds || 0) * 1000);
 }
 
 function formatAllDebridSourceLabel(source: AllDebridHostInfo["source"]): string {
@@ -4293,7 +4303,8 @@ export function App(): ReactElement {
                   ? `${selectedHistoryIds.size} von ${historyEntries.length} ausgewählt`
                   : `${historyEntries.length} Paket${historyEntries.length !== 1 ? "e" : ""} im Verlauf`}
               </span>
-              {selectedHistoryIds.size > 0 && (
+              <div className="history-toolbar-actions">
+                {selectedHistoryIds.size > 0 && (
                 <button className="btn danger" onClick={() => {
                   const idSet = new Set(selectedHistoryIds);
                   void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
@@ -4303,10 +4314,11 @@ export function App(): ReactElement {
                     void window.rd.getHistory().then((entries) => { setHistoryEntries(entries); setSelectedHistoryIds(new Set()); }).catch(() => {});
                   });
                 }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
-              )}
-              {historyEntries.length > 0 && (
+                )}
+                {historyEntries.length > 0 && (
                 <button className="btn danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {}); }}>Verlauf leeren</button>
-              )}
+                )}
+              </div>
             </div>
             {historyEntries.length === 0 && <div className="empty">Noch keine abgeschlossenen Pakete im Verlauf.</div>}
             {historyEntries.map((entry) => {
@@ -4381,7 +4393,7 @@ export function App(): ReactElement {
                         <span className="history-label">Heruntergeladen</span>
                         <span>{humanSize(entry.downloadedBytes)}</span>
                         <span className="history-label">Dauer</span>
-                        <span>{entry.durationSeconds >= 3600 ? `${Math.floor(entry.durationSeconds / 3600)}h ${Math.floor((entry.durationSeconds % 3600) / 60)}min` : entry.durationSeconds >= 60 ? `${Math.floor(entry.durationSeconds / 60)}min ${entry.durationSeconds % 60}s` : `${entry.durationSeconds}s`}</span>
+                        <span>{formatHistoryDuration(entry.durationSeconds)}</span>
                         <span className="history-label">Durchschnitt</span>
                         <span>{entry.durationSeconds > 0 ? formatSpeedMbps(Math.round(entry.downloadedBytes / entry.durationSeconds)) : ""}</span>
                         <span className="history-label">Provider</span>
@@ -4551,6 +4563,15 @@ export function App(): ReactElement {
                     </div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Auto-Resume beim Start</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collapseNewPackages} onChange={(e) => setBool("collapseNewPackages", e.target.checked)} /> Neue Pakete eingeklappt</label>
+                    <div>
+                      <label>Verlauf speichern</label>
+                      <select value={settingsDraft.historyRetentionMode} onChange={(e) => setText("historyRetentionMode", e.target.value)}>
+                        {Object.entries(historyRetentionLabels).map(([key, label]) => (
+                          <option key={key} value={key}>{label}</option>
+                        ))}
+                      </select>
+                      <div className="hint">Nie = kein Verlauf. Nur aktuelle Session = wird beim Beenden gelöscht. Dauerhaft = bleibt wie bisher gespeichert.</div>
+                    </div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSortPackagesByProgress} onChange={(e) => setBool("autoSortPackagesByProgress", e.target.checked)} /> Automatisches Sortieren laufender Pakete nach Fortschritt</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
