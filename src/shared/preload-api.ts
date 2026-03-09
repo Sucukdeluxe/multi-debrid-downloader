@@ -10,6 +10,7 @@ import type {
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
+  SupportTraceConfig,
   UiSnapshot,
   UpdateCheckResult,
   UpdateInstallProgress,
@@ -51,10 +52,16 @@ export interface ElectronApi {
   quit: () => Promise<void>;
   exportBackup: () => Promise<{ saved: boolean }>;
   importBackup: () => Promise<{ restored: boolean; message: string }>;
+  exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string }>;
   openLog: () => Promise<void>;
+  openAuditLog: () => Promise<void>;
   openSessionLog: () => Promise<void>;
+  openTraceLog: () => Promise<void>;
   openPackageLog: (packageId: string) => Promise<void>;
   openItemLog: (itemId: string) => Promise<void>;
+  getTraceConfig: () => Promise<SupportTraceConfig>;
+  setTraceEnabled: (enabled: boolean, note?: string) => Promise<SupportTraceConfig>;
+  rotateDebugToken: () => Promise<{ path: string }>;
   openRealDebridLogin: () => Promise<void>;
   openAllDebridLogin: () => Promise<void>;
   importBestDebridCookies: () => Promise<number>;

@@ -34,10 +34,13 @@ import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session
 import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
-import { startDebugServer, stopDebugServer } from "./debug-server";
+import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
+import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
+import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
+import type { SupportTraceConfig } from "../shared/types";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -77,6 +80,7 @@ export class AppController {
     initPackageLogs(this.storagePaths.baseDir);
     initItemLogs(this.storagePaths.baseDir);
     initAuditLog(this.storagePaths.baseDir);
+    initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     const session = loadSession(this.storagePaths);
     this.megaWebFallback = new MegaWebFallback(() => ({
@@ -180,8 +184,29 @@ export class AppController {
     return getAuditLogPath();
   }
 
+  public getTraceLogPath(): string | null {
+    return getTraceLogPath();
+  }
+
+  public getTraceConfig(): SupportTraceConfig {
+    return getTraceConfig();
+  }
+
+  public rotateDebugToken(): { path: string; token: string } {
+    const rotated = rotateDebugToken(this.storagePaths.baseDir);
+    this.audit("WARN", "Debug-Token rotiert", { path: rotated.path });
+    return rotated;
+  }
+
   private audit(level: "INFO" | "WARN" | "ERROR", message: string, fields?: Record<string, unknown>): void {
     logAuditEvent(level, message, fields);
+    logTraceEvent(level, "audit", message, fields);
+  }
+
+  public setTraceEnabled(enabled: boolean, note = ""): SupportTraceConfig {
+    const next = setTraceEnabled(enabled, note);
+    this.audit("INFO", enabled ? "Support-Trace aktiviert" : "Support-Trace deaktiviert", { note });
+    return next;
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
@@ -473,6 +498,18 @@ export class AppController {
     return encryptBackup(payload);
   }
 
+  public exportSupportBundle(): { buffer: Buffer; defaultFileName: string } {
+    this.audit("INFO", "Support-Bundle exportiert");
+    logTraceEvent("INFO", "support", "Support-Bundle erstellt", {
+      packageCount: Object.keys(this.manager.getSnapshot().session.packages).length,
+      itemCount: Object.keys(this.manager.getSnapshot().session.items).length
+    });
+    return {
+      buffer: buildSupportBundle(this.manager, this.storagePaths.baseDir),
+      defaultFileName: getSupportBundleDefaultFileName()
+    };
+  }
+
   public importBackup(data: Buffer): { restored: boolean; message: string } {
     let parsed: Record<string, unknown>;
     try {
@@ -569,6 +606,7 @@ export class AppController {
     shutdownPackageLogs();
     shutdownItemLogs();
     this.audit("INFO", "App beendet");
+    shutdownTraceLog();
     shutdownAuditLog();
     logger.info("App beendet");
   }

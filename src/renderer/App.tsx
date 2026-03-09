@@ -1284,6 +1284,7 @@ export function App(): ReactElement {
   const actionBusyRef = useRef(false);
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const [supportTraceEnabled, setSupportTraceEnabled] = useState(false);
   const dragOverRef = useRef(false);
   const dragDepthRef = useRef(0);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -1558,6 +1559,11 @@ export function App(): ReactElement {
     let unsubClipboard: (() => void) | null = null;
     let unsubUpdateInstallProgress: (() => void) | null = null;
     void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
+    void window.rd.getTraceConfig().then((config) => {
+      if (mountedRef.current) {
+        setSupportTraceEnabled(config.enabled);
+      }
+    }).catch(() => undefined);
     void window.rd.getSnapshot().then((state) => {
       if (!mountedRef.current) {
         return;
@@ -3391,6 +3397,49 @@ export function App(): ReactElement {
     });
   };
 
+  const onExportSupportBundle = async (): Promise<void> => {
+    closeMenus();
+    await performQuickAction(async () => {
+      const result = await window.rd.exportSupportBundle();
+      if (result.saved) {
+        showToast("Support-Bundle exportiert", 2600);
+      }
+    }, (error) => {
+      showToast(`Support-Bundle fehlgeschlagen: ${String(error)}`, 2800);
+    });
+  };
+
+  const onToggleSupportTrace = async (): Promise<void> => {
+    closeMenus();
+    const nextEnabled = !supportTraceEnabled;
+    await performQuickAction(async () => {
+      const result = await window.rd.setTraceEnabled(nextEnabled, "UI support toggle");
+      setSupportTraceEnabled(result.enabled);
+      showToast(result.enabled ? "Support-Trace aktiviert" : "Support-Trace deaktiviert", 2400);
+    }, (error) => {
+      showToast(`Support-Trace fehlgeschlagen: ${String(error)}`, 2800);
+    });
+  };
+
+  const onRotateDebugToken = async (): Promise<void> => {
+    closeMenus();
+    const confirmed = await askConfirmPrompt({
+      title: "Debug-Token rotieren",
+      message: "Das aktuelle Debug-Token wird ersetzt. Externe Debug-Links mit altem Token funktionieren danach nicht mehr.",
+      confirmLabel: "Token rotieren",
+      danger: true
+    });
+    if (!confirmed) {
+      return;
+    }
+    await performQuickAction(async () => {
+      const result = await window.rd.rotateDebugToken();
+      showToast(`Debug-Token rotiert: ${result.path}`, 4200);
+    }, (error) => {
+      showToast(`Token-Rotation fehlgeschlagen: ${String(error)}`, 3000);
+    });
+  };
+
   const onMenuRestart = (): void => {
     closeMenus();
     void window.rd.restart();
@@ -3702,9 +3751,26 @@ export function App(): ReactElement {
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog().catch(() => {}); }}>
                 <span>Log öffnen</span>
               </button>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openAuditLog().catch(() => {}); }}>
+                <span>Audit-Log öffnen</span>
+              </button>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}>
                 <span>Session-Log öffnen</span>
               </button>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openTraceLog().catch(() => {}); }}>
+                <span>Trace-Log öffnen</span>
+              </button>
+              <div className="menu-separator" />
+              <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}>
+                <span>Support-Bundle exportieren</span>
+              </button>
+              <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}>
+                <span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span>
+              </button>
+              <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}>
+                <span>Debug-Token rotieren</span>
+              </button>
+              <div className="menu-separator" />
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onCheckUpdates(); }}>
                 <span>Suche Aktualisierungen</span>
               </button>

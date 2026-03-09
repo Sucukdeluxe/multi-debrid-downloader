@@ -9,7 +9,8 @@ const LOG_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const rotateCheckAtByFile = new Map<string, number>();
 
 type LogListener = (line: string) => void;
-let logListener: LogListener | null = null;
+const logListeners = new Set<LogListener>();
+let legacyLogListener: LogListener | null = null;
 
 let pendingLines: string[] = [];
 let pendingChars = 0;
@@ -18,7 +19,24 @@ let flushInFlight = false;
 let exitHookAttached = false;
 
 export function setLogListener(listener: LogListener | null): void {
-  logListener = listener;
+  if (legacyLogListener) {
+    logListeners.delete(legacyLogListener);
+  }
+  legacyLogListener = listener;
+  if (listener) {
+    logListeners.add(listener);
+  }
+}
+
+export function addLogListener(listener: LogListener): void {
+  logListeners.add(listener);
+}
+
+export function removeLogListener(listener: LogListener): void {
+  logListeners.delete(listener);
+  if (legacyLogListener === listener) {
+    legacyLogListener = null;
+  }
 }
 
 export function configureLogger(baseDir: string): void {
@@ -195,8 +213,8 @@ function write(level: "INFO" | "WARN" | "ERROR", message: string): void {
   pendingLines.push(line);
   pendingChars += line.length;
 
-  if (logListener) {
-    try { logListener(line); } catch { /* ignore */ }
+  for (const listener of logListeners) {
+    try { listener(line); } catch { /* ignore */ }
   }
 
   while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {

@@ -3,6 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
+import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/main/windows-host-diagnostics", () => ({
@@ -43,10 +44,11 @@ import { defaultSettings } from "../src/main/constants";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "../src/main/audit-log";
 import { startDebugServer, stopDebugServer } from "../src/main/debug-server";
 import { ensureItemLog, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
-import { configureLogger, getLogFilePath } from "../src/main/logger";
+import { configureLogger, getLogFilePath, logger } from "../src/main/logger";
 import { ensurePackageLog, initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { getSessionLogPath, initSessionLog, shutdownSessionLog } from "../src/main/session-log";
 import { createStoragePaths, saveHistory, saveSettings } from "../src/main/storage";
+import { getTraceConfigPath, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "../src/main/trace-log";
 import { getDebridLinkApiKeyIds } from "../src/shared/debrid-link-keys";
 import type { DownloadManager } from "../src/main/download-manager";
 import type { UiSnapshot } from "../src/shared/types";
@@ -233,12 +235,17 @@ async function createFixture() {
   }
   logAuditEvent("INFO", "AUDIT-LINE", { scope: "settings" });
 
+  initTraceLog(baseDir);
+  setTraceEnabled(true, "test-fixture");
+  logTraceEvent("INFO", "support", "TRACE-EVENT", { scope: "fixture" });
+
   initSessionLog(baseDir);
   const sessionLogPath = getSessionLogPath();
   if (!sessionLogPath) {
     throw new Error("session log path missing");
   }
   fs.appendFileSync(sessionLogPath, "2026-03-09T00:00:01.000Z [INFO] SESSION-LINE\n", "utf8");
+  logger.info("TRACE-MAIN-LINE");
 
   initPackageLogs(baseDir);
   initItemLogs(baseDir);
@@ -273,6 +280,7 @@ async function createFixture() {
   startDebugServer(manager, baseDir);
   const baseUrl = `http://127.0.0.1:${port}`;
   await waitForReady(`${baseUrl}/health?token=${token}`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
   return {
     baseUrl,
@@ -286,6 +294,7 @@ afterEach(() => {
   shutdownSessionLog();
   shutdownPackageLogs();
   shutdownItemLogs();
+  shutdownTraceLog();
   shutdownAuditLog();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -315,6 +324,7 @@ describe("debug-server", () => {
     expect(payload.selectedPackage?.name).toBe("server-package");
     expect((payload.logs?.main?.lines || []).join("\n")).toContain("MAIN-LINE");
     expect((payload.logs?.audit?.lines || []).join("\n")).toContain("AUDIT-LINE");
+    expect((payload.logs?.trace?.lines || []).join("\n")).toContain("TRACE-EVENT");
     expect((payload.logs?.session?.lines || []).join("\n")).toContain("SESSION-LINE");
     expect((payload.logs?.package?.lines || []).join("\n")).toContain("PACKAGE-LINE");
     expect(payload.accounts?.realDebrid?.configured).toBe(true);
@@ -339,6 +349,8 @@ describe("debug-server", () => {
     expect(metaResponse.ok).toBe(true);
     const metaPayload = await metaResponse.json() as Record<string, any>;
     expect(metaPayload.supportFiles?.aiManifest).toBe(manifestPath);
+    expect(metaPayload.supportFiles?.traceConfig).toBe(getTraceConfigPath());
+    expect(metaPayload.supportFiles?.traceLog).toBe(getTraceLogPath());
   });
 
   it("serves package details and package log by package query", async () => {
@@ -386,6 +398,17 @@ describe("debug-server", () => {
     const auditPayload = await auditResponse.json() as Record<string, any>;
     expect((auditPayload.lines || []).join("\n")).toContain("AUDIT-LINE");
 
+    const traceResponse = await fetch(`${fixture.baseUrl}/logs/trace?token=${fixture.token}&lines=50`);
+    expect(traceResponse.ok).toBe(true);
+    const tracePayload = await traceResponse.json() as Record<string, any>;
+    expect((tracePayload.lines || []).join("\n")).toContain("TRACE-EVENT");
+    expect((tracePayload.lines || []).join("\n")).toContain("TRACE-MAIN-LINE");
+
+    const traceConfigResponse = await fetch(`${fixture.baseUrl}/trace/config?token=${fixture.token}&enable=0&note=test`);
+    expect(traceConfigResponse.ok).toBe(true);
+    const traceConfigPayload = await traceConfigResponse.json() as Record<string, any>;
+    expect(traceConfigPayload.config?.enabled).toBe(false);
+
     const settingsResponse = await fetch(`${fixture.baseUrl}/settings?token=${fixture.token}`);
     expect(settingsResponse.ok).toBe(true);
     const settingsPayload = await settingsResponse.json() as Record<string, any>;
@@ -413,6 +436,24 @@ describe("debug-server", () => {
     expect(historyPayload.total).toBe(1);
     expect(historyPayload.entries?.[0]?.name).toBe("server-package");
     expect(historyPayload.entries?.[0]?.urlCount).toBe(1);
+  });
+
+  it("downloads a support bundle zip", async () => {
+    const fixture = await createFixture();
+    const response = await fetch(`${fixture.baseUrl}/support/bundle?token=${fixture.token}`);
+    expect(response.ok).toBe(true);
+    expect(response.headers.get("content-type")).toContain("application/zip");
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const zip = new AdmZip(buffer);
+    const entries = zip.getEntries().map((entry) => entry.entryName);
+    expect(entries).toContain("overview/settings.json");
+    expect(entries).toContain("overview/accounts.json");
+    expect(entries).toContain("overview/trace-config.json");
+    expect(entries).toContain("logs/audit.log");
+    expect(entries).toContain("logs/trace.log");
+    expect(entries).toContain("runtime/debug_ai_manifest.json");
+    expect(entries).not.toContain("runtime/debug_token.txt");
   });
 
   it("rejects unauthenticated requests", async () => {
