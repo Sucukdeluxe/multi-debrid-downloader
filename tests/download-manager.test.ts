@@ -9,8 +9,10 @@ import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthorit
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
+import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { createStoragePaths, emptySession } from "../src/main/storage";
 import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
+import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -56,6 +58,8 @@ async function removeDirWithRetries(dir: string): Promise<void> {
 afterEach(async () => {
   globalThis.fetch = originalFetch;
   resetDebridLinkRuntimeStateForTests();
+  shutdownItemLogs();
+  shutdownRenameLog();
   for (const dir of tempDirs.splice(0)) {
     await removeDirWithRetries(dir);
   }
@@ -6704,6 +6708,50 @@ describe("download manager", () => {
     expect(fs.existsSync(expectedPath)).toBe(true);
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   });
+
+  it("writes auto-rename details into rename and item logs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Asbest.S02.GERMAN.720p.WEB.AVC-4SF";
+    const sourceFileName = "4sf-asbest.web.7p-s02e01.mkv";
+    const expectedFileName = "Asbest.S02E01.GERMAN.720p.WEB.AVC-4SF.mkv";
+    const { session, itemId, extractDir } = createCompletedArchiveSession(root, packageName, sourceFileName);
+    const stateDir = path.join(root, "state");
+    initItemLogs(stateDir);
+    initRenameLog(stateDir);
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(stateDir)
+    );
+
+    const expectedPath = path.join(extractDir, expectedFileName);
+    await waitFor(() => fs.existsSync(expectedPath), 12000);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const renameLogPath = getRenameLogPath();
+    expect(renameLogPath).not.toBeNull();
+    const renameContent = fs.readFileSync(renameLogPath!, "utf8");
+    expect(renameContent).toContain("Auto-Rename durchgeführt");
+    expect(renameContent).toContain(`targetPath=${expectedPath}`);
+
+    const itemLogPath = getItemLogPath(itemId);
+    expect(itemLogPath).not.toBeNull();
+    const itemContent = fs.readFileSync(itemLogPath!, "utf8");
+    expect(itemContent).toContain("Auto-Rename durchgeführt");
+    expect(itemContent).toContain("stage=auto-rename");
+  }, 20000);
 
   it("adds REPACK marker from rp token and supports 4SJ folders", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));

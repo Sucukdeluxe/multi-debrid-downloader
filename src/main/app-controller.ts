@@ -39,6 +39,7 @@ import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
+import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
@@ -82,6 +83,7 @@ export class AppController {
     initPackageLogs(this.storagePaths.baseDir);
     initItemLogs(this.storagePaths.baseDir);
     initAuditLog(this.storagePaths.baseDir);
+    initRenameLog(this.storagePaths.baseDir);
     initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     const session = loadSession(this.storagePaths);
@@ -184,6 +186,10 @@ export class AppController {
 
   public getAuditLogPath(): string | null {
     return getAuditLogPath();
+  }
+
+  public getRenameLogPath(): string | null {
+    return getRenameLogPath();
   }
 
   public getTraceLogPath(): string | null {
@@ -643,6 +649,7 @@ export class AppController {
     shutdownSessionLog();
     shutdownPackageLogs();
     shutdownItemLogs();
+    shutdownRenameLog();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAuditLog();

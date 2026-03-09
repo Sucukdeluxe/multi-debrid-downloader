@@ -9,6 +9,7 @@ import { logger, getLogFilePath } from "./logger";
 import { getItemLogPath as getPersistedItemLogPath } from "./item-log";
 import { getSessionLogPath } from "./session-log";
 import { getPackageLogPath as getPersistedPackageLogPath } from "./package-log";
+import { getRenameLogPath } from "./rename-log";
 import { createStoragePaths, loadHistory, loadSettings } from "./storage";
 import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
@@ -38,6 +39,7 @@ const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/log", queryExample: "lines=100&grep=keyword", description: "Legacy alias for the main application log tail." },
   { method: "GET", path: "/logs/main", queryExample: "lines=100&grep=keyword", description: "Reads the main application log tail." },
   { method: "GET", path: "/logs/audit", queryExample: "lines=100&grep=keyword", description: "Reads the audit log for support-relevant UI and admin actions." },
+  { method: "GET", path: "/logs/rename", queryExample: "lines=100&grep=keyword", description: "Reads the dedicated rename and MKV move log." },
   { method: "GET", path: "/logs/trace", queryExample: "lines=100&grep=keyword", description: "Reads the optional support trace log." },
   { method: "GET", path: "/logs/session", queryExample: "lines=100&grep=keyword", description: "Reads the session log tail." },
   { method: "GET", path: "/logs/package", queryExample: "package=Release&lines=100&grep=keyword", description: "Reads the package log for a specific package name or id." },
@@ -240,7 +242,7 @@ function buildAiManifest(baseDir: string): Record<string, unknown> {
       "If remote access is needed, ask the user only for the server IP or DNS name.",
       "Call /meta first to confirm the server is reachable and to re-read the endpoint list.",
       "Use /self-check or /debug/setup to quickly verify whether token, host, manifest, trace, disk space, and log sizes are in a good support state.",
-      "Use /diagnostics for an overview, then drill into /logs/item, /logs/package, /status, /packages, /items, /settings, /accounts, /stats, /history, or /logs/trace.",
+      "Use /diagnostics for an overview, then drill into /logs/item, /logs/package, /logs/rename, /status, /packages, /items, /settings, /accounts, /stats, /history, or /logs/trace.",
       "If a full handoff is needed, download /support/bundle as a ZIP."
     ],
     auth: {
@@ -257,6 +259,7 @@ function buildAiManifest(baseDir: string): Record<string, unknown> {
       tokenFile: path.join(baseDir, "debug_token.txt"),
       mainLogFile: getLogFilePath(),
       auditLogFile: getAuditLogPath(),
+      renameLogFile: getRenameLogPath(),
       traceLogFile: getTraceLogPath(),
       traceConfigFile: getTraceConfigPath(),
       sessionLogFile: getSessionLogPath(),
@@ -483,6 +486,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       logPaths: {
         main: getLogFilePath(),
         audit: getAuditLogPath(),
+        rename: getRenameLogPath(),
         session: getSessionLogPath(),
         trace: getTraceLogPath()
       },
@@ -513,6 +517,19 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const count = normalizeLinesParam(url.searchParams.get("lines"), 100);
     const grep = url.searchParams.get("grep") || "";
     const logPath = getAuditLogPath();
+    const lines = filterLines(readLogTailFromFile(logPath, count), grep);
+    jsonResponse(res, 200, {
+      path: logPath,
+      lines,
+      count: lines.length
+    });
+    return;
+  }
+
+  if (pathname === "/logs/rename") {
+    const count = normalizeLinesParam(url.searchParams.get("lines"), 100);
+    const grep = url.searchParams.get("grep") || "";
+    const logPath = getRenameLogPath();
     const lines = filterLines(readLogTailFromFile(logPath, count), grep);
     jsonResponse(res, 200, {
       path: logPath,
@@ -846,6 +863,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         audit: {
           path: getAuditLogPath(),
           lines: filterLines(readLogTailFromFile(getAuditLogPath(), lineCount), grep)
+        },
+        rename: {
+          path: getRenameLogPath(),
+          lines: filterLines(readLogTailFromFile(getRenameLogPath(), lineCount), grep)
         },
         trace: {
           path: getTraceLogPath(),

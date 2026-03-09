@@ -61,6 +61,7 @@ const api: ElectronApi = {
   exportSupportBundle: (): Promise<{ saved: boolean; filePath?: string }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE),
   openLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG),
   openAuditLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_AUDIT_LOG),
+  openRenameLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_RENAME_LOG),
   openSessionLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_SESSION_LOG),
   openTraceLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_TRACE_LOG),
   openPackageLog: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_PACKAGE_LOG, packageId),

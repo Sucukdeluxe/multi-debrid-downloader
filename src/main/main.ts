@@ -550,6 +550,13 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_RENAME_LOG, async () => {
+    const logPath = controller.getRenameLogPath();
+    if (logPath) {
+      await shell.openPath(logPath);
+    }
+  });
+
   ipcMain.handle(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
     const logPath = controller.getSessionLogPath();
     if (logPath) {

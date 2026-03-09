@@ -207,6 +207,7 @@ Runtime files are stored in Electron's `userData` directory, including:
 - `rd_history.json`
 - `rd_downloader.log`
 - `audit.log`
+- `rename.log`
 - `debug_ai_manifest.json`
 - `trace.log`
 - `trace_config.json`
@@ -214,7 +215,7 @@ Runtime files are stored in Electron's `userData` directory, including:
 - `package-logs/package_*.txt`
 - `item-logs/item_*.txt`
 
-`audit.log` and `trace.log` are rotated automatically. The current file is kept plus one `.old` backup, and outdated backups are purged automatically.
+`audit.log`, `rename.log`, and `trace.log` are rotated automatically. The current file is kept plus one `.old` backup, and outdated backups are purged automatically.
 
 ### Remote debug server
 
@@ -253,6 +254,7 @@ Available endpoints after restart:
 - `GET /log?lines=100&grep=keyword`
 - `GET /logs/main?lines=100&grep=keyword`
 - `GET /logs/audit?lines=100&grep=keyword`
+- `GET /logs/rename?lines=100&grep=keyword`
 - `GET /logs/trace?lines=100&grep=keyword`
 - `GET /logs/session?lines=100&grep=keyword`
 - `GET /logs/package?package=Release&lines=100&grep=keyword`
@@ -277,6 +279,7 @@ Invoke-RestMethod "http://SERVER:9868/history?token=YOUR_TOKEN&limit=20"
 Invoke-RestMethod "http://SERVER:9868/debug/setup?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/self-check?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/logs/audit?token=YOUR_TOKEN&lines=200"
+Invoke-RestMethod "http://SERVER:9868/logs/rename?token=YOUR_TOKEN&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/trace?token=YOUR_TOKEN&lines=200"
 Invoke-RestMethod "http://SERVER:9868/trace/config?token=YOUR_TOKEN&enable=1&note=support&durationMinutes=120"
 Invoke-RestMethod "http://SERVER:9868/logs/package?token=YOUR_TOKEN&package=Release&lines=200"
@@ -285,7 +288,7 @@ Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"
 Invoke-WebRequest "http://SERVER:9868/support/bundle?token=YOUR_TOKEN" -OutFile ".\\rd-support-bundle.zip"
 ```
 
-This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, trace data, package/session/item logs, host-side Windows crash hints, disk space, support-log volume, support-bundle size estimates, and even a full ZIP support bundle can be inspected remotely.
+This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, rename/MKV move traces, trace data, package/session/item logs, host-side Windows crash hints, disk space, support-log volume, support-bundle size estimates, and even a full ZIP support bundle can be inspected remotely.
 
 ## Troubleshooting
 
