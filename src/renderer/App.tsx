@@ -5090,8 +5090,8 @@ export function App(): ReactElement {
                       <option value="middle">Mittel (50% CPU)</option>
                       <option value="low">Niedrig (25% CPU)</option>
                     </select></div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> MKV nach Paketabschluss in Sammelordner verschieben (flach)</label>
-                    <label>MKV-Sammelordner</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> Videos nach Paketabschluss in Sammelordner verschieben (flach)</label>
+                    <label>Video-Sammelordner</label>
                     <div className="input-row">
                       <input value={settingsDraft.mkvLibraryDir} onChange={(e) => setText("mkvLibraryDir", e.target.value)} disabled={!settingsDraft.collectMkvToLibrary} />
                       <button className="btn" disabled={!settingsDraft.collectMkvToLibrary} onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("mkvLibraryDir", s); } }); }}>Wählen</button>

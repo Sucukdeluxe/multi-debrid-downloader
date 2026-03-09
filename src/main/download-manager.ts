@@ -3411,7 +3411,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         const extension = path.extname(entry.name).toLowerCase();
-        if (extension === ".mkv") {
+        if (SAMPLE_VIDEO_EXTENSIONS.has(extension)) {
           continue;
         }
         try {
@@ -3563,7 +3563,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const allMkvFiles = await this.collectFilesByExtensions(sourceDir, new Set([".mkv"]));
+    const allMkvFiles = await this.collectFilesByExtensions(sourceDir, SAMPLE_VIDEO_EXTENSIONS);
     if (allMkvFiles.length === 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV gefunden`);
       return;
@@ -5127,9 +5127,35 @@ export class DownloadManager extends EventEmitter {
     const touchedPackageIds = new Set<string>();
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "completed") continue;
-      if (!item.targetPath || !item.totalBytes || item.totalBytes <= 0) continue;
+      if (isExtractedLabel(item.fullStatus || "")) continue;
+      const targetPath = String(item.targetPath || "").trim();
+      const archiveLike = isArchiveLikePath(targetPath || item.fileName || "");
+      if (archiveLike) {
+        let statSize: number | null = null;
+        if (targetPath) {
+          try {
+            statSize = fs.statSync(targetPath).size;
+          } catch {
+            statSize = null;
+          }
+        }
+        const zeroByteArchive = statSize != null
+          ? statSize <= 0
+          : (item.downloadedBytes <= 0 && item.progressPercent >= 100) || /\b0\s*B\b/i.test(item.fullStatus || "");
+        if (zeroByteArchive) {
+          logger.warn(`revalidateCompleted: ${item.fileName} ist 0B/leer, setze auf queued`);
+          this.queueItemForRetry(item, {
+            hardReset: true,
+            reason: "Wartet (Auto-Retry: 0B-Datei)"
+          });
+          fixed += 1;
+          touchedPackageIds.add(item.packageId);
+          continue;
+        }
+      }
+      if (!targetPath || !item.totalBytes || item.totalBytes <= 0) continue;
       try {
-        const stat = fs.statSync(item.targetPath);
+        const stat = fs.statSync(targetPath);
         const expectedMinSize = item.totalBytes - ALLOCATION_UNIT_SIZE;
         const persistedShortfall = item.downloadedBytes < expectedMinSize && stat.size >= expectedMinSize;
         if (stat.size < expectedMinSize) {
@@ -5855,6 +5881,28 @@ export class DownloadManager extends EventEmitter {
     return task;
   }
 
+  private shouldRecoverDeferredPostProcessingOnStartup(pkg: PackageEntry, items: DownloadItem[]): boolean {
+    if (!this.settings.autoExtract) {
+      return false;
+    }
+    if (this.packagePostProcessTasks.has(pkg.id) || this.hasDeferredPostProcessPending(pkg.id)) {
+      return false;
+    }
+    const hasExtractedCompletedItem = items.some((item) =>
+      item.status === "completed" && isExtractedLabel(item.fullStatus || "")
+    );
+    if (!hasExtractedCompletedItem) {
+      return false;
+    }
+    return this.settings.autoRename4sf4sj
+      || this.settings.collectMkvToLibrary
+      || this.settings.removeLinkFilesAfterExtract
+      || this.settings.removeSamplesAfterExtract
+      || this.settings.cleanupMode !== "none"
+      || this.settings.completedCleanupPolicy === "package_done"
+      || this.settings.completedCleanupPolicy === "immediate";
+  }
+
   private recoverPostProcessingOnStartup(): void {
     const packageIds = [...this.session.packageOrder];
     if (packageIds.length === 0) {
@@ -5927,6 +5975,12 @@ export class DownloadManager extends EventEmitter {
           pkg.updatedAt = nowMs();
           changed = true;
         }
+        if (!needsExtraction && this.shouldRecoverDeferredPostProcessingOnStartup(pkg, items)) {
+          logger.info(`Deferred Post-Processing via Startup ausgelöst: pkg=${pkg.name}`);
+          void this.runDeferredPostExtraction(packageId, pkg, success, failed, true, 0).catch((err) =>
+            logger.warn(`runDeferredPostExtraction Fehler (recoverPostProcessing): ${compactErrorText(err)}`)
+          );
+        }
         continue;
       }
 
@@ -5939,6 +5993,12 @@ export class DownloadManager extends EventEmitter {
         pkg.status = targetStatus;
         pkg.updatedAt = nowMs();
         changed = true;
+      }
+      if (this.shouldRecoverDeferredPostProcessingOnStartup(pkg, items)) {
+        logger.info(`Deferred Post-Processing via Startup ausgelöst: pkg=${pkg.name}`);
+        void this.runDeferredPostExtraction(packageId, pkg, success, failed, true, 0).catch((err) =>
+          logger.warn(`runDeferredPostExtraction Fehler (recoverPostProcessing): ${compactErrorText(err)}`)
+        );
       }
     }
 
@@ -10286,6 +10346,10 @@ export class DownloadManager extends EventEmitter {
     const deferredVersion = this.getPackagePostProcessVersion(packageId);
     const shouldAbort = (): boolean => !this.isDeferredPostProcessStillCurrent(packageId, pkg, deferredVersion, deferredController.signal);
     const throwIfAborted = (): void => this.throwIfDeferredPostProcessAborted(packageId, pkg, deferredVersion, deferredController.signal);
+    const hasBlockingExtractError = pkg.itemIds.some((itemId) => {
+      const item = this.session.items[itemId];
+      return Boolean(item && item.status === "completed" && isExtractErrorLabel(item.fullStatus || ""));
+    });
 
     try {
       throwIfAborted();
@@ -10344,20 +10408,24 @@ export class DownloadManager extends EventEmitter {
         pkg.postProcessLabel = "Aufräumen...";
         this.emitState();
         throwIfAborted();
-        const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
-        if (!sourceAndTargetEqual) {
-          const candidates = await findArchiveCandidates(pkg.outputDir);
-          if (candidates.length > 0) {
-            const removed = await cleanupArchives(candidates, this.settings.cleanupMode, { shouldAbort });
-            if (removed > 0) {
-              logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
+        if (hasBlockingExtractError) {
+          logger.info(`Deferred Archive-Cleanup uebersprungen: pkg=${pkg.name}, reason=extract_error`);
+        } else {
+          const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
+          if (!sourceAndTargetEqual) {
+            const candidates = await findArchiveCandidates(pkg.outputDir);
+            if (candidates.length > 0) {
+              const removed = await cleanupArchives(candidates, this.settings.cleanupMode, { shouldAbort });
+              if (removed > 0) {
+                logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
+              }
             }
           }
         }
       }
 
       // ── Hybrid archive cleanup (wenn bereits als extracted markiert) ──
-      if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
+      if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none" && !hasBlockingExtractError) {
         throwIfAborted();
         const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir, shouldAbort);
         if (removedArchives > 0) {
@@ -10404,7 +10472,7 @@ export class DownloadManager extends EventEmitter {
       // ── MKV collection ──
       if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
         throwIfAborted();
-        pkg.postProcessLabel = "Verschiebe MKVs...";
+        pkg.postProcessLabel = "Verschiebe Videos...";
         this.emitState();
         await this.collectMkvFilesToLibrary(packageId, pkg, shouldAbort);
       }
