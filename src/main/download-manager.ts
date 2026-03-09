@@ -4989,6 +4989,14 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
+  private shouldCollapseQuickPostProcessRequeue(packageId: string): boolean {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) {
+      return true;
+    }
+    return !this.areAllPackageItemRefsFinished(pkg);
+  }
+
   private async findFullExtractArchiveSet(pkg: PackageEntry, completedItems: DownloadItem[]): Promise<Set<string>> {
     const relevant = new Set<string>();
     if (!pkg.outputDir || completedItems.length === 0) {
@@ -5499,7 +5507,9 @@ export class DownloadManager extends EventEmitter {
           // rounds when many small archive parts complete in rapid
           // succession (e.g. 15-20 × 101 MB parts per episode).
           if (roundMs < 2000 && this.hybridExtractRequeue.has(packageId)) {
-            this.hybridExtractRequeue.delete(packageId);
+            if (this.shouldCollapseQuickPostProcessRequeue(packageId)) {
+              this.hybridExtractRequeue.delete(packageId);
+            }
           }
         } while (this.hybridExtractRequeue.has(packageId));
       } finally {

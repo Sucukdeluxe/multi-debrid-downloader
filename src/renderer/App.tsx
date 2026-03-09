@@ -5538,7 +5538,7 @@ export function App(): ReactElement {
                 void window.rd.openItemLog(id).catch(() => {});
               }
               setContextMenu(null);
-            }}>Item-Log Ã¶ffnen{multi ? ` (${selectedItemIds.length})` : ""}</button>
+            }}>Item-Log öffnen{multi ? ` (${selectedItemIds.length})` : ""}</button>
           )}
           <div className="ctx-menu-sep" />
           {hasPackages && !contextMenu.itemId && (

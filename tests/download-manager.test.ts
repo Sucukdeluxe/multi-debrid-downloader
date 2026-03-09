@@ -129,6 +129,104 @@ describe("download manager", () => {
     expect(historyEntries[0]?.downloadedBytes).toBe(90 * 1024 * 1024);
   });
 
+  it("keeps the quick post-process requeue once the final package items are finished", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-final-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "postprocess-final-pkg";
+    const firstItemId = "postprocess-final-item-1";
+    const secondItemId = "postprocess-final-item-2";
+    const createdAt = Date.now() - 20_000;
+    const packageOutputDir = path.join(root, "downloads", "PostProcess Final Round");
+    const packageExtractDir = path.join(root, "extract", "PostProcess Final Round");
+    fs.mkdirSync(packageOutputDir, { recursive: true });
+    fs.mkdirSync(packageExtractDir, { recursive: true });
+    fs.writeFileSync(path.join(packageOutputDir, "final-1.rar"), Buffer.alloc(100, 1));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "PostProcess Final Round",
+      outputDir: packageOutputDir,
+      extractDir: packageExtractDir,
+      status: "downloading",
+      itemIds: [firstItemId, secondItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[firstItemId] = {
+      id: firstItemId,
+      packageId,
+      url: "https://example.com/final-1.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 100,
+      totalBytes: 100,
+      progressPercent: 100,
+      fileName: "final-1.rar",
+      targetPath: path.join(packageOutputDir, "final-1.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Done (<1s)",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[secondItemId] = {
+      id: secondItemId,
+      packageId,
+      url: "https://example.com/final-2.rar",
+      provider: "realdebrid",
+      status: "downloading",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 90,
+      totalBytes: 100,
+      progressPercent: 90,
+      fileName: "final-2.rar",
+      targetPath: path.join(packageOutputDir, "final-2.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        hybridExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    expect((manager as any).shouldCollapseQuickPostProcessRequeue(packageId)).toBe(true);
+
+    const item = (manager as any).session.items[secondItemId];
+    item.status = "completed";
+    item.downloadedBytes = item.totalBytes;
+    item.progressPercent = 100;
+    item.fullStatus = "Entpacken - Ausstehend";
+    item.updatedAt = Date.now();
+
+    expect((manager as any).session.items[firstItemId].status).toBe("completed");
+    expect((manager as any).session.items[secondItemId].status).toBe("completed");
+    expect((manager as any).session.packages[packageId].itemIds).toEqual([firstItemId, secondItemId]);
+
+    expect((manager as any).shouldCollapseQuickPostProcessRequeue(packageId)).toBe(false);
+  });
+
   function createCompletedArchiveSession(root: string, packageName: string, extractedFileName: string): {
     session: ReturnType<typeof emptySession>;
     packageId: string;
