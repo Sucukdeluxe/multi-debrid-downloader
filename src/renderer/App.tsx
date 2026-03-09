@@ -1324,6 +1324,7 @@ export function App(): ReactElement {
   snapshotRef.current = snapshot;
   const tabRef = useRef(tab);
   const autoExpandedPkgsRef = useRef(new Set<string>());
+  const manualCollapsedPkgsRef = useRef(new Set<string>());
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1827,6 +1828,11 @@ export function App(): ReactElement {
           changed = true;
         }
       }
+      for (const packageId of Array.from(manualCollapsedPkgsRef.current)) {
+        if (!snapshot.session.packages[packageId]) {
+          manualCollapsedPkgsRef.current.delete(packageId);
+        }
+      }
       return changed ? next : prev;
     });
   }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
@@ -1874,7 +1880,9 @@ export function App(): ReactElement {
       const isExtracting = items.some((item) => item.fullStatus?.startsWith("Entpacken -") && !item.fullStatus?.includes("Done"));
       if (isExtracting) {
         currentlyExtracting.add(pkg.id);
-        if (collapsedPackages[pkg.id] && !autoExpandedPkgsRef.current.has(pkg.id)) {
+        if (collapsedPackages[pkg.id]
+          && !manualCollapsedPkgsRef.current.has(pkg.id)
+          && !autoExpandedPkgsRef.current.has(pkg.id)) {
           extractingPkgIds.push(pkg.id);
           autoExpandedPkgsRef.current.add(pkg.id);
         }
@@ -2972,7 +2980,16 @@ export function App(): ReactElement {
   }, [showToast]);
 
   const onPackageToggleCollapse = useCallback((packageId: string): void => {
-    setCollapsedPackages((prev) => ({ ...prev, [packageId]: !(prev[packageId] ?? false) }));
+    setCollapsedPackages((prev) => {
+      const nextCollapsed = !(prev[packageId] ?? false);
+      if (nextCollapsed) {
+        manualCollapsedPkgsRef.current.add(packageId);
+      } else {
+        manualCollapsedPkgsRef.current.delete(packageId);
+        autoExpandedPkgsRef.current.delete(packageId);
+      }
+      return { ...prev, [packageId]: nextCollapsed };
+    });
   }, []);
 
   const onPackageCancel = useCallback((packageId: string): void => {
@@ -5327,7 +5344,15 @@ export function App(): ReactElement {
             setCollapsedPackages((prev) => {
               const next: Record<string, boolean> = { ...prev };
               const targetState = !allPackagesCollapsed;
-              for (const pkg of packages) { next[pkg.id] = targetState; }
+              for (const pkg of packages) {
+                next[pkg.id] = targetState;
+                if (targetState) {
+                  manualCollapsedPkgsRef.current.add(pkg.id);
+                } else {
+                  manualCollapsedPkgsRef.current.delete(pkg.id);
+                  autoExpandedPkgsRef.current.delete(pkg.id);
+                }
+              }
               return next;
             });
           }}>{allPackagesCollapsed ? "Ausklappen" : "Einklappen"}</button>
