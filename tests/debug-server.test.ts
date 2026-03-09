@@ -341,6 +341,7 @@ describe("debug-server", () => {
     expect(manifest.debugServer?.port).toBeGreaterThan(0);
     expect(manifest.debugServer?.remoteBaseUrlTemplate).toContain("<SERVER_IP_OR_DNS>");
     expect(manifest.quickstart?.[1]).toContain("server IP");
+    expect(manifest.setupCheckEndpoint).toBe("/debug/setup");
     expect(manifest.runtimeFiles?.tokenFile).toContain("debug_token.txt");
     expect(manifest.endpoints?.some((entry: Record<string, any>) => entry.path === "/diagnostics")).toBe(true);
     expect(JSON.stringify(manifest)).not.toContain(fixture.token);
@@ -351,6 +352,24 @@ describe("debug-server", () => {
     expect(metaPayload.supportFiles?.aiManifest).toBe(manifestPath);
     expect(metaPayload.supportFiles?.traceConfig).toBe(getTraceConfigPath());
     expect(metaPayload.supportFiles?.traceLog).toBe(getTraceLogPath());
+    expect(metaPayload.supportChecks?.setup).toBe("/debug/setup");
+  });
+
+  it("serves a debug setup check with trace expiry details", async () => {
+    const fixture = await createFixture();
+    const response = await fetch(`${fixture.baseUrl}/debug/setup?token=${fixture.token}`);
+    expect(response.ok).toBe(true);
+    const payload = await response.json() as Record<string, any>;
+
+    expect(payload.enabled).toBe(true);
+    expect(payload.host).toBe("0.0.0.0");
+    expect(payload.localOnly).toBe(false);
+    expect(payload.tokenConfigured).toBe(true);
+    expect(payload.aiManifestPresent).toBe(true);
+    expect(payload.traceEnabled).toBe(true);
+    expect(payload.traceAutoDisableAt).toBeTruthy();
+    expect(payload.remoteUrlTemplates?.health).toContain("<SERVER_IP_OR_DNS>");
+    expect(Array.isArray(payload.notes)).toBe(true);
   });
 
   it("serves package details and package log by package query", async () => {
@@ -449,6 +468,7 @@ describe("debug-server", () => {
     const entries = zip.getEntries().map((entry) => entry.entryName);
     expect(entries).toContain("overview/settings.json");
     expect(entries).toContain("overview/accounts.json");
+    expect(entries).toContain("overview/debug-setup.json");
     expect(entries).toContain("overview/trace-config.json");
     expect(entries).toContain("logs/audit.log");
     expect(entries).toContain("logs/trace.log");

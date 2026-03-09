@@ -5,6 +5,7 @@ import type {
   AppSettings,
   AppTheme,
   BandwidthScheduleEntry,
+  DebugSetupCheckResult,
   DebridFallbackProvider,
   DebridLinkHostLimitInfo,
   DebridProvider,
@@ -49,8 +50,10 @@ interface ConfirmPromptState {
   title: string;
   message: string;
   confirmLabel: string;
+  cancelLabel?: string;
   danger?: boolean;
   details?: string;
+  detailsLabel?: string;
 }
 
 interface ContextMenuState {
@@ -135,6 +138,44 @@ interface ConfiguredAccountEntry {
   dailyRemainingBytes: number | null;
   dailyLimitReached: boolean;
   debridLinkKeys: DebridLinkAccountKeyEntry[];
+}
+
+function buildDebugSetupDetails(setup: DebugSetupCheckResult): string {
+  const lines: string[] = [
+    `Debug-Server aktiv: ${setup.enabled ? "ja" : "nein"}`,
+    `Host: ${setup.host}`,
+    `Port: ${setup.port}`,
+    `Token-Datei: ${setup.tokenPath}`,
+    `KI-Manifest: ${setup.aiManifestPresent ? "vorhanden" : "fehlt"} (${setup.aiManifestPath})`,
+    `Trace aktiv: ${setup.traceEnabled ? "ja" : "nein"}`,
+    `Trace-Auto-Ende: ${setup.traceAutoDisableAt || "nicht gesetzt"}`,
+    "",
+    "Lokale URLs:",
+    setup.localUrls.health,
+    setup.localUrls.meta,
+    setup.localUrls.diagnostics,
+    "",
+    "Remote-Vorlagen:",
+    setup.remoteUrlTemplates.health,
+    setup.remoteUrlTemplates.meta,
+    setup.remoteUrlTemplates.diagnostics
+  ];
+
+  if (setup.warnings.length > 0) {
+    lines.push("", "Warnungen:");
+    for (const warning of setup.warnings) {
+      lines.push(`- ${warning}`);
+    }
+  }
+
+  if (setup.notes.length > 0) {
+    lines.push("", "Hinweise:");
+    for (const note of setup.notes) {
+      lines.push(`- ${note}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 const ACCOUNT_OPTIONS: AccountOption[] = [
@@ -3413,12 +3454,32 @@ export function App(): ReactElement {
     closeMenus();
     const nextEnabled = !supportTraceEnabled;
     await performQuickAction(async () => {
-      const result = await window.rd.setTraceEnabled(nextEnabled, "UI support toggle");
+      const result = await window.rd.setTraceEnabled(nextEnabled, "UI support toggle", 120);
       setSupportTraceEnabled(result.enabled);
-      showToast(result.enabled ? "Support-Trace aktiviert" : "Support-Trace deaktiviert", 2400);
+      showToast(result.enabled ? "Support-Trace für 2 Stunden aktiviert" : "Support-Trace deaktiviert", 2600);
     }, (error) => {
       showToast(`Support-Trace fehlgeschlagen: ${String(error)}`, 2800);
     });
+  };
+
+  const onRunDebugSetupCheck = async (): Promise<void> => {
+    closeMenus();
+    try {
+      const setup = await window.rd.getDebugSetupCheck();
+      const warningText = setup.warnings.length > 0 ? `Warnungen: ${setup.warnings.length}` : "Keine akuten Warnungen";
+      const reachabilityText = setup.localOnly ? "Nur lokal gebunden" : "Remote-fähig konfiguriert";
+      const details = buildDebugSetupDetails(setup);
+      await askConfirmPrompt({
+        title: "Debug-Setup prüfen",
+        message: `${warningText}\n${reachabilityText}\nHost: ${setup.host}:${setup.port}`,
+        confirmLabel: "Schließen",
+        cancelLabel: "Schließen",
+        details,
+        detailsLabel: "Details anzeigen"
+      });
+    } catch (error) {
+      showToast(`Debug-Setup-Check fehlgeschlagen: ${String(error)}`, 3000);
+    }
   };
 
   const onRotateDebugToken = async (): Promise<void> => {
@@ -3766,6 +3827,9 @@ export function App(): ReactElement {
               </button>
               <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}>
                 <span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span>
+              </button>
+              <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}>
+                <span>Debug-Setup prüfen</span>
               </button>
               <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}>
                 <span>Debug-Token rotieren</span>
@@ -4855,12 +4919,12 @@ export function App(): ReactElement {
             <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
             {confirmPrompt.details && (
               <details className="modal-details">
-                <summary>Changelog anzeigen</summary>
+                <summary>{confirmPrompt.detailsLabel || "Details anzeigen"}</summary>
                 <pre>{confirmPrompt.details}</pre>
               </details>
             )}
             <div className="modal-actions">
-              <button className="btn" onClick={() => closeConfirmPrompt(false)}>Abbrechen</button>
+              <button className="btn" onClick={() => closeConfirmPrompt(false)}>{confirmPrompt.cancelLabel || "Abbrechen"}</button>
               <button
                 className={confirmPrompt.danger ? "btn danger" : "btn"}
                 onClick={() => closeConfirmPrompt(true)}

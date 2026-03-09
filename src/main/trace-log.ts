@@ -7,12 +7,16 @@ type TraceLevel = "INFO" | "WARN" | "ERROR";
 
 const TRACE_LOG_FLUSH_INTERVAL_MS = 200;
 const TRACE_CONFIG_FILE = "trace_config.json";
+const TRACE_LOG_MAX_FILE_BYTES = Number(process.env.RD_TRACE_LOG_MAX_BYTES || 10 * 1024 * 1024);
+const TRACE_LOG_RETENTION_DAYS = Number(process.env.RD_TRACE_LOG_RETENTION_DAYS || 30);
+const TRACE_DEFAULT_AUTO_DISABLE_MS = Number(process.env.RD_TRACE_AUTO_DISABLE_MS || 2 * 60 * 60 * 1000);
 
 const DEFAULT_TRACE_CONFIG: SupportTraceConfig = {
   enabled: false,
   includeMainLog: true,
   includeAudit: true,
   logDebugRequests: true,
+  autoDisableAt: null,
   updatedAt: new Date(0).toISOString()
 };
 
@@ -21,6 +25,7 @@ let traceConfigPath: string | null = null;
 let traceConfig: SupportTraceConfig = { ...DEFAULT_TRACE_CONFIG };
 let pendingLines: string[] = [];
 let flushTimer: NodeJS.Timeout | null = null;
+let autoDisableTimer: NodeJS.Timeout | null = null;
 
 function sanitizeFieldValue(value: unknown): string {
   if (value === undefined || value === null) {
@@ -62,6 +67,37 @@ function flushPending(): void {
   }
 }
 
+function rotateIfNeeded(filePath: string): void {
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size < TRACE_LOG_MAX_FILE_BYTES) {
+      return;
+    }
+    const backup = `${filePath}.old`;
+    try {
+      fs.rmSync(backup, { force: true });
+    } catch {
+      // ignore
+    }
+    fs.renameSync(filePath, backup);
+  } catch {
+    // ignore
+  }
+}
+
+function cleanupOldBackup(filePath: string): void {
+  const backup = `${filePath}.old`;
+  try {
+    const stat = fs.statSync(backup);
+    const cutoff = Date.now() - TRACE_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    if (stat.mtimeMs < cutoff) {
+      fs.rmSync(backup, { force: true });
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function scheduleFlush(): void {
   if (flushTimer) {
     return;
@@ -75,6 +111,14 @@ function scheduleFlush(): void {
 function appendTraceLine(line: string): void {
   if (!traceLogPath) {
     return;
+  }
+  rotateIfNeeded(traceLogPath);
+  if (!fs.existsSync(traceLogPath)) {
+    try {
+      fs.writeFileSync(traceLogPath, "", "utf8");
+    } catch {
+      return;
+    }
   }
   pendingLines.push(line);
   scheduleFlush();
@@ -90,6 +134,9 @@ function normalizeTraceConfig(raw: unknown): SupportTraceConfig {
     includeMainLog: value.includeMainLog === undefined ? DEFAULT_TRACE_CONFIG.includeMainLog : Boolean(value.includeMainLog),
     includeAudit: value.includeAudit === undefined ? DEFAULT_TRACE_CONFIG.includeAudit : Boolean(value.includeAudit),
     logDebugRequests: value.logDebugRequests === undefined ? DEFAULT_TRACE_CONFIG.logDebugRequests : Boolean(value.logDebugRequests),
+    autoDisableAt: typeof value.autoDisableAt === "string" && value.autoDisableAt.trim()
+      ? value.autoDisableAt
+      : null,
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim()
       ? value.updatedAt
       : DEFAULT_TRACE_CONFIG.updatedAt
@@ -126,11 +173,58 @@ const mainLogListener = (line: string): void => {
   appendTraceLine(line);
 };
 
+function clearAutoDisableTimer(): void {
+  if (autoDisableTimer) {
+    clearTimeout(autoDisableTimer);
+    autoDisableTimer = null;
+  }
+}
+
+function disableTraceDueToExpiry(): void {
+  clearAutoDisableTimer();
+  if (!traceConfig.enabled) {
+    return;
+  }
+  traceConfig = normalizeTraceConfig({
+    ...traceConfig,
+    enabled: false,
+    autoDisableAt: null,
+    updatedAt: new Date().toISOString()
+  });
+  persistTraceConfig();
+  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Support-Trace automatisch deaktiviert | reason=expired\n`);
+}
+
+function scheduleAutoDisable(): void {
+  clearAutoDisableTimer();
+  if (!traceConfig.enabled || !traceConfig.autoDisableAt) {
+    return;
+  }
+  const until = Date.parse(traceConfig.autoDisableAt);
+  if (!Number.isFinite(until)) {
+    return;
+  }
+  const remainingMs = until - Date.now();
+  if (remainingMs <= 0) {
+    disableTraceDueToExpiry();
+    return;
+  }
+  autoDisableTimer = setTimeout(() => {
+    autoDisableTimer = null;
+    disableTraceDueToExpiry();
+  }, Math.min(remainingMs, 2_147_483_647));
+}
+
 export function initTraceLog(baseDir: string): void {
   traceLogPath = path.join(baseDir, "trace.log");
   traceConfigPath = path.join(baseDir, TRACE_CONFIG_FILE);
   try {
     fs.mkdirSync(baseDir, { recursive: true });
+    cleanupOldBackup(traceLogPath);
+    if (!fs.existsSync(traceLogPath)) {
+      fs.writeFileSync(traceLogPath, "", "utf8");
+    }
+    rotateIfNeeded(traceLogPath);
     if (!fs.existsSync(traceLogPath)) {
       fs.writeFileSync(traceLogPath, "", "utf8");
     }
@@ -144,6 +238,7 @@ export function initTraceLog(baseDir: string): void {
     return;
   }
   addLogListener(mainLogListener);
+  scheduleAutoDisable();
 }
 
 export function getTraceLogPath(): string | null {
@@ -171,13 +266,17 @@ export function updateTraceConfig(patch: Partial<SupportTraceConfig>): SupportTr
     updatedAt: new Date().toISOString()
   });
   persistTraceConfig();
+  scheduleAutoDisable();
   appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Konfiguration aktualisiert${formatFields(traceConfig)}\n`);
   return getTraceConfig();
 }
 
-export function setTraceEnabled(enabled: boolean, note = ""): SupportTraceConfig {
-  const next = updateTraceConfig({ enabled });
-  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Support-Trace ${enabled ? "aktiviert" : "deaktiviert"}${formatFields({ note })}\n`);
+export function setTraceEnabled(enabled: boolean, note = "", durationMs: number = TRACE_DEFAULT_AUTO_DISABLE_MS): SupportTraceConfig {
+  const autoDisableAt = enabled && durationMs > 0
+    ? new Date(Date.now() + durationMs).toISOString()
+    : null;
+  const next = updateTraceConfig({ enabled, autoDisableAt });
+  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Support-Trace ${enabled ? "aktiviert" : "deaktiviert"}${formatFields({ note, autoDisableAt })}\n`);
   return next;
 }
 
@@ -198,6 +297,7 @@ export function logTraceEvent(
 
 export function shutdownTraceLog(): void {
   removeLogListener(mainLogListener);
+  clearAutoDisableTimer();
   if (!traceLogPath) {
     return;
   }

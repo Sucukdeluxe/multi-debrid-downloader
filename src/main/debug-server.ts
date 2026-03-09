@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { APP_VERSION } from "./constants";
 import { getAuditLogPath } from "./audit-log";
+import { getDebugSetupCheck } from "./debug-setup";
 import { logger, getLogFilePath } from "./logger";
 import { getItemLogPath as getPersistedItemLogPath } from "./item-log";
 import { getSessionLogPath } from "./session-log";
@@ -11,7 +12,7 @@ import { getPackageLogPath as getPersistedPackageLogPath } from "./package-log";
 import { createStoragePaths, loadHistory, loadSettings } from "./storage";
 import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
-import { getTraceConfig, getTraceConfigPath, getTraceLogPath, logTraceEvent, updateTraceConfig } from "./trace-log";
+import { getTraceConfig, getTraceConfigPath, getTraceLogPath, logTraceEvent, setTraceEnabled, updateTraceConfig } from "./trace-log";
 import { getWindowsHostDiagnostics } from "./windows-host-diagnostics";
 import type { DownloadManager } from "./download-manager";
 import type { DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
@@ -31,6 +32,7 @@ type DebugEndpointDescriptor = {
 const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/health", description: "Basic health, uptime, and memory information." },
   { method: "GET", path: "/meta", description: "Lists runtime metadata and all available endpoints." },
+  { method: "GET", path: "/debug/setup", description: "Checks whether the local debug setup is configured for support." },
   { method: "GET", path: "/host/diagnostics", description: "Returns Windows host crash and dump diagnostics." },
   { method: "GET", path: "/log", queryExample: "lines=100&grep=keyword", description: "Legacy alias for the main application log tail." },
   { method: "GET", path: "/logs/main", queryExample: "lines=100&grep=keyword", description: "Reads the main application log tail." },
@@ -39,7 +41,7 @@ const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/logs/session", queryExample: "lines=100&grep=keyword", description: "Reads the session log tail." },
   { method: "GET", path: "/logs/package", queryExample: "package=Release&lines=100&grep=keyword", description: "Reads the package log for a specific package name or id." },
   { method: "GET", path: "/logs/item", queryExample: "item=episode.part2.rar&lines=100&grep=keyword", description: "Reads the item log for a specific file name or item id." },
-  { method: "GET", path: "/trace/config", queryExample: "enable=1&note=support", description: "Reads or updates the support trace configuration." },
+  { method: "GET", path: "/trace/config", queryExample: "enable=1&note=support&durationMinutes=120", description: "Reads or updates the support trace configuration." },
   { method: "GET", path: "/settings", description: "Returns a redacted settings snapshot without raw secrets." },
   { method: "GET", path: "/accounts", description: "Returns a redacted account/provider configuration summary." },
   { method: "GET", path: "/stats", description: "Returns live session stats plus persisted all-time totals." },
@@ -236,6 +238,7 @@ function buildAiManifest(baseDir: string): Record<string, unknown> {
       "Read debug_token.txt and debug_port.txt from this runtime folder.",
       "If remote access is needed, ask the user only for the server IP or DNS name.",
       "Call /meta first to confirm the server is reachable and to re-read the endpoint list.",
+      "Use /debug/setup to quickly verify whether token, host, manifest, and trace files are in a good support state.",
       "Use /diagnostics for an overview, then drill into /logs/item, /logs/package, /status, /packages, /items, /settings, /accounts, /stats, /history, or /logs/trace.",
       "If a full handoff is needed, download /support/bundle as a ZIP."
     ],
@@ -270,6 +273,7 @@ function buildAiManifest(baseDir: string): Record<string, unknown> {
       remoteBaseUrlTemplate: `http://<SERVER_IP_OR_DNS>:${bindPort}`,
       remoteHostHint
     },
+    setupCheckEndpoint: "/debug/setup",
     askUserFor: [
       "Server IP or DNS name, if remote access is required and not already known."
     ],
@@ -470,6 +474,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         traceConfig: getTraceConfigPath(),
         traceLog: getTraceLogPath()
       },
+      supportChecks: {
+        setup: "/debug/setup"
+      },
       logPaths: {
         main: getLogFilePath(),
         audit: getAuditLogPath(),
@@ -478,6 +485,11 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       },
       endpoints: getEndpointSummaries()
     });
+    return;
+  }
+
+  if (pathname === "/debug/setup") {
+    jsonResponse(res, 200, getDebugSetupCheck(runtimeBaseDir));
     return;
   }
 
@@ -554,11 +566,21 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       patch.logDebugRequests = logDebugRequests;
     }
     const note = String(url.searchParams.get("note") || "").trim();
-    const config = Object.keys(patch).length > 0
-      ? updateTraceConfig({ ...patch, ...(note ? { updatedAt: new Date().toISOString() } : {}) })
-      : getTraceConfig();
+    const durationMinutesRaw = Number(url.searchParams.get("durationMinutes") || "120");
+    const durationMinutes = Number.isFinite(durationMinutesRaw) && durationMinutesRaw > 0
+      ? Math.min(Math.floor(durationMinutesRaw), 24 * 60)
+      : 120;
+    let config = getTraceConfig();
+    if (enabled !== null) {
+      config = setTraceEnabled(enabled, note, durationMinutes * 60 * 1000);
+    }
+    const configPatch = { ...patch };
+    delete configPatch.enabled;
+    if (Object.keys(configPatch).length > 0) {
+      config = updateTraceConfig(configPatch);
+    }
     if (Object.keys(patch).length > 0) {
-      logTraceEvent("INFO", "support", "Trace-Konfiguration über Debug-Server geändert", { ...patch, note });
+      logTraceEvent("INFO", "support", "Trace-Konfiguration über Debug-Server geändert", { ...patch, note, durationMinutes });
     }
     jsonResponse(res, 200, {
       path: getTraceConfigPath(),
@@ -797,7 +819,8 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         debugServer: {
           host: bindHost,
           port: bindPort
-        }
+        },
+        setup: getDebugSetupCheck(runtimeBaseDir)
       },
       status: buildStatusPayload(snapshot),
       settings: buildRedactedSettingsPayload(readSupportSettings()),

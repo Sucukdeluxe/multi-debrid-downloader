@@ -3,6 +3,7 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import { APP_VERSION } from "./constants";
 import { getAuditLogPath } from "./audit-log";
+import { getDebugSetupCheck } from "./debug-setup";
 import { getLogFilePath } from "./logger";
 import { getPackageLogPath } from "./package-log";
 import { getSessionLogPath } from "./session-log";
@@ -89,6 +90,7 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
       totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime
     }
   });
+  addJson(zip, "overview/debug-setup.json", getDebugSetupCheck(baseDir));
   addJson(zip, "overview/history.json", {
     total: history.length,
     entries: history.map((entry) => summarizeHistoryEntry(entry))
@@ -115,8 +117,10 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
   addFileIfExists(zip, getLogFilePath(), "logs/rd_downloader.log");
   addFileIfExists(zip, `${getLogFilePath()}.old`, "logs/rd_downloader.log.old");
   addFileIfExists(zip, getAuditLogPath(), "logs/audit.log");
+  addFileIfExists(zip, getAuditLogPath() ? `${getAuditLogPath()}.old` : null, "logs/audit.log.old");
   addFileIfExists(zip, getSessionLogPath(), "logs/session.log");
   addFileIfExists(zip, getTraceLogPath(), "logs/trace.log");
+  addFileIfExists(zip, getTraceLogPath() ? `${getTraceLogPath()}.old` : null, "logs/trace.log.old");
 
   addDirectoryIfExists(zip, path.join(baseDir, "session-logs"), "logs/session-logs");
   addDirectoryIfExists(zip, path.join(baseDir, "package-logs"), "logs/package-logs");

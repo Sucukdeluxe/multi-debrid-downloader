@@ -48,6 +48,43 @@ describe("trace-log", () => {
 
     const traceConfig = getTraceConfig();
     expect(traceConfig.enabled).toBe(true);
+    expect(traceConfig.autoDisableAt).toBeTruthy();
     expect(JSON.parse(fs.readFileSync(traceConfigPath!, "utf8")).enabled).toBe(true);
+  });
+
+  it("auto-disables support trace after the requested duration", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-tlog-expire-"));
+    tempDirs.push(baseDir);
+
+    configureLogger(baseDir);
+    initTraceLog(baseDir);
+    setTraceEnabled(true, "expire-test", 50);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const traceConfig = getTraceConfig();
+    expect(traceConfig.enabled).toBe(false);
+    expect(traceConfig.autoDisableAt).toBeNull();
+
+    const traceLogPath = getTraceLogPath();
+    expect(traceLogPath).not.toBeNull();
+    const traceContent = fs.readFileSync(traceLogPath!, "utf8");
+    expect(traceContent).toContain("Support-Trace automatisch deaktiviert");
+  });
+
+  it("rotates oversized trace logs on startup", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-tlog-rotate-"));
+    tempDirs.push(baseDir);
+
+    const oversizedPath = path.join(baseDir, "trace.log");
+    fs.mkdirSync(baseDir, { recursive: true });
+    fs.writeFileSync(oversizedPath, "x".repeat(10 * 1024 * 1024 + 256), "utf8");
+
+    initTraceLog(baseDir);
+
+    expect(fs.existsSync(oversizedPath)).toBe(true);
+    expect(fs.existsSync(`${oversizedPath}.old`)).toBe(true);
+    const currentContent = fs.readFileSync(oversizedPath, "utf8");
+    expect(currentContent).toContain("Trace-Log Start");
   });
 });

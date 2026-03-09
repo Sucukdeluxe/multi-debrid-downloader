@@ -37,10 +37,11 @@ import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } fro
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
+import { getDebugSetupCheck } from "./debug-setup";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
-import type { SupportTraceConfig } from "../shared/types";
+import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -198,13 +199,17 @@ export class AppController {
     return rotated;
   }
 
+  public getDebugSetupCheck(): DebugSetupCheckResult {
+    return getDebugSetupCheck(this.storagePaths.baseDir);
+  }
+
   private audit(level: "INFO" | "WARN" | "ERROR", message: string, fields?: Record<string, unknown>): void {
     logAuditEvent(level, message, fields);
     logTraceEvent(level, "audit", message, fields);
   }
 
-  public setTraceEnabled(enabled: boolean, note = ""): SupportTraceConfig {
-    const next = setTraceEnabled(enabled, note);
+  public setTraceEnabled(enabled: boolean, note = "", durationMs?: number): SupportTraceConfig {
+    const next = setTraceEnabled(enabled, note, durationMs);
     this.audit("INFO", enabled ? "Support-Trace aktiviert" : "Support-Trace deaktiviert", { note });
     return next;
   }

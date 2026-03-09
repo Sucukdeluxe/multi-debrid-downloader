@@ -538,16 +538,21 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.GET_DEBUG_SETUP_CHECK, async () => controller.getDebugSetupCheck());
+
   ipcMain.handle(IPC_CHANNELS.GET_TRACE_CONFIG, async () => controller.getTraceConfig());
 
-  ipcMain.handle(IPC_CHANNELS.SET_TRACE_ENABLED, async (_event: IpcMainInvokeEvent, enabled: boolean, note?: string) => {
+  ipcMain.handle(IPC_CHANNELS.SET_TRACE_ENABLED, async (_event: IpcMainInvokeEvent, enabled: boolean, note?: string, durationMinutes?: number) => {
     if (typeof enabled !== "boolean") {
       throw new Error("enabled muss ein Boolean sein");
     }
     if (note !== undefined) {
       validateString(note, "note");
     }
-    return controller.setTraceEnabled(enabled, note);
+    if (durationMinutes !== undefined && (!Number.isFinite(durationMinutes) || durationMinutes <= 0)) {
+      throw new Error("durationMinutes muss eine positive Zahl sein");
+    }
+    return controller.setTraceEnabled(enabled, note, durationMinutes ? durationMinutes * 60 * 1000 : undefined);
   });
 
   ipcMain.handle(IPC_CHANNELS.ROTATE_DEBUG_TOKEN, async () => {
