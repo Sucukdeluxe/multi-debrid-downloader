@@ -5,7 +5,7 @@ import http from "node:http";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
-import { DownloadManager, getAuthoritativeRealDebridTotal } from "../src/main/download-manager";
+import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -14,6 +14,18 @@ import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForT
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
+
+describe("extractArchiveNameFromExtractorLogMessage", () => {
+  it("detects archive names from extractor log variants", () => {
+    expect(extractArchiveNameFromExtractorLogMessage("Extract-Backend Start: archive=scn-dhanbs7-S02E008.rar, mode=legacy")).toBe("scn-dhanbs7-S02E008.rar");
+    expect(extractArchiveNameFromExtractorLogMessage("Entpacke Archiv: scn-dhanbs7-S02E008.rar -> C:\\target")).toBe("scn-dhanbs7-S02E008.rar");
+    expect(extractArchiveNameFromExtractorLogMessage("Entpack-Fehler scn-dhanbs7-S02E008.rar [missing_parts]: Error: boom")).toBe("scn-dhanbs7-S02E008.rar");
+  });
+
+  it("returns null when no archive name is present", () => {
+    expect(extractArchiveNameFromExtractorLogMessage("Post-Processing Entpacken Ende")).toBeNull();
+  });
+});
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
   const started = Date.now();
