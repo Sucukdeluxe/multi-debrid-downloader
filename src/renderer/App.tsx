@@ -5181,6 +5181,15 @@ export function App(): ReactElement {
               setContextMenu(null);
             }}>Log öffnen{multi ? ` (${selectedPackageIds.length})` : ""}</button>
           )}
+          {contextMenu.itemId && (
+            <button className="ctx-menu-item" onClick={() => {
+              const itemIds = multi ? selectedItemIds : [contextMenu.itemId!];
+              for (const id of itemIds) {
+                void window.rd.openItemLog(id).catch(() => {});
+              }
+              setContextMenu(null);
+            }}>Item-Log Ã¶ffnen{multi ? ` (${selectedItemIds.length})` : ""}</button>
+          )}
           <div className="ctx-menu-sep" />
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
