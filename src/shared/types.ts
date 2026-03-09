@@ -346,8 +346,37 @@ export interface SupportTraceConfig {
   updatedAt: string;
 }
 
+export interface SupportFileSizeInfo {
+  path: string | null;
+  exists: boolean;
+  bytes: number;
+}
+
+export interface SupportDirectorySizeInfo {
+  path: string;
+  exists: boolean;
+  fileCount: number;
+  bytes: number;
+}
+
+export interface SupportDiskSpaceInfo {
+  path: string;
+  totalBytes: number | null;
+  freeBytes: number | null;
+  freePercent: number | null;
+}
+
+export interface SupportBundleEstimate {
+  estimatedBytes: number;
+  estimatedEntries: number;
+  duplicatedLiveLogBytes: number;
+  note: string;
+}
+
 export interface DebugSetupCheckResult {
+  status: "ok" | "warn";
   enabled: boolean;
+  runtimeBaseDir: string;
   host: string;
   port: number;
   localOnly: boolean;
@@ -359,6 +388,25 @@ export interface DebugSetupCheckResult {
   traceLogPath: string | null;
   traceEnabled: boolean;
   traceAutoDisableAt: string | null;
+  diskSpace: {
+    runtime: SupportDiskSpaceInfo;
+    output: SupportDiskSpaceInfo;
+    extract: SupportDiskSpaceInfo;
+  };
+  logSummary: {
+    totalBytes: number;
+    main: SupportFileSizeInfo;
+    mainBackup: SupportFileSizeInfo;
+    audit: SupportFileSizeInfo;
+    auditBackup: SupportFileSizeInfo;
+    session: SupportFileSizeInfo;
+    trace: SupportFileSizeInfo;
+    traceBackup: SupportFileSizeInfo;
+    sessionLogs: SupportDirectorySizeInfo;
+    packageLogs: SupportDirectorySizeInfo;
+    itemLogs: SupportDirectorySizeInfo;
+  };
+  supportBundle: SupportBundleEstimate;
   warnings: string[];
   notes: string[];
   localUrls: {

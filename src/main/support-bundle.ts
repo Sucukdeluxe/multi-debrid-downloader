@@ -72,6 +72,7 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
   const snapshot = manager.getSnapshot();
   const packageIds = Object.keys(snapshot.session.packages);
   const itemIds = Object.keys(snapshot.session.items);
+  const debugSetup = getDebugSetupCheck(baseDir);
 
   addJson(zip, "overview/meta.json", {
     appVersion: APP_VERSION,
@@ -90,7 +91,8 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
       totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime
     }
   });
-  addJson(zip, "overview/debug-setup.json", getDebugSetupCheck(baseDir));
+  addJson(zip, "overview/debug-setup.json", debugSetup);
+  addJson(zip, "overview/self-check.json", debugSetup);
   addJson(zip, "overview/history.json", {
     total: history.length,
     entries: history.map((entry) => summarizeHistoryEntry(entry))
