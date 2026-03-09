@@ -4,7 +4,7 @@ import path from "node:path";
 import http from "node:http";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
@@ -5030,6 +5030,82 @@ describe("download manager", () => {
       await once(server, "close");
     }
   }, 20000);
+
+  it("limits Mega-Debrid Web validating starts to one item at a time", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let unrestrictCalls = 0;
+    const pendingRejectors = new Set<(error: Error) => void>();
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaLogin: "mega-user",
+        megaPassword: "mega-pass",
+        megaDebridWebEnabled: true,
+        megaDebridApiEnabled: false,
+        megaDebridPreferApi: false,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 3
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        megaWebUnrestrict: vi.fn(async (_link: string, signal?: AbortSignal) => {
+          unrestrictCalls += 1;
+          return await new Promise((resolve, reject) => {
+            const rejector = (error: Error): void => {
+              signal?.removeEventListener("abort", onAbort);
+              pendingRejectors.delete(rejector);
+              reject(error);
+            };
+            const onAbort = (): void => {
+              rejector(new Error("aborted:test-mega-web"));
+            };
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            signal?.addEventListener("abort", onAbort, { once: true });
+            pendingRejectors.add(rejector);
+          });
+        })
+      }
+    );
+
+    manager.addPackages([{
+      name: "mega-web-serialized",
+      links: [
+        "https://rapidgator.net/file/mega-web-1.part1.rar.html",
+        "https://rapidgator.net/file/mega-web-2.part2.rar.html",
+        "https://rapidgator.net/file/mega-web-3.part3.rar.html"
+      ]
+    }]);
+
+    await manager.start();
+    await waitFor(() => unrestrictCalls === 1, 10000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const items = Object.values(manager.getSnapshot().session.items);
+    expect(items.filter((item) => item.status === "validating")).toHaveLength(1);
+    expect(items.filter((item) => item.status === "queued")).toHaveLength(2);
+    expect(unrestrictCalls).toBe(1);
+
+    manager.stop();
+    for (const reject of Array.from(pendingRejectors)) {
+      reject(new Error("aborted:test-mega-web"));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
 
   it("shows the same AllDebrid countdown for all immediately free slots", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));

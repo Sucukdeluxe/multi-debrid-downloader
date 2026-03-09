@@ -5750,6 +5750,31 @@ export class DownloadManager extends EventEmitter {
     return count;
   }
 
+  private getProviderValidatingTaskCount(provider: DebridProvider, excludeItemId?: string): number {
+    let count = 0;
+    for (const active of this.activeTasks.values()) {
+      if (excludeItemId && active.itemId === excludeItemId) {
+        continue;
+      }
+      const activeItem = this.session.items[active.itemId];
+      if (!activeItem || activeItem.status !== "validating") {
+        continue;
+      }
+      const expectedProvider = resolveMegaDebridProvider(this.settings, this.getExpectedProviderForItem(activeItem));
+      if (expectedProvider === provider) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private getSerializedValidatingLimit(provider: DebridProvider | null): number {
+    if (provider === "megadebrid-web") {
+      return 1;
+    }
+    return Number.MAX_SAFE_INTEGER;
+  }
+
   private delayPacedStartForItem(item: DownloadItem, now: number): boolean {
     const paceKey = this.getPacedStartKeyForItem(item);
     if (!paceKey) {
@@ -5842,7 +5867,11 @@ export class DownloadManager extends EventEmitter {
   }
 
   private shouldDelayStartForItem(item: DownloadItem): boolean {
-    const provider = this.getExpectedProviderForItem(item);
+    const provider = resolveMegaDebridProvider(this.settings, this.getExpectedProviderForItem(item));
+    const serializedValidatingLimit = this.getSerializedValidatingLimit(provider);
+    if (provider && Number.isFinite(serializedValidatingLimit) && serializedValidatingLimit < Number.MAX_SAFE_INTEGER) {
+      return this.getProviderValidatingTaskCount(provider, item.id) >= serializedValidatingLimit;
+    }
     if (provider !== "alldebrid") {
       return false;
     }
