@@ -6978,6 +6978,35 @@ describe("download manager", () => {
     expect(savedSettings.totalRuntimeAllTimeMs || 0).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000 + 100);
   }, 10000);
 
+  it("resets session runtime without affecting all-time runtime", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        totalRuntimeAllTimeMs: 90 * 60 * 1000
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const beforeReset = manager.getStats();
+    expect(beforeReset.sessionRuntimeMs).toBeGreaterThanOrEqual(100);
+
+    manager.resetSessionStats();
+
+    const afterReset = manager.getStats();
+    expect(afterReset.sessionRuntimeMs).toBeLessThan(beforeReset.sessionRuntimeMs);
+    expect(afterReset.sessionRuntimeMs).toBeLessThan(100);
+    expect(afterReset.totalRuntimeMs).toBeGreaterThanOrEqual(90 * 60 * 1000);
+  }, 10000);
+
   it("writes auto-rename details into rename and item logs", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
