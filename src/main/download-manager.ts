@@ -1159,6 +1159,26 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
   return [];
 }
 
+export function extractArchiveNameFromExtractorLogMessage(message: string): string | null {
+  const text = String(message || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const patterns = [
+    /archive=([^,\s|]+)/i,
+    /Entpacke Archiv:\s*([^\s]+)\s*->/i,
+    /Entpack-Fehler\s+([^\s]+)\s+\[/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+  return null;
+}
+
 function retryDelayWithJitter(attempt: number, baseMs: number): number {
   const exponential = baseMs * Math.pow(1.5, Math.min(attempt - 1, 14));
   const capped = Math.min(exponential, 120000);
@@ -1366,6 +1386,25 @@ export class DownloadManager extends EventEmitter {
       packageName: pkg.name,
       ...fields
     });
+  }
+
+  private logExtractionForItems(
+    pkg: PackageEntry,
+    items: DownloadItem[],
+    prefix: string,
+    level: "INFO" | "WARN" | "ERROR",
+    message: string
+  ): void {
+    const fullMessage = `${prefix}: ${message}`;
+    this.logPackageForPackage(pkg, level, fullMessage);
+
+    const archiveName = extractArchiveNameFromExtractorLogMessage(message);
+    if (!archiveName) {
+      return;
+    }
+    for (const item of resolveArchiveItemsFromList(archiveName, items)) {
+      this.logPackageForItem(item, level, fullMessage, { archiveName });
+    }
   }
 
   private logPackageForItem(
@@ -8714,7 +8753,7 @@ export class DownloadManager extends EventEmitter {
         hybridMode: true,
         maxParallel: this.settings.maxParallelExtract || 2,
         extractCpuPriority: "high",
-        onLog: (level, message) => this.logPackageForPackage(pkg, level, `Hybrid-Extractor: ${message}`),
+        onLog: (level, message) => this.logExtractionForItems(pkg, items, "Hybrid-Extractor", level, message),
         onArchiveFailure: (failure) => {
           const failedArchiveKey = readyArchiveKeyByName.get(String(failure.archiveName || "").toLowerCase());
           if (failedArchiveKey) {
@@ -9193,7 +9232,7 @@ export class DownloadManager extends EventEmitter {
           // All downloads finished — use NORMAL OS priority so extraction runs at
           // full speed (matching manual 7-Zip/WinRAR speed).
           extractCpuPriority: "high",
-          onLog: (level, message) => this.logPackageForPackage(pkg, level, `Extractor: ${message}`),
+          onLog: (level, message) => this.logExtractionForItems(pkg, completedItems, "Extractor", level, message),
           onArchiveFailure: (failure) => {
             if (autoRecoveredArchives.has(failure.archiveName)) {
               return;
