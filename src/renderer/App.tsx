@@ -3790,6 +3790,52 @@ export function App(): ReactElement {
     : 0;
   const liveSessionRuntimeMs = Math.max(0, (snapshot.stats.sessionRuntimeMs || 0) + runtimeOffsetMs);
   const liveTotalRuntimeMs = Math.max(0, (snapshot.stats.totalRuntimeMs || 0) + runtimeOffsetMs);
+  const etaSeparatorIndex = snapshot.etaText.includes(": ") ? snapshot.etaText.indexOf(": ") : -1;
+  const etaValue = etaSeparatorIndex >= 0
+    ? snapshot.etaText.slice(etaSeparatorIndex + 2)
+    : "--";
+  const resetFailedDownloads = (): void => {
+    if (itemStatusCounts.failed === 0) return;
+    const failedIds = Object.values(snapshot.session.items)
+      .filter((it) => it.status === "failed")
+      .map((it) => it.id);
+    void window.rd.resetItems(failedIds).catch(() => {});
+  };
+  const statsSections = [
+    {
+      key: "live",
+      title: "Aktuell",
+      items: [
+        { key: "speed", eyebrow: "Live", label: "Geschwindigkeit", value: snapshot.speedText.replace("Geschwindigkeit: ", "") },
+        { key: "eta", eyebrow: "Live", label: "Restzeit", value: etaValue, compactValue: true },
+        { key: "active", eyebrow: "Queue", label: "Aktive Downloads", value: String(itemStatusCounts.downloading) },
+        { key: "queued", eyebrow: "Queue", label: "In Warteschlange", value: String(itemStatusCounts.queued) },
+        {
+          key: "failed",
+          eyebrow: "Status",
+          label: "Fehlerhaft",
+          value: String(itemStatusCounts.failed),
+          danger: itemStatusCounts.failed > 0,
+          clickable: itemStatusCounts.failed > 0,
+          title: itemStatusCounts.failed > 0 ? "Klicken zum Zurücksetzen aller fehlerhaften Downloads" : undefined,
+          onClick: resetFailedDownloads
+        },
+        { key: "packages", eyebrow: "Queue", label: "Pakete", value: String(snapshot.stats.totalPackages) }
+      ]
+    },
+    {
+      key: "summary",
+      title: "Bilanz",
+      items: [
+        { key: "downloaded-session", eyebrow: "Session", label: "Heruntergeladen", value: humanSize(snapshot.stats.totalDownloaded) },
+        { key: "downloaded-total", eyebrow: "Gesamt", label: "Heruntergeladen", value: humanSize(snapshot.stats.totalDownloadedAllTime) },
+        { key: "runtime-session", eyebrow: "Session", label: "Laufzeit", value: formatRuntimeDuration(liveSessionRuntimeMs), compactValue: true },
+        { key: "runtime-total", eyebrow: "Gesamt", label: "Laufzeit", value: formatRuntimeDuration(liveTotalRuntimeMs), compactValue: true },
+        { key: "files-session", eyebrow: "Session", label: "Fertige Dateien", value: String(snapshot.stats.totalFilesSession) },
+        { key: "files-total", eyebrow: "Gesamt", label: "Fertige Dateien", value: String(snapshot.stats.totalFilesAllTime) }
+      ]
+    }
+  ] as const;
 
   return (
     <div
@@ -4434,19 +4480,38 @@ export function App(): ReactElement {
                   });
                 }}>Heruntergeladen zurücksetzen</button>
               </div>
-              <div className="stats-grid">
-                <div className="stat-item">
-                  <span className="stat-label">Aktuelle Geschwindigkeit</span>
-                  <span className="stat-value">{snapshot.speedText.replace("Geschwindigkeit: ", "")}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Heruntergeladen (Session)</span>
-                  <span className="stat-value">{humanSize(snapshot.stats.totalDownloaded)}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Heruntergeladen (Gesamt)</span>
-                  <span className="stat-value">{humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
-                </div>
+              <div className="stats-sections">
+                {statsSections.map((section) => (
+                  <section key={section.key} className="stats-section">
+                    <div className="stats-section-title">{section.title}</div>
+                    <div className="stats-grid">
+                      {section.items.map((item) => item.onClick ? (
+                        <button
+                          key={item.key}
+                          type="button"
+                          className={`stat-item stat-button${item.clickable ? " stat-item-clickable" : ""}`}
+                          title={item.title}
+                          onClick={item.onClick}
+                        >
+                          <span className="stat-top">
+                            <span className="stat-eyebrow">{item.eyebrow}</span>
+                            <span className="stat-label">{item.label}</span>
+                          </span>
+                          <span className={`stat-value${item.danger ? " danger" : ""}${item.compactValue ? " stat-value-compact" : ""}`}>{item.value}</span>
+                        </button>
+                      ) : (
+                        <div key={item.key} className="stat-item">
+                          <span className="stat-top">
+                            <span className="stat-eyebrow">{item.eyebrow}</span>
+                            <span className="stat-label">{item.label}</span>
+                          </span>
+                          <span className={`stat-value${item.compactValue ? " stat-value-compact" : ""}`}>{item.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+                {false && (<>
                 <div className="stat-item">
                   <span className="stat-label">Laufzeit (Session)</span>
                   <span className="stat-value">{formatRuntimeDuration(liveSessionRuntimeMs)}</span>
@@ -4493,6 +4558,7 @@ export function App(): ReactElement {
                   <span className="stat-label">{snapshot.etaText.includes(": ") ? snapshot.etaText.slice(0, snapshot.etaText.indexOf(": ")) : snapshot.etaText}</span>
                   <span className="stat-value">{snapshot.etaText.includes(": ") ? snapshot.etaText.slice(snapshot.etaText.indexOf(": ") + 2) : "--"}</span>
                 </div>
+                </>)}
               </div>
             </article>
 
@@ -6120,4 +6186,3 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
   }
   return true;
 });
-
