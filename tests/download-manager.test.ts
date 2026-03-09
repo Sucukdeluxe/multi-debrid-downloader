@@ -6677,6 +6677,171 @@ describe("download manager", () => {
     expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt (Quelle fehlt)");
   });
 
+  it("stops deferred post-extraction cleanup after package reset", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const sharedDir = path.join(root, "shared");
+    fs.mkdirSync(sharedDir, { recursive: true });
+    fs.writeFileSync(path.join(sharedDir, "episode.part01.rar"), "archive", "utf8");
+
+    const session = emptySession();
+    const packageId = "deferred-reset-pkg";
+    const itemId = "deferred-reset-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Deferred Reset",
+      outputDir: sharedDir,
+      extractDir: sharedDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/deferred-reset",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 123,
+      totalBytes: 123,
+      progressPercent: 100,
+      fileName: "episode.part01.rar",
+      targetPath: path.join(sharedDir, "episode.part01.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (123 B)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    let renameStarted = false;
+    let releaseRename = (): void => {};
+    const renameGate = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    const internal = manager as any;
+    internal.autoRenameExtractedVideoFiles = vi.fn(async () => {
+      renameStarted = true;
+      await renameGate;
+      return 0;
+    });
+    const cleanupRemainingArchiveArtifacts = vi.fn(async () => 0);
+    internal.cleanupRemainingArchiveArtifacts = cleanupRemainingArchiveArtifacts;
+
+    const deferredPromise = internal.runDeferredPostExtraction(
+      packageId,
+      internal.session.packages[packageId],
+      1,
+      0,
+      true,
+      1
+    );
+
+    await waitFor(() => renameStarted, 4000);
+    manager.resetPackage(packageId);
+    releaseRename();
+    await deferredPromise;
+
+    expect(cleanupRemainingArchiveArtifacts).not.toHaveBeenCalled();
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+    expect(snapshot.session.items[itemId]?.status).toBe("queued");
+  });
+
+  it("does not let cancelled cleanup delete archives for a re-added package in the same folder", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Cancel Cleanup";
+    const outputDir = path.join(root, "downloads", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+    const archivePath = path.join(outputDir, "episode.part01.rar");
+    fs.writeFileSync(archivePath, "archive", "utf8");
+
+    const session = emptySession();
+    const packageId = "cancel-cleanup-pkg";
+    const itemId = "cancel-cleanup-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir: path.join(root, "extract", packageName),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/episode.part01.rar",
+      provider: null,
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "episode.part01.rar",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.cancelPackage(packageId);
+    manager.addPackages([{ name: packageName, links: ["https://dummy/episode.part01.rar"] }]);
+
+    await waitFor(() => manager.getSnapshot().session.packageOrder.length === 1, 4000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(fs.existsSync(archivePath)).toBe(true);
+    const snapshot = manager.getSnapshot();
+    const remainingPackage = snapshot.session.packages[snapshot.session.packageOrder[0]];
+    expect(remainingPackage?.outputDir).toBe(outputDir);
+  });
+
   it("does not delete startup archives when any completed item has an extract error", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

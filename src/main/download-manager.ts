@@ -1270,6 +1270,10 @@ export class DownloadManager extends EventEmitter {
 
   private packagePostProcessAbortControllers = new Map<string, AbortController>();
 
+  private packageDeferredPostProcessAbortControllers = new Map<string, AbortController>();
+
+  private packagePostProcessVersions = new Map<string, number>();
+
   private hybridExtractRequeue = new Set<string>();
 
   // Tracks archive paths already attempted per package until the package/archive state changes
@@ -1821,6 +1825,70 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private getPackagePostProcessVersion(packageId: string): number {
+    return this.packagePostProcessVersions.get(packageId) || 0;
+  }
+
+  private bumpPackagePostProcessVersion(packageId: string): number {
+    const next = this.getPackagePostProcessVersion(packageId) + 1;
+    this.packagePostProcessVersions.set(packageId, next);
+    return next;
+  }
+
+  private abortPackagePostProcessing(packageId: string, reason: string, invalidateDeferred = true): void {
+    if (invalidateDeferred) {
+      this.bumpPackagePostProcessVersion(packageId);
+    }
+
+    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
+    if (postProcessController && !postProcessController.signal.aborted) {
+      postProcessController.abort(reason);
+    }
+    this.packagePostProcessAbortControllers.delete(packageId);
+    this.packagePostProcessTasks.delete(packageId);
+
+    const deferredController = this.packageDeferredPostProcessAbortControllers.get(packageId);
+    if (deferredController && !deferredController.signal.aborted) {
+      deferredController.abort(reason);
+    }
+    this.packageDeferredPostProcessAbortControllers.delete(packageId);
+
+    this.hybridExtractRequeue.delete(packageId);
+    this.clearHybridArchiveState(packageId);
+  }
+
+  private isDeferredPostProcessStillCurrent(
+    packageId: string,
+    pkg: PackageEntry,
+    version: number,
+    signal?: AbortSignal
+  ): boolean {
+    if (signal?.aborted) {
+      return false;
+    }
+    if (this.session.packages[packageId] !== pkg) {
+      return false;
+    }
+    return this.getPackagePostProcessVersion(packageId) === version;
+  }
+
+  private throwIfDeferredPostProcessAborted(
+    packageId: string,
+    pkg: PackageEntry,
+    version: number,
+    signal?: AbortSignal
+  ): void {
+    if (this.isDeferredPostProcessStillCurrent(packageId, pkg, version, signal)) {
+      return;
+    }
+    throw new Error(String(signal?.reason || "aborted:deferred"));
+  }
+
+  private packageOutputDirInUse(outputDir: string): boolean {
+    const key = pathKey(outputDir);
+    return Object.values(this.session.packages).some((pkg) => pathKey(pkg.outputDir) === key);
+  }
+
   public resetSessionStats(): void {
     const now = nowMs();
     this.session.totalDownloadedBytes = 0;
@@ -1937,10 +2005,7 @@ export class DownloadManager extends EventEmitter {
       if (pkg.status === "downloading" || pkg.status === "extracting") {
         pkg.status = "paused";
       }
-      const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
-      if (postProcessController && !postProcessController.signal.aborted) {
-        postProcessController.abort("package_toggle");
-      }
+      this.abortPackagePostProcessing(packageId, "package_toggle");
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
         if (!item) {
@@ -2293,14 +2358,7 @@ export class DownloadManager extends EventEmitter {
         this.retryStateByItem.delete(itemId);
       }
 
-      const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
-      if (postProcessController && !postProcessController.signal.aborted) {
-        postProcessController.abort("skip");
-      }
-      this.packagePostProcessAbortControllers.delete(packageId);
-      this.packagePostProcessTasks.delete(packageId);
-      this.hybridExtractRequeue.delete(packageId);
-      this.clearHybridArchiveState(packageId);
+      this.abortPackagePostProcessing(packageId, "skip");
 
       this.runPackageIds.delete(packageId);
       this.runCompletedPackages.delete(packageId);
@@ -2335,12 +2393,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "overwrite") {
-      const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
-      if (postProcessController && !postProcessController.signal.aborted) {
-        postProcessController.abort("overwrite");
-      }
-      this.packagePostProcessAbortControllers.delete(packageId);
-      this.packagePostProcessTasks.delete(packageId);
+      this.abortPackagePostProcessing(packageId, "overwrite");
       const canDeleteExtractDir = this.isPackageSpecificExtractDir(pkg) && !this.isExtractDirSharedWithOtherPackages(pkg.id, pkg.extractDir);
       if (canDeleteExtractDir) {
         try {
@@ -2994,7 +3047,11 @@ export class DownloadManager extends EventEmitter {
     return next;
   }
 
-  private async autoRenameExtractedVideoFiles(extractDir: string, pkg?: PackageEntry): Promise<number> {
+  private async autoRenameExtractedVideoFiles(
+    extractDir: string,
+    pkg?: PackageEntry,
+    shouldAbort?: () => boolean
+  ): Promise<number> {
     if (!this.settings.autoRename4sf4sj) {
       return 0;
     }
@@ -3033,6 +3090,9 @@ export class DownloadManager extends EventEmitter {
     }
 
     for (const sourcePath of videoFiles) {
+      if (shouldAbort?.()) {
+        return renamed;
+      }
       const sourceName = path.basename(sourcePath);
       const sourceExt = path.extname(sourceName);
       const sourceBaseName = path.basename(sourceName, sourceExt);
@@ -3309,8 +3369,11 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private async cleanupRemainingArchiveArtifacts(packageDir: string): Promise<number> {
+  private async cleanupRemainingArchiveArtifacts(packageDir: string, shouldAbort?: () => boolean): Promise<number> {
     if (this.settings.cleanupMode === "none") {
+      return 0;
+    }
+    if (shouldAbort?.()) {
       return 0;
     }
     const candidates = await findArchiveCandidates(packageDir);
@@ -3322,6 +3385,9 @@ export class DownloadManager extends EventEmitter {
     const dirFilesCache = new Map<string, string[]>();
     const targets = new Set<string>();
     for (const sourceFile of candidates) {
+      if (shouldAbort?.()) {
+        return removed;
+      }
       const dir = path.dirname(sourceFile);
       let filesInDir = dirFilesCache.get(dir);
       if (!filesInDir) {
@@ -3340,6 +3406,9 @@ export class DownloadManager extends EventEmitter {
     }
 
     for (const targetPath of targets) {
+      if (shouldAbort?.()) {
+        return removed;
+      }
       try {
         if (!await this.existsAsync(targetPath)) {
           continue;
@@ -3404,7 +3473,11 @@ export class DownloadManager extends EventEmitter {
     return fallbackPath;
   }
 
-  private async collectMkvFilesToLibrary(packageId: string, pkg: PackageEntry): Promise<void> {
+  private async collectMkvFilesToLibrary(
+    packageId: string,
+    pkg: PackageEntry,
+    shouldAbort?: () => boolean
+  ): Promise<void> {
     if (!this.settings.collectMkvToLibrary) {
       return;
     }
@@ -3440,6 +3513,9 @@ export class DownloadManager extends EventEmitter {
     const mkvFiles: string[] = [];
     let sampleSkipped = 0;
     for (const filePath of allMkvFiles) {
+      if (shouldAbort?.()) {
+        return;
+      }
       const parentDir = path.basename(path.dirname(filePath)).toLowerCase();
       const stem = path.parse(path.basename(filePath)).name;
       if (sampleDirNames.has(parentDir) || sampleTokenRe.test(stem)) {
@@ -3468,6 +3544,9 @@ export class DownloadManager extends EventEmitter {
     let failed = 0;
 
     for (const sourcePath of mkvFiles) {
+      if (shouldAbort?.()) {
+        return;
+      }
       if (isPathInsideDir(sourcePath, targetDir)) {
         skipped += 1;
         continue;
@@ -3604,10 +3683,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
-    if (postProcessController && !postProcessController.signal.aborted) {
-      postProcessController.abort("cancel");
-    }
+    this.abortPackagePostProcessing(packageId, "cancel");
 
     this.removePackageFromSession(packageId, itemIds);
     this.persistSoon();
@@ -3615,7 +3691,9 @@ export class DownloadManager extends EventEmitter {
 
     this.cleanupQueue = this.cleanupQueue
       .then(async () => {
-        const removed = await cleanupCancelledPackageArtifactsAsync(outputDir);
+        const removed = await cleanupCancelledPackageArtifactsAsync(outputDir, {
+          shouldAbort: () => this.packageOutputDirInUse(outputDir)
+        });
         logger.info(`Paket ${packageName} abgebrochen, ${removed} Artefakte gelöscht`);
       })
       .catch((error) => {
@@ -3671,14 +3749,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     // 2. Abort post-processing (extraction) if active for THIS package
-    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
-    if (postProcessController && !postProcessController.signal.aborted) {
-      postProcessController.abort("reset");
-    }
-    this.packagePostProcessAbortControllers.delete(packageId);
-    this.packagePostProcessTasks.delete(packageId);
-    this.hybridExtractRequeue.delete(packageId);
-    this.clearHybridArchiveState(packageId);
+    this.abortPackagePostProcessing(packageId, "reset");
     this.runCompletedPackages.delete(packageId);
 
     // 3. Clean up extraction progress manifest (.rd_extract_progress.json)
@@ -3761,14 +3832,7 @@ export class DownloadManager extends EventEmitter {
     // Reset parent package status if it was completed/failed (now has queued items again)
     for (const pkgId of affectedPackageIds) {
       // Abort active post-processing for this package
-      const postProcessController = this.packagePostProcessAbortControllers.get(pkgId);
-      if (postProcessController && !postProcessController.signal.aborted) {
-        postProcessController.abort("reset");
-      }
-      this.packagePostProcessAbortControllers.delete(pkgId);
-      this.packagePostProcessTasks.delete(pkgId);
-      this.hybridExtractRequeue.delete(pkgId);
-      this.clearHybridArchiveState(pkgId);
+      this.abortPackagePostProcessing(pkgId, "reset");
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
 
@@ -5837,12 +5901,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
     this.historyRecordedPackages.delete(packageId);
-    const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
-    if (postProcessController && !postProcessController.signal.aborted) {
-      postProcessController.abort("package_removed");
-    }
-    this.packagePostProcessAbortControllers.delete(packageId);
-    this.packagePostProcessTasks.delete(packageId);
+    this.abortPackagePostProcessing(packageId, "package_removed");
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
@@ -5859,8 +5918,6 @@ export class DownloadManager extends EventEmitter {
     // would make runPackageIds empty, disabling the "size > 0" filter guard and
     // causing "Start Selected" to continue with ALL packages after cleanup.
     this.runCompletedPackages.delete(packageId);
-    this.hybridExtractRequeue.delete(packageId);
-    this.clearHybridArchiveState(packageId);
     this.resetSessionTotalsIfQueueEmpty();
   }
 
@@ -9947,7 +10004,18 @@ export class DownloadManager extends EventEmitter {
     alreadyMarkedExtracted: boolean,
     extractedCount: number
   ): Promise<void> {
+    const replacedController = this.packageDeferredPostProcessAbortControllers.get(packageId);
+    if (replacedController && !replacedController.signal.aborted) {
+      replacedController.abort("deferred_replaced");
+    }
+    const deferredController = new AbortController();
+    this.packageDeferredPostProcessAbortControllers.set(packageId, deferredController);
+    const deferredVersion = this.getPackagePostProcessVersion(packageId);
+    const shouldAbort = (): boolean => !this.isDeferredPostProcessStillCurrent(packageId, pkg, deferredVersion, deferredController.signal);
+    const throwIfAborted = (): void => this.throwIfDeferredPostProcessAborted(packageId, pkg, deferredVersion, deferredController.signal);
+
     try {
+      throwIfAborted();
       // ── Nested extraction: extract archives found inside the extracted output ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.autoExtract) {
         const nestedBlacklist = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
@@ -9975,6 +10043,7 @@ export class DownloadManager extends EventEmitter {
             extractCpuPriority: this.settings.extractCpuPriority,
             onLog: (level, message) => this.logPackageForPackage(pkg, level, `Nested-Extractor: ${message}`),
           });
+          throwIfAborted();
           extractedCount += nestedResult.extracted;
           logger.info(`Deferred Nested-Extraction Ende: extracted=${nestedResult.extracted}, failed=${nestedResult.failed}`);
           this.logPackageForPackage(pkg, "INFO", "Deferred Nested-Extraction Ende", {
@@ -9991,7 +10060,8 @@ export class DownloadManager extends EventEmitter {
         this.logPackageForPackage(pkg, "INFO", "Deferred Auto-Rename gestartet", {
           extractDir: pkg.extractDir
         });
-        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
+        throwIfAborted();
+        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort);
       }
 
       // ── Archive cleanup (source archives in outputDir) ──
@@ -10000,11 +10070,12 @@ export class DownloadManager extends EventEmitter {
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none") {
         pkg.postProcessLabel = "Aufräumen...";
         this.emitState();
+        throwIfAborted();
         const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
         if (!sourceAndTargetEqual) {
           const candidates = await findArchiveCandidates(pkg.outputDir);
           if (candidates.length > 0) {
-            const removed = await cleanupArchives(candidates, this.settings.cleanupMode);
+            const removed = await cleanupArchives(candidates, this.settings.cleanupMode, { shouldAbort });
             if (removed > 0) {
               logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
             }
@@ -10014,7 +10085,8 @@ export class DownloadManager extends EventEmitter {
 
       // ── Hybrid archive cleanup (wenn bereits als extracted markiert) ──
       if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none") {
-        const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir);
+        throwIfAborted();
+        const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir, shouldAbort);
         if (removedArchives > 0) {
           logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
         }
@@ -10022,14 +10094,15 @@ export class DownloadManager extends EventEmitter {
 
       // ── Link/Sample artifact removal ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
+        throwIfAborted();
         if (this.settings.removeLinkFilesAfterExtract) {
-          const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir);
+          const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir, { shouldAbort });
           if (removedLinks > 0) {
             logger.info(`Deferred Link-Cleanup: pkg=${pkg.name}, entfernt=${removedLinks}`);
           }
         }
         if (this.settings.removeSamplesAfterExtract) {
-          const removedSamples = await removeSampleArtifacts(pkg.extractDir);
+          const removedSamples = await removeSampleArtifacts(pkg.extractDir, { shouldAbort });
           if (removedSamples.files > 0 || removedSamples.dirs > 0) {
             logger.info(`Deferred Sample-Cleanup: pkg=${pkg.name}, files=${removedSamples.files}, dirs=${removedSamples.dirs}`);
           }
@@ -10038,6 +10111,7 @@ export class DownloadManager extends EventEmitter {
 
       // ── Resume state cleanup ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
+        throwIfAborted();
         await clearExtractResumeState(pkg.outputDir, packageId);
         // Backward compatibility: older versions used .rd_extract_progress.json without package suffix.
         await clearExtractResumeState(pkg.outputDir);
@@ -10045,6 +10119,7 @@ export class DownloadManager extends EventEmitter {
 
       // ── Empty directory tree removal ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode === "delete") {
+        throwIfAborted();
         if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
           const removedDirs = await removeEmptyDirectoryTree(pkg.outputDir);
           if (removedDirs > 0) {
@@ -10055,11 +10130,13 @@ export class DownloadManager extends EventEmitter {
 
       // ── MKV collection ──
       if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
+        throwIfAborted();
         pkg.postProcessLabel = "Verschiebe MKVs...";
         this.emitState();
-        await this.collectMkvFilesToLibrary(packageId, pkg);
+        await this.collectMkvFilesToLibrary(packageId, pkg, shouldAbort);
       }
 
+      throwIfAborted();
       pkg.postProcessLabel = undefined;
       pkg.updatedAt = nowMs();
       this.persistSoon();
@@ -10067,12 +10144,29 @@ export class DownloadManager extends EventEmitter {
 
       this.applyPackageDoneCleanup(packageId);
     } catch (error) {
-      logger.warn(`Deferred Post-Extraction Fehler: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
+      const reason = compactErrorText(error);
+      if (reason.includes("aborted:deferred")
+        || reason.includes("deferred_replaced")
+        || reason.includes("package_removed")
+        || reason === "reset"
+        || reason === "cancel"
+        || reason === "overwrite"
+        || reason === "skip"
+        || reason === "package_toggle") {
+        logger.info(`Deferred Post-Extraction abgebrochen: pkg=${pkg.name}, reason=${reason}`);
+      } else {
+        logger.warn(`Deferred Post-Extraction Fehler: pkg=${pkg.name}, reason=${reason}`);
+      }
     } finally {
-      pkg.postProcessLabel = undefined;
-      pkg.updatedAt = nowMs();
-      this.persistSoon();
-      this.emitState();
+      if (this.packageDeferredPostProcessAbortControllers.get(packageId) === deferredController) {
+        this.packageDeferredPostProcessAbortControllers.delete(packageId);
+      }
+      if (this.session.packages[packageId] === pkg && this.getPackagePostProcessVersion(packageId) === deferredVersion) {
+        pkg.postProcessLabel = undefined;
+        pkg.updatedAt = nowMs();
+        this.persistSoon();
+        this.emitState();
+      }
     }
   }
 
