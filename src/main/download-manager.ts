@@ -55,6 +55,7 @@ import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
 import { ensurePackageLog, getPackageLogPath as getPersistedPackageLogPath, logPackageEvent as writePackageLogEvent } from "./package-log";
+import { logRenameEvent as writeRenameLogEvent } from "./rename-log";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 
@@ -183,6 +184,28 @@ function inspectPackageItemDiskState(pkg: PackageEntry, item: DownloadItem): Pac
       reason: "missing_file"
     };
   }
+}
+
+function stripArchiveSuffixForMatching(fileName: string): string {
+  const trimmed = path.basename(String(fileName || "").trim());
+  if (!trimmed) {
+    return "";
+  }
+  let next = trimmed.replace(/\.(?:part\d+\.rar|zip\.\d+|7z\.\d+|rar|r\d{2,3}|zip|7z|\d{3})$/i, "");
+  next = next.replace(/\.part\d+$/i, "").replace(/\.vol\d+[+\d]*$/i, "");
+  return next.toLowerCase();
+}
+
+function isPreferredArchiveEntryPointName(fileName: string): boolean {
+  const normalized = path.basename(String(fileName || "").trim()).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return /\.part0*1\.rar$/.test(normalized)
+    || (/\.rar$/.test(normalized) && !/\.part\d+\.rar$/.test(normalized) && !/\.r\d{2,3}$/.test(normalized))
+    || /\.zip\.001$/.test(normalized)
+    || /\.7z\.001$/.test(normalized)
+    || (/\.001$/.test(normalized) && !/\.(zip|7z)\.001$/.test(normalized));
 }
 
 function getDownloadStallTimeoutMs(): number {
@@ -1436,6 +1459,141 @@ export class DownloadManager extends EventEmitter {
       targetPath: item.targetPath,
       ...fields
     });
+  }
+
+  private logItemOnly(
+    item: DownloadItem,
+    level: "INFO" | "WARN" | "ERROR",
+    message: string,
+    fields?: Record<string, unknown>
+  ): void {
+    const pkg = this.session.packages[item.packageId];
+    this.ensureItemLogForItem(item);
+    writeItemLogEvent(item.id, level, message, {
+      packageId: item.packageId,
+      packageName: pkg?.name || "",
+      itemId: item.id,
+      fileName: item.fileName,
+      status: item.status,
+      targetPath: item.targetPath,
+      ...fields
+    });
+  }
+
+  private collectRenameMatchTokensForItem(pkg: PackageEntry, item: DownloadItem): string[] {
+    const tokens = new Set<string>();
+    const maybeAdd = (value: string | null | undefined): void => {
+      const normalized = String(value || "").trim().toLowerCase();
+      if (!normalized || normalized.length < 4) {
+        return;
+      }
+      tokens.add(normalized);
+    };
+
+    maybeAdd(stripArchiveSuffixForMatching(item.fileName || ""));
+    maybeAdd(stripArchiveSuffixForMatching(item.targetPath ? path.basename(item.targetPath) : ""));
+    const diskPath = resolvePackageItemDiskPath(pkg, item);
+    if (diskPath) {
+      maybeAdd(stripArchiveSuffixForMatching(path.basename(diskPath)));
+    }
+    const episodeToken = extractEpisodeToken(item.fileName || path.basename(item.targetPath || ""));
+    if (episodeToken) {
+      maybeAdd(episodeToken);
+    }
+    return [...tokens].sort((a, b) => b.length - a.length);
+  }
+
+  private inferItemForMediaLog(
+    pkg: PackageEntry,
+    ...candidates: Array<string | null | undefined>
+  ): { item: DownloadItem | null; matchedBy: string | null } {
+    const items = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter(Boolean) as DownloadItem[];
+    if (items.length === 0) {
+      return { item: null, matchedBy: null };
+    }
+    if (items.length === 1) {
+      return { item: items[0] || null, matchedBy: items[0] ? "single_item_package" : null };
+    }
+
+    const haystack = candidates
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+      .join(" || ");
+    if (!haystack) {
+      return { item: null, matchedBy: null };
+    }
+
+    let bestItem: DownloadItem | null = null;
+    let bestScore = 0;
+    let bestMatchedBy: string | null = null;
+    let bestPreferredEntry = false;
+    let ambiguous = false;
+
+    for (const item of items) {
+      const fileName = item.fileName || path.basename(item.targetPath || "");
+      const preferredEntry = isPreferredArchiveEntryPointName(fileName);
+      let score = preferredEntry ? 5 : 0;
+      let matchedBy: string | null = preferredEntry ? "entry_point" : null;
+
+      const episodeToken = extractEpisodeToken(fileName);
+      if (episodeToken && haystack.includes(episodeToken.toLowerCase())) {
+        score = 110 + (preferredEntry ? 5 : 0);
+        matchedBy = "episode_token";
+      } else {
+        for (const token of this.collectRenameMatchTokensForItem(pkg, item)) {
+          if (haystack.includes(token)) {
+            score = Math.max(score, Math.min(100, 40 + token.length) + (preferredEntry ? 5 : 0));
+            matchedBy = token === episodeToken?.toLowerCase() ? "episode_token" : `token:${token}`;
+            break;
+          }
+        }
+      }
+
+      if (score > bestScore || (score === bestScore && score > 0 && preferredEntry && !bestPreferredEntry)) {
+        bestItem = item;
+        bestScore = score;
+        bestMatchedBy = matchedBy;
+        bestPreferredEntry = preferredEntry;
+        ambiguous = false;
+        continue;
+      }
+      if (score > 0 && score === bestScore && preferredEntry === bestPreferredEntry) {
+        ambiguous = true;
+      }
+    }
+
+    if (ambiguous || !bestItem || bestScore <= 0) {
+      return { item: null, matchedBy: null };
+    }
+    return { item: bestItem, matchedBy: bestMatchedBy };
+  }
+
+  private logRenameProcess(
+    pkg: PackageEntry,
+    level: "INFO" | "WARN" | "ERROR",
+    stage: "auto-rename" | "mkv-move",
+    message: string,
+    fields?: Record<string, unknown>,
+    item?: DownloadItem | null,
+    matchedBy?: string | null
+  ): void {
+    writeRenameLogEvent(level, message, {
+      stage,
+      packageId: pkg.id,
+      packageName: pkg.name,
+      ...(item ? { itemId: item.id, fileName: item.fileName } : {}),
+      ...(matchedBy ? { matchedBy } : {}),
+      ...fields
+    });
+    if (item) {
+      this.logItemOnly(item, level, message, {
+        stage,
+        ...(matchedBy ? { matchedBy } : {}),
+        ...fields
+      });
+    }
   }
 
   public setSettings(next: AppSettings): void {
@@ -2793,6 +2951,10 @@ export class DownloadManager extends EventEmitter {
         extractDir,
         videoFiles: videoFiles.length
       });
+      this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename Scan gestartet", {
+        extractDir,
+        videoFiles: videoFiles.length
+      });
     }
     let renamed = 0;
 
@@ -2840,6 +3002,12 @@ export class DownloadManager extends EventEmitter {
       const targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
         forceEpisodeForSeasonFolder: true
       });
+      const resolveRenameItem = (...extra: Array<string | null | undefined>): { item: DownloadItem | null; matchedBy: string | null } => {
+        if (!pkg) {
+          return { item: null, matchedBy: null };
+        }
+        return this.inferItemForMediaLog(pkg, sourcePath, sourceName, folderCandidates.join(" "), targetBaseName || "", ...extra);
+      };
       if (!targetBaseName) {
         if (pkg) {
           this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: kein Zielname", {
@@ -2847,6 +3015,13 @@ export class DownloadManager extends EventEmitter {
             sourceBaseName,
             folders: folderCandidates.join(", ")
           });
+          const resolved = resolveRenameItem();
+          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename übersprungen: kein Zielname", {
+            sourcePath,
+            sourceName,
+            sourceBaseName,
+            folders: folderCandidates.join(", ")
+          }, resolved.item, resolved.matchedBy);
         }
         logger.info(`Auto-Rename: kein Zielname für ${sourceName} (folders=${folderCandidates.join(", ")})`);
         continue;
@@ -2859,6 +3034,16 @@ export class DownloadManager extends EventEmitter {
           targetPath = this.buildSafeAutoRenameTargetPath(sourcePath, fallbackBaseName, sourceExt);
           if (targetPath) {
             logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(targetPath)}`);
+            if (pkg) {
+              const resolved = resolveRenameItem(targetPath, fallbackBaseName);
+              this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename Fallback wegen Pfadlänge gewählt", {
+                sourcePath,
+                sourceName,
+                targetPath,
+                targetBaseName,
+                fallbackBaseName
+              }, resolved.item, resolved.matchedBy);
+            }
           }
         }
         if (!targetPath) {
@@ -2867,6 +3052,16 @@ export class DownloadManager extends EventEmitter {
             targetPath = this.buildSafeAutoRenameTargetPath(sourcePath, veryShortFallback, sourceExt);
             if (targetPath) {
               logger.warn(`Auto-Rename Kurz-Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(targetPath)}`);
+              if (pkg) {
+                const resolved = resolveRenameItem(targetPath, veryShortFallback);
+                this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename Kurz-Fallback wegen Pfadlänge gewählt", {
+                  sourcePath,
+                  sourceName,
+                  targetPath,
+                  targetBaseName,
+                  fallbackBaseName: veryShortFallback
+                }, resolved.item, resolved.matchedBy);
+              }
             }
           }
         }
@@ -2878,11 +3073,27 @@ export class DownloadManager extends EventEmitter {
             sourceBaseName,
             targetBaseName
           });
+          const resolved = resolveRenameItem();
+          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename übersprungen: Zielpfad ungültig", {
+            sourcePath,
+            sourceName,
+            sourceBaseName,
+            targetBaseName
+          }, resolved.item, resolved.matchedBy);
         }
         logger.warn(`Auto-Rename übersprungen (Zielpfad zu lang/ungültig): ${sourcePath}`);
         continue;
       }
       if (pathKey(targetPath) === pathKey(sourcePath)) {
+        if (pkg) {
+          const resolved = resolveRenameItem(targetPath);
+          this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename übersprungen: Name bereits passend", {
+            sourcePath,
+            sourceName,
+            targetPath,
+            targetBaseName
+          }, resolved.item, resolved.matchedBy);
+        }
         continue;
       }
       if (await this.existsAsync(targetPath)) {
@@ -2891,6 +3102,13 @@ export class DownloadManager extends EventEmitter {
             sourceName,
             targetPath
           });
+          const resolved = resolveRenameItem(targetPath);
+          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename übersprungen: Ziel existiert", {
+            sourcePath,
+            sourceName,
+            targetPath,
+            targetBaseName
+          }, resolved.item, resolved.matchedBy);
         }
         logger.warn(`Auto-Rename übersprungen (Ziel existiert): ${targetPath}`);
         continue;
@@ -2904,6 +3122,14 @@ export class DownloadManager extends EventEmitter {
             targetPath,
             sourceName
           });
+          const resolved = resolveRenameItem(targetPath);
+          this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename durchgeführt", {
+            sourcePath,
+            targetPath,
+            sourceName,
+            targetBaseName,
+            folders: folderCandidates.join(", ")
+          }, resolved.item, resolved.matchedBy);
         }
         logger.info(`Auto-Rename: ${sourceName} -> ${path.basename(targetPath)}`);
         renamed += 1;
@@ -2926,6 +3152,16 @@ export class DownloadManager extends EventEmitter {
               await this.renamePathWithExdevFallback(sourcePath, fallbackPath);
               logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(fallbackPath)}`);
               renamed += 1;
+              if (pkg) {
+                const resolved = resolveRenameItem(fallbackPath, fallbackBaseName);
+                this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename Fallback durchgeführt", {
+                  sourcePath,
+                  sourceName,
+                  targetPath: fallbackPath,
+                  targetBaseName,
+                  fallbackBaseName
+                }, resolved.item, resolved.matchedBy);
+              }
               fallbackRenamed = true;
               break;
             } catch {
@@ -2942,6 +3178,15 @@ export class DownloadManager extends EventEmitter {
             sourceName,
             error: compactErrorText(error)
           });
+          const resolved = resolveRenameItem(targetPath);
+          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename fehlgeschlagen", {
+            sourcePath,
+            sourceName,
+            targetPath,
+            targetBaseName,
+            folders: folderCandidates.join(", "),
+            error: compactErrorText(error)
+          }, resolved.item, resolved.matchedBy);
         }
       }
     }
@@ -2950,6 +3195,10 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Auto-Rename (Scene): ${renamed} Datei(en) umbenannt`);
       if (pkg) {
         this.logPackageForPackage(pkg, "INFO", "Auto-Rename abgeschlossen", {
+          renamed
+        });
+        this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename abgeschlossen", {
+          extractDir,
           renamed
         });
       }
@@ -3152,6 +3401,12 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Sammelordner Scan gestartet", {
+      sourceDir,
+      targetDir,
+      mkvFiles: mkvFiles.length
+    });
+
     const reservedTargets = new Set<string>();
     let moved = 0;
     let skipped = 0;
@@ -3174,6 +3429,12 @@ export class DownloadManager extends EventEmitter {
       }
       if (sourceSize === 0) {
         logger.warn(`MKV-Sammelordner: überspringe 0-Byte-Datei ${path.basename(sourcePath)}`);
+        const resolved = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), targetDir);
+        this.logRenameProcess(pkg, "WARN", "mkv-move", "MKV übersprungen: 0-Byte-Datei", {
+          sourcePath,
+          targetDir,
+          sourceSize
+        }, resolved.item, resolved.matchedBy);
         skipped += 1;
         continue;
       }
@@ -3184,6 +3445,12 @@ export class DownloadManager extends EventEmitter {
         const existingStat = await fs.promises.stat(idealTargetPath);
         if (existingStat.size === sourceSize) {
           logger.info(`MKV-Sammelordner: Duplikat übersprungen (gleiche Größe ${humanSize(sourceSize)}): ${path.basename(sourcePath)}`);
+          const resolved = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), idealTargetPath);
+          this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Duplikat übersprungen", {
+            sourcePath,
+            targetPath: idealTargetPath,
+            sourceSize
+          }, resolved.item, resolved.matchedBy);
           // Remove the duplicate source file to avoid future re-processing
           try { await fs.promises.unlink(sourcePath); } catch { /* ignore */ }
           skipped += 1;
@@ -3207,6 +3474,12 @@ export class DownloadManager extends EventEmitter {
           targetPath,
           sourceSize
         });
+        const resolved = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), targetPath);
+        this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV verschoben", {
+          sourcePath,
+          targetPath,
+          sourceSize
+        }, resolved.item, resolved.matchedBy);
       } catch (error) {
         failed += 1;
         logger.warn(`MKV verschieben fehlgeschlagen: ${sourcePath} -> ${targetPath} (${compactErrorText(error)})`);
@@ -3215,6 +3488,13 @@ export class DownloadManager extends EventEmitter {
           targetPath,
           error: compactErrorText(error)
         });
+        const resolved = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), targetPath);
+        this.logRenameProcess(pkg, "WARN", "mkv-move", "MKV verschieben fehlgeschlagen", {
+          sourcePath,
+          targetPath,
+          sourceSize,
+          error: compactErrorText(error)
+        }, resolved.item, resolved.matchedBy);
       }
     }
 
@@ -3230,6 +3510,13 @@ export class DownloadManager extends EventEmitter {
     }
 
     logger.info(`MKV-Sammelordner: pkg=${pkg.name}, packageId=${packageId}, moved=${moved}, skipped=${skipped}, failed=${failed}, target=${targetDir}`);
+    this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Sammelordner abgeschlossen", {
+      sourceDir,
+      targetDir,
+      moved,
+      skipped,
+      failed
+    });
   }
 
   public cancelPackage(packageId: string): void {

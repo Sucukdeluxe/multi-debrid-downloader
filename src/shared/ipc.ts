@@ -41,6 +41,7 @@ export const IPC_CHANNELS = {
   EXPORT_SUPPORT_BUNDLE: "app:export-support-bundle",
   OPEN_LOG: "app:open-log",
   OPEN_AUDIT_LOG: "app:open-audit-log",
+  OPEN_RENAME_LOG: "app:open-rename-log",
   OPEN_SESSION_LOG: "app:open-session-log",
   OPEN_TRACE_LOG: "app:open-trace-log",
   OPEN_PACKAGE_LOG: "app:open-package-log",

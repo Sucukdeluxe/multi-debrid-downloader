@@ -46,6 +46,7 @@ import { startDebugServer, stopDebugServer } from "../src/main/debug-server";
 import { ensureItemLog, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { configureLogger, getLogFilePath, logger } from "../src/main/logger";
 import { ensurePackageLog, initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
+import { getRenameLogPath, initRenameLog, logRenameEvent, shutdownRenameLog } from "../src/main/rename-log";
 import { getSessionLogPath, initSessionLog, shutdownSessionLog } from "../src/main/session-log";
 import { createStoragePaths, saveHistory, saveSettings } from "../src/main/storage";
 import { getTraceConfigPath, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "../src/main/trace-log";
@@ -235,6 +236,9 @@ async function createFixture() {
   }
   logAuditEvent("INFO", "AUDIT-LINE", { scope: "settings" });
 
+  initRenameLog(baseDir);
+  logRenameEvent("INFO", "RENAME-LINE", { stage: "auto-rename", sourcePath: "C:\\extract\\old.mkv" });
+
   initTraceLog(baseDir);
   setTraceEnabled(true, "test-fixture");
   logTraceEvent("INFO", "support", "TRACE-EVENT", { scope: "fixture" });
@@ -294,6 +298,7 @@ afterEach(() => {
   shutdownSessionLog();
   shutdownPackageLogs();
   shutdownItemLogs();
+  shutdownRenameLog();
   shutdownTraceLog();
   shutdownAuditLog();
   while (tempDirs.length > 0) {
@@ -324,6 +329,7 @@ describe("debug-server", () => {
     expect(payload.selectedPackage?.name).toBe("server-package");
     expect((payload.logs?.main?.lines || []).join("\n")).toContain("MAIN-LINE");
     expect((payload.logs?.audit?.lines || []).join("\n")).toContain("AUDIT-LINE");
+    expect((payload.logs?.rename?.lines || []).join("\n")).toContain("RENAME-LINE");
     expect((payload.logs?.trace?.lines || []).join("\n")).toContain("TRACE-EVENT");
     expect((payload.logs?.session?.lines || []).join("\n")).toContain("SESSION-LINE");
     expect((payload.logs?.package?.lines || []).join("\n")).toContain("PACKAGE-LINE");
@@ -353,6 +359,7 @@ describe("debug-server", () => {
     expect(metaPayload.supportFiles?.aiManifest).toBe(manifestPath);
     expect(metaPayload.supportFiles?.traceConfig).toBe(getTraceConfigPath());
     expect(metaPayload.supportFiles?.traceLog).toBe(getTraceLogPath());
+    expect(metaPayload.logPaths?.rename).toBe(getRenameLogPath());
     expect(metaPayload.supportChecks?.setup).toBe("/debug/setup");
     expect(metaPayload.supportChecks?.selfCheck).toBe("/self-check");
   });
@@ -376,6 +383,7 @@ describe("debug-server", () => {
     expect(payload.diskSpace?.output?.freeBytes).toBeGreaterThan(0);
     expect(payload.diskSpace?.extract?.freeBytes).toBeGreaterThan(0);
     expect(payload.logSummary?.totalBytes).toBeGreaterThan(0);
+    expect(payload.logSummary?.rename?.bytes).toBeGreaterThan(0);
     expect(payload.logSummary?.packageLogs?.fileCount).toBe(1);
     expect(payload.logSummary?.itemLogs?.fileCount).toBe(1);
     expect(payload.supportBundle?.estimatedBytes).toBeGreaterThan(0);
@@ -437,6 +445,11 @@ describe("debug-server", () => {
     const auditPayload = await auditResponse.json() as Record<string, any>;
     expect((auditPayload.lines || []).join("\n")).toContain("AUDIT-LINE");
 
+    const renameResponse = await fetch(`${fixture.baseUrl}/logs/rename?token=${fixture.token}&lines=20`);
+    expect(renameResponse.ok).toBe(true);
+    const renamePayload = await renameResponse.json() as Record<string, any>;
+    expect((renamePayload.lines || []).join("\n")).toContain("RENAME-LINE");
+
     const traceResponse = await fetch(`${fixture.baseUrl}/logs/trace?token=${fixture.token}&lines=50`);
     expect(traceResponse.ok).toBe(true);
     const tracePayload = await traceResponse.json() as Record<string, any>;
@@ -492,6 +505,7 @@ describe("debug-server", () => {
     expect(entries).toContain("overview/self-check.json");
     expect(entries).toContain("overview/trace-config.json");
     expect(entries).toContain("logs/audit.log");
+    expect(entries).toContain("logs/rename.log");
     expect(entries).toContain("logs/trace.log");
     expect(entries).toContain("runtime/debug_ai_manifest.json");
     expect(entries).not.toContain("runtime/debug_token.txt");

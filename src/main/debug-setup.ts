@@ -279,6 +279,8 @@ function getSupportBundleEstimate(
     + Number(logSummary.mainBackup.exists)
     + Number(logSummary.audit.exists)
     + Number(logSummary.auditBackup.exists)
+    + Number(logSummary.rename.exists)
+    + Number(logSummary.renameBackup.exists)
     + Number(logSummary.session.exists)
     + Number(logSummary.trace.exists)
     + Number(logSummary.traceBackup.exists)
@@ -317,6 +319,8 @@ export function getDebugSetupCheck(baseDir: string): DebugSetupCheckResult {
     mainBackup: getFileSizeInfo(path.join(baseDir, "rd_downloader.log.old")),
     audit: getFileSizeInfo(path.join(baseDir, "audit.log")),
     auditBackup: getFileSizeInfo(path.join(baseDir, "audit.log.old")),
+    rename: getFileSizeInfo(path.join(baseDir, "rename.log")),
+    renameBackup: getFileSizeInfo(path.join(baseDir, "rename.log.old")),
     session: getFileSizeInfo(sessionLogPath),
     trace: getFileSizeInfo(traceLogPath),
     traceBackup: getFileSizeInfo(path.join(baseDir, "trace.log.old")),
@@ -330,6 +334,8 @@ export function getDebugSetupCheck(baseDir: string): DebugSetupCheckResult {
     logSummary.mainBackup.bytes,
     logSummary.audit.bytes,
     logSummary.auditBackup.bytes,
+    logSummary.rename.bytes,
+    logSummary.renameBackup.bytes,
     logSummary.session.bytes,
     logSummary.trace.bytes,
     logSummary.traceBackup.bytes,

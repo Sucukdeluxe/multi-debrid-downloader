@@ -399,6 +399,8 @@ export interface DebugSetupCheckResult {
     mainBackup: SupportFileSizeInfo;
     audit: SupportFileSizeInfo;
     auditBackup: SupportFileSizeInfo;
+    rename: SupportFileSizeInfo;
+    renameBackup: SupportFileSizeInfo;
     session: SupportFileSizeInfo;
     trace: SupportFileSizeInfo;
     traceBackup: SupportFileSizeInfo;

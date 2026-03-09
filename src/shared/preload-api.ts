@@ -58,6 +58,7 @@ export interface ElectronApi {
   exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string }>;
   openLog: () => Promise<void>;
   openAuditLog: () => Promise<void>;
+  openRenameLog: () => Promise<void>;
   openSessionLog: () => Promise<void>;
   openTraceLog: () => Promise<void>;
   openPackageLog: (packageId: string) => Promise<void>;

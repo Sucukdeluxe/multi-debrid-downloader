@@ -169,6 +169,7 @@ function buildDebugSetupDetails(setup: DebugSetupCheckResult): string {
     formatFileLine("Gesamt", setup.logSummary.totalBytes),
     formatFileLine("Hauptlog", setup.logSummary.main.bytes + setup.logSummary.mainBackup.bytes),
     formatFileLine("Audit", setup.logSummary.audit.bytes + setup.logSummary.auditBackup.bytes),
+    formatFileLine("Rename", setup.logSummary.rename.bytes + setup.logSummary.renameBackup.bytes),
     formatFileLine("Trace", setup.logSummary.trace.bytes + setup.logSummary.traceBackup.bytes),
     `${formatFileLine("Session-Logs", setup.logSummary.session.bytes + setup.logSummary.sessionLogs.bytes)} | Dateien: ${setup.logSummary.sessionLogs.fileCount}`,
     `${formatFileLine("Paket-Logs", setup.logSummary.packageLogs.bytes)} | Dateien: ${setup.logSummary.packageLogs.fileCount}`,
@@ -3916,6 +3917,9 @@ export function App(): ReactElement {
               </button>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openAuditLog().catch(() => {}); }}>
                 <span>Audit-Log öffnen</span>
+              </button>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openRenameLog().catch(() => {}); }}>
+                <span>Rename-Log öffnen</span>
               </button>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}>
                 <span>Session-Log öffnen</span>
