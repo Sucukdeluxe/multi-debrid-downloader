@@ -5581,7 +5581,7 @@ export function App(): ReactElement {
           {hasPackages && !multi && (() => {
             const pkg = snapshot.session.packages[contextMenu.packageId];
             const items = pkg?.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean) || [];
-            const someCompleted = items.some((item) => item && item.status === "completed");
+            const someCompleted = items.some((item) => item && item.status === "completed" && !/^Entpackt\b/i.test(item.fullStatus || ""));
             return (<>
               {someCompleted && (
                 <button className="ctx-menu-item" onClick={() => { void window.rd.extractNow(contextMenu.packageId).catch(() => {}); setContextMenu(null); }}>Jetzt entpacken</button>
@@ -6120,5 +6120,4 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
   }
   return true;
 });
-
 

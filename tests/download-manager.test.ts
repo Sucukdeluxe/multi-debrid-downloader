@@ -227,6 +227,84 @@ describe("download manager", () => {
     expect((manager as any).shouldCollapseQuickPostProcessRequeue(packageId)).toBe(false);
   });
 
+  it("extractNow only re-arms completed items that are not already extracted", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-now-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "extract-now-pkg";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "Extract Now Test");
+    const extractDir = path.join(root, "extract", "Extract Now Test");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const specs = [
+      { id: "extract-now-item-1", fileName: "show.e01.rar", fullStatus: "Entpackt - Done (<1s)" },
+      { id: "extract-now-item-2", fileName: "show.e02.rar", fullStatus: "Entpackt - Done (1.2s)" },
+      { id: "extract-now-item-3", fileName: "show.e03.rar", fullStatus: "Entpacken - Ausstehend" }
+    ] as const;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Extract Now Test",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: specs.map((spec) => spec.id),
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    for (const spec of specs) {
+      const targetPath = path.join(outputDir, spec.fileName);
+      fs.writeFileSync(targetPath, Buffer.alloc(128, 1));
+      session.items[spec.id] = {
+        id: spec.id,
+        packageId,
+        url: `https://example.com/${spec.fileName}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: 128,
+        totalBytes: 128,
+        progressPercent: 100,
+        fileName: spec.fileName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: spec.fullStatus,
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        hybridExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.extractNow(packageId);
+
+    expect((manager as any).session.items["extract-now-item-1"].fullStatus).toBe("Entpackt - Done (<1s)");
+    expect((manager as any).session.items["extract-now-item-2"].fullStatus).toBe("Entpackt - Done (1.2s)");
+    expect((manager as any).session.items["extract-now-item-3"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect((manager as any).session.packages[packageId].status).toBe("queued");
+  });
+
   function createCompletedArchiveSession(root: string, packageName: string, extractedFileName: string): {
     session: ReturnType<typeof emptySession>;
     packageId: string;
