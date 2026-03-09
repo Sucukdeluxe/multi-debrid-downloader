@@ -6358,6 +6358,100 @@ describe("download manager", () => {
     expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt (Quelle fehlt)");
   });
 
+  it("does not delete startup archives when any completed item has an extract error", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const outputDir = path.join(root, "downloads", "keep-failed-archive");
+    const extractDir = path.join(root, "extract", "keep-failed-archive");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "episode1.mkv"), "ok", "utf8");
+
+    const okArchivePath = path.join(outputDir, "episode1.part01.rar");
+    const failedArchivePath = path.join(outputDir, "episode2.part01.rar");
+    fs.writeFileSync(okArchivePath, Buffer.from("ok-archive"));
+    fs.writeFileSync(failedArchivePath, Buffer.from("failed-archive"));
+
+    const session = emptySession();
+    const packageId = "keep-failed-archive-pkg";
+    const itemOkId = "keep-failed-archive-item-ok";
+    const itemFailId = "keep-failed-archive-item-fail";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "keep-failed-archive",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemOkId, itemFailId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemOkId] = {
+      id: itemOkId,
+      packageId,
+      url: "https://dummy/keep-failed-archive-1",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 10,
+      totalBytes: 10,
+      progressPercent: 100,
+      fileName: "episode1.part01.rar",
+      targetPath: okArchivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Done",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemFailId] = {
+      id: itemFailId,
+      packageId,
+      url: "https://dummy/keep-failed-archive-2",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 14,
+      totalBytes: 14,
+      progressPercent: 100,
+      fileName: "episode2.part01.rar",
+      targetPath: failedArchivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpack-Fehler: Unexpected end of archive",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    expect(fs.existsSync(okArchivePath)).toBe(true);
+    expect(fs.existsSync(failedArchivePath)).toBe(true);
+  });
+
   it("does not delete stale target file when stopping during unrestrict phase", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
