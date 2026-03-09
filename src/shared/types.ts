@@ -337,6 +337,14 @@ export interface SessionStats {
   queuedDownloads: number;
 }
 
+export interface SupportTraceConfig {
+  enabled: boolean;
+  includeMainLog: boolean;
+  includeAudit: boolean;
+  logDebugRequests: boolean;
+  updatedAt: string;
+}
+
 export interface HistoryEntry {
   id: string;
   name: string;

@@ -183,6 +183,8 @@ Runtime files are stored in Electron's `userData` directory, including:
 - `rd_downloader.log`
 - `audit.log`
 - `debug_ai_manifest.json`
+- `trace.log`
+- `trace_config.json`
 - `session-logs/session_*.txt`
 - `package-logs/package_*.txt`
 - `item-logs/item_*.txt`
@@ -202,6 +204,8 @@ Enable it by creating these files in the same runtime folder that contains `rd_d
 
 After startup, the app also writes `debug_ai_manifest.json` into the same runtime folder. This file is meant for support tooling and AI agents: it lists all available endpoints, the auth method, the related runtime files, and the one remaining external value the assistant may still need from you for remote access: the server IP or DNS name.
 
+If you want extra support detail during a flaky or hard-to-reproduce issue, the app also maintains a `trace.log` plus `trace_config.json`. You can enable or disable the support trace from the app menu or remotely via the debug API.
+
 Available endpoints after restart:
 
 - `GET /health`
@@ -218,9 +222,12 @@ Available endpoints after restart:
 - `GET /log?lines=100&grep=keyword`
 - `GET /logs/main?lines=100&grep=keyword`
 - `GET /logs/audit?lines=100&grep=keyword`
+- `GET /logs/trace?lines=100&grep=keyword`
 - `GET /logs/session?lines=100&grep=keyword`
 - `GET /logs/package?package=Release&lines=100&grep=keyword`
 - `GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword`
+- `GET /trace/config?enable=1&note=support`
+- `GET /support/bundle`
 - `GET /diagnostics?package=Release&lines=150`
 
 Authentication works with either:
@@ -237,12 +244,15 @@ Invoke-RestMethod "http://SERVER:9868/accounts?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/stats?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/history?token=YOUR_TOKEN&limit=20"
 Invoke-RestMethod "http://SERVER:9868/logs/audit?token=YOUR_TOKEN&lines=200"
+Invoke-RestMethod "http://SERVER:9868/logs/trace?token=YOUR_TOKEN&lines=200"
+Invoke-RestMethod "http://SERVER:9868/trace/config?token=YOUR_TOKEN&enable=1&note=support"
 Invoke-RestMethod "http://SERVER:9868/logs/package?token=YOUR_TOKEN&package=Release&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/item?token=YOUR_TOKEN&item=episode.part2.rar&lines=200"
 Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"
+Invoke-WebRequest "http://SERVER:9868/support/bundle?token=YOUR_TOKEN" -OutFile ".\\rd-support-bundle.zip"
 ```
 
-This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, package/session/item logs, and host-side Windows crash hints can be inspected remotely.
+This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, trace data, package/session/item logs, host-side Windows crash hints, and even a full ZIP support bundle can be inspected remotely.
 
 ## Troubleshooting
 

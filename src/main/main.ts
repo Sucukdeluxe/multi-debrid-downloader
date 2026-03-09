@@ -490,13 +490,41 @@ function registerIpcHandlers(): void {
     return { saved: true };
   });
 
+  ipcMain.handle(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
+    const exported = controller.exportSupportBundle();
+    const options = {
+      defaultPath: exported.defaultFileName,
+      filters: [{ name: "Support Bundle", extensions: ["zip"] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) {
+      return { saved: false };
+    }
+    await fs.promises.writeFile(result.filePath, exported.buffer);
+    return { saved: true, filePath: result.filePath };
+  });
+
   ipcMain.handle(IPC_CHANNELS.OPEN_LOG, async () => {
     const logPath = getLogFilePath();
     await shell.openPath(logPath);
   });
 
+  ipcMain.handle(IPC_CHANNELS.OPEN_AUDIT_LOG, async () => {
+    const logPath = controller.getAuditLogPath();
+    if (logPath) {
+      await shell.openPath(logPath);
+    }
+  });
+
   ipcMain.handle(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
     const logPath = controller.getSessionLogPath();
+    if (logPath) {
+      await shell.openPath(logPath);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.OPEN_TRACE_LOG, async () => {
+    const logPath = controller.getTraceLogPath();
     if (logPath) {
       await shell.openPath(logPath);
     }
@@ -508,6 +536,23 @@ function registerIpcHandlers(): void {
     if (logPath) {
       await shell.openPath(logPath);
     }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_TRACE_CONFIG, async () => controller.getTraceConfig());
+
+  ipcMain.handle(IPC_CHANNELS.SET_TRACE_ENABLED, async (_event: IpcMainInvokeEvent, enabled: boolean, note?: string) => {
+    if (typeof enabled !== "boolean") {
+      throw new Error("enabled muss ein Boolean sein");
+    }
+    if (note !== undefined) {
+      validateString(note, "note");
+    }
+    return controller.setTraceEnabled(enabled, note);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ROTATE_DEBUG_TOKEN, async () => {
+    const rotated = controller.rotateDebugToken();
+    return { path: rotated.path };
   });
 
   ipcMain.handle(IPC_CHANNELS.OPEN_ITEM_LOG, async (_event: IpcMainInvokeEvent, itemId: string) => {
