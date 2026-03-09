@@ -47,7 +47,10 @@ export function cleanupCancelledPackageArtifacts(packageDir: string): number {
   return removed;
 }
 
-export async function cleanupCancelledPackageArtifactsAsync(packageDir: string): Promise<number> {
+export async function cleanupCancelledPackageArtifactsAsync(
+  packageDir: string,
+  options: { shouldAbort?: () => boolean } = {}
+): Promise<number> {
   try {
     await fs.promises.access(packageDir, fs.constants.F_OK);
   } catch {
@@ -58,6 +61,9 @@ export async function cleanupCancelledPackageArtifactsAsync(packageDir: string):
   let touched = 0;
   const stack = [packageDir];
   while (stack.length > 0) {
+    if (options.shouldAbort?.()) {
+      return removed;
+    }
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
     try {
@@ -67,6 +73,9 @@ export async function cleanupCancelledPackageArtifactsAsync(packageDir: string):
     }
 
     for (const entry of entries) {
+      if (options.shouldAbort?.()) {
+        return removed;
+      }
       const full = path.join(current, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
@@ -88,7 +97,10 @@ export async function cleanupCancelledPackageArtifactsAsync(packageDir: string):
   return removed;
 }
 
-export async function removeDownloadLinkArtifacts(extractDir: string): Promise<number> {
+export async function removeDownloadLinkArtifacts(
+  extractDir: string,
+  options: { shouldAbort?: () => boolean } = {}
+): Promise<number> {
   try {
     await fs.promises.access(extractDir);
   } catch {
@@ -97,10 +109,16 @@ export async function removeDownloadLinkArtifacts(extractDir: string): Promise<n
   let removed = 0;
   const stack = [extractDir];
   while (stack.length > 0) {
+    if (options.shouldAbort?.()) {
+      return removed;
+    }
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
     try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (options.shouldAbort?.()) {
+        return removed;
+      }
       const full = path.join(current, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
@@ -140,7 +158,10 @@ export async function removeDownloadLinkArtifacts(extractDir: string): Promise<n
   return removed;
 }
 
-export async function removeSampleArtifacts(extractDir: string): Promise<{ files: number; dirs: number }> {
+export async function removeSampleArtifacts(
+  extractDir: string,
+  options: { shouldAbort?: () => boolean } = {}
+): Promise<{ files: number; dirs: number }> {
   try {
     await fs.promises.access(extractDir);
   } catch {
@@ -184,10 +205,16 @@ export async function removeSampleArtifacts(extractDir: string): Promise<{ files
   };
 
   while (stack.length > 0) {
+    if (options.shouldAbort?.()) {
+      return { files: removedFiles, dirs: removedDirs };
+    }
     const current = stack.pop() as string;
     let entries: fs.Dirent[] = [];
     try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (options.shouldAbort?.()) {
+        return { files: removedFiles, dirs: removedDirs };
+      }
       const full = path.join(current, entry.name);
       if (entry.isDirectory() || entry.isSymbolicLink()) {
         const base = entry.name.toLowerCase();
@@ -221,6 +248,9 @@ export async function removeSampleArtifacts(extractDir: string): Promise<{ files
 
   sampleDirs.sort((a, b) => b.length - a.length);
   for (const dir of sampleDirs) {
+    if (options.shouldAbort?.()) {
+      return { files: removedFiles, dirs: removedDirs };
+    }
     try {
       const stat = await fs.promises.lstat(dir);
       if (stat.isSymbolicLink()) {

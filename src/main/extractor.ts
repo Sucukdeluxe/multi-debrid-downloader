@@ -2744,7 +2744,11 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
   return Array.from(targets);
 }
 
-export async function cleanupArchives(sourceFiles: string[], cleanupMode: CleanupMode): Promise<number> {
+export async function cleanupArchives(
+  sourceFiles: string[],
+  cleanupMode: CleanupMode,
+  options: { shouldAbort?: () => boolean } = {}
+): Promise<number> {
   if (cleanupMode === "none") {
     return 0;
   }
@@ -2752,6 +2756,9 @@ export async function cleanupArchives(sourceFiles: string[], cleanupMode: Cleanu
   const targets = new Set<string>();
   const dirFilesCache = new Map<string, string[]>();
   for (const sourceFile of sourceFiles) {
+    if (options.shouldAbort?.()) {
+      return 0;
+    }
     const dir = path.dirname(sourceFile);
     let filesInDir = dirFilesCache.get(dir);
     if (!filesInDir) {
@@ -2795,6 +2802,9 @@ export async function cleanupArchives(sourceFiles: string[], cleanupMode: Cleanu
   };
 
   for (const filePath of targets) {
+    if (options.shouldAbort?.()) {
+      return removed;
+    }
     try {
       const fileExists = await fs.promises.access(filePath).then(() => true, () => false);
       if (!fileExists) {
