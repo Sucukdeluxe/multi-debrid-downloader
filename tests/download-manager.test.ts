@@ -576,6 +576,78 @@ describe("download manager", () => {
     };
   }
 
+  function createCompletedArchiveSessionFromArchive(
+    root: string,
+    packageName: string,
+    archiveEntries: Array<{ name: string; data: Buffer | string }>
+  ): {
+    session: ReturnType<typeof emptySession>;
+    packageId: string;
+    itemId: string;
+    outputDir: string;
+    extractDir: string;
+    archivePath: string;
+  } {
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const zip = new AdmZip();
+    for (const entry of archiveEntries) {
+      zip.addFile(entry.name, typeof entry.data === "string" ? Buffer.from(entry.data) : entry.data);
+    }
+    const archivePath = path.join(outputDir, "episode.zip");
+    zip.writeZip(archivePath);
+    const archiveSize = fs.statSync(archivePath).size;
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const itemId = `${packageName}-item`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: `https://dummy/${packageName}`,
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (100 MB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    return {
+      session,
+      packageId,
+      itemId,
+      outputDir,
+      extractDir,
+      archivePath
+    };
+  }
+
   it("retries interrupted streams and resumes download", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -6305,6 +6377,98 @@ describe("download manager", () => {
     }
   }, 35000);
 
+  it("cleans link, sample and residual artifacts before package_done cleanup removes the package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const zip = new AdmZip();
+    zip.addFile("Season 1/Episode01.mkv", Buffer.from("video"));
+    zip.addFile("Season 1/episode.links.txt", Buffer.from("https://example.com/file"));
+    zip.addFile("Season 1/cover.jpg", Buffer.from("cover"));
+    zip.addFile("Season 1/sample/sample.mkv", Buffer.from("sample-video"));
+    zip.addFile("Season 1/sample/readme.txt", Buffer.from("sample-text"));
+    zip.addFile("padding.bin", crypto.randomBytes(8 * 1024));
+    const archiveBinary = zip.toBuffer();
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/cleanup-package-full") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(archiveBinary.length));
+      res.end(archiveBinary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/cleanup-package-full`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "cleanup-package-full.zip",
+            filesize: archiveBinary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const extractRoot = path.join(root, "extract");
+      const outputRoot = path.join(root, "downloads");
+      const mkvLibraryDir = path.join(root, "mkv-library");
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: outputRoot,
+          extractDir: extractRoot,
+          autoExtract: true,
+          autoRename4sf4sj: false,
+          collectMkvToLibrary: true,
+          mkvLibraryDir,
+          removeLinkFilesAfterExtract: true,
+          removeSamplesAfterExtract: true,
+          enableIntegrityCheck: false,
+          cleanupMode: "delete",
+          completedCleanupPolicy: "package_done"
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "cleanup-package-full", links: ["https://dummy/cleanup-package-full"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+      await waitFor(() => manager.getSnapshot().session.packageOrder.length === 0, 12000);
+
+      const flattenedPath = path.join(mkvLibraryDir, "Episode01.mkv");
+      expect(fs.existsSync(flattenedPath)).toBe(true);
+      expect(fs.existsSync(path.join(extractRoot, "cleanup-package-full"))).toBe(false);
+      expect(fs.existsSync(path.join(outputRoot, "cleanup-package-full"))).toBe(false);
+      expect(Object.keys(manager.getSnapshot().session.items)).toHaveLength(0);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
+
   it("counts queued package cancellations in run summary", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -7944,6 +8108,131 @@ describe("download manager", () => {
     expect(fs.existsSync(path.join(mkvLibraryDir, "Episode01.mkv"))).toBe(true);
     expect(fs.existsSync(extractDir)).toBe(false);
   }, 20000);
+
+  it("cleans duplicate-skipped MKV source trees with link and residual artifacts", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Flat-Duplicate-Cleanup-Extended";
+    const {
+      session,
+      extractDir
+    } = createCompletedArchiveSessionFromArchive(root, packageName, [
+      { name: "Season 1/Episode01.mkv", data: Buffer.from("video") },
+      { name: "Season 1/episode.links.txt", data: Buffer.from("https://example.com/file") },
+      { name: "Season 1/info.nfo", data: Buffer.from("info") },
+      { name: "Season 1/sample/sample.mkv", data: Buffer.from("sample-video") },
+      { name: "Season 1/sample/readme.txt", data: Buffer.from("sample-text") }
+    ]);
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    fs.mkdirSync(mkvLibraryDir, { recursive: true });
+    fs.writeFileSync(path.join(mkvLibraryDir, "Episode01.mkv"), Buffer.from("video"));
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        removeLinkFilesAfterExtract: true,
+        removeSamplesAfterExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await waitFor(() => !fs.existsSync(extractDir), 12000);
+
+    expect(fs.existsSync(path.join(mkvLibraryDir, "Episode01.mkv"))).toBe(true);
+    expect(fs.existsSync(extractDir)).toBe(false);
+  }, 20000);
+
+  it("waits for deferred archive cleanup before package_done removal without MKV collection", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const zip = new AdmZip();
+    zip.addFile("Episode01.mkv", Buffer.from("video"));
+    zip.addFile("padding.bin", crypto.randomBytes(8 * 1024));
+    const archiveBinary = zip.toBuffer();
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/cleanup-archives-only") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(archiveBinary.length));
+      res.end(archiveBinary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/cleanup-archives-only`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "cleanup-archives-only.zip",
+            filesize: archiveBinary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const outputRoot = path.join(root, "downloads");
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: outputRoot,
+          extractDir: path.join(root, "extract"),
+          autoExtract: true,
+          autoRename4sf4sj: false,
+          collectMkvToLibrary: false,
+          enableIntegrityCheck: false,
+          cleanupMode: "delete",
+          completedCleanupPolicy: "package_done"
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "cleanup-archives-only", links: ["https://dummy/cleanup-archives-only"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+      await waitFor(() => manager.getSnapshot().session.packageOrder.length === 0, 12000);
+
+      expect(fs.existsSync(path.join(outputRoot, "cleanup-archives-only", "cleanup-archives-only.zip"))).toBe(false);
+      expect(Object.keys(manager.getSnapshot().session.items)).toHaveLength(0);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 35000);
 
   it("throws a controlled error for invalid queue import JSON", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
