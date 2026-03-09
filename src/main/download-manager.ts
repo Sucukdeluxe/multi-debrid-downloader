@@ -589,6 +589,13 @@ function isExtractErrorLabel(statusText: string): boolean {
     || /^entpacken\b.*\btimeout\b/i.test(text);
 }
 
+function isTransientExtractStatus(statusText: string): boolean {
+  const text = String(statusText || "").trim();
+  return /^entpacken\b/i.test(text)
+    || /^passwort\b/i.test(text)
+    || /^finalisieren\b/i.test(text);
+}
+
 function shouldAutoRetryExtraction(statusText: string): boolean {
   return !isExtractedLabel(statusText) && !isExtractErrorLabel(statusText);
 }
@@ -1102,11 +1109,13 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
 }
 
 export function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
-  const entryLower = archiveName.toLowerCase();
+  const normalizeArchiveMatchName = (value: string): string =>
+    path.basename(String(value || "")).replace(/ \(\d+\)(?=\.[^.]+$)/, "");
+  const entryLower = normalizeArchiveMatchName(archiveName).toLowerCase();
 
   // Helper: get item basename (try targetPath first, then fileName)
   const itemBaseName = (item: DownloadItem): string =>
-    path.basename(item.targetPath || item.fileName || "");
+    normalizeArchiveMatchName(item.targetPath || item.fileName || "");
 
   // Try pattern-based matching first (for multipart archives)
   let pattern: RegExp | null = null;
@@ -5296,9 +5305,11 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      if (/^Entpacken\b/i.test(currentStatus) || /^Passwort\b/i.test(currentStatus) || /^Finalisieren\b/i.test(currentStatus)) {
+      if (isTransientExtractStatus(currentStatus)) {
         const previousStatus = String(previousStatuses.get(entry.id) || "").trim();
-        entry.fullStatus = previousStatus || `Fertig (${humanSize(entry.downloadedBytes)})`;
+        entry.fullStatus = isTransientExtractStatus(previousStatus)
+          ? `Fertig (${humanSize(entry.downloadedBytes)})`
+          : previousStatus || `Fertig (${humanSize(entry.downloadedBytes)})`;
         entry.updatedAt = appliedAt;
       }
     }
@@ -9719,16 +9730,6 @@ export class DownloadManager extends EventEmitter {
         this.emitState();
       };
 
-      // Mark all items as pending before extraction starts
-      for (const entry of completedItems) {
-        if (!isExtractedLabel(entry.fullStatus)) {
-          preExtractStatuses.set(entry.id, String(entry.fullStatus || "").trim());
-          entry.fullStatus = "Entpacken - Ausstehend";
-          entry.updatedAt = nowMs();
-        }
-      }
-      this.emitState();
-
       const extractTimeoutMs = getPostExtractTimeoutMs();
       const extractAbortController = new AbortController();
       let timedOut = false;
@@ -9774,6 +9775,23 @@ export class DownloadManager extends EventEmitter {
         }
 
         const fullArchiveSet = await this.findFullExtractArchiveSet(pkg, completedItems);
+        const fullExtractItemIds = new Set<string>();
+        for (const archivePath of fullArchiveSet) {
+          const archiveItems = resolveArchiveItems(path.basename(archivePath));
+          for (const entry of archiveItems) {
+            fullExtractItemIds.add(entry.id);
+          }
+        }
+        const pendingAt = nowMs();
+        for (const entry of completedItems) {
+          if (!fullExtractItemIds.has(entry.id) || isExtractedLabel(entry.fullStatus)) {
+            continue;
+          }
+          preExtractStatuses.set(entry.id, String(entry.fullStatus || "").trim());
+          entry.fullStatus = "Entpacken - Ausstehend";
+          entry.updatedAt = pendingAt;
+        }
+        this.emitState();
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
           targetDir: pkg.extractDir,

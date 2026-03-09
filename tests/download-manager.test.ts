@@ -5,7 +5,7 @@ import http from "node:http";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal } from "../src/main/download-manager";
+import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -26,6 +26,20 @@ describe("extractArchiveNameFromExtractorLogMessage", () => {
 
   it("returns null when no archive name is present", () => {
     expect(extractArchiveNameFromExtractorLogMessage("Post-Processing Entpacken Ende")).toBeNull();
+  });
+});
+
+describe("resolveArchiveItemsFromList", () => {
+  it("includes duplicate-suffixed archive copies in multipart matches", () => {
+    const items = [
+      { id: "dup-1", fileName: "show.s01e26.part1.rar" },
+      { id: "dup-2", fileName: "show.s01e26.part1.rar", targetPath: "C:\\Downloads\\show.s01e26.part1 (1).rar" },
+      { id: "dup-3", fileName: "show.s01e26.part2.rar" }
+    ] as any[];
+
+    const resolved = resolveArchiveItemsFromList("show.s01e26.part1.rar", items);
+
+    expect(resolved.map((item) => item.id)).toEqual(["dup-1", "dup-2", "dup-3"]);
   });
 });
 
@@ -3902,6 +3916,54 @@ describe("download manager", () => {
     expect(completedItems[1].fullStatus).toBe("Entpack-Fehler: Checksum error in the encrypted file");
     expect(completedItems[2].fullStatus).toBe("Fertig (200 MB)");
     expect(completedItems[3].fullStatus).toBe("Fertig (200 MB)");
+  });
+
+  it("clears stale pending extraction labels for untouched items when another archive fails", () => {
+    const createdAt = Date.now() - 10_000;
+    const completedItems = [
+      {
+        id: "stale-fail-item-1",
+        status: "completed",
+        fileName: "show.s01e01.part1.rar",
+        downloadedBytes: 100 * 1024 * 1024,
+        fullStatus: "Fertig (100 MB)",
+        updatedAt: createdAt
+      },
+      {
+        id: "stale-fail-item-2",
+        status: "completed",
+        fileName: "show.s01e01.part2.rar",
+        downloadedBytes: 100 * 1024 * 1024,
+        fullStatus: "Fertig (100 MB)",
+        updatedAt: createdAt
+      },
+      {
+        id: "stale-fail-item-3",
+        status: "completed",
+        fileName: "show.s01e05.part2.rar",
+        downloadedBytes: 180 * 1024 * 1024,
+        fullStatus: "Entpacken - Ausstehend",
+        updatedAt: createdAt
+      }
+    ] as any[];
+    const previousStatuses = new Map<string, string>(completedItems.map((item: any) => [item.id, item.fullStatus]));
+
+    completedItems[0].fullStatus = "Entpacken - Error";
+    completedItems[1].fullStatus = "Entpacken - Error";
+
+    (DownloadManager.prototype as any).applyPackageExtractFailureStatuses.call(
+      {},
+      completedItems,
+      (archiveName: string) => resolveArchiveItemsFromList(archiveName, completedItems),
+      new Map([["show.s01e01.part1.rar", "Checksum error in the encrypted file"]]),
+      "Checksum error in the encrypted file",
+      previousStatuses,
+      createdAt + 5_000
+    );
+
+    expect(completedItems[0].fullStatus).toBe("Entpack-Fehler: Checksum error in the encrypted file");
+    expect(completedItems[1].fullStatus).toBe("Entpack-Fehler: Checksum error in the encrypted file");
+    expect(completedItems[2].fullStatus).toBe("Fertig (180 MB)");
   });
 
   it("detects start conflicts when extract output already exists", async () => {
