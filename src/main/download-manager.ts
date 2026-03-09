@@ -2390,6 +2390,12 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
+      const hasExtractErrors = items.some((item) => isExtractErrorLabel(item.fullStatus || ""));
+      if (hasExtractErrors) {
+        logger.info(`Nachträgliches Cleanup übersprungen: pkg=${pkg.name}, reason=extract_error_present`);
+        continue;
+      }
+
       const hasExtractMarker = items.some((item) => isExtractedLabel(item.fullStatus));
       const extractDirIsUnique = (extractDirUsage.get(pathKey(pkg.extractDir)) || 0) === 1;
       const hasExtractedOutput = extractDirIsUnique && await this.directoryHasAnyFiles(pkg.extractDir);
