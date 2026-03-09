@@ -141,14 +141,43 @@ interface ConfiguredAccountEntry {
 }
 
 function buildDebugSetupDetails(setup: DebugSetupCheckResult): string {
+  const formatDiskLine = (label: string, value: DebugSetupCheckResult["diskSpace"]["runtime"]): string => {
+    if (value.freeBytes === null || value.totalBytes === null) {
+      return `${label}: unbekannt (${value.path})`;
+    }
+    return `${label}: ${humanSize(value.freeBytes)} frei von ${humanSize(value.totalBytes)} (${value.freePercent ?? "?"}% frei) | ${value.path}`;
+  };
+
+  const formatFileLine = (label: string, bytes: number): string => `${label}: ${humanSize(bytes)}`;
   const lines: string[] = [
+    `Status: ${setup.status === "ok" ? "OK" : "Warnung"}`,
     `Debug-Server aktiv: ${setup.enabled ? "ja" : "nein"}`,
+    `Runtime-Ordner: ${setup.runtimeBaseDir}`,
     `Host: ${setup.host}`,
     `Port: ${setup.port}`,
     `Token-Datei: ${setup.tokenPath}`,
     `KI-Manifest: ${setup.aiManifestPresent ? "vorhanden" : "fehlt"} (${setup.aiManifestPath})`,
     `Trace aktiv: ${setup.traceEnabled ? "ja" : "nein"}`,
     `Trace-Auto-Ende: ${setup.traceAutoDisableAt || "nicht gesetzt"}`,
+    "",
+    "Freier Speicherplatz:",
+    formatDiskLine("Runtime", setup.diskSpace.runtime),
+    formatDiskLine("Download-Ziel", setup.diskSpace.output),
+    formatDiskLine("Entpack-Ziel", setup.diskSpace.extract),
+    "",
+    "Support-Logs:",
+    formatFileLine("Gesamt", setup.logSummary.totalBytes),
+    formatFileLine("Hauptlog", setup.logSummary.main.bytes + setup.logSummary.mainBackup.bytes),
+    formatFileLine("Audit", setup.logSummary.audit.bytes + setup.logSummary.auditBackup.bytes),
+    formatFileLine("Trace", setup.logSummary.trace.bytes + setup.logSummary.traceBackup.bytes),
+    `${formatFileLine("Session-Logs", setup.logSummary.session.bytes + setup.logSummary.sessionLogs.bytes)} | Dateien: ${setup.logSummary.sessionLogs.fileCount}`,
+    `${formatFileLine("Paket-Logs", setup.logSummary.packageLogs.bytes)} | Dateien: ${setup.logSummary.packageLogs.fileCount}`,
+    `${formatFileLine("Item-Logs", setup.logSummary.itemLogs.bytes)} | Dateien: ${setup.logSummary.itemLogs.fileCount}`,
+    "",
+    "Support-Bundle:",
+    `${formatFileLine("Schätzwert", setup.supportBundle.estimatedBytes)} | Einträge: ${setup.supportBundle.estimatedEntries}`,
+    formatFileLine("Doppelte Live-Log-Spiegelung", setup.supportBundle.duplicatedLiveLogBytes),
+    setup.supportBundle.note,
     "",
     "Lokale URLs:",
     setup.localUrls.health,

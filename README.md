@@ -208,13 +208,14 @@ After startup, the app also writes `debug_ai_manifest.json` into the same runtim
 
 If you want extra support detail during a flaky or hard-to-reproduce issue, the app also maintains a `trace.log` plus `trace_config.json`. You can enable or disable the support trace from the app menu or remotely via the debug API. By default, the support trace now auto-disables again after 2 hours so it does not stay enabled forever by accident.
 
-The app menu under `Hilfe` also includes a `Debug-Setup prüfen` action. It verifies the current host/port/token/AI-manifest/trace setup locally and shows the exact local and remote URLs that support tooling can use.
+The app menu under `Hilfe` also includes a `Debug-Setup prüfen` action. It verifies the current host/port/token/AI-manifest/trace setup locally and now also reports free disk space, current support-log sizes, and an estimated support-bundle size.
 
 Available endpoints after restart:
 
 - `GET /health`
 - `GET /meta`
 - `GET /debug/setup`
+- `GET /self-check`
 - `GET /host/diagnostics`
 - `GET /status`
 - `GET /settings`
@@ -249,6 +250,7 @@ Invoke-RestMethod "http://SERVER:9868/accounts?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/stats?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/history?token=YOUR_TOKEN&limit=20"
 Invoke-RestMethod "http://SERVER:9868/debug/setup?token=YOUR_TOKEN"
+Invoke-RestMethod "http://SERVER:9868/self-check?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/logs/audit?token=YOUR_TOKEN&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/trace?token=YOUR_TOKEN&lines=200"
 Invoke-RestMethod "http://SERVER:9868/trace/config?token=YOUR_TOKEN&enable=1&note=support&durationMinutes=120"
@@ -258,7 +260,7 @@ Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"
 Invoke-WebRequest "http://SERVER:9868/support/bundle?token=YOUR_TOKEN" -OutFile ".\\rd-support-bundle.zip"
 ```
 
-This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, trace data, package/session/item logs, host-side Windows crash hints, and even a full ZIP support bundle can be inspected remotely.
+This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, trace data, package/session/item logs, host-side Windows crash hints, disk space, support-log volume, support-bundle size estimates, and even a full ZIP support bundle can be inspected remotely.
 
 ## Troubleshooting
 

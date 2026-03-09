@@ -342,6 +342,7 @@ describe("debug-server", () => {
     expect(manifest.debugServer?.remoteBaseUrlTemplate).toContain("<SERVER_IP_OR_DNS>");
     expect(manifest.quickstart?.[1]).toContain("server IP");
     expect(manifest.setupCheckEndpoint).toBe("/debug/setup");
+    expect(manifest.selfCheckEndpoint).toBe("/self-check");
     expect(manifest.runtimeFiles?.tokenFile).toContain("debug_token.txt");
     expect(manifest.endpoints?.some((entry: Record<string, any>) => entry.path === "/diagnostics")).toBe(true);
     expect(JSON.stringify(manifest)).not.toContain(fixture.token);
@@ -353,6 +354,7 @@ describe("debug-server", () => {
     expect(metaPayload.supportFiles?.traceConfig).toBe(getTraceConfigPath());
     expect(metaPayload.supportFiles?.traceLog).toBe(getTraceLogPath());
     expect(metaPayload.supportChecks?.setup).toBe("/debug/setup");
+    expect(metaPayload.supportChecks?.selfCheck).toBe("/self-check");
   });
 
   it("serves a debug setup check with trace expiry details", async () => {
@@ -362,14 +364,32 @@ describe("debug-server", () => {
     const payload = await response.json() as Record<string, any>;
 
     expect(payload.enabled).toBe(true);
+    expect(payload.status).toBe("ok");
+    expect(payload.runtimeBaseDir).toBe(fixture.baseDir);
     expect(payload.host).toBe("0.0.0.0");
     expect(payload.localOnly).toBe(false);
     expect(payload.tokenConfigured).toBe(true);
     expect(payload.aiManifestPresent).toBe(true);
     expect(payload.traceEnabled).toBe(true);
     expect(payload.traceAutoDisableAt).toBeTruthy();
+    expect(payload.diskSpace?.runtime?.freeBytes).toBeGreaterThan(0);
+    expect(payload.diskSpace?.output?.freeBytes).toBeGreaterThan(0);
+    expect(payload.diskSpace?.extract?.freeBytes).toBeGreaterThan(0);
+    expect(payload.logSummary?.totalBytes).toBeGreaterThan(0);
+    expect(payload.logSummary?.packageLogs?.fileCount).toBe(1);
+    expect(payload.logSummary?.itemLogs?.fileCount).toBe(1);
+    expect(payload.supportBundle?.estimatedBytes).toBeGreaterThan(0);
     expect(payload.remoteUrlTemplates?.health).toContain("<SERVER_IP_OR_DNS>");
     expect(Array.isArray(payload.notes)).toBe(true);
+  });
+
+  it("serves the self-check alias", async () => {
+    const fixture = await createFixture();
+    const response = await fetch(`${fixture.baseUrl}/self-check?token=${fixture.token}`);
+    expect(response.ok).toBe(true);
+    const payload = await response.json() as Record<string, any>;
+    expect(payload.status).toBe("ok");
+    expect(payload.supportBundle?.estimatedEntries).toBeGreaterThan(0);
   });
 
   it("serves package details and package log by package query", async () => {
@@ -469,6 +489,7 @@ describe("debug-server", () => {
     expect(entries).toContain("overview/settings.json");
     expect(entries).toContain("overview/accounts.json");
     expect(entries).toContain("overview/debug-setup.json");
+    expect(entries).toContain("overview/self-check.json");
     expect(entries).toContain("overview/trace-config.json");
     expect(entries).toContain("logs/audit.log");
     expect(entries).toContain("logs/trace.log");
