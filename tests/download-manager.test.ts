@@ -6709,6 +6709,36 @@ describe("download manager", () => {
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   });
 
+  it("tracks app runtime for session and all-time statistics", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const stateDir = path.join(root, "state");
+    const storagePaths = createStoragePaths(stateDir);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        totalRuntimeAllTimeMs: 2 * 60 * 60 * 1000
+      },
+      emptySession(),
+      storagePaths
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const stats = manager.getStats();
+    expect(stats.sessionRuntimeMs).toBeGreaterThanOrEqual(100);
+    expect(stats.totalRuntimeMs).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000 + 100);
+    expect(stats.runtimeMeasuredAt).toBeGreaterThan(0);
+
+    manager.persistRuntimeStats(true);
+    const savedSettings = JSON.parse(fs.readFileSync(storagePaths.configFile, "utf8")) as { totalRuntimeAllTimeMs?: number };
+    expect(savedSettings.totalRuntimeAllTimeMs || 0).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000 + 100);
+  }, 10000);
+
   it("writes auto-rename details into rename and item logs", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

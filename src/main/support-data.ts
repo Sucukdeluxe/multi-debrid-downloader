@@ -134,6 +134,7 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
     statistics: {
       totalDownloadedAllTime: settings.totalDownloadedAllTime,
       totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime,
+      totalRuntimeAllTimeMs: settings.totalRuntimeAllTimeMs,
       providerDailyLimitBytes: settings.providerDailyLimitBytes,
       providerDailyUsageBytes: settings.providerDailyUsageBytes,
       providerTotalUsageBytes: settings.providerTotalUsageBytes,

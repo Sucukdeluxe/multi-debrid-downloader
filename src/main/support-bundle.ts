@@ -89,7 +89,8 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
     ...buildStatsPayload(snapshot),
     allTime: {
       totalDownloadedAllTime: settings.totalDownloadedAllTime,
-      totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime
+      totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime,
+      totalRuntimeAllTimeMs: settings.totalRuntimeAllTimeMs
     }
   });
   addJson(zip, "overview/debug-setup.json", debugSetup);

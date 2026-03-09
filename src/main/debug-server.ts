@@ -681,7 +681,8 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       ...buildStatsPayload(snapshot),
       allTime: {
         totalDownloadedAllTime: settings.totalDownloadedAllTime,
-        totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime
+        totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime,
+        totalRuntimeAllTimeMs: settings.totalRuntimeAllTimeMs
       }
     });
     return;

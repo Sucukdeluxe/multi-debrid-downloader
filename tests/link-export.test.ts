@@ -115,7 +115,11 @@ function buildSnapshot(): UiSnapshot {
       totalFilesSession: 0,
       totalFilesAllTime: 0,
       totalPackages: 2,
-      sessionStartedAt: 0
+      sessionStartedAt: 0,
+      appSessionStartedAt: 0,
+      sessionRuntimeMs: 0,
+      totalRuntimeMs: 0,
+      runtimeMeasuredAt: 0
     },
     speedText: "",
     etaText: "",

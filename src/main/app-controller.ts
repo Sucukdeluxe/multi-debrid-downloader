@@ -76,6 +76,7 @@ export class AppController {
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
 
   private autoResumePending = false;
+  private runtimeStatsTimer: NodeJS.Timeout | null = null;
 
   public constructor() {
     configureLogger(this.storagePaths.baseDir);
@@ -114,6 +115,11 @@ export class AppController {
       runtimeDir: this.storagePaths.baseDir
     });
     startDebugServer(this.manager, this.storagePaths.baseDir);
+    this.runtimeStatsTimer = setInterval(() => {
+      this.manager.persistRuntimeStats();
+      this.settings = this.manager.getSettings();
+    }, 60_000);
+    this.runtimeStatsTimer.unref?.();
 
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();
@@ -237,6 +243,7 @@ export class AppController {
     const liveSettings = this.manager.getSettings();
     nextSettings.totalDownloadedAllTime = Math.max(nextSettings.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
     nextSettings.totalCompletedFilesAllTime = Math.max(nextSettings.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);
+    nextSettings.totalRuntimeAllTimeMs = Math.max(nextSettings.totalRuntimeAllTimeMs || 0, this.manager.getLiveTotalRuntimeMs());
     nextSettings.providerDailyUsageDay = liveSettings.providerDailyUsageDay;
     nextSettings.providerDailyUsageBytes = { ...(liveSettings.providerDailyUsageBytes || {}) };
     nextSettings.providerTotalUsageBytes = { ...(liveSettings.providerTotalUsageBytes || {}) };
@@ -639,6 +646,10 @@ export class AppController {
   }
 
   public shutdown(): void {
+    if (this.runtimeStatsTimer) {
+      clearInterval(this.runtimeStatsTimer);
+      this.runtimeStatsTimer = null;
+    }
     stopDebugServer();
     abortActiveUpdateDownload();
     this.manager.prepareForShutdown();
