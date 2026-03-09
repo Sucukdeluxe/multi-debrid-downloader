@@ -45,6 +45,10 @@ export interface DownloadStats {
   totalFilesAllTime: number;
   totalPackages: number;
   sessionStartedAt: number;
+  appSessionStartedAt: number;
+  sessionRuntimeMs: number;
+  totalRuntimeMs: number;
+  runtimeMeasuredAt: number;
 }
 
 export interface AppSettings {
@@ -110,6 +114,7 @@ export interface AppSettings {
   confirmDeleteSelection: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
+  totalRuntimeAllTimeMs: number;
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   extractCpuPriority: ExtractCpuPriority;

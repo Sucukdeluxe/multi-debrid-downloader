@@ -764,7 +764,11 @@ const emptyStats = (): DownloadStats => ({
   totalFilesSession: 0,
   totalFilesAllTime: 0,
   totalPackages: 0,
-  sessionStartedAt: 0
+  sessionStartedAt: 0,
+  appSessionStartedAt: 0,
+  sessionRuntimeMs: 0,
+  totalRuntimeMs: 0,
+  runtimeMeasuredAt: 0
 });
 
 const emptySnapshot = (): UiSnapshot => ({
@@ -783,7 +787,7 @@ const emptySnapshot = (): UiSnapshot => ({
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, autoSortPackagesByProgress: true, autoSkipExtracted: false, confirmDeleteSelection: true,
     accountListShowDetailedDebridLinkKeys: false,
-    bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0,
+    bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
     autoExtractWhenStopped: true,
     disabledProviders: [],
@@ -926,6 +930,55 @@ function humanSize(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
   if (bytes < 1024 * 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`; }
   return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(3)} TB`;
+}
+
+function formatRuntimeDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor((durationMs || 0) / 1000));
+  const minuteSeconds = 60;
+  const hourSeconds = 60 * minuteSeconds;
+  const daySeconds = 24 * hourSeconds;
+  const weekSeconds = 7 * daySeconds;
+  const monthSeconds = 30 * daySeconds;
+
+  const formatUnit = (value: number, singular: string, plural: string, padTo = 0): string => {
+    const normalized = Math.max(0, Math.floor(value));
+    const text = padTo > 0 ? String(normalized).padStart(padTo, "0") : String(normalized);
+    return `${text} ${normalized === 1 ? singular : plural}`;
+  };
+
+  if (totalSeconds < hourSeconds) {
+    const minutes = Math.floor(totalSeconds / minuteSeconds);
+    const seconds = totalSeconds % minuteSeconds;
+    return `${formatUnit(minutes, "Minute", "Minuten")}, ${formatUnit(seconds, "Sekunde", "Sekunden", 2)}`;
+  }
+
+  if (totalSeconds < daySeconds) {
+    const hours = Math.floor(totalSeconds / hourSeconds);
+    const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
+    return `${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten", 2)}`;
+  }
+
+  if (totalSeconds < weekSeconds) {
+    const days = Math.floor(totalSeconds / daySeconds);
+    const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
+    const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
+    return `${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
+  }
+
+  if (totalSeconds < monthSeconds) {
+    const weeks = Math.floor(totalSeconds / weekSeconds);
+    const days = Math.floor((totalSeconds % weekSeconds) / daySeconds);
+    const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
+    const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
+    return `${formatUnit(weeks, "Woche", "Wochen")}, ${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
+  }
+
+  const months = Math.floor(totalSeconds / monthSeconds);
+  const weeks = Math.floor((totalSeconds % monthSeconds) / weekSeconds);
+  const days = Math.floor((totalSeconds % weekSeconds) / daySeconds);
+  const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
+  const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
+  return `${formatUnit(months, "Monat", "Monate")}, ${formatUnit(weeks, "Woche", "Wochen")}, ${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
 }
 
 function formatAllDebridSourceLabel(source: AllDebridHostInfo["source"]): string {
@@ -1317,6 +1370,7 @@ export function App(): ReactElement {
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
   const [scheduleCountdown, setScheduleCountdown] = useState("");
+  const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
   const panelDirtyRevisionRef = useRef(0);
@@ -1534,6 +1588,11 @@ export function App(): ReactElement {
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [snapshot.settings.scheduledStartEpochMs]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setRuntimeNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const showToast = useCallback((message: string, timeoutMs = 2200): void => {
     setStatusToast(message);
@@ -3716,6 +3775,12 @@ export function App(): ReactElement {
     return Object.entries(stats);
   }, [snapshot.session.items]);
 
+  const runtimeOffsetMs = snapshot.stats.runtimeMeasuredAt > 0
+    ? Math.max(0, runtimeNow - snapshot.stats.runtimeMeasuredAt)
+    : 0;
+  const liveSessionRuntimeMs = Math.max(0, (snapshot.stats.sessionRuntimeMs || 0) + runtimeOffsetMs);
+  const liveTotalRuntimeMs = Math.max(0, (snapshot.stats.totalRuntimeMs || 0) + runtimeOffsetMs);
+
   return (
     <div
       className={`app-shell${dragOver ? " drag-over" : ""}`}
@@ -4369,6 +4434,14 @@ export function App(): ReactElement {
                 <div className="stat-item">
                   <span className="stat-label">Heruntergeladen (Gesamt)</span>
                   <span className="stat-value">{humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Laufzeit (Session)</span>
+                  <span className="stat-value">{formatRuntimeDuration(liveSessionRuntimeMs)}</span>
+                </div>
+                <div className="stat-item">
+                  <span className="stat-label">Laufzeit (Gesamt)</span>
+                  <span className="stat-value">{formatRuntimeDuration(liveTotalRuntimeMs)}</span>
                 </div>
                 <div className="stat-item">
                   <span className="stat-label">Fertige Dateien (Gesamt)</span>

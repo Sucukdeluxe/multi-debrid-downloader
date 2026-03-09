@@ -1254,6 +1254,9 @@ export class DownloadManager extends EventEmitter {
 
   private lastPersistAt = 0;
   private lastSettingsPersistAt = 0;
+  private appSessionStartedAt = 0;
+  private runtimePersistedTotalMs = 0;
+  private runtimePersistedAt = 0;
 
   private cleanupQueue: Promise<void> = Promise.resolve();
 
@@ -1332,6 +1335,10 @@ export class DownloadManager extends EventEmitter {
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
+    const startedAt = nowMs();
+    this.appSessionStartedAt = startedAt;
+    this.runtimePersistedTotalMs = Math.max(0, Number(settings.totalRuntimeAllTimeMs || 0));
+    this.runtimePersistedAt = startedAt;
     this.session = cloneSession(session);
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
@@ -1600,7 +1607,11 @@ export class DownloadManager extends EventEmitter {
     const previous = this.settings;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
+    const now = nowMs();
+    next.totalRuntimeAllTimeMs = Math.max(next.totalRuntimeAllTimeMs || 0, this.getLiveTotalRuntimeMs(now));
     this.settings = next;
+    this.runtimePersistedTotalMs = this.settings.totalRuntimeAllTimeMs || 0;
+    this.runtimePersistedAt = now;
     this.ensureProviderDailyUsageFresh(nowMs());
     this.debridService.setSettings(next);
     this.allDebridHostInfoCache.clear();
@@ -1749,11 +1760,51 @@ export class DownloadManager extends EventEmitter {
       totalFilesSession: this.sessionCompletedFiles,
       totalFilesAllTime: this.settings.totalCompletedFilesAllTime,
       totalPackages: this.session.packageOrder.length,
-      sessionStartedAt: this.session.runStartedAt
+      sessionStartedAt: this.session.runStartedAt,
+      appSessionStartedAt: this.appSessionStartedAt,
+      sessionRuntimeMs: this.getAppSessionRuntimeMs(now),
+      totalRuntimeMs: this.getLiveTotalRuntimeMs(now),
+      runtimeMeasuredAt: now
     };
     this.statsCache = stats;
     this.statsCacheAt = now;
     return stats;
+  }
+
+  public getLiveTotalRuntimeMs(now = nowMs()): number {
+    return Math.max(0, this.runtimePersistedTotalMs + Math.max(0, now - this.runtimePersistedAt));
+  }
+
+  private getAppSessionRuntimeMs(now = nowMs()): number {
+    return this.appSessionStartedAt > 0 ? Math.max(0, now - this.appSessionStartedAt) : 0;
+  }
+
+  private foldRuntimeIntoSettings(now = nowMs()): boolean {
+    const totalRuntimeMs = this.getLiveTotalRuntimeMs(now);
+    if (!Number.isFinite(totalRuntimeMs) || totalRuntimeMs <= (this.settings.totalRuntimeAllTimeMs || 0)) {
+      return false;
+    }
+    this.settings.totalRuntimeAllTimeMs = totalRuntimeMs;
+    this.runtimePersistedTotalMs = totalRuntimeMs;
+    this.runtimePersistedAt = now;
+    this.invalidateStatsCache();
+    return true;
+  }
+
+  public persistRuntimeStats(sync = false): void {
+    if (this.blockAllPersistence) {
+      return;
+    }
+    const now = nowMs();
+    if (!this.foldRuntimeIntoSettings(now)) {
+      return;
+    }
+    this.lastSettingsPersistAt = now;
+    if (sync) {
+      saveSettings(this.storagePaths, this.settings);
+      return;
+    }
+    void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler: ${compactErrorText(err as Error)}`));
   }
 
   private invalidateStatsCache(): void {
@@ -4293,6 +4344,7 @@ export class DownloadManager extends EventEmitter {
       const pkgCount = Object.keys(this.session.packages).length;
       const itemCount = Object.keys(this.session.items).length;
       logger.info(`Shutdown-Save: ${pkgCount} Pakete, ${itemCount} Items`);
+      this.foldRuntimeIntoSettings(nowMs());
       saveSession(this.storagePaths, this.session);
       saveSettings(this.storagePaths, this.settings);
     } else {
@@ -4614,6 +4666,7 @@ export class DownloadManager extends EventEmitter {
     this.lastPersistAt = now;
     void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
     if (now - this.lastSettingsPersistAt >= 30000) {
+      this.foldRuntimeIntoSettings(now);
       this.lastSettingsPersistAt = now;
       void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler: ${compactErrorText(err as Error)}`));
     }

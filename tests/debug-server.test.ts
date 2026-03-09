@@ -173,7 +173,11 @@ function buildSnapshot(baseDir: string): UiSnapshot {
       totalFilesSession: 0,
       totalFilesAllTime: 0,
       totalPackages: 1,
-      sessionStartedAt: Date.now() - 30_000
+      sessionStartedAt: Date.now() - 30_000,
+      appSessionStartedAt: Date.now() - 60_000,
+      sessionRuntimeMs: 60_000,
+      totalRuntimeMs: 3 * 60_000,
+      runtimeMeasuredAt: Date.now()
     },
     speedText: "8.0 MB/s",
     etaText: "ETA: 00:25",
@@ -209,7 +213,8 @@ async function createFixture() {
     debridLinkApiKeys,
     debridLinkDisabledKeyIds: debridLinkKeyIds[1] ? [debridLinkKeyIds[1]] : [],
     totalDownloadedAllTime: 128 * 1024 * 1024,
-    totalCompletedFilesAllTime: 12
+    totalCompletedFilesAllTime: 12,
+    totalRuntimeAllTimeMs: 5 * 60_000
   });
   saveHistory(storagePaths, [
     {

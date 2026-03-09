@@ -384,6 +384,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     totalCompletedFilesAllTime: typeof settings.totalCompletedFilesAllTime === "number" && settings.totalCompletedFilesAllTime >= 0 ? settings.totalCompletedFilesAllTime : defaults.totalCompletedFilesAllTime,
+    totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
     columnOrder: normalizeColumnOrder(settings.columnOrder),
