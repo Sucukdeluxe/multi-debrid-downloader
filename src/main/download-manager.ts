@@ -1822,13 +1822,15 @@ export class DownloadManager extends EventEmitter {
   }
 
   public resetSessionStats(): void {
+    const now = nowMs();
     this.session.totalDownloadedBytes = 0;
     this.sessionDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
-    this.session.runStartedAt = this.session.running ? nowMs() : 0;
+    this.session.runStartedAt = this.session.running ? now : 0;
+    this.appSessionStartedAt = now;
     this.session.summaryText = "";
     this.lastGlobalProgressBytes = 0;
-    this.lastGlobalProgressAt = nowMs();
+    this.lastGlobalProgressAt = now;
     this.speedEvents = [];
     this.speedEventsHead = 0;
     this.speedBytesLastWindow = 0;
