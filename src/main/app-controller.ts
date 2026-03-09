@@ -36,6 +36,8 @@ import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePa
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
+import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
+import { buildAccountSummary, diffAccountSummary } from "./support-data";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -74,6 +76,7 @@ export class AppController {
     initSessionLog(this.storagePaths.baseDir);
     initPackageLogs(this.storagePaths.baseDir);
     initItemLogs(this.storagePaths.baseDir);
+    initAuditLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     const session = loadSession(this.storagePaths);
     this.megaWebFallback = new MegaWebFallback(() => ({
@@ -98,6 +101,10 @@ export class AppController {
     });
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
+    logAuditEvent("INFO", "App gestartet", {
+      appVersion: APP_VERSION,
+      runtimeDir: this.storagePaths.baseDir
+    });
     startDebugServer(this.manager, this.storagePaths.baseDir);
 
     if (this.settings.autoResumeOnStart) {
@@ -169,6 +176,14 @@ export class AppController {
     return this.settings;
   }
 
+  public getAuditLogPath(): string | null {
+    return getAuditLogPath();
+  }
+
+  private audit(level: "INFO" | "WARN" | "ERROR", message: string, fields?: Record<string, unknown>): void {
+    logAuditEvent(level, message, fields);
+  }
+
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
@@ -197,6 +212,10 @@ export class AppController {
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
+    this.audit("INFO", "Einstellungen aktualisiert", {
+      changedKeys: Object.keys(sanitizedPatch),
+      accountChanges: diffAccountSummary(previousSettings, this.settings)
+    });
     if (previousSettings.rememberToken && !this.settings.rememberToken) {
       void this.realDebridWebFallback.clearSessions().catch((error) => {
         logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
@@ -220,6 +239,7 @@ export class AppController {
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
+    this.audit("INFO", "Provider-Tagesnutzung zurückgesetzt", { provider });
     return this.settings;
   }
 
@@ -232,19 +252,27 @@ export class AppController {
     this.settings = nextSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
+    this.audit("INFO", "Debrid-Link-Key-Tagesnutzung zurückgesetzt", { keyId });
     return this.settings;
   }
 
   public async openRealDebridLoginWindow(): Promise<void> {
+    this.audit("INFO", "Real-Debrid Login-Fenster geöffnet");
     await this.realDebridWebFallback.openLoginWindow();
   }
 
   public async openAllDebridLoginWindow(): Promise<void> {
+    this.audit("INFO", "AllDebrid Login-Fenster geöffnet");
     await this.allDebridWebFallback.openLoginWindow();
   }
 
   public async importBestDebridCookies(filePath: string): Promise<number> {
-    return this.bestDebridWebFallback.importCookiesFromFile(filePath);
+    const imported = await this.bestDebridWebFallback.importCookiesFromFile(filePath);
+    this.audit("INFO", "BestDebrid Cookies importiert", {
+      filePath,
+      imported
+    });
+    return imported;
   }
 
   public async getAllDebridHostInfo(host = "rapidgator"): Promise<AllDebridHostInfo> {
@@ -293,9 +321,17 @@ export class AppController {
   public addLinks(payload: AddLinksPayload): { addedPackages: number; addedLinks: number; invalidCount: number } {
     const parsed = parseCollectorInput(payload.rawText, payload.packageName || this.settings.packageName);
     if (parsed.length === 0) {
+      this.audit("WARN", "Links hinzufügen ohne gültigen Inhalt", {
+        hasPackageName: Boolean(payload.packageName)
+      });
       return { addedPackages: 0, addedLinks: 0, invalidCount: 1 };
     }
     const result = this.manager.addPackages(parsed);
+    this.audit("INFO", "Links hinzugefügt", {
+      addedPackages: result.addedPackages,
+      addedLinks: result.addedLinks,
+      requestedPackages: parsed.length
+    });
     return { ...result, invalidCount: 0 };
   }
 
@@ -307,6 +343,11 @@ export class AppController {
       ...(pkg.fileNames ? { fileNames: pkg.fileNames } : {})
     }));
     const result = this.manager.addPackages(merged);
+    this.audit("INFO", "Container importiert", {
+      files: filePaths.length,
+      addedPackages: result.addedPackages,
+      addedLinks: result.addedLinks
+    });
     return result;
   }
 
@@ -319,58 +360,73 @@ export class AppController {
   }
 
   public clearAll(): void {
+    this.audit("WARN", "Queue komplett geleert");
     this.manager.clearAll();
   }
 
   public async start(): Promise<void> {
+    this.audit("INFO", "Session-Start ausgelöst");
     await this.manager.start();
   }
 
   public async startPackages(packageIds: string[]): Promise<void> {
+    this.audit("INFO", "Paket-Start ausgelöst", { packageIds });
     await this.manager.startPackages(packageIds);
   }
 
   public async startItems(itemIds: string[]): Promise<void> {
+    this.audit("INFO", "Item-Start ausgelöst", { itemIds });
     await this.manager.startItems(itemIds);
   }
 
   public stop(): void {
+    this.audit("INFO", "Session-Stopp ausgelöst");
     this.manager.stop();
   }
 
   public togglePause(): boolean {
-    return this.manager.togglePause();
+    const paused = this.manager.togglePause();
+    this.audit("INFO", "Pause umgeschaltet", { paused });
+    return paused;
   }
 
   public retryExtraction(packageId: string): void {
+    this.audit("INFO", "Extraktion manuell wiederholt", { packageId });
     this.manager.retryExtraction(packageId);
   }
 
   public extractNow(packageId: string): void {
+    this.audit("INFO", "Jetzt entpacken ausgelöst", { packageId });
     this.manager.extractNow(packageId);
   }
 
   public resetPackage(packageId: string): void {
+    this.audit("INFO", "Paket zurückgesetzt", { packageId });
     this.manager.resetPackage(packageId);
   }
 
   public cancelPackage(packageId: string): void {
+    this.audit("WARN", "Paket abgebrochen", { packageId });
     this.manager.cancelPackage(packageId);
   }
 
   public renamePackage(packageId: string, newName: string): void {
+    this.audit("INFO", "Paket umbenannt", { packageId, newName });
     this.manager.renamePackage(packageId, newName);
   }
 
   public reorderPackages(packageIds: string[]): void {
+    this.audit("INFO", "Paketreihenfolge geändert", { packageIds });
     this.manager.reorderPackages(packageIds);
   }
 
   public removeItem(itemId: string): void {
+    this.audit("WARN", "Item entfernt", { itemId });
     this.manager.removeItem(itemId);
   }
 
   public togglePackage(packageId: string): void {
+    this.audit("INFO", "Paket aktiviert/deaktiviert", { packageId });
     this.manager.togglePackage(packageId);
   }
 
@@ -387,12 +443,14 @@ export class AppController {
   }
 
   public resetSessionStats(): void {
+    this.audit("INFO", "Session-Statistik zurückgesetzt");
     this.manager.resetSessionStats();
   }
 
   public resetDownloadStats(): void {
     this.manager.resetDownloadStats();
     this.settings = this.manager.getSettings();
+    this.audit("INFO", "Download-Statistik zurückgesetzt");
   }
 
   public exportBackup(): Buffer {
@@ -406,6 +464,11 @@ export class AppController {
       settings,
       session,
       history
+    });
+    this.audit("INFO", "Backup exportiert", {
+      historyEntries: history.length,
+      sessionItems: Object.keys(session.items).length,
+      sessionPackages: Object.keys(session.packages).length
     });
     return encryptBackup(payload);
   }
@@ -475,6 +538,10 @@ export class AppController {
     this.manager.skipShutdownPersist = true;
     this.manager.blockAllPersistence = true;
     logger.info("Backup wiederhergestellt (verschlüsseltes Format)");
+    this.audit("WARN", "Backup importiert", {
+      historyEntries: Array.isArray(parsed.history) ? parsed.history.length : 0,
+      accountSummary: buildAccountSummary(this.settings)
+    });
     return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
   }
 
@@ -501,6 +568,8 @@ export class AppController {
     shutdownSessionLog();
     shutdownPackageLogs();
     shutdownItemLogs();
+    this.audit("INFO", "App beendet");
+    shutdownAuditLog();
     logger.info("App beendet");
   }
 
@@ -509,26 +578,38 @@ export class AppController {
   }
 
   public clearHistory(): void {
+    this.audit("WARN", "Verlauf geleert");
     clearHistory(this.storagePaths);
   }
 
   public setPackagePriority(packageId: string, priority: PackagePriority): void {
+    this.audit("INFO", "Paket-Priorität geändert", { packageId, priority });
     this.manager.setPackagePriority(packageId, priority);
   }
 
   public skipItems(itemIds: string[]): void {
+    this.audit("INFO", "Items übersprungen", { itemIds });
     this.manager.skipItems(itemIds);
   }
 
   public resetItems(itemIds: string[]): void {
+    this.audit("INFO", "Items zurückgesetzt", { itemIds });
     this.manager.resetItems(itemIds);
   }
 
   public removeHistoryEntry(entryId: string): void {
+    this.audit("INFO", "Verlaufseintrag entfernt", { entryId });
     removeHistoryEntry(this.storagePaths, entryId);
   }
 
   public addToHistory(entry: HistoryEntry): void {
+    this.audit("INFO", "Verlaufseintrag hinzugefügt", {
+      id: entry.id,
+      name: entry.name,
+      status: entry.status,
+      provider: entry.provider,
+      fileCount: entry.fileCount
+    });
     addHistoryEntry(this.storagePaths, entry);
   }
 }
