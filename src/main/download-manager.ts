@@ -5257,6 +5257,64 @@ export class DownloadManager extends EventEmitter {
     return changed;
   }
 
+  private applyPackageExtractFailureStatuses(
+    completedItems: DownloadItem[],
+    resolveArchiveItems: (archiveName: string) => DownloadItem[],
+    failedArchiveErrors: Map<string, string>,
+    fallbackReason: string,
+    previousStatuses: Map<string, string>,
+    appliedAt = nowMs()
+  ): void {
+    const affectedItemIds = new Set<string>();
+
+    for (const [archiveName, errorText] of failedArchiveErrors.entries()) {
+      const reason = compactErrorText(errorText || fallbackReason || "Entpacken fehlgeschlagen");
+      for (const entry of resolveArchiveItems(archiveName)) {
+        if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) {
+          continue;
+        }
+        entry.fullStatus = `Entpack-Fehler: ${reason}`;
+        entry.updatedAt = appliedAt;
+        affectedItemIds.add(entry.id);
+      }
+    }
+
+    let appliedSpecificFailure = affectedItemIds.size > 0;
+    for (const entry of completedItems) {
+      if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) {
+        continue;
+      }
+      if (affectedItemIds.has(entry.id)) {
+        continue;
+      }
+
+      const currentStatus = String(entry.fullStatus || "").trim();
+      if (currentStatus === "Entpacken - Error") {
+        entry.fullStatus = `Entpack-Fehler: ${fallbackReason}`;
+        entry.updatedAt = appliedAt;
+        appliedSpecificFailure = true;
+        continue;
+      }
+
+      if (/^Entpacken\b/i.test(currentStatus) || /^Passwort\b/i.test(currentStatus) || /^Finalisieren\b/i.test(currentStatus)) {
+        const previousStatus = String(previousStatuses.get(entry.id) || "").trim();
+        entry.fullStatus = previousStatus || `Fertig (${humanSize(entry.downloadedBytes)})`;
+        entry.updatedAt = appliedAt;
+      }
+    }
+
+    if (appliedSpecificFailure) {
+      return;
+    }
+
+    for (const entry of completedItems) {
+      if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
+        entry.fullStatus = `Entpack-Fehler: ${fallbackReason}`;
+        entry.updatedAt = appliedAt;
+      }
+    }
+  }
+
   private async waitForCompletedArchiveFilesToSettle(
     pkg: PackageEntry,
     items: DownloadItem[],
@@ -9645,6 +9703,7 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "extracting";
       this.emitState();
       const extractionStartMs = nowMs();
+      const preExtractStatuses = new Map<string, string>();
 
       const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
         resolveArchiveItemsFromList(archiveName, completedItems);
@@ -9663,6 +9722,7 @@ export class DownloadManager extends EventEmitter {
       // Mark all items as pending before extraction starts
       for (const entry of completedItems) {
         if (!isExtractedLabel(entry.fullStatus)) {
+          preExtractStatuses.set(entry.id, String(entry.fullStatus || "").trim());
           entry.fullStatus = "Entpacken - Ausstehend";
           entry.updatedAt = nowMs();
         }
@@ -9698,6 +9758,7 @@ export class DownloadManager extends EventEmitter {
       try {
         // Track archives for parallel extraction progress
         const autoRecoveredArchives = new Set<string>();
+        const fullFailedArchiveErrors = new Map<string, string>();
         const fullResolvedItems = new Map<string, DownloadItem[]>();
         const fullStartTimes = new Map<string, number>();
         let fullLastProgressCurrent: number | null = null;
@@ -9737,7 +9798,13 @@ export class DownloadManager extends EventEmitter {
             const changed = this.autoRecoverArchiveCrcFailure(pkg, completedItems, failure, "full");
             if (changed > 0) {
               autoRecoveredArchives.add(failure.archiveName);
+              fullFailedArchiveErrors.delete(failure.archiveName);
+              return;
             }
+            fullFailedArchiveErrors.set(
+              failure.archiveName,
+              failure.errorText || failure.jvmFailureReason || "Entpacken fehlgeschlagen"
+            );
           },
           onProgress: (progress) => {
             if (progress.phase === "preparing") {
@@ -9872,13 +9939,14 @@ export class DownloadManager extends EventEmitter {
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
           const failAt = nowMs();
-          for (const entry of completedItems) {
-            // Preserve per-archive "Entpackt - Done (X.Xs)" labels for successfully extracted archives
-            if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
-              entry.fullStatus = `Entpack-Fehler: ${reason}`;
-              entry.updatedAt = failAt;
-            }
-          }
+          this.applyPackageExtractFailureStatuses(
+            completedItems,
+            resolveArchiveItems,
+            fullFailedArchiveErrors,
+            reason,
+            preExtractStatuses,
+            failAt
+          );
           pkg.status = "failed";
         } else {
           const hasExtractedOutput = await this.directoryHasAnyFiles(pkg.extractDir);
