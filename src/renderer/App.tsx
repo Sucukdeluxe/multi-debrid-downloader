@@ -3896,8 +3896,8 @@ export function App(): ReactElement {
                 <button className="menu-submenu-trigger">Sicherung</button>
                 {openSubmenu === "sicherung" && (
                   <div className="menu-submenu-dropdown">
-                    <button className="menu-dropdown-item" onClick={() => { void onExportBackup(); }}>Erstellen</button>
-                    <button className="menu-dropdown-item" onClick={() => { void onImportBackup(); }}>Laden</button>
+                    <button className="menu-dropdown-item" onClick={() => { void onExportBackup(); }}>Exportieren</button>
+                    <button className="menu-dropdown-item" onClick={() => { void onImportBackup(); }}>Importieren</button>
                   </div>
                 )}
               </div>
