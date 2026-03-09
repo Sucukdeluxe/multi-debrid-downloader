@@ -1110,7 +1110,7 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
 
 export function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
   const normalizeArchiveMatchName = (value: string): string =>
-    path.basename(String(value || "")).replace(/ \(\d+\)(?=\.[^.]+$)/, "");
+    stripDuplicateSuffixBeforeExtension(path.basename(String(value || "")));
   const entryLower = normalizeArchiveMatchName(archiveName).toLowerCase();
 
   // Helper: get item basename (try targetPath first, then fileName)
@@ -1190,6 +1190,54 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
   }
 
   return [];
+}
+
+function stripDuplicateSuffixBeforeExtension(fileName: string): string {
+  return String(fileName || "").replace(/ \(\d+\)(?=\.[^.]+$)/, "");
+}
+
+function hasDuplicateSuffixBeforeExtension(fileName: string): boolean {
+  const normalized = stripDuplicateSuffixBeforeExtension(fileName);
+  return normalized !== String(fileName || "");
+}
+
+function startupDuplicateStateRank(item: DownloadItem, diskExists: boolean): number {
+  let rank = diskExists ? 40 : 0;
+  switch (item.status) {
+    case "completed":
+      rank += 40;
+      break;
+    case "downloading":
+    case "validating":
+    case "integrity_check":
+      rank += 25;
+      break;
+    case "queued":
+    case "reconnect_wait":
+    case "paused":
+      rank += 10;
+      break;
+    case "failed":
+      rank += 5;
+      break;
+    default:
+      break;
+  }
+  const fullStatus = String(item.fullStatus || "").trim();
+  if (isExtractedLabel(fullStatus)) {
+    rank += 65;
+  } else if (/^fertig\b/i.test(fullStatus)) {
+    rank += 30;
+  } else if (isTransientExtractStatus(fullStatus)) {
+    rank += 20;
+  } else if (isExtractErrorLabel(fullStatus)) {
+    rank += 5;
+  }
+  rank += Math.max(0, Math.min(9, Math.floor(Number(item.progressPercent || 0) / 12)));
+  if (Number(item.downloadedBytes || 0) > 0) {
+    rank += 1;
+  }
+  return rank;
 }
 
 export function extractArchiveNameFromExtractorLogMessage(message: string): string | null {
@@ -1375,11 +1423,11 @@ export class DownloadManager extends EventEmitter {
     }
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
+    this.restoreTargetPathReservations();
+    this.resolveExistingQueuedOpaqueFilenames();
+    this.revalidateCompletedItems();
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
-    this.resolveExistingQueuedOpaqueFilenames();
-    this.restoreTargetPathReservations();
-    this.revalidateCompletedItems();
     this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
   }
@@ -4928,8 +4976,135 @@ export class DownloadManager extends EventEmitter {
     if (restored > 0) {
       logger.info(`restoreTargetPathReservations: ${restored} Pfade aus Session wiederhergestellt`);
     }
+    this.reconcileDuplicateSuffixSessionItems();
     // Fix legacy (N) suffix files: rename back to original if original path is free
     this.fixDuplicateSuffixFiles();
+  }
+
+  private reconcileDuplicateSuffixSessionItems(): void {
+    let merged = 0;
+    const touchedPackageIds = new Set<string>();
+
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg) {
+        continue;
+      }
+
+      for (const itemId of [...pkg.itemIds]) {
+        const duplicateItem = this.session.items[itemId];
+        if (!duplicateItem) {
+          continue;
+        }
+        const duplicateTargetPath = String(duplicateItem.targetPath || "").trim();
+        if (!duplicateTargetPath) {
+          continue;
+        }
+        const duplicateBaseName = path.basename(duplicateTargetPath);
+        if (!hasDuplicateSuffixBeforeExtension(duplicateBaseName)) {
+          continue;
+        }
+
+        const canonicalBaseName = stripDuplicateSuffixBeforeExtension(duplicateBaseName);
+        const canonicalPath = path.join(path.dirname(duplicateTargetPath), canonicalBaseName);
+        const canonicalKey = pathKey(canonicalPath);
+        let primaryItem = Object.values(this.session.items).find((candidate) =>
+          candidate.packageId === packageId
+          && candidate.id !== duplicateItem.id
+          && (
+            pathKey(String(candidate.targetPath || "")) === canonicalKey
+            || (
+              !candidate.targetPath
+              && stripDuplicateSuffixBeforeExtension(candidate.fileName || "") === canonicalBaseName
+            )
+          )
+        );
+        if (!primaryItem) {
+          continue;
+        }
+
+        const duplicateExists = fs.existsSync(duplicateTargetPath);
+        let canonicalExists = fs.existsSync(canonicalPath);
+        const primaryWins = startupDuplicateStateRank(primaryItem, canonicalExists) >= startupDuplicateStateRank(duplicateItem, duplicateExists);
+
+        if (duplicateExists && !canonicalExists) {
+          try {
+            fs.renameSync(duplicateTargetPath, canonicalPath);
+            canonicalExists = true;
+            logger.info(`startupDuplicateMerge: ${path.basename(duplicateTargetPath)} → ${canonicalBaseName}`);
+          } catch (err) {
+            logger.warn(`startupDuplicateMerge: Umbenennung fehlgeschlagen ${duplicateTargetPath}: ${compactErrorText(err)}`);
+          }
+        } else if (duplicateExists && canonicalExists && primaryWins) {
+          try {
+            fs.rmSync(duplicateTargetPath, { force: true });
+          } catch {
+            // ignore, stale duplicate can remain on disk if Windows still holds a handle
+          }
+        } else if (duplicateExists && canonicalExists && !primaryWins && primaryItem.status !== "completed") {
+          try {
+            fs.rmSync(canonicalPath, { force: true });
+            fs.renameSync(duplicateTargetPath, canonicalPath);
+            canonicalExists = true;
+            logger.info(`startupDuplicateMerge: ersetze verwaisten Originalpfad ${canonicalBaseName} durch ${path.basename(duplicateTargetPath)}`);
+          } catch (err) {
+            logger.warn(`startupDuplicateMerge: Austausch fehlgeschlagen ${canonicalPath}: ${compactErrorText(err)}`);
+          }
+        }
+
+        const duplicateShouldWin = !primaryWins || (duplicateItem.status === "completed" && primaryItem.status !== "completed");
+        if (duplicateShouldWin) {
+          primaryItem.status = duplicateItem.status;
+          primaryItem.fullStatus = duplicateItem.fullStatus;
+          primaryItem.lastError = duplicateItem.lastError;
+          primaryItem.downloadedBytes = Math.max(Number(primaryItem.downloadedBytes || 0), Number(duplicateItem.downloadedBytes || 0));
+          primaryItem.totalBytes = Math.max(Number(primaryItem.totalBytes || 0), Number(duplicateItem.totalBytes || 0)) || primaryItem.totalBytes;
+          primaryItem.progressPercent = Math.max(Number(primaryItem.progressPercent || 0), Number(duplicateItem.progressPercent || 0));
+        }
+
+        if (canonicalExists) {
+          try {
+            const stat = fs.statSync(canonicalPath);
+            primaryItem.downloadedBytes = Math.max(Number(primaryItem.downloadedBytes || 0), stat.size);
+            if (!primaryItem.totalBytes || primaryItem.totalBytes < stat.size) {
+              primaryItem.totalBytes = stat.size;
+            }
+            if (primaryItem.status === "completed") {
+              primaryItem.progressPercent = 100;
+            }
+          } catch {
+            // ignore stat failures; persisted metadata remains as-is
+          }
+        }
+
+        primaryItem.fileName = canonicalBaseName;
+        primaryItem.targetPath = canonicalPath;
+        primaryItem.updatedAt = Math.max(Number(primaryItem.updatedAt || 0), Number(duplicateItem.updatedAt || 0), nowMs());
+        this.claimedTargetPathByItem.set(primaryItem.id, canonicalPath);
+        this.reservedTargetPaths.set(canonicalKey, primaryItem.id);
+
+        this.retryAfterByItem.delete(duplicateItem.id);
+        this.retryStateByItem.delete(duplicateItem.id);
+        this.releaseTargetPath(duplicateItem.id);
+        this.dropItemContribution(duplicateItem.id);
+        delete this.session.items[duplicateItem.id];
+        pkg.itemIds = pkg.itemIds.filter((candidateId) => candidateId !== duplicateItem.id);
+        this.itemCount = Math.max(0, this.itemCount - 1);
+        merged += 1;
+        touchedPackageIds.add(packageId);
+      }
+    }
+
+    if (merged > 0) {
+      for (const packageId of touchedPackageIds) {
+        const pkg = this.session.packages[packageId];
+        if (pkg) {
+          this.refreshPackageStatus(pkg);
+        }
+      }
+      logger.info(`reconcileDuplicateSuffixSessionItems: ${merged} Duplikat-Items zusammengeführt`);
+      this.persistSoon();
+    }
   }
 
   /** Re-validate "completed" items on startup: if the file on disk is significantly

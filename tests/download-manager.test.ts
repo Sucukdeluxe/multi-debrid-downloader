@@ -319,6 +319,196 @@ describe("download manager", () => {
     expect((manager as any).session.packages[packageId].status).toBe("queued");
   });
 
+  it("merges duplicate-suffixed completed startup items back into the canonical queued item", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-dup-merge-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "startup-dup-pkg";
+    const originalItemId = "startup-dup-original";
+    const duplicateItemId = "startup-dup-copy";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "Startup Duplicate Merge");
+    const extractDir = path.join(root, "extract", "Startup Duplicate Merge");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const canonicalPath = path.join(outputDir, "episode.part1.rar");
+    const duplicatePath = path.join(outputDir, "episode.part1 (1).rar");
+    fs.writeFileSync(duplicatePath, Buffer.alloc(128, 7));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Startup Duplicate Merge",
+      outputDir,
+      extractDir,
+      status: "failed",
+      itemIds: [originalItemId, duplicateItemId],
+      cancelled: false,
+      enabled: true,
+      priority: "normal",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[originalItemId] = {
+      id: originalItemId,
+      packageId,
+      url: "https://example.com/episode.part1.rar",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: 128,
+      progressPercent: 0,
+      fileName: "episode.part1.rar",
+      targetPath: canonicalPath,
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[duplicateItemId] = {
+      id: duplicateItemId,
+      packageId,
+      url: "https://example.com/episode.part1.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 128,
+      totalBytes: 128,
+      progressPercent: 100,
+      fileName: "episode.part1.rar",
+      targetPath: duplicatePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (128 B)",
+      createdAt,
+      updatedAt: createdAt + 5_000
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const current = (manager as any).session;
+    expect(current.packages[packageId].itemIds).toEqual([originalItemId]);
+    expect(current.items[duplicateItemId]).toBeUndefined();
+    expect(current.items[originalItemId].status).toBe("completed");
+    expect(current.items[originalItemId].fullStatus).toBe("Fertig (128 B)");
+    expect(current.items[originalItemId].targetPath).toBe(canonicalPath);
+    expect(fs.existsSync(canonicalPath)).toBe(true);
+    expect(fs.existsSync(duplicatePath)).toBe(false);
+  });
+
+  it("keeps a stronger extracted canonical startup state when removing stale duplicate copies", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-dup-keep-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "startup-dup-keep-pkg";
+    const originalItemId = "startup-dup-keep-original";
+    const duplicateItemId = "startup-dup-keep-copy";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "Startup Duplicate Keep");
+    const extractDir = path.join(root, "extract", "Startup Duplicate Keep");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const canonicalPath = path.join(outputDir, "episode.part1.rar");
+    const duplicatePath = path.join(outputDir, "episode.part1 (1).rar");
+    fs.writeFileSync(duplicatePath, Buffer.alloc(256, 9));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Startup Duplicate Keep",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [originalItemId, duplicateItemId],
+      cancelled: false,
+      enabled: true,
+      priority: "normal",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[originalItemId] = {
+      id: originalItemId,
+      packageId,
+      url: "https://example.com/episode.part1.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 256,
+      totalBytes: 256,
+      progressPercent: 100,
+      fileName: "episode.part1.rar",
+      targetPath: canonicalPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Done (1.0s)",
+      createdAt,
+      updatedAt: createdAt + 10_000
+    };
+    session.items[duplicateItemId] = {
+      id: duplicateItemId,
+      packageId,
+      url: "https://example.com/episode.part1.rar",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 256,
+      totalBytes: 256,
+      progressPercent: 100,
+      fileName: "episode.part1.rar",
+      targetPath: duplicatePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "Checksum error",
+      fullStatus: "Entpack-Fehler: Checksum error",
+      createdAt,
+      updatedAt: createdAt + 5_000
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const current = (manager as any).session;
+    expect(current.packages[packageId].itemIds).toEqual([originalItemId]);
+    expect(current.items[duplicateItemId]).toBeUndefined();
+    expect(current.items[originalItemId].status).toBe("completed");
+    expect(current.items[originalItemId].fullStatus).toBe("Entpackt - Done (1.0s)");
+    expect(current.items[originalItemId].targetPath).toBe(canonicalPath);
+    expect(fs.existsSync(canonicalPath)).toBe(true);
+    expect(fs.existsSync(duplicatePath)).toBe(false);
+  });
+
   function createCompletedArchiveSession(root: string, packageName: string, extractedFileName: string): {
     session: ReturnType<typeof emptySession>;
     packageId: string;
