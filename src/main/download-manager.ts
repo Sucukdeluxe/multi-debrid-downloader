@@ -2129,6 +2129,8 @@ export class DownloadManager extends EventEmitter {
         cancelled: false,
         enabled: true,
         priority: "normal",
+        downloadStartedAt: 0,
+        downloadCompletedAt: 0,
         createdAt: nowMs(),
         updatedAt: nowMs()
       };
@@ -4958,8 +4960,10 @@ export class DownloadManager extends EventEmitter {
     }
     item.progressPercent = 100;
     item.speedBps = 0;
-    item.updatedAt = nowMs();
-    pkg.updatedAt = nowMs();
+    const finalizedAt = nowMs();
+    item.updatedAt = finalizedAt;
+    this.notePackageDownloadCompleted(pkg, finalizedAt);
+    pkg.updatedAt = finalizedAt;
     this.recordRunOutcome(item.id, "completed");
 
     if (this.session.running) {
@@ -5732,6 +5736,27 @@ export class DownloadManager extends EventEmitter {
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
   }
 
+  private notePackageDownloadStarted(pkg: PackageEntry, startedAt = nowMs()): void {
+    if ((pkg.downloadStartedAt || 0) <= 0) {
+      pkg.downloadStartedAt = startedAt;
+    }
+  }
+
+  private notePackageDownloadCompleted(pkg: PackageEntry, completedAt = nowMs()): void {
+    this.notePackageDownloadStarted(pkg, completedAt);
+    pkg.downloadCompletedAt = Math.max(pkg.downloadCompletedAt || 0, completedAt);
+  }
+
+  private getPackageHistoryDurationSeconds(pkg: PackageEntry): number {
+    const startedAt = pkg.downloadStartedAt > 0 ? pkg.downloadStartedAt : pkg.createdAt;
+    const finishedAtCandidate = pkg.downloadCompletedAt > 0 ? pkg.downloadCompletedAt : nowMs();
+    const finishedAt = Math.max(startedAt || 0, finishedAtCandidate || 0);
+    if (startedAt <= 0 || finishedAt <= 0) {
+      return 1;
+    }
+    return Math.max(1, Math.floor((finishedAt - startedAt) / 1000));
+  }
+
   private recordPackageHistory(packageId: string, pkg: PackageEntry, items: DownloadItem[]): void {
     if (!this.onHistoryEntryCallback || this.historyRecordedPackages.has(packageId)) {
       return;
@@ -5742,7 +5767,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.historyRecordedPackages.add(packageId);
     const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
-    const durationSeconds = pkg.createdAt > 0 ? Math.max(1, Math.floor((nowMs() - pkg.createdAt) / 1000)) : 1;
+    const durationSeconds = this.getPackageHistoryDurationSeconds(pkg);
     const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
     const provider = providers.size === 1 ? [...providers][0] : null;
     const entry: HistoryEntry = {
@@ -5776,7 +5801,7 @@ export class DownloadManager extends EventEmitter {
       const completedCount = completedItems.length;
       if (completedCount > 0) {
         const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
-        const durationSeconds = pkg.createdAt > 0 ? Math.max(1, Math.floor((nowMs() - pkg.createdAt) / 1000)) : 1;
+        const durationSeconds = this.getPackageHistoryDurationSeconds(pkg);
         const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
         const provider = providers.size === 1 ? [...providers][0] : null;
         const entry: HistoryEntry = {
@@ -6759,6 +6784,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    this.notePackageDownloadStarted(pkg);
     item.status = "validating";
     item.fullStatus = "Link wird umgewandelt";
     item.speedBps = 0;
@@ -7077,14 +7103,16 @@ export class DownloadManager extends EventEmitter {
           throw new Error(`aborted:${active.abortReason}`);
         }
 
+        const completedAt = nowMs();
         item.status = "completed";
         item.fullStatus = this.settings.autoExtract
           ? "Entpacken - Ausstehend"
           : `Fertig (${humanSize(item.downloadedBytes)})`;
         item.progressPercent = 100;
         item.speedBps = 0;
-        item.updatedAt = nowMs();
-        pkg.updatedAt = nowMs();
+        item.updatedAt = completedAt;
+        this.notePackageDownloadCompleted(pkg, completedAt);
+        pkg.updatedAt = completedAt;
         this.recordRunOutcome(item.id, "completed");
         logger.info(`Download fertig: ${item.fileName} (${humanSize(item.downloadedBytes)}), pkg=${pkg.name}`);
         this.logPackageForItem(item, "INFO", "Download abgeschlossen", {

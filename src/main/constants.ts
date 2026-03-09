@@ -97,6 +97,7 @@ export function defaultSettings(): AppSettings {
     minimizeToTray: false,
     theme: "dark" as const,
     collapseNewPackages: true,
+    historyRetentionMode: "permanent",
     accountListShowDetailedDebridLinkKeys: false,
     autoSortPackagesByProgress: true,
     autoSkipExtracted: false,

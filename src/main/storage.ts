@@ -2,7 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
-import { AppSettings, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
@@ -15,6 +15,7 @@ const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "pack
 const VALID_SPEED_MODES = new Set(["global", "per_download"]);
 const VALID_THEMES = new Set(["dark", "light"]);
 const VALID_EXTRACT_CPU_PRIORITIES = new Set(["high", "middle", "low"]);
+const VALID_HISTORY_RETENTION_MODES = new Set<HistoryRetentionMode>(["never", "session", "permanent"]);
 const VALID_PACKAGE_PRIORITIES = new Set<string>(["high", "normal", "low"]);
 const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
   "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
@@ -375,6 +376,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     clipboardWatch: Boolean(settings.clipboardWatch),
     minimizeToTray: Boolean(settings.minimizeToTray),
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
+    historyRetentionMode: VALID_HISTORY_RETENTION_MODES.has(settings.historyRetentionMode)
+      ? settings.historyRetentionMode
+      : defaults.historyRetentionMode,
     accountListShowDetailedDebridLinkKeys: settings.accountListShowDetailedDebridLinkKeys !== undefined
       ? Boolean(settings.accountListShowDetailedDebridLinkKeys)
       : defaults.accountListShowDetailedDebridLinkKeys,
@@ -582,6 +586,8 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       cancelled: Boolean(pkg.cancelled),
       enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
       priority: VALID_PACKAGE_PRIORITIES.has(asText(pkg.priority)) ? asText(pkg.priority) as PackagePriority : "normal",
+      downloadStartedAt: clampNumber(pkg.downloadStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      downloadCompletedAt: clampNumber(pkg.downloadCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };
@@ -1011,6 +1017,24 @@ export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry): Histo
   const updated = [entry, ...existing].slice(0, MAX_HISTORY_ENTRIES);
   saveHistory(paths, updated);
   return updated;
+}
+
+export function loadHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): HistoryEntry[] {
+  return retentionMode === "never" ? [] : loadHistory(paths);
+}
+
+export function addHistoryEntryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode, entry: HistoryEntry): HistoryEntry[] {
+  if (retentionMode === "never") {
+    return [];
+  }
+  return addHistoryEntry(paths, entry);
+}
+
+export function resetHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): void {
+  if (retentionMode === "permanent") {
+    return;
+  }
+  clearHistory(paths);
 }
 
 export function removeHistoryEntry(paths: StoragePaths, entryId: string): HistoryEntry[] {

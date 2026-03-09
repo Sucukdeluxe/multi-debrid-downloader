@@ -2243,12 +2243,18 @@ body,
   display: flex;
   flex-direction: column;
   gap: 6px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .history-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
+  gap: 12px;
   padding: 5px 12px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -2256,6 +2262,14 @@ body,
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
+}
+
+.history-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .history-card {

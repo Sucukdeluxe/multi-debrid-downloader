@@ -29,6 +29,7 @@ export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
 export type PackagePriority = "high" | "normal" | "low";
 export type ExtractCpuPriority = "high" | "middle" | "low";
+export type HistoryRetentionMode = "never" | "session" | "permanent";
 
 export interface BandwidthScheduleEntry {
   id: string;
@@ -107,6 +108,7 @@ export interface AppSettings {
   minimizeToTray: boolean;
   theme: AppTheme;
   collapseNewPackages: boolean;
+  historyRetentionMode: HistoryRetentionMode;
   accountListShowDetailedDebridLinkKeys: boolean;
   autoSortPackagesByProgress: boolean;
   autoSkipExtracted: boolean;
@@ -167,6 +169,8 @@ export interface PackageEntry {
   enabled: boolean;
   priority: PackagePriority;
   postProcessLabel?: string;
+  downloadStartedAt?: number;
+  downloadCompletedAt?: number;
   createdAt: number;
   updatedAt: number;
 }

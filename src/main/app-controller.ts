@@ -32,7 +32,7 @@ import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
 import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, saveHistory, saveSession, saveSettings } from "./storage";
+import { addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
@@ -87,6 +87,7 @@ export class AppController {
     initRenameLog(this.storagePaths.baseDir);
     initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
+    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
     const session = loadSession(this.storagePaths);
     this.megaWebFallback = new MegaWebFallback(() => ({
       login: this.settings.megaLogin,
@@ -102,7 +103,7 @@ export class AppController {
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       onHistoryEntry: (entry: HistoryEntry) => {
-        addHistoryEntry(this.storagePaths, entry);
+        addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry);
       }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
@@ -253,7 +254,11 @@ export class AppController {
     nextSettings.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
       Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
     );
+    const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
     this.settings = nextSettings;
+    if (retentionChanged) {
+      resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+    }
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     this.audit("INFO", "Einstellungen aktualisiert", {
@@ -532,7 +537,7 @@ export class AppController {
   public exportBackup(): Buffer {
     const settings = { ...this.settings };
     const session = this.manager.getSession();
-    const history = loadHistory(this.storagePaths);
+    const history = loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
     const payload = JSON.stringify({
       version: 2,
       appVersion: APP_VERSION,
@@ -622,6 +627,8 @@ export class AppController {
       }
     }
 
+    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+
     // Prevent prepareForShutdown from overwriting the restored data
     this.manager.skipShutdownPersist = true;
     this.manager.blockAllPersistence = true;
@@ -664,11 +671,14 @@ export class AppController {
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAuditLog();
+    if (this.settings.historyRetentionMode === "session") {
+      clearHistory(this.storagePaths);
+    }
     logger.info("App beendet");
   }
 
   public getHistory(): HistoryEntry[] {
-    return loadHistory(this.storagePaths);
+    return loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
   }
 
   public clearHistory(): void {
