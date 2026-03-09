@@ -181,6 +181,54 @@ Runtime files are stored in Electron's `userData` directory, including:
 - `rd_session_state.json`
 - `rd_history.json`
 - `rd_downloader.log`
+- `session-logs/session_*.txt`
+- `package-logs/package_*.txt`
+- `item-logs/item_*.txt`
+
+### Remote debug server
+
+For headless or server-style troubleshooting, the app can expose a small authenticated HTTP debug API with live status and log tails.
+
+Enable it by creating these files in the same runtime folder that contains `rd_downloader.log`:
+
+- `debug_token.txt`
+  Example: a long random token such as `rd-debug-please-change-me`
+- `debug_port.txt`
+  Example: `9868`
+- `debug_host.txt` (optional)
+  Default is `127.0.0.1`. Set `0.0.0.0` only if you really want remote access and protect it with firewall, VPN, or reverse proxy.
+
+Available endpoints after restart:
+
+- `GET /health`
+- `GET /meta`
+- `GET /host/diagnostics`
+- `GET /status`
+- `GET /packages?package=Release&includeItems=1`
+- `GET /items?status=downloading&package=Release`
+- `GET /session?package=Release`
+- `GET /log?lines=100&grep=keyword`
+- `GET /logs/main?lines=100&grep=keyword`
+- `GET /logs/session?lines=100&grep=keyword`
+- `GET /logs/package?package=Release&lines=100&grep=keyword`
+- `GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword`
+- `GET /diagnostics?package=Release&lines=150`
+
+Authentication works with either:
+
+- header: `Authorization: Bearer <token>`
+- query param: `?token=<token>`
+
+Example from PowerShell:
+
+```powershell
+Invoke-RestMethod "http://SERVER:9868/diagnostics?token=YOUR_TOKEN&package=Release"
+Invoke-RestMethod "http://SERVER:9868/logs/package?token=YOUR_TOKEN&package=Release&lines=200"
+Invoke-RestMethod "http://SERVER:9868/logs/item?token=YOUR_TOKEN&item=episode.part2.rar&lines=200"
+Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"
+```
+
+This makes it easy to share one URL plus token during support, so current package status, session state, package/session logs, and host-side Windows crash hints can be inspected remotely.
 
 ## Troubleshooting
 

@@ -52,6 +52,7 @@ import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, Meg
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
+import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
 import { ensurePackageLog, getPackageLogPath as getPersistedPackageLogPath, logPackageEvent as writePackageLogEvent } from "./package-log";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
@@ -1327,12 +1328,31 @@ export class DownloadManager extends EventEmitter {
     return getPersistedPackageLogPath(packageId);
   }
 
+  public getItemLogPath(itemId: string): string | null {
+    const item = this.session.items[itemId];
+    if (item) {
+      return this.ensureItemLogForItem(item);
+    }
+    return getPersistedItemLogPath(itemId);
+  }
+
   private ensurePackageLogForPackage(pkg: PackageEntry): string | null {
     return ensurePackageLog({
       packageId: pkg.id,
       name: pkg.name,
       outputDir: pkg.outputDir,
       extractDir: pkg.extractDir
+    });
+  }
+
+  private ensureItemLogForItem(item: DownloadItem): string | null {
+    const pkg = this.session.packages[item.packageId];
+    return ensureItemLog({
+      itemId: item.id,
+      packageId: item.packageId,
+      packageName: pkg?.name || "",
+      fileName: item.fileName,
+      targetPath: item.targetPath
     });
   }
 
@@ -1358,7 +1378,17 @@ export class DownloadManager extends EventEmitter {
     if (pkg) {
       this.ensurePackageLogForPackage(pkg);
     }
+    this.ensureItemLogForItem(item);
     this.logPackage(item.packageId, level, message, {
+      packageName: pkg?.name || "",
+      itemId: item.id,
+      fileName: item.fileName,
+      status: item.status,
+      targetPath: item.targetPath,
+      ...fields
+    });
+    writeItemLogEvent(item.id, level, message, {
+      packageId: item.packageId,
       packageName: pkg?.name || "",
       itemId: item.id,
       fileName: item.fileName,

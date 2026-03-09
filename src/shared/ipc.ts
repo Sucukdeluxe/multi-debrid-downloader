@@ -39,6 +39,7 @@ export const IPC_CHANNELS = {
   OPEN_LOG: "app:open-log",
   OPEN_SESSION_LOG: "app:open-session-log",
   OPEN_PACKAGE_LOG: "app:open-package-log",
+  OPEN_ITEM_LOG: "app:open-item-log",
   OPEN_REALDEBRID_LOGIN: "app:open-realdebrid-login",
   OPEN_ALLDEBRID_LOGIN: "app:open-alldebrid-login",
   IMPORT_BESTDEBRID_COOKIES: "app:import-bestdebrid-cookies",

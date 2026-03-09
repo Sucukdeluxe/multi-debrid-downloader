@@ -28,6 +28,7 @@ import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
 import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
+import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
 import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
@@ -72,6 +73,7 @@ export class AppController {
     configureLogger(this.storagePaths.baseDir);
     initSessionLog(this.storagePaths.baseDir);
     initPackageLogs(this.storagePaths.baseDir);
+    initItemLogs(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     const session = loadSession(this.storagePaths);
     this.megaWebFallback = new MegaWebFallback(() => ({
@@ -484,6 +486,10 @@ export class AppController {
     return this.manager.getPackageLogPath(packageId) || getPackageLogPath(packageId);
   }
 
+  public getItemLogPath(itemId: string): string | null {
+    return this.manager.getItemLogPath(itemId) || getItemLogPath(itemId);
+  }
+
   public shutdown(): void {
     stopDebugServer();
     abortActiveUpdateDownload();
@@ -494,6 +500,7 @@ export class AppController {
     this.bestDebridWebFallback.dispose();
     shutdownSessionLog();
     shutdownPackageLogs();
+    shutdownItemLogs();
     logger.info("App beendet");
   }
 
