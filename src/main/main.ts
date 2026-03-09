@@ -383,6 +383,40 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.togglePackage(packageId);
   });
+  ipcMain.handle(IPC_CHANNELS.EXPORT_PACKAGE_SELECTION, async (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+    const validPackageIds = validateStringArray(packageIds ?? [], "packageIds");
+    const exported = controller.exportPackageSelection(validPackageIds);
+    if (exported.packageCount === 0 || exported.linkCount === 0) {
+      return { saved: false, packageCount: 0, linkCount: 0 };
+    }
+    const options = {
+      defaultPath: exported.defaultFileName,
+      filters: [{ name: "Link Export", extensions: ["txt"] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) {
+      return { saved: false, packageCount: exported.packageCount, linkCount: exported.linkCount };
+    }
+    await fs.promises.writeFile(result.filePath, exported.text, "utf8");
+    return { saved: true, packageCount: exported.packageCount, linkCount: exported.linkCount, filePath: result.filePath };
+  });
+  ipcMain.handle(IPC_CHANNELS.EXPORT_ITEM_SELECTION, async (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+    const validItemIds = validateStringArray(itemIds ?? [], "itemIds");
+    const exported = controller.exportItemSelection(validItemIds);
+    if (exported.packageCount === 0 || exported.linkCount === 0) {
+      return { saved: false, packageCount: 0, linkCount: 0 };
+    }
+    const options = {
+      defaultPath: exported.defaultFileName,
+      filters: [{ name: "Link Export", extensions: ["txt"] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) {
+      return { saved: false, packageCount: exported.packageCount, linkCount: exported.linkCount };
+    }
+    await fs.promises.writeFile(result.filePath, exported.text, "utf8");
+    return { saved: true, packageCount: exported.packageCount, linkCount: exported.linkCount, filePath: result.filePath };
+  });
   ipcMain.handle(IPC_CHANNELS.RETRY_EXTRACTION, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.retryExtraction(packageId);

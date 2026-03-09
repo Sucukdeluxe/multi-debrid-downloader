@@ -2642,6 +2642,30 @@ export function App(): ReactElement {
     });
   };
 
+  const onExportPackageSelection = async (packageIds: string[]): Promise<void> => {
+    closeMenus();
+    await performQuickAction(async () => {
+      const result = await window.rd.exportPackageSelection(packageIds);
+      if (result.saved) {
+        showToast(`${result.packageCount} Paket(e), ${result.linkCount} Link(s) exportiert`, 2800);
+      }
+    }, (error) => {
+      showToast(`Export fehlgeschlagen: ${String(error)}`, 2600);
+    });
+  };
+
+  const onExportItemSelection = async (itemIds: string[]): Promise<void> => {
+    closeMenus();
+    await performQuickAction(async () => {
+      const result = await window.rd.exportItemSelection(itemIds);
+      if (result.saved) {
+        showToast(`${result.packageCount} Paket(e), ${result.linkCount} Link(s) exportiert`, 2800);
+      }
+    }, (error) => {
+      showToast(`Export fehlgeschlagen: ${String(error)}`, 2600);
+    });
+  };
+
   onImportDlcRef.current = onImportDlc;
 
   const onDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
@@ -2654,6 +2678,7 @@ export function App(): ReactElement {
     if (!hasFiles && !hasUri) { return; }
     const files = Array.from(event.dataTransfer.files ?? []) as File[];
     const dlc = files.filter((f) => f.name.toLowerCase().endsWith(".dlc")).map((f) => (f as unknown as { path?: string }).path).filter((v): v is string => !!v);
+    const importFiles = files.filter((f) => /\.(json|txt)$/i.test(f.name));
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
     if (dlc.length > 0) {
       await performQuickAction(async () => {
@@ -2665,6 +2690,27 @@ export function App(): ReactElement {
           if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
         } else {
           showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
+        }
+      }, (error) => {
+        showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
+      });
+    } else if (importFiles.length > 0) {
+      await performQuickAction(async () => {
+        await persistDraftSettings();
+        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
+        let addedPackages = 0;
+        let addedLinks = 0;
+        for (const file of importFiles) {
+          const text = await file.text();
+          const result = await window.rd.importQueue(text);
+          addedPackages += result.addedPackages;
+          addedLinks += result.addedLinks;
+        }
+        if (addedLinks > 0) {
+          showToast(`Importiert: ${addedPackages} Paket(e), ${addedLinks} Link(s)`);
+          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
+        } else {
+          showToast("Keine gültigen Links in den Import-Dateien gefunden", 3000);
         }
       }, (error) => {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
@@ -2699,7 +2745,7 @@ export function App(): ReactElement {
 
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json";
+    input.accept = ".json,.txt";
 
     const releasePickerBusy = (): void => {
       actionBusyRef.current = false;
@@ -2722,9 +2768,16 @@ export function App(): ReactElement {
       }
       releasePickerBusy();
       await performQuickAction(async () => {
+        await persistDraftSettings();
+        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
         const text = await file.text();
         const result = await window.rd.importQueue(text);
-        showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+        if (result.addedLinks > 0) {
+          showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
+        } else {
+          showToast("Keine gültigen Links in der Datei gefunden", 3000);
+        }
       }, (error) => {
         showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
       });
@@ -3688,6 +3741,9 @@ export function App(): ReactElement {
                 <span>Text mit Links analysieren</span>
                 <span className="shortcut">Strg+L</span>
               </button>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onImportQueue(); }}>
+                <span>Datei importieren</span>
+              </button>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onImportDlc(); }}>
                 <span>Linkcontainer laden</span>
                 <span className="shortcut">Strg+O</span>
@@ -3997,7 +4053,7 @@ export function App(): ReactElement {
                 <div className="link-actions">
                   <button className="btn" disabled={actionBusy} onClick={onImportDlc}>DLC import</button>
                   <button className="btn" disabled={actionBusy} onClick={onExportQueue}>Queue Export</button>
-                  <button className="btn" disabled={actionBusy} onClick={onImportQueue}>Queue Import</button>
+                  <button className="btn" disabled={actionBusy} onClick={onImportQueue}>Datei Import</button>
                   <button className="btn accent" disabled={actionBusy} onClick={onAddLinks}>Zur Queue hinzufügen</button>
                 </div>
               </div>
@@ -4014,7 +4070,7 @@ export function App(): ReactElement {
                 value={currentCollectorTab.text}
                 onChange={(e) => setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id ? { ...t, text: e.target.value } : t))}
                 onDragOver={(e) => e.preventDefault()}
-                placeholder={"# package: Release-Name\nhttps://...\nhttps://...\n\nLinks oder .dlc Dateien hier ablegen"}
+                placeholder={"# package: Release-Name\n# file: Folge 01.rar\nhttps://...\nhttps://...\n\nLinks, .dlc oder Export-Dateien hier ablegen"}
               />
             </article>
           </section>
@@ -5309,7 +5365,7 @@ export function App(): ReactElement {
         </div>
       )}
       {statusToast && <div className="toast">{statusToast}</div>}
-      {dragOver && <div className="drop-overlay">Links oder .dlc Dateien hier ablegen</div>}
+      {dragOver && <div className="drop-overlay">Links, .dlc oder Export-Dateien hier ablegen</div>}
       {contextMenu && (() => {
         const multi = selectedIds.size > 1;
         const selectedPackageIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
@@ -5332,6 +5388,18 @@ export function App(): ReactElement {
           <button className="ctx-menu-item" onClick={() => { void window.rd.start().catch(() => {}); setContextMenu(null); }}>Alle Downloads starten</button>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
+          {hasPackages && !contextMenu.itemId && (
+            <button className="ctx-menu-item" onClick={() => {
+              void onExportPackageSelection(selectedPackageIds);
+              setContextMenu(null);
+            }}>{multi ? `Ausgewählte Pakete exportieren (${selectedPackageIds.length})` : "Paket exportieren"}</button>
+          )}
+          {contextMenu.itemId && (
+            <button className="ctx-menu-item" onClick={() => {
+              void onExportItemSelection(multi ? selectedItemIds : [contextMenu.itemId!]);
+              setContextMenu(null);
+            }}>{multi ? `Ausgewählte Dateien exportieren (${selectedItemIds.length})` : "Datei exportieren"}</button>
+          )}
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
               for (const id of selectedPackageIds) {

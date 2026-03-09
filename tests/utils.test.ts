@@ -40,6 +40,28 @@ describe("utils", () => {
     expect(parsed[1].name).toBe("B");
   });
 
+  it("parses optional file markers for roundtrip imports", () => {
+    const parsed = parsePackagesFromLinksText(
+      "# rd-link-export: 1\n# package: Dave Staffel 1\n# file: Folge 001.rar\nhttps://a.com/1\n# file: Folge 002.rar\nhttps://a.com/2\n",
+      "Default"
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Dave Staffel 1");
+    expect(parsed[0].links).toEqual(["https://a.com/1", "https://a.com/2"]);
+    expect(parsed[0].fileNames).toEqual(["Folge 001.rar", "Folge 002.rar"]);
+  });
+
+  it("does not carry a file marker across package boundaries", () => {
+    const parsed = parsePackagesFromLinksText(
+      "# package: Dave Staffel 1\n# file: Folge 001.rar\n# package: Dave Staffel 2\nhttps://a.com/2\n",
+      "Default"
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Dave Staffel 2");
+    expect(parsed[0].links).toEqual(["https://a.com/2"]);
+    expect(parsed[0].fileNames).toBeUndefined();
+  });
+
   it("formats eta", () => {
     expect(formatEta(-1)).toBe("--");
     expect(formatEta(65)).toBe("01:05");

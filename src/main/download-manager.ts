@@ -30,6 +30,7 @@ import {
   isProviderDailyLimitReached
 } from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS, DISK_BUSY_STATUS_THRESHOLD_MS } from "./constants";
+import { parseCollectorInput } from "./link-parser";
 
 // Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
 // when multiple parallel downloads need TLS verification disabled (e.g. DDownload).
@@ -1793,11 +1794,13 @@ export class DownloadManager extends EventEmitter {
         if (!pkg) {
           return null;
         }
+        const entries = pkg.itemIds
+          .map((itemId) => this.session.items[itemId])
+          .filter((item): item is DownloadItem => Boolean(item && item.url));
         return {
           name: pkg.name,
-          links: pkg.itemIds
-            .map((itemId) => this.session.items[itemId]?.url)
-            .filter(Boolean)
+          links: entries.map((item) => item.url),
+          fileNames: entries.map((item) => item.fileName || "")
         };
       }).filter(Boolean)
     };
@@ -1805,26 +1808,44 @@ export class DownloadManager extends EventEmitter {
   }
 
   public importQueue(json: string): { addedPackages: number; addedLinks: number } {
-    let data: { packages?: Array<{ name: string; links: string[] }> };
-    try {
-      data = JSON.parse(json) as { packages?: Array<{ name: string; links: string[] }> };
-    } catch {
-      throw new Error("Ungultige Queue-Datei (JSON)");
+    const trimmed = String(json || "").trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      let data: { packages?: Array<{ name: string; links: string[]; fileNames?: string[] }> };
+      try {
+        data = JSON.parse(json) as { packages?: Array<{ name: string; links: string[]; fileNames?: string[] }> };
+      } catch {
+        throw new Error("Ungultige Queue-Datei (JSON)");
+      }
+      if (!Array.isArray(data.packages)) {
+        return { addedPackages: 0, addedLinks: 0 };
+      }
+      const inputs: ParsedPackageInput[] = data.packages
+        .map((pkg) => {
+          const name = typeof pkg?.name === "string" ? pkg.name : "";
+          const linksRaw = Array.isArray(pkg?.links) ? pkg.links : [];
+          const fileNamesRaw = Array.isArray(pkg?.fileNames) ? pkg.fileNames : [];
+          const entries = linksRaw
+            .map((link, index) => ({
+              link: typeof link === "string" ? link.trim() : "",
+              fileName: typeof fileNamesRaw[index] === "string" ? fileNamesRaw[index].trim() : ""
+            }))
+            .filter((entry) => entry.link.length > 0);
+          const links = entries.map((entry) => entry.link);
+          const fileNames = entries.map((entry) => entry.fileName);
+          return {
+            name,
+            links,
+            ...(fileNames.some((fileName) => fileName.length > 0) ? { fileNames } : {})
+          };
+        })
+        .filter((pkg) => pkg.name.trim().length > 0 && pkg.links.length > 0);
+      return this.addPackages(inputs);
     }
-    if (!Array.isArray(data.packages)) {
+
+    const inputs = parseCollectorInput(json, "");
+    if (inputs.length === 0) {
       return { addedPackages: 0, addedLinks: 0 };
     }
-    const inputs: ParsedPackageInput[] = data.packages
-      .map((pkg) => {
-        const name = typeof pkg?.name === "string" ? pkg.name : "";
-        const linksRaw = Array.isArray(pkg?.links) ? pkg.links : [];
-        const links = linksRaw
-          .filter((link) => typeof link === "string")
-          .map((link) => link.trim())
-          .filter(Boolean);
-        return { name, links };
-      })
-      .filter((pkg) => pkg.name.trim().length > 0 && pkg.links.length > 0);
     return this.addPackages(inputs);
   }
 

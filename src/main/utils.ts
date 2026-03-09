@@ -201,19 +201,31 @@ export function parsePackagesFromLinksText(rawText: string, defaultPackageName: 
   const packages: ParsedPackageInput[] = [];
   let currentName = String(defaultPackageName || "").trim();
   let currentLinks: string[] = [];
+  let currentFileNames: string[] = [];
+  let pendingFileName = "";
 
   const flush = (): void => {
     const links = uniquePreserveOrder(currentLinks.filter((line) => isHttpLink(line)));
     if (links.length > 0) {
       const normalizedCurrentName = String(currentName || "").trim();
-      packages.push({
+      const fileNames = links.map((link) => {
+        const firstIndex = currentLinks.findIndex((currentLink) => currentLink === link);
+        return firstIndex >= 0 ? currentFileNames[firstIndex] || "" : "";
+      });
+      const nextPackage: ParsedPackageInput = {
         name: normalizedCurrentName
           ? sanitizeFilename(normalizedCurrentName)
           : inferPackageNameFromLinks(links),
         links
-      });
+      };
+      if (fileNames.some((fileName) => fileName.trim().length > 0)) {
+        nextPackage.fileNames = fileNames;
+      }
+      packages.push(nextPackage);
     }
     currentLinks = [];
+    currentFileNames = [];
+    pendingFileName = "";
   };
 
   for (const line of lines) {
@@ -225,9 +237,20 @@ export function parsePackagesFromLinksText(rawText: string, defaultPackageName: 
     if (marker) {
       flush();
       currentName = String(marker[1] || "").trim();
+      pendingFileName = "";
+      continue;
+    }
+    const fileMarker = text.match(/^#\s*file\s*:\s*(.+)$/i);
+    if (fileMarker) {
+      pendingFileName = sanitizeFilename(String(fileMarker[1] || "").trim());
+      continue;
+    }
+    if (!isHttpLink(text)) {
       continue;
     }
     currentLinks.push(text);
+    currentFileNames.push(pendingFileName);
+    pendingFileName = "";
   }
 
   flush();
