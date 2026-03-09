@@ -2,10 +2,13 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { APP_VERSION } from "./constants";
+import { getAuditLogPath } from "./audit-log";
 import { logger, getLogFilePath } from "./logger";
 import { getItemLogPath as getPersistedItemLogPath } from "./item-log";
 import { getSessionLogPath } from "./session-log";
 import { getPackageLogPath as getPersistedPackageLogPath } from "./package-log";
+import { createStoragePaths, loadHistory, loadSettings } from "./storage";
+import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
 import { getWindowsHostDiagnostics } from "./windows-host-diagnostics";
 import type { DownloadManager } from "./download-manager";
 import type { DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
@@ -13,6 +16,35 @@ import type { DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
 const DEFAULT_PORT = 9868;
 const DEFAULT_HOST = "127.0.0.1";
 const MAX_LOG_LINES = 10000;
+const AI_MANIFEST_FILE = "debug_ai_manifest.json";
+
+type DebugEndpointDescriptor = {
+  method: "GET";
+  path: string;
+  queryExample?: string;
+  description: string;
+};
+
+const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
+  { method: "GET", path: "/health", description: "Basic health, uptime, and memory information." },
+  { method: "GET", path: "/meta", description: "Lists runtime metadata and all available endpoints." },
+  { method: "GET", path: "/host/diagnostics", description: "Returns Windows host crash and dump diagnostics." },
+  { method: "GET", path: "/log", queryExample: "lines=100&grep=keyword", description: "Legacy alias for the main application log tail." },
+  { method: "GET", path: "/logs/main", queryExample: "lines=100&grep=keyword", description: "Reads the main application log tail." },
+  { method: "GET", path: "/logs/audit", queryExample: "lines=100&grep=keyword", description: "Reads the audit log for support-relevant UI and admin actions." },
+  { method: "GET", path: "/logs/session", queryExample: "lines=100&grep=keyword", description: "Reads the session log tail." },
+  { method: "GET", path: "/logs/package", queryExample: "package=Release&lines=100&grep=keyword", description: "Reads the package log for a specific package name or id." },
+  { method: "GET", path: "/logs/item", queryExample: "item=episode.part2.rar&lines=100&grep=keyword", description: "Reads the item log for a specific file name or item id." },
+  { method: "GET", path: "/settings", description: "Returns a redacted settings snapshot without raw secrets." },
+  { method: "GET", path: "/accounts", description: "Returns a redacted account/provider configuration summary." },
+  { method: "GET", path: "/stats", description: "Returns live session stats plus persisted all-time totals." },
+  { method: "GET", path: "/history", queryExample: "limit=50&status=completed", description: "Returns history entries with optional filters." },
+  { method: "GET", path: "/status", description: "Returns a live high-level status overview." },
+  { method: "GET", path: "/packages", queryExample: "package=Release&includeItems=1", description: "Lists packages and optional per-item detail." },
+  { method: "GET", path: "/items", queryExample: "status=downloading&package=Release", description: "Lists items and supports status/package filters." },
+  { method: "GET", path: "/session", queryExample: "package=Release", description: "Returns session-wide or package-scoped item state." },
+  { method: "GET", path: "/diagnostics", queryExample: "package=Release&lines=150", description: "Returns a combined support snapshot with logs, status, settings, accounts, stats, history, and host diagnostics." }
+];
 
 let server: http.Server | null = null;
 let manager: DownloadManager | null = null;
@@ -20,6 +52,22 @@ let authToken = "";
 let bindHost = DEFAULT_HOST;
 let bindPort = DEFAULT_PORT;
 let runtimeBaseDir = "";
+
+function getStoragePaths() {
+  return createStoragePaths(runtimeBaseDir);
+}
+
+function readSupportSettings() {
+  return loadSettings(getStoragePaths());
+}
+
+function readSupportHistory() {
+  return loadHistory(getStoragePaths());
+}
+
+function getAiManifestPath(baseDir: string = runtimeBaseDir): string {
+  return path.join(baseDir, AI_MANIFEST_FILE);
+}
 
 function loadToken(baseDir: string): string {
   const tokenPath = path.join(baseDir, "debug_token.txt");
@@ -111,6 +159,78 @@ function filterLines(lines: string[], grep: string): string[] {
     return lines;
   }
   return lines.filter((line) => line.toLowerCase().includes(pattern));
+}
+
+function formatEndpointSummary(endpoint: DebugEndpointDescriptor): string {
+  return `${endpoint.method} ${endpoint.path}${endpoint.queryExample ? `?${endpoint.queryExample}` : ""}`;
+}
+
+function getEndpointSummaries(): string[] {
+  return DEBUG_ENDPOINTS.map((endpoint) => formatEndpointSummary(endpoint));
+}
+
+function buildAiManifest(baseDir: string): Record<string, unknown> {
+  const remoteHostHint = bindHost === "0.0.0.0"
+    ? "Use the server IP or DNS name for remote access. Ask the user only for that host value if it is unknown."
+    : "If remote access is required and the bind host is local-only, switch debug_host.txt to 0.0.0.0 and reopen the firewall.";
+
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    runtimeBaseDir: baseDir,
+    purpose: "Machine-readable support manifest for AI tools and remote troubleshooting.",
+    quickstart: [
+      "Read debug_token.txt and debug_port.txt from this runtime folder.",
+      "If remote access is needed, ask the user only for the server IP or DNS name.",
+      "Call /meta first to confirm the server is reachable and to re-read the endpoint list.",
+      "Use /diagnostics for an overview, then drill into /logs/item, /logs/package, /status, /packages, /items, /settings, /accounts, /stats, or /history."
+    ],
+    auth: {
+      required: true,
+      methods: [
+        "Authorization: Bearer <token>",
+        "?token=<token>"
+      ],
+      tokenFile: path.join(baseDir, "debug_token.txt")
+    },
+    runtimeFiles: {
+      hostFile: path.join(baseDir, "debug_host.txt"),
+      portFile: path.join(baseDir, "debug_port.txt"),
+      tokenFile: path.join(baseDir, "debug_token.txt"),
+      mainLogFile: getLogFilePath(),
+      auditLogFile: getAuditLogPath(),
+      sessionLogFile: getSessionLogPath(),
+      packageLogDir: path.join(baseDir, "package-logs"),
+      itemLogDir: path.join(baseDir, "item-logs"),
+      settingsFile: path.join(baseDir, "rd_downloader_config.json"),
+      sessionFile: path.join(baseDir, "rd_session_state.json"),
+      historyFile: path.join(baseDir, "rd_history.json")
+    },
+    debugServer: {
+      enabled: Boolean(authToken),
+      host: bindHost,
+      port: bindPort,
+      localBaseUrl: `http://127.0.0.1:${bindPort}`,
+      remoteBaseUrlTemplate: `http://<SERVER_IP_OR_DNS>:${bindPort}`,
+      remoteHostHint
+    },
+    askUserFor: [
+      "Server IP or DNS name, if remote access is required and not already known."
+    ],
+    endpoints: DEBUG_ENDPOINTS.map((endpoint) => ({
+      ...endpoint,
+      summary: formatEndpointSummary(endpoint)
+    }))
+  };
+}
+
+function writeAiManifest(baseDir: string): void {
+  try {
+    fs.writeFileSync(getAiManifestPath(baseDir), JSON.stringify(buildAiManifest(baseDir), null, 2), "utf8");
+  } catch (error) {
+    logger.warn(`Debug-Server: KI-Support-Datei konnte nicht geschrieben werden: ${String(error)}`);
+  }
 }
 
 function summarizeItem(item: DownloadItem): Record<string, unknown> {
@@ -264,25 +384,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         host: bindHost,
         port: bindPort
       },
+      supportFiles: {
+        aiManifest: getAiManifestPath()
+      },
       logPaths: {
         main: getLogFilePath(),
         session: getSessionLogPath()
       },
-      endpoints: [
-        "GET /health",
-        "GET /meta",
-        "GET /host/diagnostics",
-        "GET /log?lines=100&grep=keyword",
-        "GET /logs/main?lines=100&grep=keyword",
-        "GET /logs/session?lines=100&grep=keyword",
-        "GET /logs/package?package=Release&lines=100&grep=keyword",
-        "GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword",
-        "GET /status",
-        "GET /packages?package=Release&includeItems=1",
-        "GET /items?status=downloading&package=Release",
-        "GET /session?package=Release",
-        "GET /diagnostics?package=Release&lines=150"
-      ]
+      endpoints: getEndpointSummaries()
     });
     return;
   }
@@ -297,6 +406,19 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const grep = url.searchParams.get("grep") || "";
     const lines = filterLines(readLogTailFromFile(getLogFilePath(), count), grep);
     jsonResponse(res, 200, { lines, count: lines.length });
+    return;
+  }
+
+  if (pathname === "/logs/audit") {
+    const count = normalizeLinesParam(url.searchParams.get("lines"), 100);
+    const grep = url.searchParams.get("grep") || "";
+    const logPath = getAuditLogPath();
+    const lines = filterLines(readLogTailFromFile(logPath, count), grep);
+    jsonResponse(res, 200, {
+      path: logPath,
+      lines,
+      count: lines.length
+    });
     return;
   }
 
@@ -357,6 +479,58 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       path: resolved.logPath,
       lines,
       count: lines.length
+    });
+    return;
+  }
+
+  if (pathname === "/settings") {
+    const settings = readSupportSettings();
+    jsonResponse(res, 200, buildRedactedSettingsPayload(settings));
+    return;
+  }
+
+  if (pathname === "/accounts") {
+    const settings = readSupportSettings();
+    jsonResponse(res, 200, buildAccountSummary(settings));
+    return;
+  }
+
+  if (pathname === "/stats") {
+    if (!manager) {
+      jsonResponse(res, 503, { error: "Manager not initialized" });
+      return;
+    }
+    const snapshot = manager.getSnapshot();
+    const settings = readSupportSettings();
+    jsonResponse(res, 200, {
+      ...buildStatsPayload(snapshot),
+      allTime: {
+        totalDownloadedAllTime: settings.totalDownloadedAllTime,
+        totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime
+      }
+    });
+    return;
+  }
+
+  if (pathname === "/history") {
+    const entries = readSupportHistory();
+    const limit = normalizeLinesParam(url.searchParams.get("limit"), 50);
+    const statusFilter = String(url.searchParams.get("status") || "").trim().toLowerCase();
+    const grep = String(url.searchParams.get("grep") || "").trim().toLowerCase();
+    let filtered = entries;
+    if (statusFilter) {
+      filtered = filtered.filter((entry) => String(entry.status || "").toLowerCase() === statusFilter);
+    }
+    if (grep) {
+      filtered = filtered.filter((entry) => JSON.stringify(summarizeHistoryEntry(entry)).toLowerCase().includes(grep));
+    }
+    const sliced = filtered
+      .sort((a, b) => Number(b.completedAt || 0) - Number(a.completedAt || 0))
+      .slice(0, limit);
+    jsonResponse(res, 200, {
+      count: sliced.length,
+      total: filtered.length,
+      entries: sliced.map((entry) => summarizeHistoryEntry(entry))
     });
     return;
   }
@@ -478,12 +652,26 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         }
       },
       status: buildStatusPayload(snapshot),
+      settings: buildRedactedSettingsPayload(readSupportSettings()),
+      stats: buildStatsPayload(snapshot),
+      accounts: buildAccountSummary(readSupportSettings()),
+      history: {
+        total: readSupportHistory().length,
+        recent: readSupportHistory()
+          .sort((a, b) => Number(b.completedAt || 0) - Number(a.completedAt || 0))
+          .slice(0, 10)
+          .map((entry) => summarizeHistoryEntry(entry))
+      },
       host: getWindowsHostDiagnostics(),
       selectedPackage: selectedPackage ? summarizePackage(snapshot, selectedPackage, true) : undefined,
       logs: {
         main: {
           path: mainLogPath,
           lines: filterLines(readLogTailFromFile(mainLogPath, lineCount), grep)
+        },
+        audit: {
+          path: getAuditLogPath(),
+          lines: filterLines(readLogTailFromFile(getAuditLogPath(), lineCount), grep)
         },
         session: {
           path: sessionLogPath,
@@ -500,35 +688,22 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
   jsonResponse(res, 404, {
     error: "Not found",
-    endpoints: [
-      "GET /health",
-      "GET /meta",
-      "GET /host/diagnostics",
-      "GET /log?lines=100&grep=keyword",
-      "GET /logs/main?lines=100&grep=keyword",
-      "GET /logs/session?lines=100&grep=keyword",
-      "GET /logs/package?package=Release&lines=100&grep=keyword",
-      "GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword",
-      "GET /status",
-      "GET /packages?package=Release&includeItems=1",
-      "GET /items?status=downloading&package=Bloodline",
-      "GET /session?package=Criminal",
-      "GET /diagnostics?package=Criminal&lines=150"
-    ]
+    endpoints: getEndpointSummaries()
   });
 }
 
 export function startDebugServer(mgr: DownloadManager, baseDir: string): void {
   runtimeBaseDir = baseDir;
   authToken = loadToken(baseDir);
+  bindPort = getPort(baseDir);
+  bindHost = getHost(baseDir);
+  writeAiManifest(baseDir);
   if (!authToken) {
     logger.info("Debug-Server: Kein Token in debug_token.txt, Server wird nicht gestartet");
     return;
   }
 
   manager = mgr;
-  bindPort = getPort(baseDir);
-  bindHost = getHost(baseDir);
 
   server = http.createServer(handleRequest);
   server.listen(bindPort, bindHost, () => {

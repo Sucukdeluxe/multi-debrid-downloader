@@ -181,6 +181,8 @@ Runtime files are stored in Electron's `userData` directory, including:
 - `rd_session_state.json`
 - `rd_history.json`
 - `rd_downloader.log`
+- `audit.log`
+- `debug_ai_manifest.json`
 - `session-logs/session_*.txt`
 - `package-logs/package_*.txt`
 - `item-logs/item_*.txt`
@@ -198,17 +200,24 @@ Enable it by creating these files in the same runtime folder that contains `rd_d
 - `debug_host.txt` (optional)
   Default is `127.0.0.1`. Set `0.0.0.0` only if you really want remote access and protect it with firewall, VPN, or reverse proxy.
 
+After startup, the app also writes `debug_ai_manifest.json` into the same runtime folder. This file is meant for support tooling and AI agents: it lists all available endpoints, the auth method, the related runtime files, and the one remaining external value the assistant may still need from you for remote access: the server IP or DNS name.
+
 Available endpoints after restart:
 
 - `GET /health`
 - `GET /meta`
 - `GET /host/diagnostics`
 - `GET /status`
+- `GET /settings`
+- `GET /accounts`
+- `GET /stats`
+- `GET /history?limit=50&status=completed`
 - `GET /packages?package=Release&includeItems=1`
 - `GET /items?status=downloading&package=Release`
 - `GET /session?package=Release`
 - `GET /log?lines=100&grep=keyword`
 - `GET /logs/main?lines=100&grep=keyword`
+- `GET /logs/audit?lines=100&grep=keyword`
 - `GET /logs/session?lines=100&grep=keyword`
 - `GET /logs/package?package=Release&lines=100&grep=keyword`
 - `GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword`
@@ -223,12 +232,17 @@ Example from PowerShell:
 
 ```powershell
 Invoke-RestMethod "http://SERVER:9868/diagnostics?token=YOUR_TOKEN&package=Release"
+Invoke-RestMethod "http://SERVER:9868/settings?token=YOUR_TOKEN"
+Invoke-RestMethod "http://SERVER:9868/accounts?token=YOUR_TOKEN"
+Invoke-RestMethod "http://SERVER:9868/stats?token=YOUR_TOKEN"
+Invoke-RestMethod "http://SERVER:9868/history?token=YOUR_TOKEN&limit=20"
+Invoke-RestMethod "http://SERVER:9868/logs/audit?token=YOUR_TOKEN&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/package?token=YOUR_TOKEN&package=Release&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/item?token=YOUR_TOKEN&item=episode.part2.rar&lines=200"
 Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"
 ```
 
-This makes it easy to share one URL plus token during support, so current package status, session state, package/session logs, and host-side Windows crash hints can be inspected remotely.
+This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, package/session/item logs, and host-side Windows crash hints can be inspected remotely.
 
 ## Troubleshooting
 

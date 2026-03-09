@@ -40,11 +40,14 @@ vi.mock("../src/main/windows-host-diagnostics", () => ({
 }));
 
 import { defaultSettings } from "../src/main/constants";
+import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "../src/main/audit-log";
 import { startDebugServer, stopDebugServer } from "../src/main/debug-server";
 import { ensureItemLog, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { configureLogger, getLogFilePath } from "../src/main/logger";
 import { ensurePackageLog, initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { getSessionLogPath, initSessionLog, shutdownSessionLog } from "../src/main/session-log";
+import { createStoragePaths, saveHistory, saveSettings } from "../src/main/storage";
+import { getDebridLinkApiKeyIds } from "../src/shared/debrid-link-keys";
 import type { DownloadManager } from "../src/main/download-manager";
 import type { UiSnapshot } from "../src/shared/types";
 
@@ -188,13 +191,47 @@ async function createFixture() {
   const token = "debug-secret";
   const port = await getFreePort();
   const snapshot = buildSnapshot(baseDir);
+  const storagePaths = createStoragePaths(baseDir);
 
   fs.writeFileSync(path.join(baseDir, "debug_token.txt"), token, "utf8");
   fs.writeFileSync(path.join(baseDir, "debug_port.txt"), String(port), "utf8");
   fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "0.0.0.0", "utf8");
+  const debridLinkApiKeys = "key-a\nkey-b";
+  const debridLinkKeyIds = getDebridLinkApiKeyIds(debridLinkApiKeys);
+
+  saveSettings(storagePaths, {
+    ...snapshot.settings,
+    token: "rd-secret-token",
+    realDebridUseWebLogin: true,
+    debridLinkApiKeys,
+    debridLinkDisabledKeyIds: debridLinkKeyIds[1] ? [debridLinkKeyIds[1]] : [],
+    totalDownloadedAllTime: 128 * 1024 * 1024,
+    totalCompletedFilesAllTime: 12
+  });
+  saveHistory(storagePaths, [
+    {
+      id: "hist-1",
+      name: "server-package",
+      totalBytes: 123,
+      downloadedBytes: 123,
+      fileCount: 2,
+      provider: "realdebrid",
+      completedAt: Date.now() - 5_000,
+      durationSeconds: 42,
+      status: "completed",
+      outputDir: path.join(baseDir, "downloads", "server-package"),
+      urls: ["https://hoster.example/file-1"]
+    }
+  ]);
 
   configureLogger(baseDir);
   fs.writeFileSync(getLogFilePath(), "2026-03-09T00:00:00.000Z [INFO] MAIN-LINE\n", "utf8");
+  initAuditLog(baseDir);
+  const auditLogPath = getAuditLogPath();
+  if (!auditLogPath) {
+    throw new Error("audit log path missing");
+  }
+  logAuditEvent("INFO", "AUDIT-LINE", { scope: "settings" });
 
   initSessionLog(baseDir);
   const sessionLogPath = getSessionLogPath();
@@ -239,7 +276,8 @@ async function createFixture() {
 
   return {
     baseUrl,
-    token
+    token,
+    baseDir
   };
 }
 
@@ -248,6 +286,7 @@ afterEach(() => {
   shutdownSessionLog();
   shutdownPackageLogs();
   shutdownItemLogs();
+  shutdownAuditLog();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (!dir) {
@@ -275,8 +314,31 @@ describe("debug-server", () => {
     expect(payload.host?.recentKernelPower?.[0]?.id).toBe(41);
     expect(payload.selectedPackage?.name).toBe("server-package");
     expect((payload.logs?.main?.lines || []).join("\n")).toContain("MAIN-LINE");
+    expect((payload.logs?.audit?.lines || []).join("\n")).toContain("AUDIT-LINE");
     expect((payload.logs?.session?.lines || []).join("\n")).toContain("SESSION-LINE");
     expect((payload.logs?.package?.lines || []).join("\n")).toContain("PACKAGE-LINE");
+    expect(payload.accounts?.realDebrid?.configured).toBe(true);
+    expect(payload.history?.total).toBe(1);
+  });
+
+  it("writes a machine-readable AI support manifest into the runtime folder", async () => {
+    const fixture = await createFixture();
+    const manifestPath = path.join(fixture.baseDir, "debug_ai_manifest.json");
+    expect(fs.existsSync(manifestPath)).toBe(true);
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, any>;
+    expect(manifest.appVersion).toBeTruthy();
+    expect(manifest.debugServer?.port).toBeGreaterThan(0);
+    expect(manifest.debugServer?.remoteBaseUrlTemplate).toContain("<SERVER_IP_OR_DNS>");
+    expect(manifest.quickstart?.[1]).toContain("server IP");
+    expect(manifest.runtimeFiles?.tokenFile).toContain("debug_token.txt");
+    expect(manifest.endpoints?.some((entry: Record<string, any>) => entry.path === "/diagnostics")).toBe(true);
+    expect(JSON.stringify(manifest)).not.toContain(fixture.token);
+
+    const metaResponse = await fetch(`${fixture.baseUrl}/meta?token=${fixture.token}`);
+    expect(metaResponse.ok).toBe(true);
+    const metaPayload = await metaResponse.json() as Record<string, any>;
+    expect(metaPayload.supportFiles?.aiManifest).toBe(manifestPath);
   });
 
   it("serves package details and package log by package query", async () => {
@@ -314,6 +376,43 @@ describe("debug-server", () => {
     expect(payload.platform).toBe("win32");
     expect(payload.crashControl?.crashDumpEnabled).toBe(3);
     expect(payload.assessmentHints?.[0]).toContain("watchdog");
+  });
+
+  it("serves audit log, settings, accounts, stats, and history", async () => {
+    const fixture = await createFixture();
+
+    const auditResponse = await fetch(`${fixture.baseUrl}/logs/audit?token=${fixture.token}&lines=20`);
+    expect(auditResponse.ok).toBe(true);
+    const auditPayload = await auditResponse.json() as Record<string, any>;
+    expect((auditPayload.lines || []).join("\n")).toContain("AUDIT-LINE");
+
+    const settingsResponse = await fetch(`${fixture.baseUrl}/settings?token=${fixture.token}`);
+    expect(settingsResponse.ok).toBe(true);
+    const settingsPayload = await settingsResponse.json() as Record<string, any>;
+    expect(settingsPayload.accounts?.realDebrid?.configured).toBe(true);
+    expect(settingsPayload.extraction?.archivePasswordCount).toBe(0);
+    expect(JSON.stringify(settingsPayload)).not.toContain("rd-secret-token");
+    expect(JSON.stringify(settingsPayload)).not.toContain("key-a");
+    expect(JSON.stringify(settingsPayload)).not.toContain("key-b");
+
+    const accountsResponse = await fetch(`${fixture.baseUrl}/accounts?token=${fixture.token}`);
+    expect(accountsResponse.ok).toBe(true);
+    const accountsPayload = await accountsResponse.json() as Record<string, any>;
+    expect(accountsPayload.debridLink?.keyCount).toBe(2);
+    expect(accountsPayload.debridLink?.disabledKeyCount).toBe(1);
+
+    const statsResponse = await fetch(`${fixture.baseUrl}/stats?token=${fixture.token}`);
+    expect(statsResponse.ok).toBe(true);
+    const statsPayload = await statsResponse.json() as Record<string, any>;
+    expect(statsPayload.session?.totalDownloaded).toBeGreaterThan(0);
+    expect(statsPayload.allTime?.totalDownloadedAllTime).toBeGreaterThan(0);
+
+    const historyResponse = await fetch(`${fixture.baseUrl}/history?token=${fixture.token}&limit=10`);
+    expect(historyResponse.ok).toBe(true);
+    const historyPayload = await historyResponse.json() as Record<string, any>;
+    expect(historyPayload.total).toBe(1);
+    expect(historyPayload.entries?.[0]?.name).toBe("server-package");
+    expect(historyPayload.entries?.[0]?.urlCount).toBe(1);
   });
 
   it("rejects unauthenticated requests", async () => {
