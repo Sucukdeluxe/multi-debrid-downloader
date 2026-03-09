@@ -3500,6 +3500,11 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
+  private hasDeferredPostProcessPending(packageId: string): boolean {
+    const controller = this.packageDeferredPostProcessAbortControllers.get(packageId);
+    return Boolean(controller && !controller.signal.aborted);
+  }
+
   private async buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): Promise<string> {
     const parsed = path.parse(path.basename(sourcePath));
     const extension = parsed.ext || ".mkv";
@@ -3599,6 +3604,7 @@ export class DownloadManager extends EventEmitter {
     let moved = 0;
     let skipped = 0;
     let failed = 0;
+    let sourceArtifactsChanged = false;
 
     for (const sourcePath of mkvFiles) {
       if (shouldAbort?.()) {
@@ -3643,7 +3649,12 @@ export class DownloadManager extends EventEmitter {
             sourceSize
           }, resolved.item, resolved.matchedBy);
           // Remove the duplicate source file to avoid future re-processing
-          try { await fs.promises.unlink(sourcePath); } catch { /* ignore */ }
+          try {
+            await fs.promises.unlink(sourcePath);
+            sourceArtifactsChanged = true;
+          } catch {
+            /* ignore */
+          }
           skipped += 1;
           continue;
         }
@@ -3660,6 +3671,7 @@ export class DownloadManager extends EventEmitter {
       try {
         await this.moveFileWithExdevFallback(sourcePath, targetPath);
         moved += 1;
+        sourceArtifactsChanged = true;
         this.logPackageForPackage(pkg, "INFO", "MKV verschoben", {
           sourcePath,
           targetPath,
@@ -3689,7 +3701,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    if (moved > 0 && await this.existsAsync(sourceDir)) {
+    if (sourceArtifactsChanged && await this.existsAsync(sourceDir)) {
       const removedResidual = await this.cleanupNonMkvResidualFiles(sourceDir, targetDir);
       if (removedResidual > 0) {
         logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, entfernt=${removedResidual}`);
@@ -10444,7 +10456,7 @@ export class DownloadManager extends EventEmitter {
 
     if (policy === "immediate") {
       for (const itemId of [...pkg.itemIds]) {
-        this.applyCompletedCleanupPolicy(packageId, itemId);
+        this.applyCompletedCleanupPolicy(packageId, itemId, { ignoreDeferred: true });
       }
       return;
     }
@@ -10473,7 +10485,11 @@ export class DownloadManager extends EventEmitter {
     this.removePackageFromSession(packageId, [...pkg.itemIds], "completed");
   }
 
-  private applyCompletedCleanupPolicy(packageId: string, itemId: string): void {
+  private applyCompletedCleanupPolicy(
+    packageId: string,
+    itemId: string,
+    options?: { ignoreDeferred?: boolean }
+  ): void {
     const policy = this.settings.completedCleanupPolicy;
     if (policy === "never" || policy === "on_start") {
       return;
@@ -10481,6 +10497,10 @@ export class DownloadManager extends EventEmitter {
 
     const pkg = this.session.packages[packageId];
     if (!pkg) {
+      return;
+    }
+
+    if (!options?.ignoreDeferred && this.hasDeferredPostProcessPending(packageId)) {
       return;
     }
 
