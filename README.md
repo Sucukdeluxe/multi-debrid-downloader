@@ -189,6 +189,8 @@ Runtime files are stored in Electron's `userData` directory, including:
 - `package-logs/package_*.txt`
 - `item-logs/item_*.txt`
 
+`audit.log` and `trace.log` are rotated automatically. The current file is kept plus one `.old` backup, and outdated backups are purged automatically.
+
 ### Remote debug server
 
 For headless or server-style troubleshooting, the app can expose a small authenticated HTTP debug API with live status and log tails.
@@ -204,12 +206,15 @@ Enable it by creating these files in the same runtime folder that contains `rd_d
 
 After startup, the app also writes `debug_ai_manifest.json` into the same runtime folder. This file is meant for support tooling and AI agents: it lists all available endpoints, the auth method, the related runtime files, and the one remaining external value the assistant may still need from you for remote access: the server IP or DNS name.
 
-If you want extra support detail during a flaky or hard-to-reproduce issue, the app also maintains a `trace.log` plus `trace_config.json`. You can enable or disable the support trace from the app menu or remotely via the debug API.
+If you want extra support detail during a flaky or hard-to-reproduce issue, the app also maintains a `trace.log` plus `trace_config.json`. You can enable or disable the support trace from the app menu or remotely via the debug API. By default, the support trace now auto-disables again after 2 hours so it does not stay enabled forever by accident.
+
+The app menu under `Hilfe` also includes a `Debug-Setup prüfen` action. It verifies the current host/port/token/AI-manifest/trace setup locally and shows the exact local and remote URLs that support tooling can use.
 
 Available endpoints after restart:
 
 - `GET /health`
 - `GET /meta`
+- `GET /debug/setup`
 - `GET /host/diagnostics`
 - `GET /status`
 - `GET /settings`
@@ -226,7 +231,7 @@ Available endpoints after restart:
 - `GET /logs/session?lines=100&grep=keyword`
 - `GET /logs/package?package=Release&lines=100&grep=keyword`
 - `GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword`
-- `GET /trace/config?enable=1&note=support`
+- `GET /trace/config?enable=1&note=support&durationMinutes=120`
 - `GET /support/bundle`
 - `GET /diagnostics?package=Release&lines=150`
 
@@ -243,9 +248,10 @@ Invoke-RestMethod "http://SERVER:9868/settings?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/accounts?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/stats?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/history?token=YOUR_TOKEN&limit=20"
+Invoke-RestMethod "http://SERVER:9868/debug/setup?token=YOUR_TOKEN"
 Invoke-RestMethod "http://SERVER:9868/logs/audit?token=YOUR_TOKEN&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/trace?token=YOUR_TOKEN&lines=200"
-Invoke-RestMethod "http://SERVER:9868/trace/config?token=YOUR_TOKEN&enable=1&note=support"
+Invoke-RestMethod "http://SERVER:9868/trace/config?token=YOUR_TOKEN&enable=1&note=support&durationMinutes=120"
 Invoke-RestMethod "http://SERVER:9868/logs/package?token=YOUR_TOKEN&package=Release&lines=200"
 Invoke-RestMethod "http://SERVER:9868/logs/item?token=YOUR_TOKEN&item=episode.part2.rar&lines=200"
 Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"

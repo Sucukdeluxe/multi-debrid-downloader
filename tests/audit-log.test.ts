@@ -29,4 +29,20 @@ describe("audit-log", () => {
     expect(content).toContain("Settings changed");
     expect(content).toContain("changedKeys");
   });
+
+  it("rotates oversized audit logs on startup", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-alog-rotate-"));
+    tempDirs.push(baseDir);
+
+    const oversizedPath = path.join(baseDir, "audit.log");
+    fs.mkdirSync(baseDir, { recursive: true });
+    fs.writeFileSync(oversizedPath, "x".repeat(10 * 1024 * 1024 + 256), "utf8");
+
+    initAuditLog(baseDir);
+
+    expect(fs.existsSync(oversizedPath)).toBe(true);
+    expect(fs.existsSync(`${oversizedPath}.old`)).toBe(true);
+    const content = fs.readFileSync(oversizedPath, "utf8");
+    expect(content).toContain("Audit-Log Start");
+  });
 });

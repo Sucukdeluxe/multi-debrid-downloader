@@ -2,6 +2,7 @@ import type {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  DebugSetupCheckResult,
   DebridLinkHostLimitInfo,
   DebridProvider,
   DuplicatePolicy,
@@ -59,8 +60,9 @@ export interface ElectronApi {
   openTraceLog: () => Promise<void>;
   openPackageLog: (packageId: string) => Promise<void>;
   openItemLog: (itemId: string) => Promise<void>;
+  getDebugSetupCheck: () => Promise<DebugSetupCheckResult>;
   getTraceConfig: () => Promise<SupportTraceConfig>;
-  setTraceEnabled: (enabled: boolean, note?: string) => Promise<SupportTraceConfig>;
+  setTraceEnabled: (enabled: boolean, note?: string, durationMinutes?: number) => Promise<SupportTraceConfig>;
   rotateDebugToken: () => Promise<{ path: string }>;
   openRealDebridLogin: () => Promise<void>;
   openAllDebridLogin: () => Promise<void>;

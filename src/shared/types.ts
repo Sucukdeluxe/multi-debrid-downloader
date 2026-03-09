@@ -342,7 +342,35 @@ export interface SupportTraceConfig {
   includeMainLog: boolean;
   includeAudit: boolean;
   logDebugRequests: boolean;
+  autoDisableAt: string | null;
   updatedAt: string;
+}
+
+export interface DebugSetupCheckResult {
+  enabled: boolean;
+  host: string;
+  port: number;
+  localOnly: boolean;
+  tokenConfigured: boolean;
+  tokenPath: string;
+  aiManifestPath: string;
+  aiManifestPresent: boolean;
+  traceConfigPath: string | null;
+  traceLogPath: string | null;
+  traceEnabled: boolean;
+  traceAutoDisableAt: string | null;
+  warnings: string[];
+  notes: string[];
+  localUrls: {
+    health: string;
+    meta: string;
+    diagnostics: string;
+  };
+  remoteUrlTemplates: {
+    health: string;
+    meta: string;
+    diagnostics: string;
+  };
 }
 
 export interface HistoryEntry {
