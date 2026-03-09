@@ -3840,6 +3840,70 @@ describe("download manager", () => {
     expect((manager as any).session.items[itemId].fullStatus).toBe("Entpack-Fehler: Checksum error in encrypted file");
   });
 
+  it("applies final extract errors only to the affected full-extract archive items", () => {
+    const createdAt = Date.now() - 10_000;
+    const completedItems = [
+      {
+        id: "full-fail-item-1",
+        status: "completed",
+        fileName: "show.s01e01.part1.rar",
+        downloadedBytes: 100 * 1024 * 1024,
+        fullStatus: "Fertig (100 MB)",
+        updatedAt: createdAt
+      },
+      {
+        id: "full-fail-item-2",
+        status: "completed",
+        fileName: "show.s01e01.part2.rar",
+        downloadedBytes: 100 * 1024 * 1024,
+        fullStatus: "Fertig (100 MB)",
+        updatedAt: createdAt
+      },
+      {
+        id: "full-fail-item-3",
+        status: "completed",
+        fileName: "show.s01e02.part1.rar",
+        downloadedBytes: 200 * 1024 * 1024,
+        fullStatus: "Fertig (200 MB)",
+        updatedAt: createdAt
+      },
+      {
+        id: "full-fail-item-4",
+        status: "completed",
+        fileName: "show.s01e02.part2.rar",
+        downloadedBytes: 200 * 1024 * 1024,
+        fullStatus: "Fertig (200 MB)",
+        updatedAt: createdAt
+      }
+    ] as any[];
+    const previousStatuses = new Map<string, string>(completedItems.map((item: any) => [item.id, item.fullStatus]));
+
+    for (const item of completedItems) {
+      item.fullStatus = "Entpacken - Ausstehend";
+    }
+    completedItems[0].fullStatus = "Entpacken - Error";
+    completedItems[1].fullStatus = "Entpacken - Error";
+    const resolveArchiveItems = (archiveName: string) => {
+      const base = archiveName.replace(/\.part0*1\.rar$/i, "");
+      return completedItems.filter((item: any) => String(item.fileName || "").toLowerCase().startsWith(`${base}.part`));
+    };
+
+    (DownloadManager.prototype as any).applyPackageExtractFailureStatuses.call(
+      {},
+      completedItems,
+      resolveArchiveItems,
+      new Map([["show.s01e01.part1.rar", "Checksum error in the encrypted file"]]),
+      "Checksum error in the encrypted file",
+      previousStatuses,
+      createdAt + 5_000
+    );
+
+    expect(completedItems[0].fullStatus).toBe("Entpack-Fehler: Checksum error in the encrypted file");
+    expect(completedItems[1].fullStatus).toBe("Entpack-Fehler: Checksum error in the encrypted file");
+    expect(completedItems[2].fullStatus).toBe("Fertig (200 MB)");
+    expect(completedItems[3].fullStatus).toBe("Fertig (200 MB)");
+  });
+
   it("detects start conflicts when extract output already exists", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
