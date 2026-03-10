@@ -7827,6 +7827,87 @@ describe("download manager", () => {
     expect(remainingPackage?.outputDir).toBe(outputDir);
   });
 
+  it("removes link and sample artifacts from extracted output even when deferred post-processing has failures", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Failed Cleanup";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(path.join(extractDir, "sample"), { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "episode.links.txt"), "https://example.com/file", "utf8");
+    fs.writeFileSync(path.join(extractDir, "sample", "sample.mkv"), "sample-video", "utf8");
+
+    const session = emptySession();
+    const packageId = "failed-cleanup-pkg";
+    const itemId = "failed-cleanup-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "failed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/failed-cleanup",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 100,
+      totalBytes: 100,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath: path.join(outputDir, "episode.zip"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Done (1s)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: false,
+        removeLinkFilesAfterExtract: true,
+        removeSamplesAfterExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).runDeferredPostExtraction(
+      packageId,
+      (manager as any).session.packages[packageId],
+      1,
+      1,
+      true,
+      1
+    );
+
+    expect(fs.existsSync(path.join(extractDir, "episode.links.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(extractDir, "sample", "sample.mkv"))).toBe(false);
+  });
+
   it("does not delete startup archives when any completed item has an extract error", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

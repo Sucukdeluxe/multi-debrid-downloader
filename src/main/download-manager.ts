@@ -3694,6 +3694,7 @@ export class DownloadManager extends EventEmitter {
     let skipped = 0;
     let failed = 0;
     let sourceArtifactsChanged = false;
+    let sourceCleanupRelevant = false;
 
     for (const sourcePath of mkvFiles) {
       if (shouldAbort?.()) {
@@ -3744,6 +3745,7 @@ export class DownloadManager extends EventEmitter {
           } catch {
             /* ignore */
           }
+          sourceCleanupRelevant = true;
           skipped += 1;
           continue;
         }
@@ -3761,6 +3763,7 @@ export class DownloadManager extends EventEmitter {
         await this.moveFileWithExdevFallback(sourcePath, targetPath);
         moved += 1;
         sourceArtifactsChanged = true;
+        sourceCleanupRelevant = true;
         this.logPackageForPackage(pkg, "INFO", "MKV verschoben", {
           sourcePath,
           targetPath,
@@ -3790,7 +3793,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    if (sourceArtifactsChanged && await this.existsAsync(sourceDir)) {
+    if ((sourceArtifactsChanged || sourceCleanupRelevant) && await this.existsAsync(sourceDir)) {
       const removedResidual = await this.cleanupNonMkvResidualFiles(sourceDir, targetDir);
       if (removedResidual > 0) {
         logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, entfernt=${removedResidual}`);
@@ -10585,7 +10588,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       // ── Link/Sample artifact removal ──
-      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
+      if (extractedCount > 0 || alreadyMarkedExtracted) {
         throwIfAborted();
         if (this.settings.removeLinkFilesAfterExtract) {
           const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir, { shouldAbort });
