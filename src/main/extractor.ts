@@ -651,6 +651,23 @@ export function classifyExtractionError(errorText: string): ExtractErrorCategory
   return "unknown";
 }
 
+export function shouldSerialRetryParallelFailures(
+  extractedCount: number,
+  failedCategories: ExtractErrorCategory[]
+): boolean {
+  if (failedCategories.length === 0) {
+    return false;
+  }
+  if (extractedCount > 0) {
+    return true;
+  }
+  return failedCategories.every((category) =>
+    category === "crc_error"
+    || category === "wrong_password"
+    || category === "unknown"
+  );
+}
+
 export function shouldFallbackLegacyRarToJvm(
   archivePath: string,
   configuredMode: ExtractBackendMode,
@@ -3001,6 +3018,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let learnedPassword = cachedPackagePassword;
   let packageNeedsFlatMode = false;
   const extractedArchives = new Set<string>();
+  const failedArchiveCategories = new Map<string, ExtractErrorCategory>();
   for (const archivePath of candidates) {
     if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
       extractedArchives.add(archivePath);
@@ -3201,6 +3219,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
       extracted += 1;
       extractedArchives.add(archivePath);
+      failedArchiveCategories.delete(archivePath);
       resumeCompleted.add(archiveResumeKey);
       await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
@@ -3224,6 +3243,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       failed += 1;
       lastError = errorText;
       const errorCategory = classifyExtractionError(errorText);
+      failedArchiveCategories.set(archivePath, errorCategory);
       const hintedError = error as ExtractionErrorWithHints;
       options.onArchiveFailure?.({
         archiveName,
@@ -3328,6 +3348,33 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       passwordCandidates = frozenPasswords;
 
       if (abortError) throw new Error("aborted:extract");
+
+      if (failed > 0 && extracted === 0) {
+        const failedArchives = parallelQueue.filter((ap) => !extractedArchives.has(ap) && !resumeCompleted.has(archiveNameKey(path.basename(ap))));
+        const failedCategories = failedArchives.map((archivePath) => failedArchiveCategories.get(archivePath) || "unknown");
+        if (failedArchives.length > 0 && shouldSerialRetryParallelFailures(extracted, failedCategories)) {
+          const categorySummary = [...new Set(failedCategories)].join(",");
+          logger.info(
+            `Serielle Wiederholung nach Parallel-Fehlstart: ${failedArchives.length} Archive werden einzeln wiederholt ` +
+            `(categories=${categorySummary || "unknown"})`
+          );
+          let retryRecovered = 0;
+          for (const archivePath of failedArchives) {
+            if (options.signal?.aborted || noExtractorEncountered) break;
+            try {
+              failed -= 1;
+              await extractSingleArchive(archivePath);
+              retryRecovered += 1;
+            } catch (retryError) {
+              const errText = String(retryError);
+              if (isExtractAbortError(errText)) throw retryError;
+            }
+          }
+          if (retryRecovered > 0) {
+            logger.info(`Serielle Wiederholung nach Parallel-Fehlstart: ${retryRecovered}/${failedArchives.length} Archive erfolgreich entpackt`);
+          }
+        }
+      }
 
       // ── Retry failed wrong_password archives serially ──
       // Parallel UnRAR processes writing to the same target directory can cause
