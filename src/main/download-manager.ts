@@ -50,6 +50,7 @@ function releaseTlsSkip(): void {
   }
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
+import { planDownloadCompletion, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
@@ -8363,6 +8364,14 @@ export class DownloadManager extends EventEmitter {
           // Only add existingBytes for 206 responses; for 200 the Content-Length is the full file
           item.totalBytes = response.status === 206 ? existingBytes + contentLength : contentLength;
         }
+        const completionPlan = planDownloadCompletion({
+          existingBytes,
+          responseStatus: response.status,
+          contentLength,
+          totalFromRange,
+          knownTotal,
+          correctedTotal: correctedRealDebridTotal?.totalBytes || null
+        });
 
         const writeMode = existingBytes > 0 && response.status === 206 ? "a" : "w";
         logAttemptEvent("INFO", "HTTP-Antwort akzeptiert", {
@@ -8723,12 +8732,7 @@ export class DownloadManager extends EventEmitter {
               // Use totalBytes (from unrestrict or Content-Length header) as
               // primary check, fall back to raw contentLength for providers
               // that don't report fileSize (e.g. Mega-Debrid Web).
-              const expectedTotal = (item.totalBytes && item.totalBytes > 0) ? item.totalBytes : 0;
-              const expectedFromResponse = contentLength > 0 ? contentLength : 0;
-              if (expectedTotal > 0 && existingBytes + written >= expectedTotal) {
-                break;
-              }
-              if (expectedTotal === 0 && expectedFromResponse > 0 && written >= expectedFromResponse) {
+              if (completionPlan.canFinishEarly && completionPlan.expectedTotal && written >= completionPlan.expectedTotal) {
                 break;
               }
 
@@ -8870,6 +8874,20 @@ export class DownloadManager extends EventEmitter {
           }
         }
 
+        try {
+          const finalizedStat = await fs.promises.stat(effectiveTargetPath);
+          if (Number.isFinite(finalizedStat.size) && finalizedStat.size >= 0 && finalizedStat.size !== written) {
+            logAttemptEvent("WARN", "Dateigroesse nach Stream-Abschluss korrigiert", {
+              attempt,
+              previousWritten: written,
+              statSize: finalizedStat.size
+            });
+            written = finalizedStat.size;
+          }
+        } catch {
+          // ignore stat race; validation below will handle empty/missing files
+        }
+
         // Detect tiny error-response files (e.g. hoster returning "Forbidden" with HTTP 200).
         // No legitimate file-hoster download is < 512 bytes.
         if (written > 0 && written < 512) {
@@ -8900,21 +8918,37 @@ export class DownloadManager extends EventEmitter {
           }
         }
 
-        const exactLengthRequired = isLargeBinaryLikePath(item.fileName || effectiveTargetPath);
-        if (item.totalBytes && item.totalBytes > 0 && written < item.totalBytes) {
-          const shortfall = item.totalBytes - written;
+        const completionValidation = validateDownloadedFileCompletion({
+          actualBytes: written,
+          plan: completionPlan
+        });
+        if (!completionValidation.ok) {
+          const shortfall = Math.max(0, completionValidation.totalBytes - written);
           if (preAllocated) {
             try {
               await fs.promises.truncate(effectiveTargetPath, written);
             } catch { /* best-effort */ }
           }
-          logger.warn(`Download-Underflow: erwartet=${item.totalBytes}, erhalten=${written}, shortfall=${shortfall} fuer ${item.fileName}`);
-          if (exactLengthRequired || shortfall > ALLOCATION_UNIT_SIZE) {
-            item.downloadedBytes = written;
-            item.progressPercent = Math.max(0, Math.min(99, Math.floor((written / item.totalBytes) * 100)));
-            item.speedBps = 0;
-            throw new Error(`download_underflow:${written}/${item.totalBytes}`);
-          }
+          logger.warn(`Download-Underflow: erwartet=${completionValidation.totalBytes}, erhalten=${written}, shortfall=${shortfall} fuer ${item.fileName}`);
+          item.downloadedBytes = written;
+          item.progressPercent = completionValidation.totalBytes > 0
+            ? Math.max(0, Math.min(99, Math.floor((written / completionValidation.totalBytes) * 100)))
+            : 0;
+          item.speedBps = 0;
+          throw new Error(completionValidation.error || `download_underflow:${written}/${completionValidation.totalBytes}`);
+        }
+
+        if (completionValidation.acceptedMetadataMismatch) {
+          logger.warn(
+            `Provider-Groesseninfo verworfen, HTTP-EOF als vollstaendig akzeptiert: ` +
+            `${item.fileName} erwartet=${completionPlan.expectedTotal}, erhalten=${written}`
+          );
+          logAttemptEvent("WARN", "Provider-Groesseninfo weicht von finaler Dateigroesse ab", {
+            attempt,
+            expectedTotal: completionPlan.expectedTotal,
+            actualBytes: written,
+            source: completionPlan.source
+          });
         }
 
         // Truncate pre-allocated files to actual bytes written to prevent zero-padded tail
@@ -8926,6 +8960,7 @@ export class DownloadManager extends EventEmitter {
         }
 
         item.downloadedBytes = written;
+        item.totalBytes = completionValidation.totalBytes > 0 ? completionValidation.totalBytes : item.totalBytes;
         item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 100;
         item.speedBps = 0;
         item.fullStatus = "Finalisierend...";

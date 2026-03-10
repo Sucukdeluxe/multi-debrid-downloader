@@ -7,6 +7,7 @@ import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList } from "../src/main/download-manager";
+import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -42,6 +43,38 @@ describe("resolveArchiveItemsFromList", () => {
     const resolved = resolveArchiveItemsFromList("show.s01e26.part1.rar", items);
 
     expect(resolved.map((item) => item.id)).toEqual(["dup-1", "dup-2", "dup-3"]);
+  });
+});
+
+describe("download completion planning", () => {
+  it("does not allow early finish on provider metadata alone", () => {
+    expect(planDownloadCompletion({
+      existingBytes: 0,
+      responseStatus: 200,
+      contentLength: 0,
+      totalFromRange: null,
+      knownTotal: 192 * 1024,
+      correctedTotal: null
+    })).toEqual({
+      expectedTotal: 192 * 1024,
+      source: "provider-metadata",
+      canFinishEarly: false
+    });
+  });
+
+  it("accepts provider metadata mismatches after a clean stream end", () => {
+    expect(validateDownloadedFileCompletion({
+      actualBytes: 256 * 1024,
+      plan: {
+        expectedTotal: 192 * 1024,
+        source: "provider-metadata",
+        canFinishEarly: false
+      }
+    })).toEqual({
+      ok: true,
+      totalBytes: 256 * 1024,
+      acceptedMetadataMismatch: true
+    });
   });
 });
 
@@ -1857,6 +1890,215 @@ describe("download manager", () => {
       expect(starts).toContain(partialSize);
       expect(starts).toContain(0);
       expect(fs.readFileSync(existingTargetPath).equals(binary)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("does not stop early on provider-only totals when the HTTP response is longer", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-provider-total-mismatch-"));
+    tempDirs.push(root);
+    const actual = Buffer.alloc(256 * 1024, 77);
+    const advertised = 192 * 1024;
+    let unrestrictCalls = 0;
+
+    const server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.write(actual.subarray(0, 96 * 1024));
+      setTimeout(() => {
+        res.end(actual.subarray(96 * 1024));
+      }, 40);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/provider-mismatch`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "provider-mismatch.rar",
+            filesize: advertised
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 1,
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "provider-mismatch", links: ["https://dummy/provider-mismatch"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(actual.length);
+      expect(item?.totalBytes).toBe(actual.length);
+      expect(unrestrictCalls).toBe(1);
+      expect(fs.readFileSync(item.targetPath).equals(actual)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("does not double-count resumed bytes when deciding early completion", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-resume-early-finish-"));
+    tempDirs.push(root);
+    const actual = Buffer.alloc(256 * 1024, 91);
+    const partialSize = 96 * 1024;
+    const pkgDir = path.join(root, "downloads", "resume-early-finish");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const targetPath = path.join(pkgDir, "resume-early-finish.mkv");
+    fs.writeFileSync(targetPath, actual.subarray(0, partialSize));
+    let unrestrictCalls = 0;
+    const starts: number[] = [];
+
+    const server = http.createServer((req, res) => {
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+      starts.push(start);
+
+      if (start <= 0) {
+        res.statusCode = 500;
+        res.end("expected resume");
+        return;
+      }
+
+      const remaining = actual.subarray(start);
+      const firstChunkBytes = 64 * 1024;
+      res.statusCode = 206;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Range", `bytes ${start}-${actual.length - 1}/${actual.length}`);
+      res.setHeader("Content-Length", String(remaining.length));
+      res.write(remaining.subarray(0, firstChunkBytes));
+      setTimeout(() => {
+        res.end(remaining.subarray(firstChunkBytes));
+      }, 50);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/resume-early-finish`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "resume-early-finish.mkv",
+            filesize: actual.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "resume-early-finish-pkg";
+      const itemId = "resume-early-finish-item";
+      const createdAt = Date.now() - 10_000;
+
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "resume-early-finish",
+        outputDir: pkgDir,
+        extractDir: path.join(root, "extract", "resume-early-finish"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/resume-early-finish",
+        provider: null,
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: actual.length,
+        progressPercent: Math.floor((partialSize / actual.length) * 100),
+        fileName: "resume-early-finish.mkv",
+        targetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 1,
+          autoExtract: false,
+          autoReconnect: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(actual.length);
+      expect(item?.totalBytes).toBe(actual.length);
+      expect(unrestrictCalls).toBe(1);
+      expect(starts).toEqual([partialSize]);
+      expect(fs.readFileSync(targetPath).equals(actual)).toBe(true);
     } finally {
       server.close();
       await once(server, "close");
