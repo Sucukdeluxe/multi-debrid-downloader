@@ -406,6 +406,9 @@ function shouldRejectSuspiciousSmallDownload(
     return expected > 0 || binaryLike;
   }
   if (size < 512) {
+    if (expected > 0 && size >= expected && binaryLike) {
+      return false;
+    }
     return true;
   }
   if (size >= MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES) {
@@ -598,6 +601,11 @@ function isTransientExtractStatus(statusText: string): boolean {
 
 function shouldAutoRetryExtraction(statusText: string): boolean {
   return !isExtractedLabel(statusText) && !isExtractErrorLabel(statusText);
+}
+
+function shouldPreserveExtractionResumeLabel(statusText: string): boolean {
+  const text = String(statusText || "").trim();
+  return isTransientExtractStatus(text) || /^entpacken abgebrochen\b/i.test(text);
 }
 
 function formatExtractDone(elapsedMs: number): string {
@@ -1818,6 +1826,7 @@ export class DownloadManager extends EventEmitter {
     const stats = {
       totalDownloaded: this.sessionDownloadedBytes,
       totalDownloadedAllTime: this.settings.totalDownloadedAllTime,
+      totalFiles: this.sessionCompletedFiles,
       totalFilesSession: this.sessionCompletedFiles,
       totalFilesAllTime: this.settings.totalCompletedFilesAllTime,
       totalPackages: this.session.packageOrder.length,
@@ -1858,6 +1867,9 @@ export class DownloadManager extends EventEmitter {
     }
     const now = nowMs();
     if (!this.foldRuntimeIntoSettings(now)) {
+      if (sync && !fs.existsSync(this.storagePaths.configFile)) {
+        saveSettings(this.storagePaths, this.settings);
+      }
       return;
     }
     this.lastSettingsPersistAt = now;
@@ -1873,12 +1885,50 @@ export class DownloadManager extends EventEmitter {
     this.statsCacheAt = 0;
   }
 
-  private resetSessionTotalsIfQueueEmpty(): void {
+  private resetSessionTotalsIfQueueEmpty(force = false): void {
     if (this.itemCount > 0 || this.session.packageOrder.length > 0) {
       return;
     }
     if (Object.keys(this.session.items).length > 0 || Object.keys(this.session.packages).length > 0) {
       return;
+    }
+    if (!force && (this.sessionDownloadedBytes > 0 || this.sessionCompletedFiles > 0 || this.itemContributedBytes.size > 0)) {
+      return;
+    }
+    let changed = false;
+    if (this.session.totalDownloadedBytes !== 0) {
+      this.session.totalDownloadedBytes = 0;
+      changed = true;
+    }
+    if (this.sessionDownloadedBytes !== 0) {
+      this.sessionDownloadedBytes = 0;
+      changed = true;
+    }
+    if (this.sessionCompletedFiles !== 0) {
+      this.sessionCompletedFiles = 0;
+      changed = true;
+    }
+    if (this.session.runStartedAt !== 0) {
+      this.session.runStartedAt = 0;
+      changed = true;
+    }
+    if (this.session.summaryText) {
+      this.session.summaryText = "";
+      changed = true;
+    }
+    if (this.lastGlobalProgressBytes !== 0) {
+      this.lastGlobalProgressBytes = 0;
+      changed = true;
+    }
+    if (this.speedEvents.length > 0 || this.speedBytesLastWindow !== 0 || this.speedBytesPerPackage.size > 0) {
+      this.speedEvents = [];
+      this.speedBytesLastWindow = 0;
+      this.speedBytesPerPackage.clear();
+      this.speedEventsHead = 0;
+      changed = true;
+    }
+    if (changed) {
+      this.invalidateStatsCache();
     }
   }
 
@@ -2223,7 +2273,7 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessWaiters = [];
     this.summary = null;
     this.nonResumableActive = 0;
-    this.resetSessionTotalsIfQueueEmpty();
+    this.resetSessionTotalsIfQueueEmpty(true);
     this.persistNow();
     this.emitState(true);
   }
@@ -4663,7 +4713,7 @@ export class DownloadManager extends EventEmitter {
         pkg.status = "completed";
       }
     }
-    this.resetSessionTotalsIfQueueEmpty();
+    this.resetSessionTotalsIfQueueEmpty(true);
     this.persistSoon();
   }
 
@@ -5178,6 +5228,10 @@ export class DownloadManager extends EventEmitter {
         }
       } catch {
         // file doesn't exist — reset to queued so it gets re-downloaded
+        if (archiveLike && this.shouldPreserveMissingCompletedArchiveForStartupRecovery(item)) {
+          logger.info(`revalidateCompleted: ${item.fileName} Quelle fehlt, belasse fuer Startup-Recovery`);
+          continue;
+        }
         logger.warn(`revalidateCompleted: ${item.fileName} Datei nicht gefunden, setze auf queued`);
         item.status = "queued";
         item.fullStatus = "Wartet";
@@ -5198,6 +5252,23 @@ export class DownloadManager extends EventEmitter {
       logger.info(`revalidateCompletedItems: ${fixed} Items korrigiert`);
       this.persistSoon();
     }
+  }
+
+  private shouldPreserveMissingCompletedArchiveForStartupRecovery(item: DownloadItem): boolean {
+    if (!this.settings.autoExtract) {
+      return false;
+    }
+    const pkg = this.session.packages[item.packageId];
+    if (!pkg || pkg.cancelled || pkg.enabled === false) {
+      return false;
+    }
+    const statusText = String(item.fullStatus || "").trim();
+    if (isExtractedLabel(statusText) || isExtractErrorLabel(statusText)) {
+      return false;
+    }
+    return /^Fertig\b/i.test(statusText)
+      || shouldPreserveExtractionResumeLabel(statusText)
+      || shouldAutoRetryExtraction(statusText);
   }
 
   private tryFinalizeItemFromDisk(
@@ -5943,7 +6014,9 @@ export class DownloadManager extends EventEmitter {
           pkg.updatedAt = nowMs();
           for (const item of items) {
             if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
-              item.fullStatus = "Entpacken - Ausstehend";
+              if (!shouldPreserveExtractionResumeLabel(item.fullStatus)) {
+                item.fullStatus = "Entpacken - Ausstehend";
+              }
               item.updatedAt = nowMs();
             }
           }
@@ -5964,7 +6037,9 @@ export class DownloadManager extends EventEmitter {
           pkg.updatedAt = nowMs();
           for (const item of items) {
             if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
-              item.fullStatus = "Entpacken - Ausstehend";
+              if (!shouldPreserveExtractionResumeLabel(item.fullStatus)) {
+                item.fullStatus = "Entpacken - Ausstehend";
+              }
               item.updatedAt = nowMs();
             }
           }
@@ -8749,6 +8824,16 @@ export class DownloadManager extends EventEmitter {
             snippet = await fs.promises.readFile(effectiveTargetPath, "utf8");
             snippet = snippet.slice(0, 200).replace(/[\r\n]+/g, " ").trim();
           } catch { /* ignore */ }
+          const exactTinyBinary = Boolean(
+            item.totalBytes
+            && item.totalBytes > 0
+            && written >= item.totalBytes
+            && isLargeBinaryLikePath(item.fileName || effectiveTargetPath)
+          );
+          const snippetSuggestsError = /<(?:!doctype|html|body)\b|\b(?:forbidden|access denied|error|not found|expired|unavailable)\b/i.test(snippet);
+          if (exactTinyBinary && !snippetSuggestsError) {
+            logger.info(`Tiny Binary akzeptiert (${written} B): ${item.fileName || effectiveTargetPath}`);
+          } else {
           logger.warn(`Tiny download erkannt (${written} B): "${snippet}"`);
           try {
             await fs.promises.rm(effectiveTargetPath, { force: true });
@@ -8758,6 +8843,7 @@ export class DownloadManager extends EventEmitter {
           item.downloadedBytes = 0;
           item.progressPercent = 0;
           throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);
+          }
         }
 
         const exactLengthRequired = isLargeBinaryLikePath(item.fileName || effectiveTargetPath);
