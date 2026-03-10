@@ -721,12 +721,14 @@ export function normalizeLoadedSessionTransientFields(session: SessionState): Se
 
 function readSessionFile(filePath: string): SessionState | null {
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
+    // Inline readFileSync into JSON.parse so the raw string is not bound to a
+    // variable and can be GC'd immediately — avoids holding the full JSON text
+    // and the parsed object graph in memory simultaneously.
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
     const session = normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
     const pkgCount = Object.keys(session.packages).length;
     const itemCount = Object.keys(session.items).length;
-    logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items, ${raw.length} Bytes)`);
+    logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items)`);
     return session;
   } catch (error) {
     logger.error(`Session-Datei nicht lesbar: ${filePath}: ${String(error)}`);
