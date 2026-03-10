@@ -1332,6 +1332,92 @@ describe("download manager", () => {
     expect(unrestrictCalls).toBe(0);
   });
 
+  it("completes Debrid-Link direct-link retries from disk during start preflight", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(60 * 1024, 23);
+    const pkgDir = path.join(root, "downloads", "queued-directlink-complete");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const targetPath = path.join(pkgDir, "queued-directlink-complete.part10.rar");
+    fs.writeFileSync(targetPath, binary);
+    let unrestrictCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        unrestrictCalls += 1;
+        throw new Error(`unexpected debrid-link unrestrict ${url}`);
+      }
+      return originalFetch(input, init);
+    };
+
+    const session = emptySession();
+    const packageId = "queued-directlink-complete-pkg";
+    const itemId = "queued-directlink-complete-item";
+    const createdAt = Date.now() - 10_000;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "queued-directlink-complete",
+      outputDir: pkgDir,
+      extractDir: path.join(root, "extract", "queued-directlink-complete"),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/queued-directlink-complete",
+      provider: "debridlink",
+      status: "queued",
+      retries: 14,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: binary.length,
+      progressPercent: 0,
+      fileName: "queued-directlink-complete.part10.rar",
+      targetPath,
+      resumable: true,
+      attempts: 0,
+      lastError: "direct_link_retry_exhausted:HTTP 416",
+      fullStatus: "Direktlink erneuern, Retry 15/inf",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        debridLinkApiKeys: "dl-test-key",
+        providerOrder: ["debridlink"],
+        providerPrimary: "debridlink",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 0,
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+    const item = manager.getSnapshot().session.items[itemId];
+    expect(item?.status).toBe("completed");
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.downloadedBytes).toBe(binary.length);
+    expect(item?.fullStatus).toContain("Fertig");
+    expect(unrestrictCalls).toBe(0);
+  });
+
   it("retries direct-link exhaustion caused by HTTP 416 in-session and then completes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

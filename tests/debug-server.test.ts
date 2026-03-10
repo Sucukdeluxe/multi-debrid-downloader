@@ -405,6 +405,22 @@ describe("debug-server", () => {
     expect(payload.supportBundle?.estimatedEntries).toBeGreaterThan(0);
   });
 
+  it("writes the client IP into the debug trace log", async () => {
+    const fixture = await createFixture();
+    const response = await fetch(`${fixture.baseUrl}/health?token=${fixture.token}`, {
+      headers: {
+        "X-Forwarded-For": "159.195.63.46"
+      }
+    });
+    expect(response.ok).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const traceLogPath = getTraceLogPath();
+    expect(traceLogPath).toBeTruthy();
+    const traceText = fs.readFileSync(traceLogPath!, "utf8");
+    expect(traceText).toContain("clientIp=159.195.63.46");
+  });
+
   it("serves package details and package log by package query", async () => {
     const fixture = await createFixture();
 

@@ -76,6 +76,21 @@ function readSupportHistory() {
   return loadHistory(getStoragePaths());
 }
 
+function extractDebugClientIp(req: http.IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const forwardedIp = String(forwardedValue || "").split(",")[0]?.trim();
+  if (forwardedIp) {
+    return forwardedIp;
+  }
+  const realIp = String(req.headers["x-real-ip"] || "").trim();
+  if (realIp) {
+    return realIp;
+  }
+  const remote = String(req.socket.remoteAddress || req.socket.address()?.address || "").trim();
+  return remote.replace(/^::ffff:/i, "");
+}
+
 function getAiManifestPath(baseDir: string = runtimeBaseDir): string {
   return path.join(baseDir, AI_MANIFEST_FILE);
 }
@@ -431,7 +446,8 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   if (traceConfig.enabled && traceConfig.logDebugRequests) {
     logTraceEvent("INFO", "debug-http", "Request", {
       method: req.method || "GET",
-      url: sanitizeRequestUrlForTrace(req.url || "/")
+      url: sanitizeRequestUrlForTrace(req.url || "/"),
+      clientIp: extractDebugClientIp(req)
     });
   }
 
@@ -449,7 +465,8 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     if (traceConfig.enabled && traceConfig.logDebugRequests) {
       logTraceEvent("WARN", "debug-http", "Unauthorized request", {
         method: req.method || "GET",
-        url: sanitizeRequestUrlForTrace(req.url || "/")
+        url: sanitizeRequestUrlForTrace(req.url || "/"),
+        clientIp: extractDebugClientIp(req)
       });
     }
     jsonResponse(res, 401, { error: "Unauthorized" });
