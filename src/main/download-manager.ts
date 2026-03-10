@@ -10622,6 +10622,10 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    if (pkg.status !== "completed") {
+      return;
+    }
+
     const allDone = pkg.itemIds.every((itemId) => {
       const item = this.session.items[itemId];
       return !item || item.status === "completed" || item.status === "cancelled" || item.status === "failed";
@@ -10691,6 +10695,9 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (policy === "package_done") {
+      if (pkg.status !== "completed") {
+        return;
+      }
       const hasOpen = pkg.itemIds.some((id) => {
         const item = this.session.items[id];
         return item != null && item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed";

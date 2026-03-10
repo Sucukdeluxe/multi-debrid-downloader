@@ -6292,6 +6292,95 @@ describe("download manager", () => {
     }
   }, 35000);
 
+  it("keeps partially failed packages under package_done cleanup policy", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "package-done-partial-failure-pkg";
+    const completedItemId = "package-done-partial-failure-completed";
+    const failedItemId = "package-done-partial-failure-failed";
+    const createdAt = Date.now() - 10_000;
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "package-done-partial-failure",
+      outputDir: path.join(root, "downloads", "package-done-partial-failure"),
+      extractDir: path.join(root, "extract", "package-done-partial-failure"),
+      status: "failed",
+      itemIds: [completedItemId, failedItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[completedItemId] = {
+      id: completedItemId,
+      packageId,
+      url: "https://dummy/package-done-partial-failure-completed",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1024,
+      totalBytes: 1024,
+      progressPercent: 100,
+      fileName: "episode01.rar",
+      targetPath: path.join(root, "downloads", "package-done-partial-failure", "episode01.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Done (<1s)",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[failedItemId] = {
+      id: failedItemId,
+      packageId,
+      url: "https://dummy/package-done-partial-failure-failed",
+      provider: "realdebrid",
+      status: "failed",
+      retries: 1,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: 1024,
+      progressPercent: 0,
+      fileName: "episode02.rar",
+      targetPath: path.join(root, "downloads", "package-done-partial-failure", "episode02.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "checksum",
+      fullStatus: "Entpack-Fehler: Checksum error",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete",
+        completedCleanupPolicy: "package_done"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).applyPackageDoneCleanup(packageId);
+    (manager as any).applyCompletedCleanupPolicy(packageId, completedItemId);
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.session.packages[packageId]).toBeDefined();
+    expect(snapshot.session.items[completedItemId]).toBeDefined();
+    expect(snapshot.session.items[failedItemId]).toBeDefined();
+    expect(snapshot.session.packageOrder).toEqual([packageId]);
+  });
+
   it("waits for deferred MKV collection before package_done cleanup removes the package", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
