@@ -434,6 +434,11 @@ function shouldPreflightFinalizeItemFromDisk(item: DownloadItem): boolean {
   const text = `${item.fullStatus || ""} ${item.lastError || ""}`.toLowerCase();
   return text.includes("resume-link erneuern")
     || text.includes("resume link erneuern")
+    || text.includes("direktlink erneuern")
+    || text.includes("direktlink erschöpft")
+    || text.includes("direct_link_retry_exhausted")
+    || text.includes("download_underflow")
+    || text.includes("resume_download_underflow")
     || text.includes("range_ignored_on_resume")
     || text.includes("server ignorierte range");
 }
@@ -8142,16 +8147,21 @@ export class DownloadManager extends EventEmitter {
         if (response.status === 416 && existingBytes > 0) {
           await response.arrayBuffer().catch(() => undefined);
           const rangeTotal = parseContentRangeTotal(response.headers.get("content-range"));
-          const expectedTotal = knownTotal && knownTotal > 0 ? knownTotal : rangeTotal;
-          if (expectedTotal && existingBytes === expectedTotal) {
-            item.totalBytes = expectedTotal;
+          const expectedTotal = rangeTotal && rangeTotal > 0
+            ? rangeTotal
+            : (knownTotal && knownTotal > 0 ? knownTotal : null);
+          const closeEnoughToExpected = expectedTotal != null
+            && Math.abs(existingBytes - expectedTotal) <= ALLOCATION_UNIT_SIZE;
+          if (expectedTotal != null && closeEnoughToExpected) {
+            const finalizedTotal = Math.max(existingBytes, expectedTotal);
+            item.totalBytes = finalizedTotal;
             item.downloadedBytes = existingBytes;
             item.progressPercent = 100;
             item.speedBps = 0;
             item.updatedAt = nowMs();
             logAttemptEvent("INFO", "HTTP 416 als vollständig behandelt", {
               existingBytes,
-              expectedTotal
+              expectedTotal: finalizedTotal
             });
             return { resumable: true };
           }
