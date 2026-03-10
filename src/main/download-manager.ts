@@ -5868,10 +5868,9 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async acquirePostProcessSlot(packageId: string): Promise<void> {
-    // Extract packages sequentially (one at a time) to focus I/O on finishing
-    // the earliest package first. maxParallelExtract is reserved for future
-    // intra-package parallelism.
-    const maxConcurrent = 1;
+    // Honor the user-facing "Parallele Entpackungen" setting for package-level
+    // post-processing so multiple episodes/packages can extract concurrently.
+    const maxConcurrent = Math.max(1, Math.min(8, this.settings.maxParallelExtract || 1));
     if (this.packagePostProcessActive < maxConcurrent) {
       this.packagePostProcessActive += 1;
       return;

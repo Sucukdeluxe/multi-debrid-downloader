@@ -243,6 +243,42 @@ describe("download manager", () => {
     expect((manager as any).shouldCollapseQuickPostProcessRequeue(packageId)).toBe(false);
   });
 
+  it("honors maxParallelExtract for concurrent post-process slots", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-slots-"));
+    tempDirs.push(root);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        maxParallelExtract: 4
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).acquirePostProcessSlot("pkg-1");
+    await (manager as any).acquirePostProcessSlot("pkg-2");
+    await (manager as any).acquirePostProcessSlot("pkg-3");
+    await (manager as any).acquirePostProcessSlot("pkg-4");
+
+    expect((manager as any).packagePostProcessActive).toBe(4);
+
+    let fifthResolved = false;
+    const fifth = (manager as any).acquirePostProcessSlot("pkg-5").then(() => {
+      fifthResolved = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(fifthResolved).toBe(false);
+
+    (manager as any).releasePostProcessSlot();
+    await fifth;
+
+    expect(fifthResolved).toBe(true);
+    expect((manager as any).packagePostProcessActive).toBe(4);
+  });
+
   it("extractNow only re-arms completed items that are not already extracted", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-now-"));
     tempDirs.push(root);
