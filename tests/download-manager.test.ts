@@ -1564,6 +1564,73 @@ describe("download manager", () => {
     expect(fs.statSync(item.targetPath).size).toBe(binary.length);
   });
 
+  it("finalizes Debrid-Link items in-session when the file is already complete on disk", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(60 * 1024, 57);
+    let unrestrictCalls = 0;
+    let downloadCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        unrestrictCalls += 1;
+        return new Response(
+          JSON.stringify({
+            success: true,
+            value: {
+              downloadUrl: `https://dummy/debridlink-direct-complete-${unrestrictCalls}`,
+              name: "debridlink-complete.part10.rar",
+              size: binary.length
+            }
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        debridLinkApiKeys: "dl-test-key",
+        providerOrder: ["debridlink"],
+        providerPrimary: "debridlink",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 2,
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).downloadToFile = async (_active: unknown, _directUrl: string, targetPath: string) => {
+      downloadCalls += 1;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, binary);
+      throw new Error("direct_link_retry_exhausted:download_underflow:61440/61440");
+    };
+
+    manager.addPackages([{ name: "debridlink-complete", links: ["https://dummy/debridlink-complete"] }]);
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 12000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item?.status).toBe("completed");
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.downloadedBytes).toBe(binary.length);
+    expect(unrestrictCalls).toBe(1);
+    expect(downloadCalls).toBe(1);
+    expect(fs.existsSync(item.targetPath)).toBe(true);
+    expect(fs.statSync(item.targetPath).size).toBe(binary.length);
+  });
+
   it("queues Debrid-Link cooldown retries when wrapped unrestrict errors carry the cooldown marker", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
