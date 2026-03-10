@@ -14,6 +14,7 @@ import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item
 import { createStoragePaths, emptySession } from "../src/main/storage";
 import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
+import { UnrestrictedLink } from "../src/main/realdebrid";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -5694,7 +5695,7 @@ describe("download manager", () => {
       {
         megaWebUnrestrict: vi.fn(async (_link: string, signal?: AbortSignal) => {
           unrestrictCalls += 1;
-          return await new Promise((resolve, reject) => {
+          return await new Promise<UnrestrictedLink | null>((resolve, reject) => {
             const rejector = (error: Error): void => {
               signal?.removeEventListener("abort", onAbort);
               pendingRejectors.delete(rejector);

@@ -580,7 +580,7 @@ async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: strin
   throw new Error(String(lastError || `Debrid-Link Limits für ${apiKey.label} fehlgeschlagen`).replace(/^Error:\s*/i, ""));
 }
 
-function uniqueProviderOrder(order: DebridProvider[]): DebridProvider[] {
+function uniqueProviderOrder(order: readonly DebridProvider[]): DebridProvider[] {
   const seen = new Set<DebridProvider>();
   const result: DebridProvider[] = [];
   for (const provider of order) {
@@ -1668,94 +1668,6 @@ class DebridLinkClient {
           : "";
         logger.warn(`Debrid-Link${keyLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Key`);
       }
-      continue;
-
-      let lastError = "";
-      for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
-        if (signal?.aborted) throw new Error("aborted:debrid");
-        try {
-          const res = await fetch(`${DEBRID_LINK_API_BASE}/downloader/add`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-              Authorization: `Bearer ${apiKey.token}`
-            },
-            body: `url=${encodeURIComponent(link)}`,
-            signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
-          });
-
-          const json = await res.json() as Record<string, unknown>;
-
-          if (!json.success) {
-            const errorCode = String(json.error || "");
-            const errorDesc = String(json.error_description || json.error || "Unbekannter Debrid-Link-Fehler");
-
-            if (DEBRID_LINK_QUOTA_ERRORS.has(errorCode)) {
-              logger.warn(`Debrid-Link${keyLabel}: API-Quota erreicht (${errorCode}: ${errorDesc}), wechsle zum naechsten Key`);
-              debridLinkKeyCooldowns.set(apiKey.id, Date.now() + DEBRID_LINK_KEY_COOLDOWN_MS);
-              break;
-            }
-            if (DEBRID_LINK_SKIP_KEY_ERRORS.has(errorCode)) {
-              logger.warn(`Debrid-Link${keyLabel}: Key kann Link nicht verarbeiten (${errorCode}: ${errorDesc}), wechsle zum naechsten Key`);
-              debridLinkKeyCooldowns.set(apiKey.id, Date.now() + DEBRID_LINK_KEY_COOLDOWN_MS);
-              break;
-            }
-
-            if (errorCode === "badToken" || errorCode === "expired_token") {
-              throw new Error(`Debrid-Link${keyLabel}: Ungültiger oder abgelaufener API-Key`);
-            }
-            if (errorCode === "floodDetected") {
-              await sleep(retryDelay(attempt), signal);
-              continue;
-            }
-
-            throw new Error(`Debrid-Link${keyLabel}: ${errorDesc}`);
-          }
-
-          const value = json.value as Record<string, unknown> | undefined;
-          if (!value) {
-            throw new Error(`Debrid-Link${keyLabel}: Keine Daten in Antwort`);
-          }
-
-          const directUrl = String(value.downloadUrl || "");
-          if (!directUrl) {
-            throw new Error(`Debrid-Link${keyLabel}: Keine Download-URL in Antwort`);
-          }
-
-          const fileName = String(value.name || "") || filenameFromUrl(directUrl) || filenameFromUrl(link);
-          const fileSize = typeof value.size === "number" && value.size > 0 ? value.size : null;
-
-          logger.info(`Debrid-Link${keyLabel}: Unrestrict OK → ${fileName || "?"}`);
-
-          return {
-            fileName,
-            directUrl,
-            fileSize,
-            retriesUsed: attempt - 1,
-            sourceLabel: apiKey.label,
-            sourceAccountId: apiKey.id,
-            sourceAccountLabel: apiKey.label
-          };
-        } catch (error) {
-          lastError = compactErrorText(error);
-          if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
-            throw error;
-          }
-          if (/Ungültig|abgelaufen/i.test(lastError)) {
-            throw error;
-          }
-          logger.warn(`Debrid-Link${keyLabel}: Fehler bei Unrestrict-Versuch ${attempt}/${REQUEST_RETRIES}: ${lastError}`);
-          if (attempt < REQUEST_RETRIES) {
-            await sleep(retryDelay(attempt), signal);
-          }
-        }
-      }
-
-      if (keyIdx + 1 < this.apiKeys.length) {
-        const nextKey = this.apiKeys[keyIdx + 1];
-        const nextKeyLabel = this.apiKeys.length > 1 ? ` (${nextKey.label})` : "";
-        logger.info(`Debrid-Link${keyLabel}: kein Erfolg, wechsle zu naechstem Key${nextKeyLabel}`);
-      }
     }
 
     if (!usableKeySeen) {
@@ -2299,7 +2211,7 @@ class DdownloadClient {
     if (!xfss) {
       throw new Error("DDownload Login fehlgeschlagen (kein Session-Cookie)");
     }
-    this.cookies = [loginCookie, xfss].filter(Boolean).map((c: string) => c.split(";")[0]).join("; ");
+    this.cookies = [loginCookie, xfss].filter((c): c is string => Boolean(c)).map((c) => c.split(";")[0]).join("; ");
   }
 
   public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {

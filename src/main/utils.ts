@@ -271,8 +271,26 @@ export function nowMs(): number {
   return Date.now();
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(String(signal.reason || "aborted")));
+      return;
+    }
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error(String(signal?.reason || "aborted")));
+    };
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function formatEta(seconds: number): string {
