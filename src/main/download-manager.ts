@@ -1274,6 +1274,34 @@ export function extractArchiveNameFromExtractorLogMessage(message: string): stri
   return null;
 }
 
+function summarizeExtractFailureReason(reason: string): string {
+  const text = compactErrorText(reason).replace(/^Error:\s*/i, "").trim();
+  if (!text) {
+    return "Entpacken fehlgeschlagen";
+  }
+  if (/checksum error|crc/i.test(text)) {
+    return "Checksum/CRC-Fehler im Archiv";
+  }
+  if (/wrong password|falsches passwort|password/i.test(text) && /checksum error in the encrypted file/i.test(text)) {
+    return "Checksum- oder Passwortfehler im verschluesselten Archiv";
+  }
+  if (/missing_file|next volume is required|cannot find volume|volume.*missing|part.*missing/i.test(text)) {
+    return "Teilarchiv fehlt oder ist nicht lesbar";
+  }
+  if (/unexpected end of archive|no end header found|invalid or unsupported zip format|not a rar archive|ungueltig|unsupported_format/i.test(text)) {
+    return "Archiv unvollstaendig oder ungueltig";
+  }
+  return text;
+}
+
+function formatExtractFailureLabel(reason: string, archiveName = ""): string {
+  const summary = summarizeExtractFailureReason(reason);
+  const archive = String(archiveName || "").trim();
+  return archive
+    ? `Entpack-Fehler [${archive}]: ${summary}`
+    : `Entpack-Fehler: ${summary}`;
+}
+
 function retryDelayWithJitter(attempt: number, baseMs: number): number {
   const exponential = baseMs * Math.pow(1.5, Math.min(attempt - 1, 14));
   const capped = Math.min(exponential, 120000);
@@ -5577,7 +5605,7 @@ export class DownloadManager extends EventEmitter {
         if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) {
           continue;
         }
-        entry.fullStatus = `Entpack-Fehler: ${reason}`;
+        entry.fullStatus = formatExtractFailureLabel(reason, archiveName);
         entry.updatedAt = appliedAt;
         affectedItemIds.add(entry.id);
       }
@@ -5594,7 +5622,7 @@ export class DownloadManager extends EventEmitter {
 
       const currentStatus = String(entry.fullStatus || "").trim();
       if (currentStatus === "Entpacken - Error") {
-        entry.fullStatus = `Entpack-Fehler: ${fallbackReason}`;
+        entry.fullStatus = formatExtractFailureLabel(fallbackReason);
         entry.updatedAt = appliedAt;
         appliedSpecificFailure = true;
         continue;
@@ -5615,7 +5643,7 @@ export class DownloadManager extends EventEmitter {
 
     for (const entry of completedItems) {
       if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
-        entry.fullStatus = `Entpack-Fehler: ${fallbackReason}`;
+        entry.fullStatus = formatExtractFailureLabel(fallbackReason);
         entry.updatedAt = appliedAt;
       }
     }
@@ -10316,6 +10344,17 @@ export class DownloadManager extends EventEmitter {
         if (result.failed > 0) {
           const reason = compactErrorText(result.lastError || "Entpacken fehlgeschlagen");
           const failAt = nowMs();
+          if (fullFailedArchiveErrors.size > 0) {
+            const archiveSummaries = [...fullFailedArchiveErrors.entries()]
+              .slice(0, 3)
+              .map(([archiveName, errorText]) => `${archiveName}: ${summarizeExtractFailureReason(errorText)}`)
+              .join(" | ");
+            logger.warn(`Post-Processing Entpacken Fehlerdetails: pkg=${pkg.name}, archives=${archiveSummaries}`);
+            this.logPackageForPackage(pkg, "WARN", "Post-Processing Entpacken Fehlerdetails", {
+              failedArchives: [...fullFailedArchiveErrors.keys()],
+              summary: archiveSummaries
+            });
+          }
           this.applyPackageExtractFailureStatuses(
             completedItems,
             resolveArchiveItems,
@@ -10359,7 +10398,7 @@ export class DownloadManager extends EventEmitter {
             logger.error(`Post-Processing Entpacken Timeout: pkg=${pkg.name}`);
             for (const entry of completedItems) {
               if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
-                entry.fullStatus = `Entpack-Fehler: ${timeoutReason}`;
+                entry.fullStatus = formatExtractFailureLabel(timeoutReason);
                 entry.updatedAt = nowMs();
               }
             }
@@ -10384,7 +10423,7 @@ export class DownloadManager extends EventEmitter {
           logger.error(`Post-Processing Entpacken Exception: pkg=${pkg.name}, reason=${reason}`);
           for (const entry of completedItems) {
             if (entry.status === "completed" && !isExtractedLabel(entry.fullStatus)) {
-              entry.fullStatus = `Entpack-Fehler: ${reason}`;
+              entry.fullStatus = formatExtractFailureLabel(reason);
               entry.updatedAt = nowMs();
             }
           }
