@@ -12,6 +12,7 @@ import {
   archiveFilenamePasswords,
   detectArchiveSignature,
   classifyExtractionError,
+  shouldSerialRetryParallelFailures,
   findArchiveCandidates,
   orderExtractorCandidatesForArchive,
   resolveExtractorBackendModeForArchive,
@@ -1045,6 +1046,19 @@ describe("extractor", () => {
       const cleaned = cleanErrorText(noisy);
       expect(cleaned).toContain("Unexpected end of archive");
       expect(classifyExtractionError(cleaned)).toBe("missing_parts");
+    });
+  });
+
+  describe("shouldSerialRetryParallelFailures", () => {
+    it("keeps serial recovery enabled after mixed parallel results", () => {
+      expect(shouldSerialRetryParallelFailures(1, ["wrong_password"])).toBe(true);
+      expect(shouldSerialRetryParallelFailures(2, ["missing_parts"])).toBe(true);
+    });
+
+    it("only retries a total parallel wipe-out for contention-like failures", () => {
+      expect(shouldSerialRetryParallelFailures(0, ["crc_error", "wrong_password", "unknown"])).toBe(true);
+      expect(shouldSerialRetryParallelFailures(0, ["missing_parts"])).toBe(false);
+      expect(shouldSerialRetryParallelFailures(0, ["unsupported_format", "crc_error"])).toBe(false);
     });
   });
 
