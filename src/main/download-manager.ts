@@ -1409,7 +1409,10 @@ export class DownloadManager extends EventEmitter {
     this.appSessionStartedAt = startedAt;
     this.runtimePersistedTotalMs = Math.max(0, Number(settings.totalRuntimeAllTimeMs || 0));
     this.runtimePersistedAt = startedAt;
-    this.session = cloneSession(session);
+    // loadSession already returns a fresh, standalone object graph — no need to
+    // deep-clone again.  This avoids duplicating the entire session in memory at
+    // startup which can spike peak heap on low-RAM servers.
+    this.session = session;
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
     this.debridService = new DebridService(settings, {

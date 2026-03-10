@@ -89,6 +89,14 @@ let resolveExtractorCommandInFlight: Promise<string> | null = null;
 
 const EXTRACTOR_RETRY_AFTER_MS = 30_000;
 const DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB = 256;
+
+/** Compute a safe JVM -Xmx value based on available physical RAM.
+ *  Reserves 4 GB for Windows + Electron + other processes, caps at 16 GB. */
+function jvmMaxHeapArg(): string {
+  const totalGb = os.totalmem() / (1024 ** 3);
+  const heapGb = Math.max(1, Math.min(Math.floor(totalGb - 4), 16));
+  return `-Xmx${heapGb}g`;
+}
 const EXTRACTOR_PROBE_TIMEOUT_MS = 8_000;
 const DEFAULT_EXTRACT_CPU_BUDGET_PERCENT = 80;
 let currentExtractCpuPriority: string | undefined;
@@ -1392,7 +1400,7 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     "-Dfile.encoding=UTF-8",
     `-Djava.io.tmpdir=${jvmTmpDir}`,
     "-Xms1g",
-    "-Xmx32g",
+    jvmMaxHeapArg(),
     "-XX:+UseG1GC",
     "-XX:MaxGCPauseMillis=50",
     "-cp",
@@ -1640,7 +1648,7 @@ async function runJvmExtractCommand(
     "-Dfile.encoding=UTF-8",
     `-Djava.io.tmpdir=${jvmTmpDir}`,
     "-Xms1g",
-    "-Xmx32g",
+    jvmMaxHeapArg(),
     "-XX:+UseG1GC",
     "-XX:MaxGCPauseMillis=50",
     "-cp",
