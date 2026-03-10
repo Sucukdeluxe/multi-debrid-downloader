@@ -7778,6 +7778,12 @@ export class DownloadManager extends EventEmitter {
           const directLinkRetryMatch = errorText.match(/^(?:Error:\s*)?direct_link_retry_exhausted:(.+)$/);
           if (directLinkRetryMatch) {
             const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
+            if (item.provider === "debridlink") {
+              await sleep(450);
+              if (this.tryFinalizeItemFromDisk(pkg, item, "DebridLink-Settle-Recovery", exhaustedReason)) {
+                return;
+              }
+            }
             if (isHttp416Text(exhaustedReason) && active.genericErrorRetries < maxHttp416Retries) {
               this.scheduleHttp416Retry(item, active, retryDisplayLimit, exhaustedReason, claimedTargetPath);
               this.persistSoon();
