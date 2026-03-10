@@ -32,7 +32,7 @@ import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
 import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
@@ -587,6 +587,8 @@ export class AppController {
 
     // Restore settings — ALL credentials are included (no more masking)
     const importedSettings = parsed.settings as AppSettings;
+    const importedSettingsRecord = importedSettings as unknown as Record<string, unknown>;
+    const currentSettingsRecord = this.settings as unknown as Record<string, unknown>;
     // Legacy backup compatibility: if credentials were masked with ***, keep current values
     const SENSITIVE_KEYS: (keyof AppSettings)[] = [
       "token", "megaLogin", "megaPassword", "bestToken", "allDebridToken",
@@ -594,9 +596,9 @@ export class AppController {
       "debridLinkApiKeys", "linkSnappyLogin", "linkSnappyPassword"
     ];
     for (const key of SENSITIVE_KEYS) {
-      const val = (importedSettings as Record<string, unknown>)[key];
+      const val = importedSettingsRecord[key];
       if (typeof val === "string" && val.startsWith("***")) {
-        (importedSettings as Record<string, unknown>)[key] = (this.settings as Record<string, unknown>)[key];
+        importedSettingsRecord[key] = currentSettingsRecord[key];
       }
     }
     const restoredSettings = normalizeSettings(importedSettings);

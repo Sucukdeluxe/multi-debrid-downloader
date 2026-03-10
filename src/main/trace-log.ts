@@ -267,7 +267,7 @@ export function updateTraceConfig(patch: Partial<SupportTraceConfig>): SupportTr
   });
   persistTraceConfig();
   scheduleAutoDisable();
-  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Konfiguration aktualisiert${formatFields(traceConfig)}\n`);
+  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Konfiguration aktualisiert${formatFields(traceConfig as unknown as Record<string, unknown>)}\n`);
   return getTraceConfig();
 }
 

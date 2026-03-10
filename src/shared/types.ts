@@ -42,7 +42,7 @@ export interface BandwidthScheduleEntry {
 export interface DownloadStats {
   totalDownloaded: number;
   totalDownloadedAllTime: number;
-  totalFiles: number;
+  totalFiles?: number;
   totalFilesSession: number;
   totalFilesAllTime: number;
   totalPackages: number;
@@ -74,7 +74,7 @@ export interface AppSettings {
   linkSnappyPassword: string;
   archivePasswordList: string;
   rememberToken: boolean;
-  providerOrder: DebridProvider[];
+  providerOrder: readonly DebridProvider[];
   providerPrimary: DebridProvider;
   providerSecondary: DebridFallbackProvider;
   providerTertiary: DebridFallbackProvider;
@@ -168,7 +168,7 @@ export interface PackageEntry {
   itemIds: string[];
   cancelled: boolean;
   enabled: boolean;
-  priority: PackagePriority;
+  priority?: PackagePriority;
   postProcessLabel?: string;
   downloadStartedAt?: number;
   downloadCompletedAt?: number;

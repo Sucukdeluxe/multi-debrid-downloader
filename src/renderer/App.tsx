@@ -1,4 +1,4 @@
-import { CSSProperties, DragEvent, KeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import type {
   AllDebridHostInfo,
@@ -761,6 +761,7 @@ function validateAccountDialog(dialog: AccountDialogState): string | null {
 const emptyStats = (): DownloadStats => ({
   totalDownloaded: 0,
   totalDownloadedAllTime: 0,
+  totalFiles: 0,
   totalFilesSession: 0,
   totalFilesAllTime: 0,
   totalPackages: 0,
@@ -770,6 +771,24 @@ const emptyStats = (): DownloadStats => ({
   totalRuntimeMs: 0,
   runtimeMeasuredAt: 0
 });
+
+type StatsSectionItem = {
+  key: string;
+  eyebrow: string;
+  label: string;
+  value: string;
+  compactValue?: boolean;
+  danger?: boolean;
+  clickable?: boolean;
+  title?: string;
+  onClick?: () => void;
+};
+
+type StatsSection = {
+  key: string;
+  title: string;
+  items: StatsSectionItem[];
+};
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
@@ -3204,6 +3223,7 @@ export function App(): ReactElement {
     });
     void window.rd.togglePackage(packageId).catch((error) => {
       if (previousEnabled !== null) {
+        const revertedEnabled = previousEnabled;
         setSnapshot((prev) => {
           const pkg = prev.session.packages[packageId];
           if (!pkg) {
@@ -3217,8 +3237,8 @@ export function App(): ReactElement {
                 ...prev.session.packages,
                 [packageId]: {
                   ...pkg,
-                  enabled: previousEnabled,
-                  status: previousEnabled && pkg.status === "paused" ? "queued" : pkg.status,
+                  enabled: revertedEnabled,
+                  status: revertedEnabled && pkg.status === "paused" ? "queued" : pkg.status,
                   updatedAt: Date.now()
                 }
               },
@@ -3554,7 +3574,7 @@ export function App(): ReactElement {
   }, [selectedIds, settingsDraft.confirmDeleteSelection, executeDeleteSelection]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
+    const onKey = (e: globalThis.KeyboardEvent): void => {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
         if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
@@ -3801,7 +3821,7 @@ export function App(): ReactElement {
       .map((it) => it.id);
     void window.rd.resetItems(failedIds).catch(() => {});
   };
-  const statsSections = [
+  const statsSections: StatsSection[] = [
     {
       key: "live",
       title: "Aktuell",
@@ -3835,7 +3855,7 @@ export function App(): ReactElement {
         { key: "files-total", eyebrow: "Gesamt", label: "Fertige Dateien", value: String(snapshot.stats.totalFilesAllTime) }
       ]
     }
-  ] as const;
+  ];
 
   return (
     <div
@@ -5955,7 +5975,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
   const exProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
   const combinedProgress = Math.min(100, useExtractSplit ? dlProgress + exProgress : dlProgress);
 
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
     if (e.key === "Escape") { onFinishEdit(pkg.id, pkg.name, pkg.name); }
   };
@@ -6093,7 +6113,7 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
               );
               case "progress": return (
                 <span key={col} className="pkg-col pkg-col-progress">
-                  {item.totalBytes > 0 ? (
+                  {(item.totalBytes || 0) > 0 ? (
                     <span className="progress-inline progress-inline-small">
                       <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
                       <span className="progress-inline-text">{item.progressPercent}%</span>

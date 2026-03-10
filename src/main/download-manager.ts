@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   AllDebridHostInfo,
   AppSettings,
+  DebridProvider,
   DownloadItem,
   DownloadStats,
   DownloadSummary,
@@ -2662,7 +2663,9 @@ export class DownloadManager extends EventEmitter {
       // Reuse result if same URL was already checked
       if (checkedUrls.has(url)) {
         const cached = checkedUrls.get(url);
-        this.applyRapidgatorCheckResult(item, cached);
+        if (cached !== undefined) {
+          this.applyRapidgatorCheckResult(item, cached);
+        }
         this.emitState();
         continue;
       }
@@ -6219,8 +6222,8 @@ export class DownloadManager extends EventEmitter {
   }
 
   private getPackageHistoryDurationSeconds(pkg: PackageEntry): number {
-    const startedAt = pkg.downloadStartedAt > 0 ? pkg.downloadStartedAt : pkg.createdAt;
-    const finishedAtCandidate = pkg.downloadCompletedAt > 0 ? pkg.downloadCompletedAt : nowMs();
+    const startedAt = (pkg.downloadStartedAt || 0) > 0 ? (pkg.downloadStartedAt || 0) : pkg.createdAt;
+    const finishedAtCandidate = (pkg.downloadCompletedAt || 0) > 0 ? (pkg.downloadCompletedAt || 0) : nowMs();
     const finishedAt = Math.max(startedAt || 0, finishedAtCandidate || 0);
     if (startedAt <= 0 || finishedAt <= 0) {
       return 1;
@@ -6458,7 +6461,7 @@ export class DownloadManager extends EventEmitter {
 
   private getProviderOrder(): DebridProvider[] {
     if (this.settings.providerOrder && this.settings.providerOrder.length > 0) {
-      return this.settings.providerOrder;
+      return [...this.settings.providerOrder];
     }
     return [
       this.settings.providerPrimary,
@@ -7195,7 +7198,7 @@ export class DownloadManager extends EventEmitter {
     errorText: string,
     claimedTargetPath: string
   ): void {
-    active.genericErrorRetries += 1;
+    active.genericErrorRetries = Number(active.genericErrorRetries || 0) + 1;
     item.retries += 1;
     if (claimedTargetPath) {
       try {
@@ -7660,6 +7663,7 @@ export class DownloadManager extends EventEmitter {
           // Persist retry counters so shelve logic survives reconnect interruption
           this.retryStateByItem.set(item.id, {
             freshRetryUsed: Boolean(active.freshRetryUsed),
+            resumeHardResetUsed: Boolean(active.resumeHardResetUsed),
             stallRetries: Number(active.stallRetries || 0),
             genericErrorRetries: Number(active.genericErrorRetries || 0),
             unrestrictRetries: Number(active.unrestrictRetries || 0)
@@ -7676,6 +7680,7 @@ export class DownloadManager extends EventEmitter {
           item.fullStatus = "Paket gestoppt";
           this.retryStateByItem.set(item.id, {
             freshRetryUsed: Boolean(active.freshRetryUsed),
+            resumeHardResetUsed: Boolean(active.resumeHardResetUsed),
             stallRetries: Number(active.stallRetries || 0),
             genericErrorRetries: Number(active.genericErrorRetries || 0),
             unrestrictRetries: Number(active.unrestrictRetries || 0)
@@ -9389,8 +9394,9 @@ export class DownloadManager extends EventEmitter {
           const stat = await fs.promises.stat(part);
           // Find the item that owns this file to get its expected totalBytes
           const ownerItem = this.findItemByDiskPath(pkg, part);
-          const minBytes = ownerItem?.totalBytes && ownerItem.totalBytes > 0
-            ? ownerItem.totalBytes - ALLOCATION_UNIT_SIZE
+          const ownerTotalBytes = ownerItem?.totalBytes ?? 0;
+          const minBytes = ownerTotalBytes > 0
+            ? ownerTotalBytes - ALLOCATION_UNIT_SIZE
             : 10240;
           if (stat.size < minBytes) {
             allMissingFullOnDisk = false;
@@ -9933,8 +9939,9 @@ export class DownloadManager extends EventEmitter {
           : 10240;
         if (stat.size >= minSize) {
           // Re-check: another task may have started this item during the await
-          if (this.activeTasks.has(item.id) || item.status === "downloading"
-            || item.status === "validating" || item.status === "integrity_check") {
+          const latestItem = this.session.items[item.id];
+          if (!latestItem || this.activeTasks.has(item.id) || latestItem.status === "downloading"
+            || latestItem.status === "validating" || latestItem.status === "integrity_check") {
             continue;
           }
           // Guard against pre-allocated sparse files from a hard crash: file has
