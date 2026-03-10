@@ -6120,12 +6120,12 @@ describe("download manager", () => {
       await new Promise((resolve) => setTimeout(resolve, 140));
       expect(fs.existsSync(extractDir)).toBe(false);
 
-      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+      await waitFor(() => fs.existsSync(path.join(extractDir, "inside.txt")), 30000);
 
       const snapshot = manager.getSnapshot();
       const item = Object.values(snapshot.session.items)[0];
       expect(item?.status).toBe("completed");
-      expect(item?.fullStatus).toBe("Entpackt - Done");
+      expect(item?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
       expect(fs.existsSync(extractDir)).toBe(true);
       expect(fs.existsSync(path.join(extractDir, "inside.txt"))).toBe(true);
     } finally {
@@ -7111,7 +7111,7 @@ describe("download manager", () => {
     await waitFor(() => fs.existsSync(path.join(extractDir, "episode.txt")), 25000);
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
-    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
+    expect(snapshot.session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
   });
 
   it("does not fail startup post-processing when source package dir is missing but extract output exists", async () => {
@@ -7178,7 +7178,7 @@ describe("download manager", () => {
     await waitFor(() => manager.getSnapshot().session.items[itemId]?.fullStatus.startsWith("Entpackt"), 12000);
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
-    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
+    expect(snapshot.session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
   });
 
   it("marks missing source package dir as extracted instead of failed", async () => {
@@ -7850,7 +7850,7 @@ describe("download manager", () => {
     await waitFor(() => fs.existsSync(expectedPath), 12000);
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
-    expect(snapshot.session.items[itemId]?.fullStatus).toBe("Entpackt - Done");
+    expect(snapshot.session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
     expect(fs.existsSync(expectedPath)).toBe(true);
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   });

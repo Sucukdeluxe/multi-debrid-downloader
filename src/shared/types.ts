@@ -42,6 +42,7 @@ export interface BandwidthScheduleEntry {
 export interface DownloadStats {
   totalDownloaded: number;
   totalDownloadedAllTime: number;
+  totalFiles: number;
   totalFilesSession: number;
   totalFilesAllTime: number;
   totalPackages: number;
