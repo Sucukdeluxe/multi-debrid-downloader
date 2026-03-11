@@ -731,6 +731,8 @@ const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
 const SCENE_GROUP_SUFFIX_FALLBACK_RE = /-([A-Za-z0-9]{2,})$/;
+const SCENE_FLEXIBLE_GROUP_SUFFIX_RE = /-([A-Za-z0-9]+(?:_[A-Za-z0-9]+)*)$/;
+const SCENE_MIXED_GROUP_SUFFIX_RE = /-[^-]*[\/\\|\u2044\u2215][^-]*$/;
 const SCENE_NON_GROUP_SUFFIXES = new Set([
   "x264",
   "x265",
@@ -771,6 +773,49 @@ function isValidSceneGroupSuffix(suffix: string): boolean {
     return false;
   }
   return /[a-z]/i.test(normalizedSuffix);
+}
+
+function extractFlexibleSceneGroupSuffix(fileName: string): string | null {
+  const text = String(fileName || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const match = text.match(SCENE_FLEXIBLE_GROUP_SUFFIX_RE);
+  const suffix = String(match?.[1] || "").trim();
+  if (!suffix || !/[a-z]/i.test(suffix)) {
+    return null;
+  }
+
+  const suffixParts = suffix.split("_").filter(Boolean);
+  if (suffixParts.length === 0) {
+    return null;
+  }
+  if (!suffixParts.every((part) => isValidSceneGroupSuffix(part))) {
+    return null;
+  }
+  return suffix;
+}
+
+function hasMixedSceneGroupSuffix(fileName: string): boolean {
+  const text = String(fileName || "").trim();
+  if (!text) {
+    return false;
+  }
+  return SCENE_MIXED_GROUP_SUFFIX_RE.test(text);
+}
+
+function applySourceSceneGroupSuffix(targetBaseName: string, sourceFileName: string): string {
+  const target = String(targetBaseName || "").trim();
+  const suffix = extractFlexibleSceneGroupSuffix(sourceFileName);
+  if (!target || !suffix) {
+    return target;
+  }
+
+  if (/-[^-]+$/.test(target)) {
+    return target.replace(/-[^-]+$/, `-${suffix}`);
+  }
+  return `${target}-${suffix}`;
 }
 
 function hasSceneGroupSuffix(fileName: string): boolean {
@@ -1106,6 +1151,13 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
       target = applyEpisodeTokenToFolderName(target, resolvedEpisode.token);
     }
 
+    if (resolvedEpisode
+      && folderHasSeason
+      && !folderHasEpisode
+      && (hasMixedSceneGroupSuffix(folderName) || !hasSceneGroupSuffix(folderName))) {
+      target = applySourceSceneGroupSuffix(target, normalizedSourceFileName);
+    }
+
     if (globalRepackHint) {
       target = ensureRepackToken(removeRpTokens(target));
     }
@@ -1122,6 +1174,9 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
         continue;
       }
       let target = applyEpisodeTokenToFolderName(folderName, resolvedEpisode.token);
+      if (hasMixedSceneGroupSuffix(folderName) || !hasSceneGroupSuffix(folderName)) {
+        target = applySourceSceneGroupSuffix(target, normalizedSourceFileName);
+      }
       if (globalRepackHint) {
         target = ensureRepackToken(removeRpTokens(target));
       }
