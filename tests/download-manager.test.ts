@@ -101,6 +101,28 @@ describe("auto rename base selection", () => {
       { forceEpisodeForSeasonFolder: true }
     )).toBe("Alex.und.Co.S03E18.GERMAN.DL.720p.WEB.H264-SunDry");
   });
+
+  it("uses the episode's own scene group when a season folder mixes providers", () => {
+    expect(buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "amilllt.web.de.7p-101",
+        "A.Million.Little.Things.S01.GERMAN.DUBBED.720p.WEB.h264-idTV\u2044GDR"
+      ],
+      "A.Million.Little.Things.S01E01.GERMAN.DUBBED.720p.WEB.h264-idTV_iNT",
+      { forceEpisodeForSeasonFolder: true }
+    )).toBe("A.Million.Little.Things.S01E01.GERMAN.DUBBED.720p.WEB.h264-idTV_iNT");
+  });
+
+  it("keeps per-episode GDR suffixes instead of inheriting a mixed package suffix", () => {
+    expect(buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "amilllt.web.de.7p-110",
+        "A.Million.Little.Things.S01.GERMAN.DUBBED.720p.WEB.h264-idTV\u2044GDR"
+      ],
+      "A.Million.Little.Things.S01E10.German.DL.Dubbed.720p.WEB.h264-GDR",
+      { forceEpisodeForSeasonFolder: true }
+    )).toBe("A.Million.Little.Things.S01E10.GERMAN.DUBBED.720p.WEB.h264-GDR");
+  });
 });
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
