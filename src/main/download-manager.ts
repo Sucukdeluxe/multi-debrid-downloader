@@ -748,6 +748,31 @@ const SCENE_NON_GROUP_SUFFIXES = new Set([
   "remux"
 ]);
 
+function isValidSceneGroupSuffix(suffix: string): boolean {
+  const normalizedSuffix = String(suffix || "").trim();
+  if (!normalizedSuffix) {
+    return false;
+  }
+
+  const lower = normalizedSuffix.toLowerCase();
+  if (SCENE_NON_GROUP_SUFFIXES.has(lower)) {
+    return false;
+  }
+  if (/^s\d{1,2}e\d{1,3}(?:e\d{1,3})?$/i.test(normalizedSuffix) || /^s\d{1,2}$/i.test(normalizedSuffix) || /^e\d{1,3}$/i.test(normalizedSuffix)) {
+    return false;
+  }
+  if (/^\d+p$/.test(lower) || /^\d+$/.test(lower)) {
+    return false;
+  }
+  if (/^\d/.test(normalizedSuffix)) {
+    return false;
+  }
+  if (/4s(?:f|j)/i.test(normalizedSuffix) && !/^(?:4sf|4sj)$/i.test(normalizedSuffix)) {
+    return false;
+  }
+  return /[a-z]/i.test(normalizedSuffix);
+}
+
 function hasSceneGroupSuffix(fileName: string): boolean {
   const text = String(fileName || "").trim();
   if (!text) {
@@ -755,29 +780,13 @@ function hasSceneGroupSuffix(fileName: string): boolean {
   }
 
   if (SCENE_GROUP_SUFFIX_RE.test(text)) {
-    return true;
+    const directMatch = text.match(SCENE_GROUP_SUFFIX_FALLBACK_RE);
+    return isValidSceneGroupSuffix(String(directMatch?.[1] || ""));
   }
 
   const fallbackMatch = text.match(SCENE_GROUP_SUFFIX_FALLBACK_RE);
   const suffix = String(fallbackMatch?.[1] || "").trim();
-  if (!suffix) {
-    return false;
-  }
-
-  const lower = suffix.toLowerCase();
-  if (SCENE_NON_GROUP_SUFFIXES.has(lower)) {
-    return false;
-  }
-  if (/^\d+p$/.test(lower) || /^\d+$/.test(lower)) {
-    return false;
-  }
-  if (/^\d/.test(suffix)) {
-    return false;
-  }
-  if (/4s(?:f|j)/i.test(suffix) && !/^(?:4sf|4sj)$/i.test(suffix)) {
-    return false;
-  }
-  return /[a-z]/i.test(suffix);
+  return isValidSceneGroupSuffix(suffix);
 }
 
 export function extractEpisodeToken(fileName: string): string | null {

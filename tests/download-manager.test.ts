@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
@@ -75,6 +75,31 @@ describe("download completion planning", () => {
       totalBytes: 256 * 1024,
       acceptedMetadataMismatch: true
     });
+  });
+});
+
+describe("auto rename base selection", () => {
+  it("ignores raw episode-suffix folders like 4sf-amilllt...-s03e10 as scene targets", () => {
+    expect(buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "4sf-amilllt.de.dl.web.7p-s03e10",
+        "A.Million.Little.Things.S03.GERMAN.DL.720p.WEB.H264-RWP",
+        "amilllt.de.dl.web.7p-s03e10"
+      ],
+      "A.Million.Little.Things.S03E10.Vertraue.mir.GERMAN.DL.720p.WEB.H264-4SF",
+      { forceEpisodeForSeasonFolder: true }
+    )).toBe("A.Million.Little.Things.S03E10.GERMAN.DL.720p.WEB.H264-RWP");
+  });
+
+  it("ignores compact archive folder stems like scn-alco7-S03E18 as scene targets", () => {
+    expect(buildAutoRenameBaseNameFromFoldersWithOptions(
+      [
+        "scn-alco7-S03E18",
+        "Alex.und.Co.S03.GERMAN.DL.720p.WEB.H264-SunDry"
+      ],
+      "alex.und.co.s03e18.720p.web.h264-sundry",
+      { forceEpisodeForSeasonFolder: true }
+    )).toBe("Alex.und.Co.S03E18.GERMAN.DL.720p.WEB.H264-SunDry");
   });
 });
 
