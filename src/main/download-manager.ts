@@ -3281,22 +3281,15 @@ export class DownloadManager extends EventEmitter {
     }
     let renamed = 0;
 
-    // Collect additional folder candidates from package metadata (outputDir, item filenames)
+    // Collect additional folder candidates from package metadata (outputDir only).
+    // Item filenames are intentionally excluded: they contain episode tokens from
+    // OTHER files in the package, which pollute resolveEpisodeTokenForAutoRename
+    // and cause all files to receive the same wrong episode number.
     const packageExtraCandidates: string[] = [];
     if (pkg) {
       const outputBase = path.basename(pkg.outputDir || "");
       if (outputBase) {
         packageExtraCandidates.push(outputBase);
-      }
-      for (const itemId of pkg.itemIds) {
-        const item = this.session.items[itemId];
-        if (item?.fileName) {
-          const itemBase = path.basename(item.fileName, path.extname(item.fileName));
-          const stripped = itemBase.replace(/\.part\d+$/i, "").replace(/\.vol\d+[+\d]*$/i, "");
-          if (stripped) {
-            packageExtraCandidates.push(stripped);
-          }
-        }
       }
     }
 
@@ -10626,6 +10619,7 @@ export class DownloadManager extends EventEmitter {
             removeLinks: false,
             removeSamples: false,
             passwordList: this.settings.archivePasswordList,
+            signal: deferredController.signal,
             packageId,
             onlyArchives: new Set(nestedCandidates.map((p) => process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p))),
             maxParallel: this.settings.maxParallelExtract || 2,
