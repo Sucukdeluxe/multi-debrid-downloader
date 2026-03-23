@@ -1012,7 +1012,10 @@ export function applyEpisodeTokenToFolderName(folderName: string, episodeToken: 
     return episodeToken;
   }
 
-  const episodeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}(?:e\d{1,3})?(?=[._\-\s]|$)/i;
+  // Match single episodes (S01E03), multi-episodes (S01E01E02), and
+  // episode ranges (S01E01-E08, S01E01-08) so the range is fully replaced
+  // with the source's specific episode token.
+  const episodeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}(?:e\d{1,3})?(?:[-]e?\d{1,3})?(?=[._\-\s]|$)/i;
   if (episodeRe.test(trimmed)) {
     return trimmed.replace(episodeRe, `$1${episodeToken}`);
   }
@@ -1084,6 +1087,17 @@ export function buildAutoRenameBaseName(folderName: string, sourceFileName: stri
   let next = isLegacy4sf4sjFolder
     ? applyEpisodeTokenToFolderName(normalizedFolderName, episodeToken)
     : normalizedFolderName;
+
+  // If the folder contains an episode RANGE (e.g. S01E01-E08), replace the
+  // range with the source's specific episode token.  Without this, all
+  // episodes in a range-named folder share the same target name, producing
+  // (2)(3)(4) suffixes during MKV collection.
+  if (!isLegacy4sf4sjFolder && isSceneGroupFolder) {
+    const episodeRangeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}[-]e?\d{1,3}(?=[._\-\s]|$)/i;
+    if (episodeRangeRe.test(normalizedFolderName)) {
+      next = applyEpisodeTokenToFolderName(normalizedFolderName, episodeToken);
+    }
+  }
 
   const hasRepackHint = sourceHasRpToken(normalizedSourceFileName)
     || SCENE_REPACK_TOKEN_RE.test(normalizedSourceFileName)
