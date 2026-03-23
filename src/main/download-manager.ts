@@ -3307,6 +3307,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
     for (const sourcePath of videoFiles) {
       if (shouldAbort?.()) {
         return renamed;
@@ -3314,6 +3315,13 @@ export class DownloadManager extends EventEmitter {
       const sourceName = path.basename(sourcePath);
       const sourceExt = path.extname(sourceName);
       const sourceBaseName = path.basename(sourceName, sourceExt);
+
+      // Skip sample files — renaming them strips the "-sample" suffix,
+      // making them indistinguishable from the main MKV and causing (2)
+      // duplicates during MKV collection.
+      if (sampleTokenRe.test(sourceBaseName)) {
+        continue;
+      }
       const folderCandidates: string[] = [];
       let currentDir = path.dirname(sourcePath);
       while (currentDir && isPathInsideDir(currentDir, extractDir)) {
