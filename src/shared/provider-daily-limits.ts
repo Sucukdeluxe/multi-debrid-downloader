@@ -5,11 +5,13 @@ export type DebridLinkKeyByteMap = Record<string, number>;
 
 type ProviderDailySettings =
   Pick<AppSettings, "providerDailyLimitBytes" | "providerDailyUsageBytes" | "providerDailyUsageDay">
-  & Partial<Pick<AppSettings, "debridLinkApiKeyDailyLimitBytes" | "debridLinkApiKeyDailyUsageBytes">>;
+  & Partial<Pick<AppSettings, "debridLinkApiKeyDailyLimitBytes" | "debridLinkApiKeyDailyUsageBytes">>
+  & Partial<Pick<AppSettings, "megaDebridDisabledAccountIds" | "megaDebridAccountDailyLimitBytes" | "megaDebridAccountDailyUsageBytes">>;
 
 type ProviderUsageSettings =
   ProviderDailySettings
-  & Partial<Pick<AppSettings, "providerTotalUsageBytes" | "debridLinkApiKeyTotalUsageBytes">>;
+  & Partial<Pick<AppSettings, "providerTotalUsageBytes" | "debridLinkApiKeyTotalUsageBytes">>
+  & Partial<Pick<AppSettings, "megaDebridAccountTotalUsageBytes">>;
 
 function normalizePositiveBytes(value: unknown): number {
   const numeric = Number(value);
@@ -245,5 +247,85 @@ export function addDebridLinkApiKeyTotalUsageBytes(
 
   return {
     debridLinkApiKeyTotalUsageBytes: currentUsageBytes
+  };
+}
+
+// ── Mega-Debrid per-account limits ──
+
+export function isMegaDebridAccountDisabled(settings: ProviderDailySettings, accountId: string): boolean {
+  return Array.isArray(settings.megaDebridDisabledAccountIds) && settings.megaDebridDisabledAccountIds.includes(accountId);
+}
+
+export function getMegaDebridAccountDailyLimitBytes(settings: ProviderDailySettings, accountId: string): number {
+  return normalizePositiveBytes(settings.megaDebridAccountDailyLimitBytes?.[accountId]);
+}
+
+export function getMegaDebridAccountDailyUsageBytes(
+  settings: ProviderDailySettings,
+  accountId: string,
+  epochMs = Date.now()
+): number {
+  if (settings.providerDailyUsageDay !== getProviderUsageDayKey(epochMs)) {
+    return 0;
+  }
+  return normalizePositiveBytes(settings.megaDebridAccountDailyUsageBytes?.[accountId]);
+}
+
+export function isMegaDebridAccountDailyLimitReached(
+  settings: ProviderDailySettings,
+  accountId: string,
+  epochMs = Date.now()
+): boolean {
+  const limit = getMegaDebridAccountDailyLimitBytes(settings, accountId);
+  return limit > 0 && getMegaDebridAccountDailyUsageBytes(settings, accountId, epochMs) >= limit;
+}
+
+export function getMegaDebridAccountTotalUsageBytes(settings: ProviderUsageSettings, accountId: string): number {
+  return normalizePositiveBytes(settings.megaDebridAccountTotalUsageBytes?.[accountId]);
+}
+
+export function addMegaDebridAccountDailyUsageBytes(
+  settings: ProviderDailySettings,
+  accountId: string,
+  byteDelta: number,
+  epochMs = Date.now()
+): Pick<AppSettings, "providerDailyUsageDay" | "megaDebridAccountDailyUsageBytes"> {
+  const increment = normalizePositiveBytes(byteDelta);
+  const dayKey = getProviderUsageDayKey(epochMs);
+  const currentUsageBytes = settings.providerDailyUsageDay === dayKey
+    ? { ...(settings.megaDebridAccountDailyUsageBytes || {}) }
+    : {};
+  if (increment <= 0) {
+    return {
+      providerDailyUsageDay: dayKey,
+      megaDebridAccountDailyUsageBytes: currentUsageBytes
+    };
+  }
+
+  currentUsageBytes[accountId] = normalizePositiveBytes(currentUsageBytes[accountId]) + increment;
+
+  return {
+    providerDailyUsageDay: dayKey,
+    megaDebridAccountDailyUsageBytes: currentUsageBytes
+  };
+}
+
+export function addMegaDebridAccountTotalUsageBytes(
+  settings: ProviderUsageSettings,
+  accountId: string,
+  byteDelta: number
+): Pick<AppSettings, "megaDebridAccountTotalUsageBytes"> {
+  const increment = normalizePositiveBytes(byteDelta);
+  const currentUsageBytes = { ...(settings.megaDebridAccountTotalUsageBytes || {}) };
+  if (increment <= 0) {
+    return {
+      megaDebridAccountTotalUsageBytes: currentUsageBytes
+    };
+  }
+
+  currentUsageBytes[accountId] = normalizePositiveBytes(currentUsageBytes[accountId]) + increment;
+
+  return {
+    megaDebridAccountTotalUsageBytes: currentUsageBytes
   };
 }

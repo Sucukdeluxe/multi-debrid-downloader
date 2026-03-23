@@ -58,6 +58,7 @@ export interface AppSettings {
   realDebridUseWebLogin: boolean;
   megaLogin: string;
   megaPassword: string;
+  megaCredentials: string;
   megaDebridApiEnabled: boolean;
   megaDebridWebEnabled: boolean;
   megaDebridPreferApi: boolean;
@@ -130,6 +131,10 @@ export interface AppSettings {
   debridLinkApiKeyDailyLimitBytes: Record<string, number>;
   debridLinkApiKeyDailyUsageBytes: Record<string, number>;
   debridLinkApiKeyTotalUsageBytes: Record<string, number>;
+  megaDebridDisabledAccountIds: string[];
+  megaDebridAccountDailyLimitBytes: Record<string, number>;
+  megaDebridAccountDailyUsageBytes: Record<string, number>;
+  megaDebridAccountTotalUsageBytes: Record<string, number>;
   providerDailyUsageDay: string;
   scheduledStartEpochMs: number;
 }

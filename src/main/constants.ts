@@ -46,6 +46,7 @@ export function defaultSettings(): AppSettings {
     realDebridUseWebLogin: false,
     megaLogin: "",
     megaPassword: "",
+    megaCredentials: "",
     megaDebridApiEnabled: false,
     megaDebridWebEnabled: false,
     megaDebridPreferApi: true,
@@ -118,6 +119,10 @@ export function defaultSettings(): AppSettings {
     debridLinkApiKeyDailyLimitBytes: {},
     debridLinkApiKeyDailyUsageBytes: {},
     debridLinkApiKeyTotalUsageBytes: {},
+    megaDebridDisabledAccountIds: [],
+    megaDebridAccountDailyLimitBytes: {},
+    megaDebridAccountDailyUsageBytes: {},
+    megaDebridAccountTotalUsageBytes: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   };

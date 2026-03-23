@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
+import { getMegaDebridAccountIds } from "../shared/mega-debrid-accounts";
 import { AppSettings, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
@@ -281,6 +282,12 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const currentUsageDay = getProviderUsageDayKey();
   const megaLogin = asText(settings.megaLogin);
   const megaPassword = asText(settings.megaPassword);
+  // Migrate legacy single-account to multi-account format
+  let megaCredentials = String(settings.megaCredentials ?? "").replace(/\r\n|\r/g, "\n").trim();
+  if (!megaCredentials && megaLogin && megaPassword) {
+    megaCredentials = `${megaLogin}:${megaPassword}`;
+  }
+  const megaDebridAccountIds = getMegaDebridAccountIds(megaCredentials);
   const megaDebridPreferApi = settings.megaDebridPreferApi !== undefined ? Boolean(settings.megaDebridPreferApi) : true;
   const hasMegaCreds = Boolean(megaLogin && megaPassword);
   const megaDebridApiEnabled = settings.megaDebridApiEnabled !== undefined
@@ -322,6 +329,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
     megaLogin,
     megaPassword,
+    megaCredentials,
     megaDebridApiEnabled,
     megaDebridWebEnabled,
     megaDebridPreferApi,
@@ -406,6 +414,12 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     debridLinkApiKeyDailyLimitBytes,
     debridLinkApiKeyDailyUsageBytes: providerDailyUsageDay === currentUsageDay ? debridLinkApiKeyDailyUsageBytes : {},
     debridLinkApiKeyTotalUsageBytes,
+    megaDebridDisabledAccountIds: normalizeStringList(settings.megaDebridDisabledAccountIds, megaDebridAccountIds),
+    megaDebridAccountDailyLimitBytes: normalizeNamedByteMap(settings.megaDebridAccountDailyLimitBytes, megaDebridAccountIds),
+    megaDebridAccountDailyUsageBytes: providerDailyUsageDay === currentUsageDay
+      ? normalizeNamedByteMap(settings.megaDebridAccountDailyUsageBytes, megaDebridAccountIds)
+      : {},
+    megaDebridAccountTotalUsageBytes: normalizeNamedByteMap(settings.megaDebridAccountTotalUsageBytes, megaDebridAccountIds),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };
@@ -454,6 +468,7 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
     realDebridUseWebLogin: settings.realDebridUseWebLogin,
     megaLogin: "",
     megaPassword: "",
+    megaCredentials: "",
     bestToken: "",
     bestDebridUseWebLogin: settings.bestDebridUseWebLogin,
     allDebridToken: "",
