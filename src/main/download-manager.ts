@@ -722,6 +722,8 @@ const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
 const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]+$/;
 const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
 const SCENE_EPISODE_JOINED_RE = /s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
+// Scene typo: "S05S01" instead of "S05E01" — second S should be E
+const SCENE_EPISODE_TYPO_SS_RE = /(?:^|[._\-\s])s(\d{1,2})s(\d{1,3})(?!\d)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
@@ -836,7 +838,7 @@ function hasSceneGroupSuffix(fileName: string): boolean {
 
 export function extractEpisodeToken(fileName: string): string | null {
   const text = String(fileName || "");
-  const match = text.match(SCENE_EPISODE_RE) || text.match(SCENE_EPISODE_JOINED_RE);
+  const match = text.match(SCENE_EPISODE_RE) || text.match(SCENE_EPISODE_JOINED_RE) || text.match(SCENE_EPISODE_TYPO_SS_RE);
   if (!match) {
     return null;
   }
