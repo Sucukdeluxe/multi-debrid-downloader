@@ -10735,6 +10735,22 @@ export class DownloadManager extends EventEmitter {
         pkg.postProcessLabel = "Verschiebe Videos...";
         this.emitState();
         await this.collectMkvFilesToLibrary(packageId, pkg, shouldAbort);
+
+        // ── Post-MKV-move rename pass ──
+        // During hybrid extraction, files can finish extracting between the
+        // auto-rename scan and MKV-move, causing them to be moved with their
+        // original scene names (e.g. awa-diethundermans03e21hd.mkv).
+        // Run auto-rename on the MKV library dir to catch these stragglers.
+        if (this.settings.autoRename4sf4sj && this.settings.collectMkvToLibrary) {
+          const mkvDir = String(this.settings.mkvLibraryDir || "").trim();
+          if (mkvDir && await this.existsAsync(mkvDir)) {
+            throwIfAborted();
+            const postMkvRenamed = await this.autoRenameExtractedVideoFiles(mkvDir, pkg, shouldAbort);
+            if (postMkvRenamed > 0) {
+              logger.info(`Post-MKV-Move Auto-Rename: pkg=${pkg.name}, renamed=${postMkvRenamed} in ${mkvDir}`);
+            }
+          }
+        }
       }
 
       throwIfAborted();
