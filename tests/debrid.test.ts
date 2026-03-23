@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, normalizeResolvedFilename, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
+import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, normalizeResolvedFilename, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   resetDebridLinkRuntimeStateForTests();
+  resetMegaDebridRuntimeStateForTests();
   vi.restoreAllMocks();
 });
 
@@ -19,6 +20,7 @@ describe("debrid service", () => {
       token: "rd-token",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       bestToken: "",
       providerOrder: [] as const,
       providerPrimary: "realdebrid" as const,
@@ -58,6 +60,7 @@ describe("debrid service", () => {
       token: "rd-token",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       providerPrimary: "realdebrid" as const,
       providerSecondary: "megadebrid" as const,
       providerTertiary: "bestdebrid" as const,
@@ -966,6 +969,7 @@ describe("debrid service", () => {
       allDebridToken: "",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       providerOrder: [] as const,
       providerPrimary: "megadebrid" as const,
       providerSecondary: "megadebrid" as const,
@@ -999,6 +1003,7 @@ describe("debrid service", () => {
       allDebridToken: "",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       megaDebridApiEnabled: true,
       megaDebridWebEnabled: true,
       providerPrimary: "megadebrid-api" as const,
@@ -1029,6 +1034,7 @@ describe("debrid service", () => {
       allDebridToken: "",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       megaDebridApiEnabled: true,
       megaDebridWebEnabled: true,
       providerOrder: [] as const,
@@ -1062,6 +1068,7 @@ describe("debrid service", () => {
       allDebridToken: "",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       providerOrder: [] as const,
       providerPrimary: "megadebrid" as const,
       providerSecondary: "none" as const,
@@ -1104,6 +1111,7 @@ describe("debrid service", () => {
       allDebridToken: "ad-token",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       providerPrimary: "megadebrid" as const,
       providerSecondary: "megadebrid" as const,
       providerTertiary: "megadebrid" as const,
@@ -1135,6 +1143,7 @@ describe("debrid service", () => {
       token: "",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       providerPrimary: "realdebrid" as const,
       providerSecondary: "megadebrid" as const,
       providerTertiary: "none" as const,
@@ -1159,6 +1168,7 @@ describe("debrid service", () => {
       token: "rd-token",
       megaLogin: "user",
       megaPassword: "pass",
+      megaCredentials: "user:pass",
       providerPrimary: "realdebrid" as const,
       providerSecondary: "none" as const,
       providerTertiary: "none" as const,

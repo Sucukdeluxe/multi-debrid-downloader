@@ -1,6 +1,7 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostLimitInfo, DebridProvider } from "../shared/types";
-import { isDebridLinkApiKeyDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
+import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
@@ -94,6 +95,62 @@ function getDebridLinkKeyCooldownState(
   };
 }
 
+/** Per-account cooldown cache for Mega-Debrid: accountId → expiry timestamp. */
+type MegaDebridCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary" | "skip";
+type MegaDebridCooldownDetail = { until: number; message: string; category: MegaDebridCooldownCategory };
+const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
+const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000; // 2 min cooldown per failed account
+const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
+
+export function resetMegaDebridRuntimeStateForTests(): void {
+  megaDebridAccountCooldowns.clear();
+}
+
+export function primeMegaDebridRuntimeCooldownForTests(accountId: string, cooldownMs: number, message = "Mega-Debrid Account im Cooldown"): void {
+  setMegaDebridAccountCooldownState(accountId, cooldownMs, message, "temporary");
+}
+
+function clearMegaDebridAccountCooldownState(accountId: string): void {
+  megaDebridAccountCooldowns.delete(accountId);
+}
+
+function setMegaDebridAccountCooldownState(
+  accountId: string,
+  cooldownMs: number,
+  message: string,
+  category: MegaDebridCooldownCategory
+): void {
+  if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) {
+    clearMegaDebridAccountCooldownState(accountId);
+    return;
+  }
+  megaDebridAccountCooldowns.set(accountId, {
+    until: Date.now() + Math.max(1000, Math.floor(cooldownMs)),
+    message,
+    category
+  });
+}
+
+export function getMegaDebridAccountCooldownState(
+  accountId: string,
+  now = Date.now()
+): { until: number; remainingMs: number; message: string; category: MegaDebridCooldownCategory } | null {
+  const detail = megaDebridAccountCooldowns.get(accountId);
+  if (!detail) {
+    return null;
+  }
+  if (detail.until <= now) {
+    clearMegaDebridAccountCooldownState(accountId);
+    return null;
+  }
+  return {
+    until: detail.until,
+    remainingMs: detail.until - now,
+    message: detail.message,
+    category: detail.category
+  };
+}
+
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 
 const PROVIDER_LABELS: Record<DebridProvider, string> = {
@@ -146,7 +203,11 @@ function cloneSettings(settings: AppSettings): AppSettings {
     providerTotalUsageBytes: { ...(settings.providerTotalUsageBytes || {}) },
     debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
     debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) },
-    debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) }
+    debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) },
+    megaDebridDisabledAccountIds: [...(settings.megaDebridDisabledAccountIds || [])],
+    megaDebridAccountDailyLimitBytes: { ...(settings.megaDebridAccountDailyLimitBytes || {}) },
+    megaDebridAccountDailyUsageBytes: { ...(settings.megaDebridAccountDailyUsageBytes || {}) },
+    megaDebridAccountTotalUsageBytes: { ...(settings.megaDebridAccountTotalUsageBytes || {}) }
   };
 }
 
@@ -160,8 +221,29 @@ export function getAvailableDebridLinkApiKeys(settings: AppSettings, epochMs = D
   );
 }
 
+/** Returns Mega-Debrid accounts that are not disabled and not daily-limited. */
+export function getAvailableMegaDebridAccounts(settings: AppSettings, epochMs = Date.now()): MegaDebridAccountEntry[] {
+  return getMegaDebridAccountList(settings).filter(
+    (entry) => !isMegaDebridAccountDisabled(settings, entry.id) && !isMegaDebridAccountDailyLimitReached(settings, entry.id, epochMs)
+  );
+}
+
+/** Resolves the full list of Mega-Debrid accounts from settings (multi-account or legacy single). */
+function getMegaDebridAccountList(settings: AppSettings): MegaDebridAccountEntry[] {
+  // Multi-account format: newline-separated "login:password" pairs in megaCredentials
+  const multiAccounts = parseMegaDebridAccounts(settings.megaCredentials || "");
+  if (multiAccounts.length > 0) {
+    return multiAccounts;
+  }
+  // Backward compat: single legacy megaLogin/megaPassword
+  if (settings.megaLogin?.trim() && settings.megaPassword?.trim()) {
+    return parseMegaDebridAccounts(settings.megaLogin.trim(), settings.megaPassword.trim());
+  }
+  return [];
+}
+
 function hasMegaDebridCredentials(settings: AppSettings): boolean {
-  return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
+  return getMegaDebridAccountList(settings).length > 0;
 }
 
 function isMegaDebridModeEnabled(settings: AppSettings, mode: "api" | "web"): boolean {
@@ -1004,11 +1086,11 @@ class MegaDebridClient {
 
   private allowApiFallback: boolean;
 
-  private static cachedApiToken = "";
+  /** Per-account API token cache: login (lowercase) → { token, timestamp } */
+  private static cachedApiTokens = new Map<string, { token: string; at: number }>();
 
-  private static cachedApiTokenAt = 0;
-
-  private static pendingConnect: Promise<string | null> | null = null;
+  /** Per-account pending connect deduplication: login (lowercase) → promise */
+  private static pendingConnects = new Map<string, Promise<string | null>>();
 
   public constructor(login: string, password: string, mode: "api" | "web", allowApiFallback: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
     this.login = login;
@@ -1018,21 +1100,33 @@ class MegaDebridClient {
     this.megaWebUnrestrict = megaWebUnrestrict;
   }
 
+  private get cacheKey(): string {
+    return this.login.trim().toLowerCase();
+  }
+
   private async connectApi(signal?: AbortSignal): Promise<string | null> {
+    const key = this.cacheKey;
     // Return cached token if fresh (max 20 min)
-    if (MegaDebridClient.cachedApiToken && Date.now() - MegaDebridClient.cachedApiTokenAt < 20 * 60 * 1000) {
-      return MegaDebridClient.cachedApiToken;
+    const cached = MegaDebridClient.cachedApiTokens.get(key);
+    if (cached && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
+      return cached.token;
     }
 
-    // Deduplicate parallel connectUser calls — only one in-flight request at a time
-    if (MegaDebridClient.pendingConnect) {
-      return MegaDebridClient.pendingConnect;
+    // Deduplicate parallel connectUser calls — only one in-flight request per account
+    const pending = MegaDebridClient.pendingConnects.get(key);
+    if (pending) {
+      return pending;
     }
 
-    MegaDebridClient.pendingConnect = this.doConnectApi(signal).finally(() => {
-      MegaDebridClient.pendingConnect = null;
+    const promise = this.doConnectApi(signal).finally(() => {
+      MegaDebridClient.pendingConnects.delete(key);
     });
-    return MegaDebridClient.pendingConnect;
+    MegaDebridClient.pendingConnects.set(key, promise);
+    return promise;
+  }
+
+  private clearTokenCache(): void {
+    MegaDebridClient.cachedApiTokens.delete(this.cacheKey);
   }
 
   private async doConnectApi(signal?: AbortSignal): Promise<string | null> {
@@ -1053,8 +1147,7 @@ class MegaDebridClient {
     if (!token) {
       return null;
     }
-    MegaDebridClient.cachedApiToken = token;
-    MegaDebridClient.cachedApiTokenAt = Date.now();
+    MegaDebridClient.cachedApiTokens.set(this.cacheKey, { token, at: Date.now() });
     return token;
   }
 
@@ -1078,8 +1171,7 @@ class MegaDebridClient {
     if (!response.ok) {
       // Token might be invalid, clear cache
       if (response.status === 401 || response.status === 403) {
-        MegaDebridClient.cachedApiToken = "";
-        MegaDebridClient.cachedApiTokenAt = 0;
+        this.clearTokenCache();
       }
       return null;
     }
@@ -1087,8 +1179,7 @@ class MegaDebridClient {
     if (!payload || payload.response_code !== "ok") {
       // Token expired — clear cache for next attempt
       if (payload && String(payload.response_code || "").includes("token")) {
-        MegaDebridClient.cachedApiToken = "";
-        MegaDebridClient.cachedApiTokenAt = 0;
+        this.clearTokenCache();
       }
       const errorText = String(payload?.response_text || "").trim();
       if (errorText) {
@@ -1172,6 +1263,168 @@ class MegaDebridClient {
     }
 
     return this.unrestrictViaWeb(link, signal);
+  }
+
+  /**
+   * Multi-account rotation for Mega-Debrid, following the same pattern as Debrid-Link multi-key rotation.
+   * Iterates through all configured accounts, skipping disabled/daily-limited/cooldown accounts.
+   * On success: clears cooldown, returns result with sourceAccountId/sourceAccountLabel.
+   * On failure: classifies error, sets cooldown, tries next account.
+   */
+  public static async unrestrictWithAccounts(
+    settings: AppSettings,
+    mode: "api" | "web",
+    allowApiFallback: boolean,
+    link: string,
+    megaWebUnrestrict: MegaWebUnrestrictor | undefined,
+    signal?: AbortSignal
+  ): Promise<UnrestrictedLink> {
+    const accounts = getMegaDebridAccountList(settings);
+    if (accounts.length === 0) {
+      throw new Error("Mega-Debrid: Kein Account konfiguriert");
+    }
+
+    if (getAvailableMegaDebridAccounts(settings).length === 0) {
+      throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar (deaktiviert oder am Tageslimit)");
+    }
+
+    const failures: string[] = [];
+    let usableAccountSeen = false;
+    const cooldownFailures: string[] = [];
+    let earliestCooldownUntil = 0;
+    const hasMultiple = accounts.length > 1;
+
+    // Always start from first account — use first available, skip disabled/limited/cooldown.
+    for (let idx = 0; idx < accounts.length; idx += 1) {
+      const account = accounts[idx];
+      const accountLabel = hasMultiple ? ` (${account.label})` : "";
+
+      if (isMegaDebridAccountDisabled(settings, account.id)) {
+        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Account`);
+        continue;
+      }
+      if (isMegaDebridAccountDailyLimitReached(settings, account.id)) {
+        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (lokales Tageslimit erreicht), pruefe naechsten Account`);
+        continue;
+      }
+      // Cooldown key includes mode so API failures don't block Web attempts
+      const cooldownKey = `${account.id}:${mode}`;
+      const accountCooldownState = getMegaDebridAccountCooldownState(cooldownKey);
+      if (accountCooldownState) {
+        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (Cooldown bis ${new Date(accountCooldownState.until).toLocaleTimeString()}), pruefe naechsten Account`);
+        cooldownFailures.push(`Mega-Debrid${accountLabel}: ${accountCooldownState.message}`);
+        if (!earliestCooldownUntil || accountCooldownState.until < earliestCooldownUntil) {
+          earliestCooldownUntil = accountCooldownState.until;
+        }
+        continue;
+      }
+
+      usableAccountSeen = true;
+      try {
+        const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
+        const result = await client.unrestrictLink(link, signal);
+        clearMegaDebridAccountCooldownState(cooldownKey);
+        logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK -> ${result.fileName || "?"}`);
+        return {
+          ...result,
+          sourceLabel: account.label,
+          sourceAccountId: account.id,
+          sourceAccountLabel: account.label
+        };
+      } catch (error) {
+        const failure = MegaDebridClient.classifyAccountFailure(error);
+        failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
+        if (failure.cooldownMs > 0) {
+          setMegaDebridAccountCooldownState(cooldownKey, failure.cooldownMs, failure.message, failure.category);
+        } else {
+          clearMegaDebridAccountCooldownState(cooldownKey);
+        }
+        if (failure.fatal) {
+          throw new Error(`Mega-Debrid${accountLabel}: ${failure.message}`);
+        }
+        const cooldownInfo = failure.cooldownMs > 0
+          ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
+          : "";
+        logger.warn(`Mega-Debrid${accountLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Account`);
+      }
+    }
+
+    if (!usableAccountSeen) {
+      if (cooldownFailures.length > 0 && earliestCooldownUntil > Date.now()) {
+        const retryMs = Math.max(1000, earliestCooldownUntil - Date.now() + 1000);
+        throw new Error(`mega_debrid_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
+      }
+      throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar");
+    }
+    throw new Error(failures.join(" | ") || "Mega-Debrid: Kein aktiver Account verfuegbar");
+  }
+
+  /**
+   * Classify error from a single Mega-Debrid account attempt.
+   * Returns whether the error is fatal (stop all accounts) and how long to cool down.
+   */
+  private static classifyAccountFailure(
+    error: unknown
+  ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory } {
+    const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
+
+    // Abort — don't retry other accounts
+    if (/aborted/i.test(errorText) && !/timeout/i.test(errorText)) {
+      return { fatal: true, cooldownMs: 0, message: errorText, category: "temporary" };
+    }
+
+    // Auth/login failures — long cooldown, try next account
+    if (/login|password|auth|credentials|unauthorized|forbidden/i.test(errorText) || /connectUser/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS,
+        message: `ungueltiger Account (${errorText})`,
+        category: "invalid"
+      };
+    }
+
+    // Permanent hoster errors — fatal, don't try other accounts
+    if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(errorText)) {
+      return { fatal: true, cooldownMs: 0, message: errorText, category: "skip" };
+    }
+
+    // Quota/limit errors — cooldown, try next account
+    if (/quota|limit|exceeded|bandwidth/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+        message: `Quota/Limit erreicht (${errorText})`,
+        category: "quota"
+      };
+    }
+
+    // Rate limit
+    if (/rate.?limit|too.?many|429/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+        message: `Rate-Limit (${errorText})`,
+        category: "rate_limit"
+      };
+    }
+
+    // Temporary/transport errors — short cooldown, try next account
+    if (isRetryableErrorText(errorText) || /timeout|network|fetch|socket/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+        message: errorText || "temporaerer Fehler",
+        category: "temporary"
+      };
+    }
+
+    // Unknown errors — short cooldown, try next account (non-fatal)
+    return {
+      fatal: false,
+      cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+      message: errorText || "unbekannter Fehler",
+      category: "temporary"
+    };
   }
 }
 
@@ -2466,6 +2719,12 @@ export class DebridService {
         return true;
       }
     }
+    if (effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") {
+      const configuredAccounts = getMegaDebridAccountList(settings);
+      if (configuredAccounts.length > 0 && getAvailableMegaDebridAccounts(settings).length === 0) {
+        return true;
+      }
+    }
     return isProviderDailyLimitReached(settings, effectiveProvider);
   }
 
@@ -2477,6 +2736,9 @@ export class DebridService {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
     if (effectiveProvider === "debridlink" && parseDebridLinkApiKeys(settings.debridLinkApiKeys).length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
       return "Debrid-Link nicht verfuegbar (alle aktiven API-Keys deaktiviert oder ausgeschopft)";
+    }
+    if ((effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") && getMegaDebridAccountList(settings).length > 0 && getAvailableMegaDebridAccounts(settings).length === 0) {
+      return "Mega-Debrid nicht verfuegbar (alle aktiven Accounts deaktiviert oder ausgeschopft)";
     }
     return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
   }
@@ -2704,10 +2966,10 @@ export class DebridService {
       return result;
     }
     if (effectiveProvider === "megadebrid-api") {
-      return new MegaDebridClient(settings.megaLogin, settings.megaPassword, "api", provider === "megadebrid" && settings.megaDebridPreferApi, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
+      return MegaDebridClient.unrestrictWithAccounts(settings, "api", provider === "megadebrid" && settings.megaDebridPreferApi, link, this.options.megaWebUnrestrict, signal);
     }
     if (effectiveProvider === "megadebrid-web") {
-      return new MegaDebridClient(settings.megaLogin, settings.megaPassword, "web", false, this.options.megaWebUnrestrict).unrestrictLink(link, signal);
+      return MegaDebridClient.unrestrictWithAccounts(settings, "web", false, link, this.options.megaWebUnrestrict, signal);
     }
     if (effectiveProvider === "alldebrid") {
       if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {

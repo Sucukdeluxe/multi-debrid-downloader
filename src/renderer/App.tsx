@@ -1,5 +1,6 @@
 import { CSSProperties, DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import type {
   AllDebridHostInfo,
   AppSettings,
@@ -232,8 +233,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid API",
     modeLabel: "API",
-    pickerDescription: "Login nur über die API, ohne Web-Fallback.",
-    needsCredentials: true
+    pickerDescription: "Login:Passwort-Paare für Mega-Debrid (API). Mehrere Accounts zeilenweise für Multi-Account.",
+    needsToken: true
   },
   {
     kind: "megadebrid-web",
@@ -241,8 +242,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid Web",
     modeLabel: "Web",
-    pickerDescription: "Login nur über Web, ohne API-Fallback.",
-    needsCredentials: true
+    pickerDescription: "Login:Passwort-Paare für Mega-Debrid (Web). Mehrere Accounts zeilenweise für Multi-Account.",
+    needsToken: true
   },
   {
     kind: "bestdebrid-api",
@@ -404,9 +405,9 @@ function getAccountPickerFunctionLabel(option: AccountOption): string {
     case "alldebrid-web":
       return "Browser-Login";
     case "megadebrid-api":
-      return "Login + Passwort (API)";
+      return "Login:Passwort (API)";
     case "megadebrid-web":
-      return "Login + Passwort (Web)";
+      return "Login:Passwort (Web)";
     case "bestdebrid-web":
       return "Cookies.txt-Import";
     case "alldebrid-api":
@@ -420,6 +421,7 @@ function getAccountPickerFunctionLabel(option: AccountOption): string {
 }
 
 function hasMegaDebridCredentials(settings: AppSettings): boolean {
+  if (parseMegaDebridAccounts(settings.megaCredentials || "").length > 0) return true;
   return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
 }
 
@@ -527,8 +529,12 @@ function summarizeAccount(kind: AccountKind, settings: AppSettings): string {
     case "realdebrid-web":
       return "Browser-Login";
     case "megadebrid-api":
-    case "megadebrid-web":
-      return settings.megaLogin.trim() ? maskValue(settings.megaLogin.trim(), 2, 6) : "Login + Passwort";
+    case "megadebrid-web": {
+      const megaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword);
+      if (megaAccounts.length > 1) return `${megaAccounts.length} Accounts`;
+      if (megaAccounts.length === 1) return megaAccounts[0].maskedLogin;
+      return settings.megaLogin.trim() ? maskValue(settings.megaLogin.trim(), 2, 6) : "Nicht hinterlegt";
+    }
     case "bestdebrid-api":
       return maskValue(settings.bestToken, 3, 3);
     case "bestdebrid-web":
@@ -560,6 +566,12 @@ function summarizeAccountLines(kind: AccountKind, settings: AppSettings): string
       return keys.map((entry) => `${entry.label}: ${entry.masked}`);
     }
   }
+  if (kind === "megadebrid-api" || kind === "megadebrid-web") {
+    const accounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword);
+    if (accounts.length > 1) {
+      return accounts.map((entry) => `${entry.label}: ${entry.maskedLogin}`);
+    }
+  }
   return [summarizeAccount(kind, settings)];
 }
 
@@ -583,8 +595,14 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
     case "realdebrid-web":
       return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "megadebrid-api":
-    case "megadebrid-web":
-      return { mode, kind, token: "", login: settings.megaLogin, password: settings.megaPassword, dailyLimitGb, keyDailyLimitGbById: {} };
+    case "megadebrid-web": {
+      // Populate token field with megaCredentials, or build from legacy megaLogin/megaPassword
+      let megaToken = (settings.megaCredentials || "").trim();
+      if (!megaToken && settings.megaLogin.trim() && settings.megaPassword.trim()) {
+        megaToken = `${settings.megaLogin.trim()}:${settings.megaPassword.trim()}`;
+      }
+      return { mode, kind, token: megaToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
+    }
     case "bestdebrid-api":
       return { mode, kind, token: settings.bestToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {} };
     case "bestdebrid-web":
@@ -642,10 +660,18 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
       return { ...settings, token, realDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "realdebrid-web":
       return { ...settings, token: "", realDebridUseWebLogin: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
-    case "megadebrid-api":
-      return { ...settings, megaLogin: login, megaPassword: password, megaDebridApiEnabled: true, megaDebridPreferApi: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
-    case "megadebrid-web":
-      return { ...settings, megaLogin: login, megaPassword: password, megaDebridWebEnabled: true, megaDebridPreferApi: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+    case "megadebrid-api": {
+      const megaAccounts = parseMegaDebridAccounts(token);
+      const firstLogin = megaAccounts.length > 0 ? megaAccounts[0].login : "";
+      const firstPassword = megaAccounts.length > 0 ? megaAccounts[0].password : "";
+      return { ...settings, megaCredentials: token, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridApiEnabled: true, megaDebridPreferApi: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+    }
+    case "megadebrid-web": {
+      const megaAccounts = parseMegaDebridAccounts(token);
+      const firstLogin = megaAccounts.length > 0 ? megaAccounts[0].login : "";
+      const firstPassword = megaAccounts.length > 0 ? megaAccounts[0].password : "";
+      return { ...settings, megaCredentials: token, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridWebEnabled: true, megaDebridPreferApi: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+    }
     case "bestdebrid-api":
       return { ...settings, bestToken: token, bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "bestdebrid-web":
@@ -692,11 +718,11 @@ function clearAccountServiceFromSettings(settings: AppSettings, service: Account
     case "megadebrid-api":
       return settings.megaDebridWebEnabled
         ? { ...settings, megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes }
-        : { ...settings, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
+        : { ...settings, megaCredentials: "", megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "megadebrid-web":
       return settings.megaDebridApiEnabled
         ? { ...settings, megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes }
-        : { ...settings, megaLogin: "", megaPassword: "", megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
+        : { ...settings, megaCredentials: "", megaLogin: "", megaPassword: "", megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "bestdebrid":
       return { ...settings, bestToken: "", bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "alldebrid":
@@ -728,6 +754,11 @@ function validateAccountDialog(dialog: AccountDialogState): string | null {
   const option = findAccountOption(dialog.kind);
   if (option.needsToken && !dialog.token.trim()) {
     return `${option.title}: Bitte Zugangstoken eintragen.`;
+  }
+  if ((dialog.kind === "megadebrid-api" || dialog.kind === "megadebrid-web") && dialog.token.trim()) {
+    if (parseMegaDebridAccounts(dialog.token).length === 0) {
+      return `${option.title}: Mindestens ein gültiges Login:Passwort-Paar eintragen (Format: login:passwort, pro Zeile).`;
+    }
   }
   if (option.needsCredentials) {
     if (!dialog.login.trim()) {
@@ -792,7 +823,7 @@ type StatsSection = {
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
+    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaCredentials: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
     debridLinkDisabledKeyIds: [],
     archivePasswordList: "",
     rememberToken: true, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
@@ -817,6 +848,10 @@ const emptySnapshot = (): UiSnapshot => ({
     debridLinkApiKeyDailyLimitBytes: {},
     debridLinkApiKeyDailyUsageBytes: {},
     debridLinkApiKeyTotalUsageBytes: {},
+    megaDebridDisabledAccountIds: [],
+    megaDebridAccountDailyLimitBytes: {},
+    megaDebridAccountDailyUsageBytes: {},
+    megaDebridAccountTotalUsageBytes: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   },
@@ -2082,8 +2117,12 @@ export function App(): ReactElement {
       let statusLabel = "Aktiviert";
       let note = "";
       if (kind === "megadebrid-api") {
+        const megaAccountCount = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword).length;
+        statusLabel = megaAccountCount > 1 ? `${megaAccountCount} Accounts` : "Aktiviert";
         note = "Nur API aktiv. Kein Web-Fallback.";
       } else if (kind === "megadebrid-web") {
+        const megaAccountCount = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword).length;
+        statusLabel = megaAccountCount > 1 ? `${megaAccountCount} Accounts` : "Aktiviert";
         note = "Nur Web aktiv. Kein API-Fallback.";
       } else if (kind === "realdebrid-web") {
         note = "Login kann bei Bedarf direkt aus der Liste geöffnet werden.";
@@ -5006,10 +5045,8 @@ export function App(): ReactElement {
                         <button className="btn" disabled={actionBusy} onClick={() => { void onOpenRealDebridLogin(); }}>Real-Debrid Web-Login öffnen</button>
                       </>
                     )}
-                    <label>Mega-Debrid Login</label>
-                    <input value={settingsDraft.megaLogin} onChange={(e) => setText("megaLogin", e.target.value)} />
-                    <label>Mega-Debrid Passwort</label>
-                    <input type="password" value={settingsDraft.megaPassword} onChange={(e) => setText("megaPassword", e.target.value)} />
+                    <label>Mega-Debrid Accounts (Login:Passwort pro Zeile)</label>
+                    <textarea rows={3} value={settingsDraft.megaCredentials || ""} onChange={(e) => setText("megaCredentials", e.target.value)} style={{ fontFamily: "monospace", resize: "vertical" }} placeholder={"user@example.com:passwort"} />
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.megaDebridPreferApi} onChange={(e) => setBool("megaDebridPreferApi", e.target.checked)} /> Mega-Debrid bevorzugt über API (schneller, Fallback auf Web)</label>
                     <label>BestDebrid API Token</label>
                     <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
@@ -5375,7 +5412,7 @@ export function App(): ReactElement {
                     <div className="account-modal-fields">
                       {accountDialogOption.needsToken && (
                         <div>
-                          <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" || accountDialogOption.service === "debridlink" ? "API-Key(s)" : "Token"}</label>
+                          <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" || accountDialogOption.service === "debridlink" ? "API-Key(s)" : accountDialogOption.service === "megadebrid-api" || accountDialogOption.service === "megadebrid-web" ? "Login:Passwort (pro Zeile)" : "Token"}</label>
                           {accountDialogOption.service === "debridlink" ? (
                             <textarea
                               rows={4}
@@ -5386,6 +5423,14 @@ export function App(): ReactElement {
                                 token: event.target.value,
                                 keyDailyLimitGbById: buildDebridLinkKeyLimitInputs(event.target.value, prev.keyDailyLimitGbById, settingsDraft)
                               } : prev)}
+                              style={{ fontFamily: "monospace", resize: "vertical" }}
+                            />
+                          ) : accountDialogOption.service === "megadebrid-api" || accountDialogOption.service === "megadebrid-web" ? (
+                            <textarea
+                              rows={4}
+                              placeholder={"user1@example.com:passwort1\nuser2@example.com:passwort2"}
+                              value={accountDialog.token}
+                              onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)}
                               style={{ fontFamily: "monospace", resize: "vertical" }}
                             />
                           ) : (
@@ -5457,10 +5502,10 @@ export function App(): ReactElement {
                         <div className="account-modal-note">Der Web-Login nutzt ein echtes Browserfenster, damit reCAPTCHA sauber läuft.</div>
                       )}
                       {accountDialog.kind === "megadebrid-api" && (
-                        <div className="account-modal-note">Dieser Account nutzt nur die Mega-Debrid API. Kein Web-Fallback.</div>
+                        <div className="account-modal-note">Ein Login:Passwort-Paar pro Zeile. Mehrere Accounts werden rotierend genutzt. Dieser Account nutzt nur die Mega-Debrid API. Kein Web-Fallback.</div>
                       )}
                       {accountDialog.kind === "megadebrid-web" && (
-                        <div className="account-modal-note">Dieser Account nutzt nur Mega-Debrid Web. Kein API-Fallback.</div>
+                        <div className="account-modal-note">Ein Login:Passwort-Paar pro Zeile. Mehrere Accounts werden rotierend genutzt. Dieser Account nutzt nur Mega-Debrid Web. Kein API-Fallback.</div>
                       )}
 
                       {accountDialogOption.service === "alldebrid" && allDebridHostInfo && (
