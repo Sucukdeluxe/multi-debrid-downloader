@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeToDailyRenameLog } from "./daily-log";
 
 type RenameLogLevel = "INFO" | "WARN" | "ERROR";
 
@@ -93,11 +94,9 @@ export function logRenameEvent(level: RenameLogLevel, message: string, fields?: 
     if (!fs.existsSync(renameLogPath)) {
       fs.writeFileSync(renameLogPath, "", "utf8");
     }
-    fs.appendFileSync(
-      renameLogPath,
-      `${new Date().toISOString()} [${level}] ${message}${formatFields(fields)}\n`,
-      "utf8"
-    );
+    const line = `${new Date().toISOString()} [${level}] ${message}${formatFields(fields)}\n`;
+    fs.appendFileSync(renameLogPath, line, "utf8");
+    writeToDailyRenameLog(line);
   } catch {
     // ignore write errors
   }
