@@ -3,15 +3,23 @@ import path from "node:path";
 import { addLogListener, removeLogListener } from "./logger";
 
 const DAILY_LOG_RETENTION_DAYS = 30;
-const CLEANUP_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6 hours
+const CLEANUP_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const FLUSH_INTERVAL_MS = 500;
+const BUFFER_LIMIT_CHARS = 500_000;
 
 let dailyLogDir = "";
 let currentDayKey = "";
-let currentLogFd: number | null = null;
-let currentRenameFd: number | null = null;
 let logListener: ((line: string) => void) | null = null;
 let cleanupTimer: NodeJS.Timeout | null = null;
 let lastCleanupAt = 0;
+
+// Async buffered writes — never blocks the event loop
+let pendingLogLines: string[] = [];
+let pendingLogChars = 0;
+let pendingRenameLines: string[] = [];
+let pendingRenameChars = 0;
+let flushTimer: NodeJS.Timeout | null = null;
+let flushInFlight = false;
 
 function getDayKey(now = new Date()): string {
   const year = now.getFullYear();
@@ -21,59 +29,84 @@ function getDayKey(now = new Date()): string {
 }
 
 function getMonthDir(dayKey: string): string {
-  return dayKey.slice(0, 7); // "YYYY-MM"
+  return dayKey.slice(0, 7);
 }
 
-function ensureDayFile(dayKey: string): number | null {
-  if (currentDayKey === dayKey && currentLogFd !== null) {
-    return currentLogFd;
-  }
+function getDailyLogPath(dayKey: string): string {
+  return path.join(dailyLogDir, getMonthDir(dayKey), `${dayKey}.log`);
+}
 
-  // Close previous day's fd
-  if (currentLogFd !== null) {
-    try { fs.closeSync(currentLogFd); } catch { /* ignore */ }
-    currentLogFd = null;
-  }
-  if (currentRenameFd !== null) {
-    try { fs.closeSync(currentRenameFd); } catch { /* ignore */ }
-    currentRenameFd = null;
-  }
+function getDailyRenameLogPath(dayKey: string): string {
+  return path.join(dailyLogDir, getMonthDir(dayKey), `${dayKey}-rename.log`);
+}
 
-  currentDayKey = dayKey;
-  const monthDir = path.join(dailyLogDir, getMonthDir(dayKey));
+function scheduleFlush(): void {
+  if (flushTimer || flushInFlight) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushAsync();
+  }, FLUSH_INTERVAL_MS);
+}
+
+async function flushAsync(): Promise<void> {
+  if (flushInFlight) return;
+  flushInFlight = true;
 
   try {
-    fs.mkdirSync(monthDir, { recursive: true });
-    const filePath = path.join(monthDir, `${dayKey}.log`);
-    currentLogFd = fs.openSync(filePath, "a");
-    return currentLogFd;
-  } catch {
-    return null;
+    const dayKey = currentDayKey || getDayKey();
+
+    if (pendingLogLines.length > 0) {
+      const chunk = pendingLogLines.join("");
+      pendingLogLines = [];
+      pendingLogChars = 0;
+      const filePath = getDailyLogPath(dayKey);
+      try {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.promises.appendFile(filePath, chunk, "utf8");
+      } catch { /* ignore */ }
+    }
+
+    if (pendingRenameLines.length > 0) {
+      const chunk = pendingRenameLines.join("");
+      pendingRenameLines = [];
+      pendingRenameChars = 0;
+      const filePath = getDailyRenameLogPath(dayKey);
+      try {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.promises.appendFile(filePath, chunk, "utf8");
+      } catch { /* ignore */ }
+    }
+  } finally {
+    flushInFlight = false;
+    if (pendingLogLines.length > 0 || pendingRenameLines.length > 0) {
+      scheduleFlush();
+    }
   }
 }
 
-function ensureRenameFd(dayKey: string): number | null {
-  if (currentDayKey === dayKey && currentRenameFd !== null) {
-    return currentRenameFd;
+function flushSyncOnExit(): void {
+  const dayKey = currentDayKey || getDayKey();
+
+  if (pendingLogLines.length > 0) {
+    const chunk = pendingLogLines.join("");
+    pendingLogLines = [];
+    pendingLogChars = 0;
+    try {
+      const filePath = getDailyLogPath(dayKey);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.appendFileSync(filePath, chunk, "utf8");
+    } catch { /* ignore */ }
   }
 
-  // ensureDayFile handles day transitions
-  if (currentDayKey !== dayKey) {
-    ensureDayFile(dayKey);
-  }
-
-  if (currentRenameFd !== null) {
-    return currentRenameFd;
-  }
-
-  const monthDir = path.join(dailyLogDir, getMonthDir(dayKey));
-  try {
-    fs.mkdirSync(monthDir, { recursive: true });
-    const filePath = path.join(monthDir, `${dayKey}-rename.log`);
-    currentRenameFd = fs.openSync(filePath, "a");
-    return currentRenameFd;
-  } catch {
-    return null;
+  if (pendingRenameLines.length > 0) {
+    const chunk = pendingRenameLines.join("");
+    pendingRenameLines = [];
+    pendingRenameChars = 0;
+    try {
+      const filePath = getDailyRenameLogPath(dayKey);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.appendFileSync(filePath, chunk, "utf8");
+    } catch { /* ignore */ }
   }
 }
 
@@ -81,31 +114,43 @@ function writeToDailyLog(line: string): void {
   if (!dailyLogDir) return;
 
   const dayKey = getDayKey();
-  const fd = ensureDayFile(dayKey);
-  if (fd === null) return;
-
-  try {
-    fs.writeSync(fd, line);
-  } catch {
-    // Close and retry on next write
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    currentLogFd = null;
+  if (dayKey !== currentDayKey) {
+    // Day changed — flush previous day's buffer first
+    if (currentDayKey && (pendingLogLines.length > 0 || pendingRenameLines.length > 0)) {
+      void flushAsync();
+    }
+    currentDayKey = dayKey;
   }
+
+  pendingLogLines.push(line);
+  pendingLogChars += line.length;
+
+  // Shed oldest lines if buffer too large
+  while (pendingLogChars > BUFFER_LIMIT_CHARS && pendingLogLines.length > 1) {
+    const removed = pendingLogLines.shift();
+    if (removed) pendingLogChars -= removed.length;
+  }
+
+  scheduleFlush();
 }
 
 export function writeToDailyRenameLog(line: string): void {
   if (!dailyLogDir) return;
 
   const dayKey = getDayKey();
-  const fd = ensureRenameFd(dayKey);
-  if (fd === null) return;
-
-  try {
-    fs.writeSync(fd, line);
-  } catch {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    currentRenameFd = null;
+  if (dayKey !== currentDayKey) {
+    currentDayKey = dayKey;
   }
+
+  pendingRenameLines.push(line);
+  pendingRenameChars += line.length;
+
+  while (pendingRenameChars > BUFFER_LIMIT_CHARS && pendingRenameLines.length > 1) {
+    const removed = pendingRenameLines.shift();
+    if (removed) pendingRenameChars -= removed.length;
+  }
+
+  scheduleFlush();
 }
 
 function cleanupOldDailyLogs(): void {
@@ -136,7 +181,6 @@ function cleanupOldDailyLogs(): void {
         } catch { /* ignore */ }
       }
 
-      // Remove empty month dirs
       try {
         const remaining = fs.readdirSync(monthPath);
         if (remaining.length === 0) {
@@ -156,16 +200,17 @@ export function initDailyLog(baseDir: string): void {
     fs.mkdirSync(dailyLogDir, { recursive: true });
   } catch { /* ignore */ }
 
-  // Attach listener to main logger
+  currentDayKey = getDayKey();
+
   logListener = (line: string) => writeToDailyLog(line);
   addLogListener(logListener);
 
-  // Initial cleanup
   cleanupOldDailyLogs();
 
-  // Periodic cleanup
   cleanupTimer = setInterval(cleanupOldDailyLogs, CLEANUP_CHECK_INTERVAL_MS);
   if (cleanupTimer.unref) cleanupTimer.unref();
+
+  process.once("exit", flushSyncOnExit);
 }
 
 export function shutdownDailyLog(): void {
@@ -177,14 +222,11 @@ export function shutdownDailyLog(): void {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
   }
-  if (currentLogFd !== null) {
-    try { fs.closeSync(currentLogFd); } catch { /* ignore */ }
-    currentLogFd = null;
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
   }
-  if (currentRenameFd !== null) {
-    try { fs.closeSync(currentRenameFd); } catch { /* ignore */ }
-    currentRenameFd = null;
-  }
+  flushSyncOnExit();
   currentDayKey = "";
 }
 
