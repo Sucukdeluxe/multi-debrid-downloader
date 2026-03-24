@@ -40,7 +40,6 @@ import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
-import { initDailyLog, shutdownDailyLog } from "./daily-log";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
@@ -86,7 +85,6 @@ export class AppController {
     initItemLogs(this.storagePaths.baseDir);
     initAuditLog(this.storagePaths.baseDir);
     initRenameLog(this.storagePaths.baseDir);
-    initDailyLog(this.storagePaths.baseDir);
     initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
@@ -672,7 +670,6 @@ export class AppController {
     shutdownPackageLogs();
     shutdownItemLogs();
     shutdownRenameLog();
-    shutdownDailyLog();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAuditLog();
