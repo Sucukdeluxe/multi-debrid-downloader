@@ -4551,13 +4551,23 @@ export class DownloadManager extends EventEmitter {
       active.abortReason = "stop";
       active.abortController.abort("stop");
     }
-    // Reset all non-finished items to clean "Wartet" / "Paket gestoppt" state
+    // Reset non-finished items.  Items that were part of the current run
+    // (runItemIds) go back to "Wartet" so they are picked up by the next start().
+    // Items that were NOT in the run set are marked "Gestoppt" so a subsequent
+    // start() does not accidentally include the entire queue.
+    const hadRunItems = this.runItemIds.size > 0;
     for (const item of Object.values(this.session.items)) {
       if (!isFinishedStatus(item.status)) {
-        item.status = "queued";
-        item.speedBps = 0;
         const pkg = this.session.packages[item.packageId];
-        item.fullStatus = pkg && !pkg.enabled ? "Paket gestoppt" : "Wartet";
+        const wasInRun = !hadRunItems || this.runItemIds.has(item.id);
+        if (wasInRun) {
+          item.status = "queued";
+          item.fullStatus = pkg && !pkg.enabled ? "Paket gestoppt" : "Wartet";
+        } else {
+          item.status = "cancelled";
+          item.fullStatus = "Gestoppt";
+        }
+        item.speedBps = 0;
         item.updatedAt = nowMs();
       }
     }
