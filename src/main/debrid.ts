@@ -41,7 +41,14 @@ const DEBRID_LINK_FATAL_LINK_ERRORS = new Set(["badArguments", "badFileUrl", "ba
 const debridLinkKeyCooldowns = new Map<string, number>();
 type DebridLinkCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary" | "skip";
 type DebridLinkCooldownDetail = { message: string; category: DebridLinkCooldownCategory };
+type DebridLinkRuntimeState = DebridLinkHostLimitInfo["state"];
+type DebridLinkRuntimeStatus = {
+  state: DebridLinkRuntimeState;
+  detail: string;
+  updatedAt: number;
+};
 const debridLinkKeyCooldownDetails = new Map<string, DebridLinkCooldownDetail>();
+const debridLinkKeyRuntimeStatuses = new Map<string, DebridLinkRuntimeStatus>();
 const DEBRID_LINK_KEY_COOLDOWN_MS = 120_000; // 2 min cooldown per failed key
 const DEBRID_LINK_INVALID_KEY_COOLDOWN_MS = 60 * 60 * 1000;
 const DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
@@ -49,6 +56,7 @@ const DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyCooldowns.clear();
   debridLinkKeyCooldownDetails.clear();
+  debridLinkKeyRuntimeStatuses.clear();
 }
 
 export function primeDebridLinkRuntimeCooldownForTests(keyId: string, cooldownMs: number, message = "Debrid-Link Key im Cooldown"): void {
@@ -58,6 +66,31 @@ export function primeDebridLinkRuntimeCooldownForTests(keyId: string, cooldownMs
 function clearDebridLinkKeyCooldownState(keyId: string): void {
   debridLinkKeyCooldowns.delete(keyId);
   debridLinkKeyCooldownDetails.delete(keyId);
+}
+
+function setDebridLinkKeyRuntimeStatus(keyId: string, state: DebridLinkRuntimeState, detail: string): void {
+  debridLinkKeyRuntimeStatuses.set(keyId, {
+    state,
+    detail: String(detail || "").trim(),
+    updatedAt: Date.now()
+  });
+}
+
+function getDebridLinkKeyRuntimeStatus(keyId: string): DebridLinkRuntimeStatus | null {
+  return debridLinkKeyRuntimeStatuses.get(keyId) || null;
+}
+
+function mapDebridLinkCooldownCategoryToRuntimeState(category: DebridLinkCooldownCategory): DebridLinkRuntimeState {
+  if (category === "invalid") {
+    return "invalid";
+  }
+  if (category === "quota") {
+    return "quota";
+  }
+  if (category === "rate_limit") {
+    return "rate_limit";
+  }
+  return "cooldown";
 }
 
 function setDebridLinkKeyCooldownState(
@@ -72,6 +105,7 @@ function setDebridLinkKeyCooldownState(
   }
   debridLinkKeyCooldowns.set(keyId, Date.now() + Math.max(1000, Math.floor(cooldownMs)));
   debridLinkKeyCooldownDetails.set(keyId, { message, category });
+  setDebridLinkKeyRuntimeStatus(keyId, mapDebridLinkCooldownCategoryToRuntimeState(category), message);
 }
 
 function getDebridLinkKeyCooldownState(
@@ -296,14 +330,16 @@ function parseRetryAfterMs(value: string | null): number {
     return 0;
   }
 
+  // Cap at 1 hour — floodDetected can mandate "retry after 1 hour"
+  const maxRetryMs = 60 * 60 * 1000;
   const asSeconds = Number(text);
   if (Number.isFinite(asSeconds) && asSeconds >= 0) {
-    return Math.min(120000, Math.floor(asSeconds * 1000));
+    return Math.min(maxRetryMs, Math.floor(asSeconds * 1000));
   }
 
   const asDate = Date.parse(text);
   if (Number.isFinite(asDate)) {
-    return Math.min(120000, Math.max(0, asDate - Date.now()));
+    return Math.min(maxRetryMs, Math.max(0, asDate - Date.now()));
   }
 
   return 0;
@@ -576,6 +612,194 @@ class DebridLinkApiError extends Error {
   }
 }
 
+function toDebridLinkKeyStateLabel(state: DebridLinkHostLimitInfo["state"]): string {
+  if (state === "ready") {
+    return "Bereit";
+  }
+  if (state === "cooldown") {
+    return "Cooldown";
+  }
+  if (state === "invalid") {
+    return "Ungueltig";
+  }
+  if (state === "quota") {
+    return "Quota";
+  }
+  if (state === "rate_limit") {
+    return "Rate-Limit";
+  }
+  if (state === "error") {
+    return "Fehler";
+  }
+  return "Unbekannt";
+}
+
+function toDebridLinkHostStateLabel(state: DebridLinkHostLimitInfo["hostState"]): string {
+  if (state === "up") {
+    return "Online";
+  }
+  if (state === "down") {
+    return "Offline";
+  }
+  return "Unbekannt";
+}
+
+function shouldRetryDebridLinkApiError(error: DebridLinkApiError, attempt: number, maxAttempts: number): boolean {
+  if (attempt >= maxAttempts) {
+    return false;
+  }
+  if (error.status === 429 || error.status >= 500) {
+    return true;
+  }
+  return DEBRID_LINK_RETRYABLE_ERRORS.has(error.code);
+}
+
+function retryDelayForDebridLinkApiError(error: DebridLinkApiError, attempt: number): number {
+  if (error.retryAfterMs > 0) {
+    return error.retryAfterMs;
+  }
+  return retryDelay(attempt);
+}
+
+async function requestDebridLinkPayloadWithKey(
+  apiKey: { token: string },
+  method: "GET" | "POST" | "DELETE",
+  apiPath: string,
+  body: Record<string, unknown> | undefined,
+  signal?: AbortSignal,
+  maxAttempts = REQUEST_RETRIES
+): Promise<Record<string, unknown>> {
+  let lastTransportError = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey.token}`,
+        "User-Agent": DEBRID_USER_AGENT
+      };
+      let payloadBody: string | undefined;
+      if (method !== "GET" && method !== "DELETE" && body) {
+        headers["Content-Type"] = "application/json";
+        payloadBody = JSON.stringify(body);
+      }
+
+      const response = await fetch(`${DEBRID_LINK_API_BASE}${apiPath}`, {
+        method,
+        headers,
+        body: payloadBody,
+        signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+      });
+      const responseText = await response.text();
+      const payload = parseJsonSafe(responseText);
+      if (!payload) {
+        const description = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
+          ? `Debrid-Link lieferte HTML statt JSON (HTTP ${response.status})`
+          : compactErrorText(responseText) || `Debrid-Link lieferte kein JSON (HTTP ${response.status})`;
+        const error = new DebridLinkApiError(
+          response.status,
+          "requestError",
+          description,
+          parseRetryAfterMs(response.headers.get("retry-after")),
+          null
+        );
+        if (shouldRetryDebridLinkApiError(error, attempt, maxAttempts)) {
+          await sleepWithSignal(retryDelayForDebridLinkApiError(error, attempt), signal);
+          continue;
+        }
+        throw error;
+      }
+
+      if (!response.ok || !parseDebridLinkSuccess(payload)) {
+        const error = new DebridLinkApiError(
+          response.status,
+          parseDebridLinkErrorCode(payload) || `HTTP ${response.status}`,
+          parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
+          parseRetryAfterMs(response.headers.get("retry-after")),
+          payload
+        );
+        if (shouldRetryDebridLinkApiError(error, attempt, maxAttempts)) {
+          await sleepWithSignal(retryDelayForDebridLinkApiError(error, attempt), signal);
+          continue;
+        }
+        throw error;
+      }
+
+      return payload;
+    } catch (error) {
+      if (error instanceof DebridLinkApiError) {
+        throw error;
+      }
+      lastTransportError = compactErrorText(error);
+      if (signal?.aborted || (/aborted/i.test(lastTransportError) && !/timeout/i.test(lastTransportError))) {
+        throw error;
+      }
+      if (attempt >= maxAttempts || !isRetryableErrorText(lastTransportError)) {
+        throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
+      }
+      await sleepWithSignal(retryDelay(attempt), signal);
+    }
+  }
+  throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
+}
+
+async function fetchDebridLinkPublicHostInfo(
+  host: string,
+  signal?: AbortSignal
+): Promise<Pick<DebridLinkHostLimitInfo, "hostState" | "hostStateLabel" | "hostNote">> {
+  const hostLabel = host.trim() || "rapidgator";
+  try {
+    const response = await fetch(`${DEBRID_LINK_API_BASE}/downloader/hosts?keys=name,status,domains`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "User-Agent": DEBRID_USER_AGENT
+      },
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+    });
+    const responseText = await response.text();
+    const payload = parseJsonSafe(responseText);
+    if (!response.ok || !payload || !parseDebridLinkSuccess(payload)) {
+      throw new Error(parseError(response.status, responseText, payload));
+    }
+    const entries = Array.isArray(payload.value)
+      ? payload.value.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry))
+      : [];
+    const wanted = normalizeDebridLinkHostKey(hostLabel);
+    const hostEntry = entries.find((entry) => {
+      const name = normalizeDebridLinkHostKey(pickString(entry, ["name"]));
+      if (name === wanted) {
+        return true;
+      }
+      const domains = Array.isArray(entry.domains) ? entry.domains.map((value) => normalizeDebridLinkHostKey(String(value || ""))) : [];
+      return domains.some((domain) => domain === wanted);
+    });
+    if (!hostEntry) {
+      return {
+        hostState: "unknown",
+        hostStateLabel: toDebridLinkHostStateLabel("unknown"),
+        hostNote: `${hostLabel} nicht in /downloader/hosts gefunden.`
+      };
+    }
+    const statusValue = Number(hostEntry.status ?? NaN);
+    const hostState: DebridLinkHostLimitInfo["hostState"] = Number.isFinite(statusValue)
+      ? (statusValue >= 1 ? "up" : "down")
+      : "unknown";
+    return {
+      hostState,
+      hostStateLabel: toDebridLinkHostStateLabel(hostState),
+      hostNote: hostState === "down"
+        ? `${hostLabel} ist laut Debrid-Link /downloader/hosts aktuell offline.`
+        : `${hostLabel} ist laut Debrid-Link /downloader/hosts erreichbar.`
+    };
+  } catch (error) {
+    return {
+      hostState: "unknown",
+      hostStateLabel: toDebridLinkHostStateLabel("unknown"),
+      hostNote: `Hoststatus konnte nicht geladen werden: ${compactErrorText(error)}`
+    };
+  }
+}
+
 async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: string; token: string }, host: string, signal?: AbortSignal): Promise<DebridLinkHostLimitInfo> {
   let lastError = "";
   const hostLabel = host.trim() || "rapidgator";
@@ -629,7 +853,16 @@ async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: strin
             trafficMaxBytes: null,
             linksCurrent: null,
             linksMax: null,
-            note: `${hostLabel} nicht in der Debrid-Link-Limits-Antwort vorhanden.`
+            note: `${hostLabel} nicht in der Debrid-Link-Limits-Antwort vorhanden.`,
+            state: "unknown",
+            stateLabel: toDebridLinkKeyStateLabel("unknown"),
+            stateDetail: "",
+            cooldownUntil: null,
+            cooldownRemainingMs: 0,
+            lastCheckedAt: Date.now(),
+            hostState: "unknown",
+            hostStateLabel: toDebridLinkHostStateLabel("unknown"),
+            hostNote: ""
           };
         }
 
@@ -644,7 +877,16 @@ async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: strin
           trafficMaxBytes: pickNumber(daySize, ["value", "max"]),
           linksCurrent: pickNumber(dayCount, ["current"]),
           linksMax: pickNumber(dayCount, ["value", "max"]),
-          note: ""
+          note: "",
+          state: "ready",
+          stateLabel: toDebridLinkKeyStateLabel("ready"),
+          stateDetail: "API erreichbar",
+          cooldownUntil: null,
+          cooldownRemainingMs: 0,
+          lastCheckedAt: Date.now(),
+          hostState: "unknown",
+          hostStateLabel: toDebridLinkHostStateLabel("unknown"),
+          hostNote: ""
         };
       } catch (error) {
         lastError = compactErrorText(error);
@@ -660,6 +902,172 @@ async function fetchDebridLinkHostLimitForKey(apiKey: { id: string; label: strin
   }
 
   throw new Error(String(lastError || `Debrid-Link Limits für ${apiKey.label} fehlgeschlagen`).replace(/^Error:\s*/i, ""));
+}
+
+async function fetchDebridLinkHostLimitForKeyDetailed(
+  apiKey: { id: string; label: string; token: string },
+  host: string,
+  publicHostInfo: Pick<DebridLinkHostLimitInfo, "hostState" | "hostStateLabel" | "hostNote">,
+  signal?: AbortSignal
+): Promise<DebridLinkHostLimitInfo> {
+  const hostLabel = host.trim() || "rapidgator";
+  const runtimeStatus = getDebridLinkKeyRuntimeStatus(apiKey.id);
+  const buildInfo = (overrides: Partial<DebridLinkHostLimitInfo>): DebridLinkHostLimitInfo => ({
+    keyId: apiKey.id,
+    keyLabel: apiKey.label,
+    host: hostLabel,
+    fetchedAt: Date.now(),
+    trafficCurrentBytes: null,
+    trafficMaxBytes: null,
+    linksCurrent: null,
+    linksMax: null,
+    note: "",
+    state: runtimeStatus?.state || "unknown",
+    stateLabel: toDebridLinkKeyStateLabel(runtimeStatus?.state || "unknown"),
+    stateDetail: runtimeStatus?.detail || "",
+    cooldownUntil: null,
+    cooldownRemainingMs: 0,
+    lastCheckedAt: runtimeStatus?.updatedAt || null,
+    hostState: publicHostInfo.hostState,
+    hostStateLabel: publicHostInfo.hostStateLabel,
+    hostNote: publicHostInfo.hostNote,
+    ...overrides
+  });
+
+  const cooldownState = getDebridLinkKeyCooldownState(apiKey.id);
+  if (cooldownState) {
+    const state = mapDebridLinkCooldownCategoryToRuntimeState(cooldownState.category);
+    return buildInfo({
+      state,
+      stateLabel: toDebridLinkKeyStateLabel(state),
+      stateDetail: cooldownState.message,
+      cooldownUntil: cooldownState.until,
+      cooldownRemainingMs: cooldownState.remainingMs,
+      lastCheckedAt: runtimeStatus?.updatedAt || Date.now(),
+      note: cooldownState.message
+    });
+  }
+
+  for (const apiPath of ["/downloader/limits/all", "/downloader/limits"]) {
+    try {
+      const payload = await requestDebridLinkPayloadWithKey(apiKey, "GET", apiPath, undefined, signal);
+      const hostEntry = findDebridLinkHostEntry(payload, hostLabel);
+      if (!hostEntry) {
+        if (apiPath.endsWith("/all")) {
+          continue;
+        }
+        clearDebridLinkKeyCooldownState(apiKey.id);
+        setDebridLinkKeyRuntimeStatus(apiKey.id, "ready", "API erreichbar");
+        return buildInfo({
+          state: "ready",
+          stateLabel: toDebridLinkKeyStateLabel("ready"),
+          stateDetail: "API erreichbar",
+          lastCheckedAt: Date.now(),
+          note: `${hostLabel} nicht in der Debrid-Link-Limits-Antwort vorhanden.`
+        });
+      }
+
+      const daySize = asRecord(hostEntry.daySize);
+      const dayCount = asRecord(hostEntry.dayCount);
+      clearDebridLinkKeyCooldownState(apiKey.id);
+      setDebridLinkKeyRuntimeStatus(apiKey.id, "ready", "API erreichbar");
+      return buildInfo({
+        host: pickString(hostEntry, ["name", "host"]) || hostLabel,
+        trafficCurrentBytes: pickNumber(daySize, ["current"]),
+        trafficMaxBytes: pickNumber(daySize, ["value", "max"]),
+        linksCurrent: pickNumber(dayCount, ["current"]),
+        linksMax: pickNumber(dayCount, ["value", "max"]),
+        state: "ready",
+        stateLabel: toDebridLinkKeyStateLabel("ready"),
+        stateDetail: "API erreichbar",
+        lastCheckedAt: Date.now(),
+        note: ""
+      });
+    } catch (error) {
+      if (error instanceof DebridLinkApiError && error.status === 404 && apiPath.endsWith("/all")) {
+        continue;
+      }
+
+      const checkedAt = Date.now();
+      if (error instanceof DebridLinkApiError) {
+        const code = String(error.code || "").trim() || `HTTP ${error.status}`;
+        const description = error.message || code;
+
+        if (DEBRID_LINK_INVALID_TOKEN_ERRORS.has(code)) {
+          const detail = `API-Key ungueltig oder deaktiviert (${code}: ${description})`;
+          setDebridLinkKeyCooldownState(apiKey.id, DEBRID_LINK_INVALID_KEY_COOLDOWN_MS, detail, "invalid");
+          const nextCooldown = getDebridLinkKeyCooldownState(apiKey.id, checkedAt);
+          return buildInfo({
+            state: "invalid",
+            stateLabel: toDebridLinkKeyStateLabel("invalid"),
+            stateDetail: detail,
+            cooldownUntil: nextCooldown?.until || null,
+            cooldownRemainingMs: nextCooldown?.remainingMs || 0,
+            lastCheckedAt: checkedAt,
+            note: detail
+          });
+        }
+
+        if (DEBRID_LINK_RATE_LIMIT_ERRORS.has(code) || error.status === 429) {
+          const detail = `API-Rate-Limit erreicht (${code}: ${description})`;
+          setDebridLinkKeyCooldownState(apiKey.id, error.retryAfterMs || DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS, detail, "rate_limit");
+          const nextCooldown = getDebridLinkKeyCooldownState(apiKey.id, checkedAt);
+          return buildInfo({
+            state: "rate_limit",
+            stateLabel: toDebridLinkKeyStateLabel("rate_limit"),
+            stateDetail: detail,
+            cooldownUntil: nextCooldown?.until || null,
+            cooldownRemainingMs: nextCooldown?.remainingMs || 0,
+            lastCheckedAt: checkedAt,
+            note: detail
+          });
+        }
+
+        if (DEBRID_LINK_QUOTA_ERRORS.has(code)) {
+          const detail = `Quota erreicht (${code}: ${description})`;
+          setDebridLinkKeyCooldownState(apiKey.id, parseDebridLinkNextResetMs(error.payload) || DEBRID_LINK_KEY_COOLDOWN_MS, detail, "quota");
+          const nextCooldown = getDebridLinkKeyCooldownState(apiKey.id, checkedAt);
+          return buildInfo({
+            state: "quota",
+            stateLabel: toDebridLinkKeyStateLabel("quota"),
+            stateDetail: detail,
+            cooldownUntil: nextCooldown?.until || null,
+            cooldownRemainingMs: nextCooldown?.remainingMs || 0,
+            lastCheckedAt: checkedAt,
+            note: detail
+          });
+        }
+
+        const detail = `${code}: ${description}`;
+        setDebridLinkKeyRuntimeStatus(apiKey.id, "error", detail);
+        return buildInfo({
+          state: "error",
+          stateLabel: toDebridLinkKeyStateLabel("error"),
+          stateDetail: detail,
+          lastCheckedAt: checkedAt,
+          note: detail
+        });
+      }
+
+      const detail = compactErrorText(error).replace(/^Error:\s*/i, "") || `Debrid-Link Limits fuer ${apiKey.label} fehlgeschlagen`;
+      setDebridLinkKeyRuntimeStatus(apiKey.id, "error", detail);
+      return buildInfo({
+        state: "error",
+        stateLabel: toDebridLinkKeyStateLabel("error"),
+        stateDetail: detail,
+        lastCheckedAt: checkedAt,
+        note: detail
+      });
+    }
+  }
+
+  return buildInfo({
+    state: "unknown",
+    stateLabel: toDebridLinkKeyStateLabel("unknown"),
+    stateDetail: `Keine Limits fuer ${apiKey.label} gefunden`,
+    lastCheckedAt: Date.now(),
+    note: `Keine Limits fuer ${apiKey.label} gefunden`
+  });
 }
 
 function uniqueProviderOrder(order: readonly DebridProvider[]): DebridProvider[] {
@@ -1841,9 +2249,10 @@ export async function fetchDebridLinkHostLimits(apiKeysRaw: string, host = "rapi
     throw new Error("Debrid-Link ist nicht konfiguriert");
   }
 
+  const publicHostInfo = await fetchDebridLinkPublicHostInfo(host, signal);
   const results: DebridLinkHostLimitInfo[] = [];
   for (const apiKey of apiKeys) {
-    results.push(await fetchDebridLinkHostLimitForKey(apiKey, host, signal));
+    results.push(await fetchDebridLinkHostLimitForKeyDetailed(apiKey, host, publicHostInfo, signal));
   }
   return results;
 }
@@ -1870,6 +2279,7 @@ class DebridLinkClient {
     let usableKeySeen = false;
     const cooldownFailures: string[] = [];
     let earliestCooldownUntil = 0;
+    const attemptedKeyFailures: Array<{ message: string; cooldownMs: number; category?: DebridLinkCooldownCategory }> = [];
 
     // Always start from first key — use first available, skip disabled/limited/cooldown.
     // This ensures all parallel items use the same key until it's actually exhausted.
@@ -1898,6 +2308,7 @@ class DebridLinkClient {
       try {
         const result = await this.unrestrictWithKey(apiKey, link, signal);
         clearDebridLinkKeyCooldownState(apiKey.id);
+        setDebridLinkKeyRuntimeStatus(apiKey.id, "ready", "Unrestrict erfolgreich");
         logger.info(`Debrid-Link${keyLabel}: Unrestrict OK -> ${result.fileName || "?"}`);
         return {
           ...result,
@@ -1907,11 +2318,17 @@ class DebridLinkClient {
         };
       } catch (error) {
         const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
+        attemptedKeyFailures.push({
+          message: `Debrid-Link${keyLabel}: ${failure.message}`,
+          cooldownMs: failure.cooldownMs,
+          category: failure.category
+        });
         failures.push(`Debrid-Link${keyLabel}: ${failure.message}`);
         if (failure.cooldownMs > 0) {
           setDebridLinkKeyCooldownState(apiKey.id, failure.cooldownMs, failure.message, failure.category || "temporary");
         } else {
           clearDebridLinkKeyCooldownState(apiKey.id);
+          setDebridLinkKeyRuntimeStatus(apiKey.id, failure.category === "invalid" ? "invalid" : "error", failure.message);
         }
         if (failure.fatal) {
           throw new Error(`Debrid-Link${keyLabel}: ${failure.message}`);
@@ -1928,7 +2345,17 @@ class DebridLinkClient {
         const retryMs = Math.max(1000, earliestCooldownUntil - Date.now() + 1000);
         throw new Error(`debrid_link_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
       }
-      throw new Error("Debrid-Link: Kein aktiver API-Key verfuegbar");
+      throw new Error("debrid_link_no_active_key:Debrid-Link: Kein aktiver API-Key verfuegbar");
+    }
+
+    if (attemptedKeyFailures.length > 0 && attemptedKeyFailures.every((entry) => entry.category === "invalid")) {
+      throw new Error(`debrid_link_invalid_all:${attemptedKeyFailures.map((entry) => entry.message).join(" | ")}`);
+    }
+
+    const cooldownOnlyFailures = attemptedKeyFailures.filter((entry) => entry.cooldownMs > 0);
+    if (attemptedKeyFailures.length > 0 && cooldownOnlyFailures.length === attemptedKeyFailures.length) {
+      const retryMs = Math.max(1000, Math.min(...cooldownOnlyFailures.map((entry) => Math.max(1000, entry.cooldownMs))) + 1000);
+      throw new Error(`debrid_link_cooldown:${retryMs}:${cooldownOnlyFailures.map((entry) => entry.message).join(" | ")}`);
     }
     throw new Error(failures.join(" | ") || "Debrid-Link: Kein aktiver API-Key verfuegbar");
   }
@@ -1961,77 +2388,7 @@ class DebridLinkClient {
     signal?: AbortSignal,
     maxAttempts = REQUEST_RETRIES
   ): Promise<Record<string, unknown>> {
-    let lastTransportError = "";
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        const headers: Record<string, string> = {
-          Accept: "application/json",
-          Authorization: `Bearer ${apiKey.token}`,
-          "User-Agent": DEBRID_USER_AGENT
-        };
-        let payloadBody: string | undefined;
-        if (method !== "GET" && method !== "DELETE" && body) {
-          headers["Content-Type"] = "application/json";
-          payloadBody = JSON.stringify(body);
-        }
-
-        const response = await fetch(`${DEBRID_LINK_API_BASE}${apiPath}`, {
-          method,
-          headers,
-          body: payloadBody,
-          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
-        });
-        const responseText = await response.text();
-        const payload = parseJsonSafe(responseText);
-        if (!payload) {
-          const description = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
-            ? `Debrid-Link lieferte HTML statt JSON (HTTP ${response.status})`
-            : compactErrorText(responseText) || `Debrid-Link lieferte kein JSON (HTTP ${response.status})`;
-          const error = new DebridLinkApiError(
-            response.status,
-            "requestError",
-            description,
-            parseRetryAfterMs(response.headers.get("retry-after")),
-            null
-          );
-          if (this.shouldRetryApiError(error, attempt, maxAttempts)) {
-            await sleepWithSignal(this.retryDelayForApiError(error, attempt), signal);
-            continue;
-          }
-          throw error;
-        }
-
-        if (!response.ok || !parseDebridLinkSuccess(payload)) {
-          const error = new DebridLinkApiError(
-            response.status,
-            parseDebridLinkErrorCode(payload) || `HTTP ${response.status}`,
-            parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
-            parseRetryAfterMs(response.headers.get("retry-after")),
-            payload
-          );
-          if (this.shouldRetryApiError(error, attempt, maxAttempts)) {
-            await sleepWithSignal(this.retryDelayForApiError(error, attempt), signal);
-            continue;
-          }
-          throw error;
-        }
-
-        return payload;
-      } catch (error) {
-        if (error instanceof DebridLinkApiError) {
-          throw error;
-        }
-        lastTransportError = compactErrorText(error);
-        if (signal?.aborted || (/aborted/i.test(lastTransportError) && !/timeout/i.test(lastTransportError))) {
-          throw error;
-        }
-        if (attempt >= maxAttempts || !isRetryableErrorText(lastTransportError)) {
-          throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
-        }
-        await sleepWithSignal(retryDelay(attempt), signal);
-      }
-    }
-    throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
+    return requestDebridLinkPayloadWithKey(apiKey, method, apiPath, body, signal, maxAttempts);
   }
 
   private shouldRetryApiError(error: DebridLinkApiError, attempt: number, maxAttempts: number): boolean {
@@ -2084,8 +2441,28 @@ class DebridLinkClient {
     if (!id) {
       return chosen;
     }
-    const refreshed = await this.fetchDownloaderEntry(apiKey, id, signal);
-    return refreshed || chosen;
+
+    // Poll up to 5 times with 2s delay — Debrid-Link sometimes needs a few
+    // seconds to generate the download URL after /downloader/add.
+    const maxPolls = 5;
+    for (let poll = 0; poll < maxPolls; poll++) {
+      if (signal?.aborted) {
+        throw new Error("aborted");
+      }
+      if (poll > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      const refreshed = await this.fetchDownloaderEntry(apiKey, id, signal);
+      if (refreshed) {
+        const url = pickString(refreshed, ["downloadUrl"]);
+        const expired = refreshed.expired === true;
+        if (url && !expired) {
+          return refreshed;
+        }
+      }
+    }
+    // Return last fetched entry (caller will detect missing URL and throw)
+    return (await this.fetchDownloaderEntry(apiKey, id, signal)) || chosen;
   }
 
   private async fetchDownloaderEntry(
@@ -2152,11 +2529,12 @@ class DebridLinkClient {
         };
       }
       if (DEBRID_LINK_PROVIDER_WIDE_ERRORS.has(code)) {
+        // notDebrid = "host may be down" — transient, try next key before giving up.
         return {
-          fatal: true,
-          cooldownMs: 0,
+          fatal: false,
+          cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
           message: `Link kann aktuell nicht generiert werden (${code}: ${description})`,
-          category: "skip"
+          category: "temporary"
         };
       }
       if (DEBRID_LINK_SKIP_KEY_ERRORS.has(code)) {
@@ -2186,6 +2564,17 @@ class DebridLinkClient {
         fatal: true,
         cooldownMs: 0,
         message: description
+      };
+    }
+
+    // Treat missing/expired download URLs as temporary — the server may need
+    // more time or another key might succeed immediately.
+    if (/keine gueltige download-url/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
+        message: errorText || "Download-URL nicht verfuegbar",
+        category: "temporary"
       };
     }
 

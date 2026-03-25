@@ -462,7 +462,70 @@ describe("debrid service", () => {
     expect(addCalls).toBe(2);
   });
 
-  it("fails fast on provider-wide Debrid-Link notDebrid errors without rotating through all keys", async () => {
+  it("returns an invalid-all marker when all Debrid-Link keys are invalid", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const authHeaders: string[] = [];
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const headers = init?.headers;
+      let authHeader = "";
+      if (headers instanceof Headers) {
+        authHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        authHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+      authHeaders.push(authHeader);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "badToken",
+        error_description: "token expired"
+      }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/all-invalid.bin")).rejects.toThrow(/debrid_link_invalid_all:/i);
+    expect(authHeaders).toEqual(["Bearer dl-key-one", "Bearer dl-key-two"]);
+  });
+
+  it("returns a clear error when all Debrid-Link keys are locally exhausted", async () => {
+    const keys = parseDebridLinkApiKeys("dl-key-one\ndl-key-two");
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      debridLinkApiKeyDailyLimitBytes: {
+        [keys[0].id]: 100,
+        [keys[1].id]: 100
+      },
+      debridLinkApiKeyDailyUsageBytes: {
+        [keys[0].id]: 100,
+        [keys[1].id]: 100
+      },
+      providerDailyUsageDay: getProviderUsageDayKey()
+    };
+
+    const service = new DebridService(settings);
+    await expect(service.unrestrictLink("https://hoster.example/no-key-left.bin")).rejects.toThrow(/debrid-link nicht verfuegbar|kein aktiver api-key/i);
+  });
+
+  it("rotates through all keys on Debrid-Link notDebrid errors before failing", async () => {
     const settings = {
       ...defaultSettings(),
       debridLinkApiKeys: "dl-key-one\ndl-key-two",
@@ -488,8 +551,9 @@ describe("debrid service", () => {
     }) as typeof fetch;
 
     const service = new DebridService(settings);
-    await expect(service.unrestrictLink("https://hoster.example/not-debrid.bin")).rejects.toThrow("Link kann aktuell nicht generiert werden (notDebrid: notDebrid)");
-    expect(authHeaders).toEqual(["Bearer dl-key-one"]);
+    await expect(service.unrestrictLink("https://hoster.example/not-debrid.bin")).rejects.toThrow(/notDebrid/);
+    // notDebrid is transient (host may be down) — both keys should be tried
+    expect(authHeaders).toEqual(["Bearer dl-key-one", "Bearer dl-key-two"]);
   });
 
   it("continues to the next Debrid-Link key for non-provider-wide skip errors without caching a cooldown", async () => {
@@ -826,6 +890,90 @@ describe("debrid service", () => {
     expect(info[0].linksMax).toBe(500);
     expect(calledUrls.some((url) => url.includes("/limits/all"))).toBe(true);
     expect(calledUrls.some((url) => url.includes("/limits"))).toBe(true);
+  });
+
+  it("includes Debrid-Link host and key state diagnostics in host limits", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/hosts")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: [
+            {
+              name: "rapidgator",
+              status: 1,
+              domains: ["rapidgator.net", "rg.to"]
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("debrid-link.com/api/v2/downloader/limits/all")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            hosters: [
+              {
+                name: "rapidgator",
+                daySize: { current: 1024, value: 2048 },
+                dayCount: { current: 2, value: 5 }
+              }
+            ]
+          }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const info = await fetchDebridLinkHostLimits("key-a", "rapidgator");
+    expect(info[0].state).toBe("ready");
+    expect(info[0].stateLabel).toBe("Bereit");
+    expect(info[0].hostState).toBe("up");
+    expect(info[0].hostStateLabel).toBe("Online");
+  });
+
+  it("returns invalid Debrid-Link key diagnostics instead of failing the whole popup request", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/hosts")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: [
+            {
+              name: "rapidgator",
+              status: 0,
+              domains: ["rapidgator.net"]
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("debrid-link.com/api/v2/downloader/limits/all")) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "badToken",
+          error_description: "token expired"
+        }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const info = await fetchDebridLinkHostLimits("key-a", "rapidgator");
+    expect(info).toHaveLength(1);
+    expect(info[0].state).toBe("invalid");
+    expect(info[0].cooldownRemainingMs).toBeGreaterThan(0);
+    expect(info[0].hostState).toBe("down");
+    expect(info[0].hostStateLabel).toBe("Offline");
   });
 
   it("uses AllDebrid web path when enabled", async () => {
