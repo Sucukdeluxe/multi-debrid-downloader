@@ -1545,10 +1545,16 @@ class MegaDebridClient {
     });
     const text = await response.text();
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.clearTokenCache();
+      }
       return null;
     }
     const payload = parseJsonSafe(text);
     if (!payload || payload.response_code !== "ok") {
+      if (payload && String(payload.response_code || "").toLowerCase().includes("token")) {
+        this.clearTokenCache();
+      }
       return null;
     }
     const token = String(payload.token || "").trim();
@@ -2467,7 +2473,7 @@ class DebridLinkClient {
         throw new Error("aborted");
       }
       if (poll > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await sleepWithSignal(2000, signal);
       }
       const refreshed = await this.fetchDownloaderEntry(apiKey, id, signal);
       if (refreshed) {
@@ -2738,7 +2744,7 @@ class LinkSnappyClient {
           throw error;
         }
         if (attempt < REQUEST_RETRIES) {
-          await sleep(retryDelay(attempt), signal);
+          await sleepWithSignal(retryDelay(attempt), signal);
         }
       }
     }
@@ -2808,7 +2814,7 @@ class OneFichierClient {
           throw error;
         }
         if (attempt < REQUEST_RETRIES) {
-          await sleep(retryDelay(attempt), signal);
+          await sleepWithSignal(retryDelay(attempt), signal);
         }
       }
     }
