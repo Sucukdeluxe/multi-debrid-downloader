@@ -354,6 +354,9 @@ export class AppController {
     if (this.manager.isSessionRunning()) {
       this.manager.stop();
     }
+    // Flush any pending async saves BEFORE the update process starts.
+    // This ensures the queue is fully persisted to disk so it survives the restart.
+    this.manager.persistNowSync();
 
     const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
     const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000

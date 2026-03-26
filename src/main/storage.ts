@@ -881,7 +881,25 @@ export function loadSession(paths: StoragePaths): SessionState {
     return backup;
   }
 
-  logger.error("Session konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  // Last resort: try to recover from temp files left by interrupted writes
+  for (const kind of ["sync", "async"] as const) {
+    const tmpPath = sessionTempPath(paths.sessionFile, kind);
+    if (fs.existsSync(tmpPath)) {
+      const tmpSession = readSessionFile(tmpPath);
+      if (tmpSession && Object.keys(tmpSession.packages).length > 0) {
+        logger.warn(`Session aus temporaerer Datei wiederhergestellt: ${tmpPath} (${Object.keys(tmpSession.packages).length} Pakete)`);
+        try {
+          const payload = JSON.stringify({ ...tmpSession, updatedAt: Date.now() });
+          fs.writeFileSync(paths.sessionFile, payload, "utf8");
+        } catch {
+          // ignore restore write failure
+        }
+        return tmpSession;
+      }
+    }
+  }
+
+  logger.error("Session konnte nicht geladen werden (Primary, Backup und Temp-Dateien fehlgeschlagen)");
   return emptySession();
 }
 
