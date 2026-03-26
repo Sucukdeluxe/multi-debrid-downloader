@@ -525,7 +525,7 @@ describe("debrid service", () => {
     await expect(service.unrestrictLink("https://hoster.example/no-key-left.bin")).rejects.toThrow(/debrid-link nicht verfuegbar|kein aktiver api-key/i);
   });
 
-  it("rotates through all keys on Debrid-Link notDebrid errors before failing", async () => {
+  it("stops rotation immediately on Debrid-Link notDebrid (provider-wide) — does NOT burn remaining keys", async () => {
     const settings = {
       ...defaultSettings(),
       debridLinkApiKeys: "dl-key-one\ndl-key-two",
@@ -551,9 +551,9 @@ describe("debrid service", () => {
     }) as typeof fetch;
 
     const service = new DebridService(settings);
-    await expect(service.unrestrictLink("https://hoster.example/not-debrid.bin")).rejects.toThrow(/notDebrid/);
-    // notDebrid is transient (host may be down) — both keys should be tried
-    expect(authHeaders).toEqual(["Bearer dl-key-one", "Bearer dl-key-two"]);
+    await expect(service.unrestrictLink("https://hoster.example/not-debrid.bin")).rejects.toThrow(/debrid_link_cooldown.*notDebrid/);
+    // notDebrid is a host-level issue — only Key 1 should be tried, Key 2 must NOT be burned
+    expect(authHeaders).toEqual(["Bearer dl-key-one"]);
   });
 
   it("continues to the next Debrid-Link key for non-provider-wide skip errors without caching a cooldown", async () => {

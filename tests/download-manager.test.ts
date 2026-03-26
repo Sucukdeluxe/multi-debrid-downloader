@@ -1798,6 +1798,54 @@ describe("download manager", () => {
     await manager.stop();
   });
 
+  it("fails fast when Debrid-Link has no active api key left", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const keys = parseDebridLinkApiKeys("dl-key-one\ndl-key-two");
+
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      retryLimit: 0,
+      autoExtract: false,
+      debridLinkApiKeyDailyLimitBytes: {
+        [keys[0].id]: 100,
+        [keys[1].id]: 100
+      },
+      debridLinkApiKeyDailyUsageBytes: {
+        [keys[0].id]: 100,
+        [keys[1].id]: 100
+      },
+      providerDailyUsageDay: getProviderUsageDayKey()
+    };
+
+    const manager = new DownloadManager(
+      settings,
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "debridlink-no-key", links: ["https://rapidgator.net/file/no-active-key.part1.rar.html"] }]);
+    await manager.start();
+    await waitFor(() => {
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      return Boolean(item && item.status === "failed");
+    }, 12000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item?.status).toBe("failed");
+    expect(item?.fullStatus || "").toContain("Debrid-Link");
+    expect(item?.retries).toBe(0);
+
+    await manager.stop();
+  });
+
   it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

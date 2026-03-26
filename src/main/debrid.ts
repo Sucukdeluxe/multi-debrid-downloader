@@ -2280,6 +2280,7 @@ class DebridLinkClient {
     const cooldownFailures: string[] = [];
     let earliestCooldownUntil = 0;
     const attemptedKeyFailures: Array<{ message: string; cooldownMs: number; category?: DebridLinkCooldownCategory }> = [];
+    let consecutiveTransportFailures = 0;
 
     // Always start from first key — use first available, skip disabled/limited/cooldown.
     // This ensures all parallel items use the same key until it's actually exhausted.
@@ -2332,6 +2333,22 @@ class DebridLinkClient {
         }
         if (failure.fatal) {
           throw new Error(`Debrid-Link${keyLabel}: ${failure.message}`);
+        }
+        if (failure.providerWide) {
+          // Host-level issue (e.g. notDebrid) — rotating to other keys is pointless.
+          // Break immediately and apply a longer cooldown (5 min) to avoid burning all keys.
+          const providerWideCooldownMs = 5 * 60 * 1000;
+          logger.warn(`Debrid-Link${keyLabel}: ${failure.message} (provider-wide, ueberspringe verbleibende Keys, Cooldown ${providerWideCooldownMs / 1000}s)`);
+          throw new Error(`debrid_link_cooldown:${providerWideCooldownMs}:Debrid-Link${keyLabel}: ${failure.message}`);
+        }
+        // Track consecutive transport failures (timeout/network) to detect cascades.
+        const isTransport = isRetryableErrorText(failure.message) && !(error instanceof DebridLinkApiError);
+        consecutiveTransportFailures = isTransport ? consecutiveTransportFailures + 1 : 0;
+        if (consecutiveTransportFailures >= 2) {
+          // 2+ keys timed out in a row — likely a server/network issue, not key-specific.
+          const cascadeCooldownMs = 3 * 60 * 1000;
+          logger.warn(`Debrid-Link: ${consecutiveTransportFailures} Transport-Fehler in Folge, ueberspringe verbleibende Keys, Cooldown ${cascadeCooldownMs / 1000}s`);
+          throw new Error(`debrid_link_cooldown:${cascadeCooldownMs}:Debrid-Link: Transport-Kaskade (${consecutiveTransportFailures}x)`);
         }
         const cooldownInfo = failure.cooldownMs > 0
           ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
@@ -2496,7 +2513,7 @@ class DebridLinkClient {
     apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
     link: string,
     signal?: AbortSignal
-  ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory }> {
+  ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory; providerWide?: boolean }> {
     const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
     if (error instanceof DebridLinkApiError) {
       const code = String(error.code || "").trim() || `HTTP ${error.status}`;
@@ -2529,12 +2546,13 @@ class DebridLinkClient {
         };
       }
       if (DEBRID_LINK_PROVIDER_WIDE_ERRORS.has(code)) {
-        // notDebrid = "host may be down" — transient, try next key before giving up.
+        // notDebrid = host-level issue — affects ALL keys equally, do NOT rotate.
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
           message: `Link kann aktuell nicht generiert werden (${code}: ${description})`,
-          category: "temporary"
+          category: "temporary",
+          providerWide: true
         };
       }
       if (DEBRID_LINK_SKIP_KEY_ERRORS.has(code)) {

@@ -296,6 +296,8 @@ export interface UpdateInstallProgress {
 
 export type AllDebridHostState = "up" | "down" | "not_tracked" | "unknown";
 export type AllDebridHostInfoSource = "api" | "web";
+export type DebridLinkHostState = "up" | "down" | "unknown";
+export type DebridLinkKeyState = "ready" | "cooldown" | "invalid" | "quota" | "rate_limit" | "error" | "unknown";
 
 export interface AllDebridHostInfo {
   host: string;
@@ -321,6 +323,15 @@ export interface DebridLinkHostLimitInfo {
   linksCurrent: number | null;
   linksMax: number | null;
   note: string;
+  state: DebridLinkKeyState;
+  stateLabel: string;
+  stateDetail: string;
+  cooldownUntil: number | null;
+  cooldownRemainingMs: number;
+  lastCheckedAt: number | null;
+  hostState: DebridLinkHostState;
+  hostStateLabel: string;
+  hostNote: string;
 }
 
 export interface ParsedHashEntry {
