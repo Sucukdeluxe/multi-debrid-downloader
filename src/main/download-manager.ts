@@ -52,7 +52,7 @@ function releaseTlsSkip(): void {
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys } from "./debrid";
-import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
+import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
@@ -5781,6 +5781,141 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  /**
+   * Detect and fix obfuscated archive filenames after download.
+   * Some hosters mutate filenames (e.g. `.part06.rar` → `.part06.mov`) and
+   * inject typos into the stem to prevent automated extraction.
+   * This method reads magic bytes of non-archive files and renames them back
+   * to their correct archive extension, using correctly-named siblings as a
+   * reference for the base filename.
+   */
+  private async deobfuscateArchiveFiles(
+    pkg: PackageEntry,
+    completedItems: DownloadItem[],
+    signal?: AbortSignal
+  ): Promise<number> {
+    const KNOWN_ARCHIVE_EXTS = new Set([
+      ".rar", ".zip", ".7z", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz",
+      ".tar", ".001", ".002", ".003", ".004", ".005", ".006", ".007", ".008", ".009",
+    ]);
+    // Also treat .r00-.r99 as known archive extensions
+    const isArchiveExt = (ext: string): boolean => {
+      const lower = ext.toLowerCase();
+      if (KNOWN_ARCHIVE_EXTS.has(lower)) return true;
+      if (/^\.r\d{2}$/.test(lower)) return true;
+      if (/^\.part\d+\.rar$/.test(lower)) return true;
+      return false;
+    };
+
+    // Map items by their target path (lowercased for case-insensitive lookup)
+    const itemByPath = new Map<string, DownloadItem>();
+    for (const item of completedItems) {
+      if (item.targetPath) {
+        itemByPath.set(item.targetPath.toLowerCase(), item);
+      }
+    }
+
+    // Collect reference RAR files (correctly named) and suspect files
+    const referenceRars: string[] = [];
+    const suspectFiles: Array<{ item: DownloadItem; filePath: string }> = [];
+
+    for (const item of completedItems) {
+      if (!item.targetPath || !item.fileName) continue;
+      if (signal?.aborted) return 0;
+      const ext = path.extname(item.fileName).toLowerCase();
+      // Check for double extension like .part01.rar
+      const doubleExt = item.fileName.match(/(\.\w+\.\w+)$/)?.[1]?.toLowerCase() || "";
+      if (isArchiveExt(ext) || isArchiveExt(doubleExt)) {
+        if (ext === ".rar") {
+          referenceRars.push(item.targetPath);
+        }
+        continue;
+      }
+      // Non-archive extension — suspect
+      suspectFiles.push({ item, filePath: item.targetPath });
+    }
+
+    if (suspectFiles.length === 0) return 0;
+
+    // Extract base pattern from reference RAR files
+    // e.g. "tvs-star_crossed-dd51-ded-dl-7p-nfhd-x264-104" from "tvs-star_crossed-...part01.rar"
+    let referenceBase = "";
+    const partBaseRe = /^(.+?)\.part\d{1,3}\.rar$/i;
+    for (const rarPath of referenceRars) {
+      const match = path.basename(rarPath).match(partBaseRe);
+      if (match) {
+        referenceBase = match[1];
+        break;
+      }
+    }
+
+    let fixedCount = 0;
+    const SIG_TO_EXT: Record<string, string> = { rar: ".rar", "7z": ".7z", zip: ".zip" };
+
+    for (const { item, filePath } of suspectFiles) {
+      if (signal?.aborted) break;
+      try {
+        const exists = await fs.promises.stat(filePath).then(() => true, () => false);
+        if (!exists) continue;
+
+        const sig = await detectArchiveSignature(filePath);
+        if (!sig || !SIG_TO_EXT[sig]) continue;
+
+        const correctExt = SIG_TO_EXT[sig];
+        const oldName = path.basename(filePath);
+        let newName: string;
+
+        // Try to extract part number from the obfuscated filename
+        const partMatch = oldName.match(/[._-](?:[a-z]*?)part(\d{1,3})\b/i)
+          || oldName.match(/[._-]r?part(\d{1,3})\b/i);
+        const partNum = partMatch?.[1];
+
+        if (referenceBase && partNum) {
+          // Reconstruct correct filename from reference base + part number
+          const paddedPart = partNum.padStart(2, "0");
+          newName = `${referenceBase}.part${paddedPart}${correctExt}`;
+        } else {
+          // No reference available — just fix the extension
+          const stem = oldName.replace(/\.[^.]+$/, "");
+          newName = `${stem}${correctExt}`;
+        }
+
+        if (newName === oldName) continue;
+
+        const newPath = path.join(path.dirname(filePath), newName);
+        // Don't overwrite existing files
+        const targetExists = await fs.promises.stat(newPath).then(() => true, () => false);
+        if (targetExists) {
+          logger.warn(`Deobfuskation: Ziel existiert bereits, ueberspringe: ${newPath}`);
+          continue;
+        }
+
+        await fs.promises.rename(filePath, newPath);
+        item.fileName = newName;
+        item.targetPath = newPath;
+        // Update the path lookup
+        this.releaseTargetPath(item.id);
+        this.claimTargetPath(item.id, newPath);
+        fixedCount += 1;
+        logger.info(`Deobfuskation: ${oldName} -> ${newName} (${sig} erkannt)`);
+        this.logPackageForPackage(pkg, "INFO", "Archiv-Deobfuskation", {
+          oldName,
+          newName,
+          signature: sig
+        });
+      } catch (err) {
+        logger.warn(`Deobfuskation fehlgeschlagen: ${filePath}: ${compactErrorText(err as Error)}`);
+      }
+    }
+
+    if (fixedCount > 0) {
+      logger.info(`Deobfuskation abgeschlossen: pkg=${pkg.name}, ${fixedCount} Datei(en) korrigiert`);
+      this.persistSoon();
+      this.emitState();
+    }
+    return fixedCount;
+  }
+
   private async waitForCompletedArchiveFilesToSettle(
     pkg: PackageEntry,
     items: DownloadItem[],
@@ -9707,6 +9842,11 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<number> {
+    // Fix obfuscated archive filenames before archive discovery.
+    const completedForDeobfuscation = items.filter((item) => item.status === "completed");
+    await this.deobfuscateArchiveFiles(pkg, completedForDeobfuscation, signal);
+    if (signal?.aborted) return 0;
+
     const findReadyStart = nowMs();
     const readyArchives = await this.findReadyArchiveSets(pkg);
     const findReadyMs = nowMs() - findReadyStart;
@@ -10279,6 +10419,11 @@ export class DownloadManager extends EventEmitter {
       pkg.postProcessLabel = "Entpacken vorbereiten...";
       pkg.status = "extracting";
       this.emitState();
+
+      // Fix obfuscated archive filenames before extraction attempts.
+      await this.deobfuscateArchiveFiles(pkg, completedItems, signal);
+      if (signal?.aborted) return;
+
       const extractionStartMs = nowMs();
       const preExtractStatuses = new Map<string, string>();
 
