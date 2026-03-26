@@ -257,7 +257,7 @@ function registerIpcHandlers(): void {
     if (result.started) {
       updateQuitTimer = setTimeout(() => {
         app.quit();
-      }, 900);
+      }, 5000);
     }
     return result;
   });

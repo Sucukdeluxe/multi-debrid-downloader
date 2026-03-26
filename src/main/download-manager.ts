@@ -4696,9 +4696,12 @@ export class DownloadManager extends EventEmitter {
     this.pacedStartReservationByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
-    // Persist synchronously on shutdown to guarantee data is written before process exits
-    // Skip if a backup was just imported — the restored session on disk must not be overwritten
-    if (!this.skipShutdownPersist && !this.blockAllPersistence) {
+    // Persist synchronously on shutdown to guarantee data is written before process exits.
+    // Only skip if a backup was just imported (skipShutdownPersist) — the restored session
+    // on disk must not be overwritten.  blockAllPersistence is intentionally NOT checked
+    // here: it guards async/periodic saves during runtime, but shutdown must always persist
+    // to prevent queue loss across restarts/updates.
+    if (!this.skipShutdownPersist) {
       const pkgCount = Object.keys(this.session.packages).length;
       const itemCount = Object.keys(this.session.items).length;
       logger.info(`Shutdown-Save: ${pkgCount} Pakete, ${itemCount} Items`);
@@ -5028,6 +5031,18 @@ export class DownloadManager extends EventEmitter {
       this.lastSettingsPersistAt = now;
       void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler: ${compactErrorText(err as Error)}`));
     }
+  }
+
+  /** Synchronous persist — guarantees state is on disk before returning.
+   *  Used before update installs to prevent queue loss. */
+  public persistNowSync(): void {
+    this.clearPersistTimer();
+    const pkgCount = Object.keys(this.session.packages).length;
+    const itemCount = Object.keys(this.session.items).length;
+    logger.info(`Pre-Update Sync-Save: ${pkgCount} Pakete, ${itemCount} Items`);
+    this.foldRuntimeIntoSettings(nowMs());
+    saveSession(this.storagePaths, this.session);
+    saveSettings(this.storagePaths, this.settings);
   }
 
   private emitState(force = false): void {
