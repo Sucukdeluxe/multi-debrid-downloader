@@ -1562,10 +1562,12 @@ body,
 
 .account-subkey-table-head .col-usage,
 .account-subkey-table-head .col-limit,
+.account-subkey-table-head .col-status,
 .account-subkey-table-head .col-traffic,
 .account-subkey-table-head .col-links,
 .account-subkey-table-row .col-usage,
 .account-subkey-table-row .col-limit,
+.account-subkey-table-row .col-status,
 .account-subkey-table-row .col-traffic,
 .account-subkey-table-row .col-links {
   text-align: right;
@@ -1615,6 +1617,10 @@ body,
   color: var(--muted);
 }
 
+.account-subkey-table-row .col-status {
+  text-align: center;
+}
+
 .account-subkey-table-row .col-traffic,
 .account-subkey-table-row .col-links {
   text-align: center;
@@ -1633,6 +1639,38 @@ body,
 .account-subkey-table-row .col-action .btn {
   padding: 1px 6px;
   font-size: 10px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.status-pill-ok {
+  color: #166534;
+  background: color-mix(in srgb, #22c55e 16%, transparent);
+}
+
+.status-pill-warn {
+  color: #92400e;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+}
+
+.status-pill-bad {
+  color: #991b1b;
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+}
+
+.status-pill-muted {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--field) 80%, transparent);
 }
 
 .btn-sm {

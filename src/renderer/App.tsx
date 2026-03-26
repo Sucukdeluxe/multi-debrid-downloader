@@ -1121,6 +1121,76 @@ function formatDebridLinkCountQuota(info: DebridLinkHostLimitInfo | null | undef
   return info.note || "Nicht verfügbar";
 }
 
+function getDebridLinkKeyStatusDisplay(
+  key: DebridLinkAccountKeyEntry,
+  info: DebridLinkHostLimitInfo | null | undefined
+): { label: string; tone: "ok" | "warn" | "bad" | "muted"; title: string } {
+  if (key.disabled) {
+    return {
+      label: "Deaktiviert",
+      tone: "muted",
+      title: "Key ist manuell deaktiviert."
+    };
+  }
+  if (key.dailyLimitReached) {
+    return {
+      label: "Lokales Limit",
+      tone: "warn",
+      title: key.dailyLimitBytes > 0
+        ? `Lokales Tageslimit erreicht (${humanSize(key.dailyUsedBytes)} / ${humanSize(key.dailyLimitBytes)}).`
+        : "Lokales Tageslimit erreicht."
+    };
+  }
+  if (!info) {
+    return {
+      label: "Pruefe...",
+      tone: "muted",
+      title: "Live-Status wird geladen."
+    };
+  }
+
+  const title = [info.stateDetail, info.note, info.hostNote]
+    .filter((value) => Boolean(String(value || "").trim()))
+    .join("\n");
+
+  if (info.state === "ready") {
+    if (info.hostState === "down") {
+      return {
+        label: "Host offline",
+        tone: "warn",
+        title: title || "Der Hoster ist laut Debrid-Link aktuell offline."
+      };
+    }
+    return {
+      label: "Bereit",
+      tone: "ok",
+      title: title || "Key ist nutzbar."
+    };
+  }
+
+  if (info.state === "invalid" || info.state === "error") {
+    return {
+      label: info.stateLabel,
+      tone: "bad",
+      title: title || info.stateLabel
+    };
+  }
+
+  if (info.state === "quota" || info.state === "rate_limit" || info.state === "cooldown") {
+    return {
+      label: info.stateLabel,
+      tone: "warn",
+      title: title || info.stateLabel
+    };
+  }
+
+  return {
+    label: info.stateLabel || "Unbekannt",
+    tone: "muted",
+    title: title || info.stateLabel || "Unbekannt"
+  };
+}
+
 interface BandwidthChartProps {
   items: Record<string, DownloadItem>;
   running: boolean;
@@ -5913,7 +5983,13 @@ export function App(): ReactElement {
         const totalUsed = entry.debridLinkKeys.reduce((s, k) => s + k.dailyUsedBytes, 0);
         const limitedCount = entry.debridLinkKeys.filter((k) => k.dailyLimitReached).length;
         const disabledCount = entry.debridLinkKeys.filter((k) => k.disabled).length;
+        const keyDiagnostics = entry.debridLinkKeys
+          .map((k) => debridLinkHostLimits[k.id])
+          .filter((info): info is DebridLinkHostLimitInfo => Boolean(info));
         const loadedQuotaCount = entry.debridLinkKeys.filter((k) => Boolean(debridLinkHostLimits[k.id])).length;
+        const invalidCount = keyDiagnostics.filter((info) => info.state === "invalid").length;
+        const cooldownCount = keyDiagnostics.filter((info) => info.state === "cooldown" || info.state === "quota" || info.state === "rate_limit").length;
+        const hostStatusLabel = keyDiagnostics.find((info) => info.hostState !== "unknown")?.hostStateLabel || "";
         return (
           <div className="modal-backdrop" onClick={() => setKeyStatsPopup(null)}>
             <div className="modal-card key-stats-popup" onClick={(e) => e.stopPropagation()}>
@@ -5924,8 +6000,10 @@ export function App(): ReactElement {
                     {entry.debridLinkKeys.length} Keys &middot; Heute: {humanSize(totalUsed)}
                     {limitedCount > 0 && <span className="key-stats-warn"> &middot; {limitedCount} am Limit</span>}
                     {disabledCount > 0 && <span className="key-stats-warn"> &middot; {disabledCount} deaktiviert</span>}
+                    {invalidCount > 0 && <span className="key-stats-warn"> &middot; {invalidCount} invalid</span>}
+                    {cooldownCount > 0 && <span className="key-stats-warn"> &middot; {cooldownCount} im Cooldown</span>}
                     {debridLinkHostLimitsLoading && <span> &middot; Rapidgator-Quota wird geladen ({loadedQuotaCount}/{entry.debridLinkKeys.length})</span>}
-                    {!debridLinkHostLimitsLoading && !debridLinkHostLimitsError && <span> &middot; Rapidgator API-Quota</span>}
+                    {!debridLinkHostLimitsLoading && !debridLinkHostLimitsError && <span> &middot; Rapidgator {hostStatusLabel || "Status unbekannt"}</span>}
                     {debridLinkHostLimitsError && <span className="key-stats-warn"> &middot; API-Quota konnte nicht geladen werden</span>}
                   </p>
                 </div>
@@ -5937,14 +6015,16 @@ export function App(): ReactElement {
                   <span className="col-masked">Key</span>
                   <span className="col-usage">Heute</span>
                   <span className="col-limit">Lokal</span>
+                  <span className="col-status">Status</span>
                   <span className="col-traffic">RG Traffic</span>
                   <span className="col-links">RG Links</span>
                   <span className="col-action"></span>
                 </div>
                 {entry.debridLinkKeys.map((key, ki) => (
-                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached ? " warning" : ""}${key.disabled ? " disabled" : ""}`}>
+                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${key.disabled ? " disabled" : ""}`}>
                     {(() => {
                       const hostInfo = debridLinkHostLimits[key.id];
+                      const statusDisplay = getDebridLinkKeyStatusDisplay(key, hostInfo);
                       return (
                         <>
                     <span className="col-key">{ki + 1}</span>
@@ -5961,6 +6041,7 @@ export function App(): ReactElement {
                     </span>
                     <span className="col-usage">{humanSize(key.dailyUsedBytes)}</span>
                     <span className="col-limit">{key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
+                    <span className={`col-status status-pill status-pill-${statusDisplay.tone}`} title={statusDisplay.title}>{statusDisplay.label}</span>
                     <span className="col-traffic" title={hostInfo?.note || ""}>{formatDebridLinkTraffic(hostInfo)}</span>
                     <span className="col-links" title={hostInfo?.note || ""}>{formatDebridLinkCountQuota(hostInfo)}</span>
                     <span className="col-action">

@@ -525,7 +525,8 @@ function isPermanentLinkError(errorText: string): boolean {
 
 function isUnrestrictFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
-  return text.includes("unrestrict") || text.includes("mega-web") || text.includes("mega-debrid")
+  return text.includes("unrestrict") || text.includes("debrid-link") || text.includes("debrid_link_")
+    || text.includes("mega-web") || text.includes("mega-debrid")
     || text.includes("bestdebrid") || text.includes("alldebrid") || text.includes("kein debrid")
     || text.includes("session-cookie") || text.includes("session cookie") || text.includes("session blockiert")
     || text.includes("session expired") || text.includes("invalid session")
@@ -544,6 +545,26 @@ function parseDebridLinkCooldownRetry(errorText: string): { delayMs: number; det
     return null;
   }
   return { delayMs, detail };
+}
+
+function parseDebridLinkTerminalFailure(errorText: string): { kind: "invalid_all" | "no_active_key"; detail: string } | null {
+  const raw = String(errorText || "");
+  const match = raw.match(/debrid_link_(invalid_all|no_active_key):(.*)$/i);
+  if (!match) {
+    if (/debrid-link.+(deaktiviert|ausgeschopft|kein aktiver api-key)/i.test(raw)) {
+      return {
+        kind: "no_active_key",
+        detail: raw.trim()
+      };
+    }
+    return null;
+  }
+  const kind = String(match[1] || "").toLowerCase() === "invalid_all" ? "invalid_all" : "no_active_key";
+  const detail = String(match[2] || "").trim();
+  return {
+    kind,
+    detail: detail || "Debrid-Link ist aktuell nicht verfuegbar"
+  };
 }
 
 function isProviderBusyUnrestrictError(errorText: string): boolean {
@@ -3310,6 +3331,9 @@ export class DownloadManager extends EventEmitter {
     }
 
     const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
+    const sampleDirNames = new Set(["sample", "samples"]);
+    // Short suffix pattern: scene groups often use "-s.mkv" for samples (e.g. itn-continuum.s01e10.720p-s.mkv)
+    const sampleSuffixRe = /[._\-]s$/i;
     for (const sourcePath of videoFiles) {
       if (shouldAbort?.()) {
         return renamed;
@@ -3317,11 +3341,12 @@ export class DownloadManager extends EventEmitter {
       const sourceName = path.basename(sourcePath);
       const sourceExt = path.extname(sourceName);
       const sourceBaseName = path.basename(sourceName, sourceExt);
+      const parentDirName = path.basename(path.dirname(sourcePath)).toLowerCase();
 
       // Skip sample files — renaming them strips the "-sample" suffix,
       // making them indistinguishable from the main MKV and causing (2)
       // duplicates during MKV collection.
-      if (sampleTokenRe.test(sourceBaseName)) {
+      if (sampleTokenRe.test(sourceBaseName) || sampleDirNames.has(parentDirName) || sampleSuffixRe.test(sourceBaseName)) {
         continue;
       }
       const folderCandidates: string[] = [];
@@ -3427,7 +3452,8 @@ export class DownloadManager extends EventEmitter {
         logger.warn(`Auto-Rename übersprungen (Zielpfad zu lang/ungültig): ${sourcePath}`);
         continue;
       }
-      if (pathKey(targetPath) === pathKey(sourcePath)) {
+      if (targetPath === sourcePath) {
+        // Exact match (including casing) — truly nothing to do.
         if (pkg) {
           const resolved = resolveRenameItem(targetPath);
           this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename übersprungen: Name bereits passend", {
@@ -3436,6 +3462,27 @@ export class DownloadManager extends EventEmitter {
             targetPath,
             targetBaseName
           }, resolved.item, resolved.matchedBy);
+        }
+        continue;
+      }
+      if (pathKey(targetPath) === pathKey(sourcePath) && targetPath !== sourcePath) {
+        // Same file on case-insensitive FS but different casing — rename in-place.
+        // On Windows, fs.rename handles case-only renames correctly.
+        try {
+          await fs.promises.rename(sourcePath, targetPath);
+          renamedCount += 1;
+          if (pkg) {
+            const resolved = resolveRenameItem(targetPath);
+            this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename (Casing korrigiert)", {
+              sourcePath,
+              sourceName,
+              targetPath,
+              targetBaseName
+            }, resolved.item, resolved.matchedBy);
+          }
+          logger.info(`Auto-Rename Casing: ${sourcePath} -> ${targetPath}`);
+        } catch (err) {
+          logger.warn(`Auto-Rename Casing fehlgeschlagen: ${sourcePath} -> ${targetPath}: ${compactErrorText(err as Error)}`);
         }
         continue;
       }
@@ -8055,14 +8102,28 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
+          const debridLinkTerminalFailure = parseDebridLinkTerminalFailure(errorText);
+          if (debridLinkTerminalFailure) {
+            item.status = "failed";
+            this.recordRunOutcome(item.id, "failed");
+            item.lastError = debridLinkTerminalFailure.detail;
+            item.fullStatus = `Debrid-Link: ${debridLinkTerminalFailure.detail}`;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            this.retryStateByItem.delete(item.id);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
           if (isUnrestrictFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             const debridLinkCooldown = parseDebridLinkCooldownRetry(errorText);
             if (debridLinkCooldown) {
               active.unrestrictRetries += 1;
               item.retries += 1;
-              const failureProvider = this.getProviderFailureKeyForItem(item);
-              this.recordProviderFailure(failureProvider);
-              this.applyProviderBusyBackoff(failureProvider, debridLinkCooldown.delayMs);
+              // Do NOT call recordProviderFailure/applyProviderBusyBackoff here —
+              // Debrid-Link key cooldowns are managed in debrid.ts per-key.
+              // Adding a provider-wide cooldown on top causes double-blocking.
               logger.warn(
                 `Debrid-Link-Cooldown: item=${item.fileName || item.id}, ` +
                 `retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${debridLinkCooldown.delayMs}ms, ` +
