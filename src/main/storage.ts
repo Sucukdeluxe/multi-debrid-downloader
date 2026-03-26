@@ -501,6 +501,14 @@ function ensureBaseDir(baseDir: string): void {
   fs.mkdirSync(baseDir, { recursive: true });
 }
 
+/** JSON replacer that sanitizes NaN/Infinity to null to prevent file corruption. */
+function safeJsonReplacer(_key: string, value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -608,10 +616,15 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     };
   }
 
+  let orphanedItemCount = 0;
   for (const [itemId, item] of Object.entries(itemsById)) {
     if (!packagesById[item.packageId]) {
+      orphanedItemCount += 1;
       delete itemsById[itemId];
     }
+  }
+  if (orphanedItemCount > 0) {
+    logger.warn(`normalizeLoadedSession: ${orphanedItemCount} verwaiste Items entfernt (fehlende Pakete)`);
   }
 
   for (const pkg of Object.values(packagesById)) {
@@ -671,7 +684,7 @@ export function loadSettings(paths: StoragePaths): AppSettings {
   if (backupLoaded) {
     logger.warn("Konfiguration defekt, Backup-Datei wird verwendet");
     try {
-      const payload = JSON.stringify(backupLoaded, null, 2);
+      const payload = JSON.stringify(backupLoaded, safeJsonReplacer, 2);
       const tempPath = `${paths.configFile}.tmp`;
       fs.writeFileSync(tempPath, payload, "utf8");
       syncRenameWithExdevFallback(tempPath, paths.configFile);
@@ -762,7 +775,7 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
     }
   }
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
-  const payload = JSON.stringify(persisted, null, 2);
+  const payload = JSON.stringify(persisted, safeJsonReplacer, 2);
   const tempPath = `${paths.configFile}.tmp`;
   try {
     fs.writeFileSync(tempPath, payload, "utf8");
@@ -796,7 +809,7 @@ async function writeSettingsPayload(paths: StoragePaths, payload: string): Promi
 
 export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
-  const payload = JSON.stringify(persisted, null, 2);
+  const payload = JSON.stringify(persisted, safeJsonReplacer, 2);
   if (asyncSettingsSaveRunning) {
     asyncSettingsSaveQueued = { paths, settings };
     return;
@@ -853,7 +866,7 @@ export function loadSession(paths: StoragePaths): SessionState {
         if (backupPkgCount > 0) {
           logger.warn(`Session-Datei ist leer (0 Pakete), aber Backup hat ${backupPkgCount} Pakete — verwende Backup`);
           try {
-            const payload = JSON.stringify({ ...backup, updatedAt: Date.now() });
+            const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
             const tempPath = sessionTempPath(paths.sessionFile, "sync");
             fs.writeFileSync(tempPath, payload, "utf8");
             syncRenameWithExdevFallback(tempPath, paths.sessionFile);
@@ -871,7 +884,7 @@ export function loadSession(paths: StoragePaths): SessionState {
   if (backup) {
     logger.warn("Session defekt, Backup-Datei wird verwendet");
     try {
-      const payload = JSON.stringify({ ...backup, updatedAt: Date.now() });
+      const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
       const tempPath = sessionTempPath(paths.sessionFile, "sync");
       fs.writeFileSync(tempPath, payload, "utf8");
       syncRenameWithExdevFallback(tempPath, paths.sessionFile);
@@ -889,7 +902,7 @@ export function loadSession(paths: StoragePaths): SessionState {
       if (tmpSession && Object.keys(tmpSession.packages).length > 0) {
         logger.warn(`Session aus temporaerer Datei wiederhergestellt: ${tmpPath} (${Object.keys(tmpSession.packages).length} Pakete)`);
         try {
-          const payload = JSON.stringify({ ...tmpSession, updatedAt: Date.now() });
+          const payload = JSON.stringify({ ...tmpSession, updatedAt: Date.now() }, safeJsonReplacer);
           fs.writeFileSync(paths.sessionFile, payload, "utf8");
         } catch {
           // ignore restore write failure
@@ -913,7 +926,7 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
       // Best-effort backup; proceed even if it fails
     }
   }
-  const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
+  const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
   const tempPath = sessionTempPath(paths.sessionFile, "sync");
   try {
     fs.writeFileSync(tempPath, payload, "utf8");
@@ -983,7 +996,7 @@ export function cancelPendingAsyncSaves(): void {
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
-  const payload = JSON.stringify({ ...session, updatedAt: Date.now() });
+  const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
   await saveSessionPayloadAsync(paths, payload);
 }
 
@@ -1036,7 +1049,7 @@ export function loadHistory(paths: StoragePaths): HistoryEntry[] {
 export function saveHistory(paths: StoragePaths, entries: HistoryEntry[]): void {
   ensureBaseDir(paths.baseDir);
   const trimmed = entries.slice(0, MAX_HISTORY_ENTRIES);
-  const payload = JSON.stringify(trimmed, null, 2);
+  const payload = JSON.stringify(trimmed, safeJsonReplacer, 2);
   const tempPath = `${paths.historyFile}.tmp`;
   try {
     fs.writeFileSync(tempPath, payload, "utf8");
