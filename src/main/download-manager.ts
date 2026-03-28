@@ -123,6 +123,8 @@ const ARCHIVE_SETTLE_MAX_WAIT_MS = 5000;
 
 const MAX_SAME_DIRECT_URL_ATTEMPTS = 3;
 
+const RESUME_REWIND_BYTES = 256 * 1024;
+
 const REALDEBRID_TOTAL_MISMATCH_TOLERANCE_BYTES = 64 * 1024;
 
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
@@ -425,6 +427,21 @@ function shouldRejectSuspiciousSmallDownload(
 function isFetchFailure(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("fetch failed") || text.includes("socket hang up") || text.includes("econnreset") || text.includes("network error");
+}
+
+function shouldRewindResumeTail(errorText: string): boolean {
+  const text = String(errorText || "").toLowerCase();
+  if (!text) {
+    return false;
+  }
+  return text.includes("terminated")
+    || text.includes("stall_timeout")
+    || text.includes("slow_throughput")
+    || text.includes("write_drain_timeout")
+    || text.includes("premature close")
+    || text.includes("unexpected eof")
+    || text.includes("download_underflow")
+    || isFetchFailure(text);
 }
 
 function isHttp416Text(errorText: string): boolean {
@@ -8388,6 +8405,7 @@ export class DownloadManager extends EventEmitter {
 
     let lastError = "";
     let effectiveTargetPath = targetPath;
+    let resumeRewindBytesNextAttempt = 0;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let existingBytes = 0;
       try {
@@ -8395,6 +8413,33 @@ export class DownloadManager extends EventEmitter {
         existingBytes = stat.size;
       } catch {
         // file does not exist
+      }
+      if (existingBytes > 0 && resumeRewindBytesNextAttempt > 0) {
+        const previousBytes = existingBytes;
+        const rewindBytes = Math.min(existingBytes, resumeRewindBytesNextAttempt);
+        const resumeStart = Math.max(0, existingBytes - rewindBytes);
+        try {
+          await fs.promises.truncate(effectiveTargetPath, resumeStart);
+          existingBytes = resumeStart;
+          item.downloadedBytes = Math.min(item.downloadedBytes, existingBytes);
+          logAttemptEvent("WARN", "Resume-Schutz aktiv: Teil-Datei vor Retry zurueckgespult", {
+            attempt,
+            previousBytes,
+            rewindBytes,
+            resumeStart
+          });
+        } catch (rewindError) {
+          logAttemptEvent("WARN", "Resume-Schutz: Rueckspulen der Teil-Datei fehlgeschlagen", {
+            attempt,
+            previousBytes,
+            rewindBytes,
+            error: compactErrorText(rewindError)
+          });
+        } finally {
+          resumeRewindBytesNextAttempt = 0;
+        }
+      } else if (resumeRewindBytesNextAttempt > 0) {
+        resumeRewindBytesNextAttempt = 0;
       }
       // Guard against pre-allocated sparse files from a crashed session:
       // if file size exceeds persisted downloadedBytes by >1MB, the file was
@@ -9287,6 +9332,17 @@ export class DownloadManager extends EventEmitter {
         });
         if (normalizedLastError.startsWith("range_ignored_on_resume:")) {
           throw new Error(`direct_link_retry_exhausted:${normalizedLastError}`);
+        }
+        if (attempt < maxAttempts && written > existingBytes && shouldRewindResumeTail(normalizedLastError)) {
+          resumeRewindBytesNextAttempt = Math.max(resumeRewindBytesNextAttempt, RESUME_REWIND_BYTES);
+          logAttemptEvent("WARN", "Resume-Schutz vorgemerkt: naechster Retry startet mit Rewind", {
+            attempt,
+            existingBytes,
+            written,
+            appendedBytes: Math.max(0, written - existingBytes),
+            rewindBytes: resumeRewindBytesNextAttempt,
+            error: normalizedLastError
+          });
         }
         if (attempt < maxAttempts) {
           item.retries += 1;

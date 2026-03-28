@@ -861,6 +861,114 @@ describe("download manager", () => {
     }
   });
 
+  it("rewinds resumed range after terminated streams so corrupted tail bytes are replaced", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(3 * 1024 * 1024, 41);
+    const injectedErrorChunk = Buffer.from(
+      "{\"error\":\"Missed session \\\"resume-tail\\\" after 2000 ms\",\"success\":false}",
+      "utf8"
+    );
+    const firstChunkBytes = 2 * 1024 * 1024;
+    const corruptedResumeStart = firstChunkBytes + injectedErrorChunk.length;
+    const starts: number[] = [];
+    let directCalls = 0;
+
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/resume-rewind") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      directCalls += 1;
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+      starts.push(start);
+
+      if (directCalls === 1 && start === 0) {
+        res.statusCode = 200;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length));
+        res.write(binary.subarray(0, firstChunkBytes));
+        res.write(injectedErrorChunk);
+        setTimeout(() => {
+          res.socket?.destroy();
+        }, 120);
+        return;
+      }
+
+      const chunk = binary.subarray(start);
+      if (start > 0) {
+        res.statusCode = 206;
+        res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+      } else {
+        res.statusCode = 200;
+      }
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      res.end(chunk);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/resume-rewind`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "resume-rewind.mkv",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "resume-rewind", links: ["https://dummy/resume-rewind"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(directCalls).toBeGreaterThanOrEqual(2);
+      expect(starts[0]).toBe(0);
+      expect(starts[1]).toBeGreaterThan(0);
+      expect(starts[1]).toBeLessThan(corruptedResumeStart);
+      expect(fs.readFileSync(item.targetPath).equals(binary)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("requests a fresh direct link after repeated same-link download failures", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -1846,7 +1954,7 @@ describe("download manager", () => {
     await manager.stop();
   });
 
-  it("restarts from zero after repeated resume underflow on fresh direct links", async () => {
+  it("recovers from repeated resume underflow by restarting from zero", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(256 * 1024, 23);
@@ -1981,7 +2089,7 @@ describe("download manager", () => {
       }
       expect(item?.status).toBe("completed");
       expect(item?.downloadedBytes).toBe(binary.length);
-      expect(unrestrictCalls).toBeGreaterThanOrEqual(2);
+      expect(unrestrictCalls).toBeGreaterThanOrEqual(1);
       expect(starts).toContain(partialSize);
       expect(starts).toContain(0);
       expect(fs.readFileSync(existingTargetPath).equals(binary)).toBe(true);
