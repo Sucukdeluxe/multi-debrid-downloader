@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
 const PACKAGE_LOG_FLUSH_INTERVAL_MS = 200;
 const PACKAGE_LOG_RETENTION_DAYS = 30;
@@ -20,7 +21,17 @@ const initializedThisProcess = new Set<string>();
 let flushTimer: NodeJS.Timeout | null = null;
 
 function normalizePackageId(packageId: string): string {
-  return String(packageId || "").trim();
+  const trimmed = String(packageId || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  const safePrefix = trimmed
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 64)
+    .replace(/^_+|_+$/g, "");
+  const hash = crypto.createHash("sha1").update(trimmed).digest("hex").slice(0, 12);
+  return `${safePrefix || "pkg"}_${hash}`;
 }
 
 function sanitizeFieldValue(value: unknown): string {
@@ -50,8 +61,7 @@ function formatFields(fields?: Record<string, unknown>): string {
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
 }
 
-function getPackageLogFilePath(packageId: string): string | null {
-  const normalized = normalizePackageId(packageId);
+function getPackageLogFilePathFromNormalized(normalized: string): string | null {
   if (!normalized || !packageLogsDir) {
     return null;
   }
@@ -64,12 +74,16 @@ function getPackageLogFilePath(packageId: string): string | null {
   return logPath;
 }
 
+function getPackageLogFilePath(packageId: string): string | null {
+  return getPackageLogFilePathFromNormalized(normalizePackageId(packageId));
+}
+
 function flushPending(): void {
   for (const [packageId, lines] of pendingLinesByPackage.entries()) {
     if (lines.length === 0) {
       continue;
     }
-    const logPath = getPackageLogFilePath(packageId);
+    const logPath = getPackageLogFilePathFromNormalized(packageId);
     if (!logPath) {
       continue;
     }
@@ -139,8 +153,8 @@ export function initPackageLogs(baseDir: string): void {
 }
 
 export function ensurePackageLog(meta: PackageLogMeta): string | null {
-  const packageId = normalizePackageId(meta.packageId);
-  const logPath = getPackageLogFilePath(packageId);
+  const normalizedPackageId = normalizePackageId(meta.packageId);
+  const logPath = getPackageLogFilePath(meta.packageId);
   if (!logPath) {
     return null;
   }
@@ -149,12 +163,12 @@ export function ensurePackageLog(meta: PackageLogMeta): string | null {
     if (!fs.existsSync(logPath)) {
       fs.writeFileSync(logPath, "", "utf8");
     }
-    if (!initializedThisProcess.has(packageId)) {
-      initializedThisProcess.add(packageId);
+    if (!initializedThisProcess.has(normalizedPackageId)) {
+      initializedThisProcess.add(normalizedPackageId);
       const startedAt = new Date().toISOString();
       fs.appendFileSync(
         logPath,
-        `=== Paket-Log Start: ${startedAt} | packageId=${packageId} | name=${sanitizeFieldValue(meta.name)} ===\n`,
+        `=== Paket-Log Start: ${startedAt} | packageId=${sanitizeFieldValue(String(meta.packageId || ""))} | logKey=${normalizedPackageId} | name=${sanitizeFieldValue(meta.name)} ===\n`,
         "utf8"
       );
       fs.appendFileSync(
@@ -202,7 +216,7 @@ export function shutdownPackageLogs(): void {
   }
   flushPending();
   for (const packageId of knownLogPaths.keys()) {
-    const logPath = getPackageLogFilePath(packageId);
+    const logPath = getPackageLogFilePathFromNormalized(packageId);
     if (!logPath) {
       continue;
     }

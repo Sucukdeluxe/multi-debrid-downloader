@@ -75,6 +75,7 @@ export function planDownloadCompletion(args: {
 export function validateDownloadedFileCompletion(args: {
   actualBytes: number;
   plan: DownloadCompletionPlan;
+  toleranceBytes?: number;
 }): {
   ok: boolean;
   totalBytes: number;
@@ -85,11 +86,12 @@ export function validateDownloadedFileCompletion(args: {
   const expectedTotal = Number.isFinite(args.plan.expectedTotal || NaN)
     ? Math.max(0, Math.floor(args.plan.expectedTotal || 0))
     : 0;
+  const toleranceBytes = Math.max(0, Math.floor(Number(args.toleranceBytes ?? ALLOCATION_UNIT_SIZE) || 0));
 
   if (
     expectedTotal > 0 &&
     (args.plan.source === "content-range" || args.plan.source === "content-length") &&
-    actualBytes + ALLOCATION_UNIT_SIZE < expectedTotal
+    actualBytes + toleranceBytes < expectedTotal
   ) {
     return {
       ok: false,
@@ -109,10 +111,18 @@ export function validateDownloadedFileCompletion(args: {
   }
 
   if (args.plan.source === "provider-metadata") {
+    if (expectedTotal > 0 && actualBytes + toleranceBytes < expectedTotal) {
+      return {
+        ok: false,
+        totalBytes: expectedTotal,
+        acceptedMetadataMismatch: false,
+        error: `download_underflow:${actualBytes}/${expectedTotal}`
+      };
+    }
     return {
       ok: true,
       totalBytes: actualBytes,
-      acceptedMetadataMismatch: expectedTotal > 0 && Math.abs(actualBytes - expectedTotal) > ALLOCATION_UNIT_SIZE
+      acceptedMetadataMismatch: expectedTotal > 0 && Math.abs(actualBytes - expectedTotal) > toleranceBytes
     };
   }
 

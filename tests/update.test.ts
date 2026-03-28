@@ -319,6 +319,35 @@ describe("update", () => {
     expect(result.message).toMatch(/integrit|sha256|mismatch/i);
   });
 
+  it("blocks installer start when no digest can be resolved", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("unsigned-setup.exe")) {
+        return new Response(executablePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" }
+        });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    const prechecked: UpdateCheckResult = {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "",
+      releaseUrl: "https://codeberg.org/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "https://example.invalid/unsigned-setup.exe",
+      setupAssetName: "setup.exe",
+      setupAssetDigest: ""
+    };
+
+    const result = await installLatestUpdate("owner/repo", prechecked);
+    expect(result.started).toBe(false);
+    expect(result.message).toMatch(/digest|integrit|sha/i);
+  });
+
   it("uses latest.yml SHA512 digest when API asset digest is missing", async () => {
     const executablePayload = fs.readFileSync(process.execPath);
     const digestSha512Hex = sha512Hex(executablePayload);

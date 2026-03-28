@@ -63,4 +63,23 @@ describe("item-log", () => {
     expect(content).toContain("archive=episode.part2.rar");
     expect(content).toContain("code=missing_parts");
   });
+
+  it("keeps traversal-like item ids inside the item log directory", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-ilog-"));
+    tempDirs.push(baseDir);
+
+    initItemLogs(baseDir);
+    const logPath = ensureItemLog({
+      itemId: "..\\..\\outside",
+      packageId: "pkg-traversal",
+      packageName: "Traversal Paket",
+      fileName: "episode.part2.rar",
+      targetPath: "C:\\downloads\\Traversal Paket\\episode.part2.rar"
+    });
+
+    expect(logPath).not.toBeNull();
+    const logsDir = path.resolve(path.join(baseDir, "item-logs"));
+    const resolvedLogPath = path.resolve(logPath!);
+    expect(resolvedLogPath === logsDir || resolvedLogPath.startsWith(`${logsDir}${path.sep}`)).toBe(true);
+  });
 });

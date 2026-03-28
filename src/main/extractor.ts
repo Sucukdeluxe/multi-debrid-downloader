@@ -2154,9 +2154,9 @@ async function runExternalExtractInner(
   let lastError = "";
   const extractorName = path.basename(command).replace(/\.exe$/i, "") || command;
 
-  const quotedPasswords = passwords.map((p) => p === "" ? '""' : `"${p}"`);
+  const emptyPasswordCount = passwords.filter((candidate) => candidate === "").length;
   onLog?.("INFO", `Legacy-Extractor Start: archive=${path.basename(archivePath)}, extractor=${extractorName}, passwordCount=${passwords.length}, forceFlatMode=${forceFlatMode}, targetDir=${targetDir}`);
-  logger.info(`Legacy-Extractor (${extractorName}): ${path.basename(archivePath)}, ${passwords.length} Passwörter: [${quotedPasswords.join(", ")}]${forceFlatMode ? " (flat-mode cached)" : ""}`);
+  logger.info(`Legacy-Extractor (${extractorName}): ${path.basename(archivePath)}, passwordCount=${passwords.length}, redacted=true, emptyCandidates=${emptyPasswordCount}${forceFlatMode ? " (flat-mode cached)" : ""}`);
 
   let announcedStart = false;
   let bestPercent = 0;
@@ -2173,9 +2173,8 @@ async function runExternalExtractInner(
     for (const password of passwords) {
       if (signal?.aborted) throw new Error("aborted:extract");
       passwordAttempt += 1;
-      const quotedPw = password === "" ? '""' : `"${password}"`;
-      onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=${quotedPw}`);
-      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
+      onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
+      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
       const result = await runExtractCommand(command, args, (chunk) => {
         const parsed = parseProgressPercent(chunk);
@@ -2203,9 +2202,8 @@ async function runExternalExtractInner(
     }
     passwordAttempt += 1;
     const attemptStartedAt = Date.now();
-    const quotedPw = password === "" ? '""' : `"${password}"`;
-    onLog?.("INFO", `Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=${quotedPw}`);
-    logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
+    onLog?.("INFO", `Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
+    logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
     if (passwords.length > 1) {
       onPasswordAttempt?.(passwordAttempt, passwords.length);
     }
@@ -2262,8 +2260,8 @@ async function runExternalExtractInner(
     if (!createErrorText && result.errorText.includes("Cannot create")) {
       createErrorText = result.errorText;
       createErrorPassword = password;
-      logger.warn(`Entpack-Pfadfehler gemerkt: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, password=${quotedPw}`);
-      onLog?.("WARN", `Entpack-Pfadfehler gemerkt: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, password=${quotedPw}`);
+      logger.warn(`Entpack-Pfadfehler gemerkt: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, password=<redacted>`);
+      onLog?.("WARN", `Entpack-Pfadfehler gemerkt: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, password=<redacted>`);
     }
 
     if (result.aborted) {
@@ -2300,9 +2298,8 @@ async function runExternalExtractInner(
     for (const password of flatPasswords) {
       if (signal?.aborted) throw new Error("aborted:extract");
       passwordAttempt += 1;
-      const quotedPw = password === "" ? '""' : `"${password}"`;
-      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)}: ${quotedPw}`);
-      onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, password=${quotedPw}`);
+      logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
+      onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
       const result = await runExtractCommand(command, args, (chunk) => {
         const parsed = parseProgressPercent(chunk);
@@ -2360,8 +2357,8 @@ async function runExternalExtract(
         }
         logger.warn(`JVM-Extractor nicht verfügbar, nutze Legacy-Extractor: ${path.basename(archivePath)}`);
       } else {
-        const quotedPasswords = passwordCandidates.map((p) => p === "" ? '""' : `"${p}"`);
-        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${archiveName}, ${passwordCandidates.length} Passwörter: [${quotedPasswords.join(", ")}]`);
+        const emptyCount = passwordCandidates.filter((candidate) => candidate === "").length;
+        logger.info(`JVM-Extractor aktiv (${layout.rootDir}): ${archiveName}, passwordCount=${passwordCandidates.length}, redacted=true, emptyCandidates=${emptyCount}`);
         const jvmStartedAt = Date.now();
         onLog?.("INFO", `JVM-Extractor vorbereitet: archive=${archiveName}, passwordCandidates=${passwordCandidates.length}, layout=${layout.rootDir}`);
         const jvmResult = await runJvmExtractCommand(
@@ -3128,7 +3125,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
     logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
     options.onLog?.("INFO", `Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
-    options.onLog?.("INFO", `Archiv-Passwortliste: archive=${archiveName}, candidates=[${archivePasswordCandidates.map((p) => p === "" ? '""' : `"${p}"`).join(", ")}]`);
+    const emptyArchivePasswordCount = archivePasswordCandidates.filter((candidate) => candidate === "").length;
+    options.onLog?.("INFO", `Archiv-Passwortliste: archive=${archiveName}, passwordCount=${archivePasswordCandidates.length}, redacted=true, emptyCandidates=${emptyArchivePasswordCount}`);
     const hasManyPasswords = archivePasswordCandidates.length > 1;
     if (hasManyPasswords) {
       emitProgress(extracted + failed, archiveName, "extracting", 0, 0, { passwordAttempt: 0, passwordTotal: archivePasswordCandidates.length });
@@ -3136,8 +3134,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     const onPwAttempt = hasManyPasswords
       ? (attempt: number, total: number) => {
         emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, { passwordAttempt: attempt, passwordTotal: total });
-        const attemptedPassword = archivePasswordCandidates[Math.max(0, attempt - 1)] ?? "";
-        options.onLog?.("INFO", `Passwort-Versuch ${attempt}/${total}: archive=${archiveName}, password=${attemptedPassword === "" ? '""' : `"${attemptedPassword}"`}`);
+        options.onLog?.("INFO", `Passwort-Versuch ${attempt}/${total}: archive=${archiveName}, password=<redacted>`);
       }
       : undefined;
     try {

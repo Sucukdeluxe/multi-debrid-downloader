@@ -113,9 +113,6 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
   addFileIfExists(zip, path.join(baseDir, AI_MANIFEST_FILE), `runtime/${AI_MANIFEST_FILE}`);
   addFileIfExists(zip, path.join(baseDir, "debug_host.txt"), "runtime/debug_host.txt");
   addFileIfExists(zip, path.join(baseDir, "debug_port.txt"), "runtime/debug_port.txt");
-  addFileIfExists(zip, storagePaths.configFile, "runtime/rd_downloader_config.json");
-  addFileIfExists(zip, storagePaths.sessionFile, "runtime/rd_session_state.json");
-  addFileIfExists(zip, storagePaths.historyFile, "runtime/rd_history.json");
   addFileIfExists(zip, getTraceConfigPath(), "runtime/trace_config.json");
 
   addFileIfExists(zip, getLogFilePath(), "logs/rd_downloader.log");

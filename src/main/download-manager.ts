@@ -129,10 +129,16 @@ const REALDEBRID_TOTAL_MISMATCH_TOLERANCE_BYTES = 64 * 1024;
 
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
+function expectedMinBytes(totalBytes: number | null | undefined, strict: boolean): number {
+  if (!totalBytes || totalBytes <= 0) {
+    return 10240;
+  }
+  return strict ? totalBytes : Math.max(10240, totalBytes - ALLOCATION_UNIT_SIZE);
+}
+
 function itemExpectedMinBytes(item: DownloadItem): number {
-  return item.totalBytes && item.totalBytes > 0
-    ? Math.max(10240, item.totalBytes - ALLOCATION_UNIT_SIZE)
-    : 10240;
+  const strict = isLargeBinaryLikePath(item.targetPath || item.fileName || "");
+  return expectedMinBytes(item.totalBytes, strict);
 }
 
 function resolvePackageItemDiskPath(pkg: PackageEntry, item: DownloadItem): string | null {
@@ -335,16 +341,34 @@ function cloneSettings(settings: AppSettings): AppSettings {
   };
 }
 
-function parseContentRangeTotal(contentRange: string | null): number | null {
+type ParsedContentRange = {
+  start: number;
+  end: number;
+  total: number | null;
+};
+
+function parseContentRange(contentRange: string | null): ParsedContentRange | null {
   if (!contentRange) {
     return null;
   }
-  const match = contentRange.match(/\/(\d+)$/);
+  const match = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
   if (!match) {
     return null;
   }
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const total = match[3] === "*" ? null : Number(match[3]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
+    return null;
+  }
+  if (total !== null && (!Number.isFinite(total) || total <= 0 || end >= total)) {
+    return null;
+  }
+  return { start, end, total };
+}
+
+function parseContentRangeTotal(contentRange: string | null): number | null {
+  return parseContentRange(contentRange)?.total ?? null;
 }
 
 function parseContentDispositionFilename(contentDisposition: string | null): string {
@@ -5228,9 +5252,19 @@ export class DownloadManager extends EventEmitter {
    *  instead of reusing its own partial file — or worse, overwrite another item's file. */
   private restoreTargetPathReservations(): void {
     let restored = 0;
+    let droppedUnsafe = 0;
     for (const item of Object.values(this.session.items)) {
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg) {
+        continue;
+      }
       const tp = String(item.targetPath || "").trim();
       if (!tp) continue;
+      if (!isPathInsideDir(tp, pkg.outputDir)) {
+        droppedUnsafe += 1;
+        item.targetPath = "";
+        continue;
+      }
       const key = pathKey(tp);
       if (!this.reservedTargetPaths.has(key)) {
         this.reservedTargetPaths.set(key, item.id);
@@ -5240,6 +5274,9 @@ export class DownloadManager extends EventEmitter {
     }
     if (restored > 0) {
       logger.info(`restoreTargetPathReservations: ${restored} Pfade aus Session wiederhergestellt`);
+    }
+    if (droppedUnsafe > 0) {
+      logger.warn(`restoreTargetPathReservations: ${droppedUnsafe} unsichere targetPath-Eintraege verworfen`);
     }
     this.reconcileDuplicateSuffixSessionItems();
     // Fix legacy (N) suffix files: rename back to original if original path is free
@@ -5409,7 +5446,7 @@ export class DownloadManager extends EventEmitter {
       if (!targetPath || !item.totalBytes || item.totalBytes <= 0) continue;
       try {
         const stat = fs.statSync(targetPath);
-        const expectedMinSize = item.totalBytes - ALLOCATION_UNIT_SIZE;
+        const expectedMinSize = expectedMinBytes(item.totalBytes, isLargeBinaryLikePath(item.fileName || targetPath));
         const persistedShortfall = item.downloadedBytes < expectedMinSize && stat.size >= expectedMinSize;
         if (stat.size < expectedMinSize) {
           logger.warn(`revalidateCompleted: ${item.fileName} ist nur ${humanSize(stat.size)} statt ${humanSize(item.totalBytes)}, setze auf queued`);
@@ -5489,13 +5526,14 @@ export class DownloadManager extends EventEmitter {
       || normalizedError.includes("resume_download_underflow");
     const archiveLikeTarget = String(item.fileName || diskState.diskPath || "").toLowerCase();
     const archiveLike = /(?:\.part\d+\.rar|\.rar|\.r\d{2,3}|\.zip(?:\.\d+)?|\.7z(?:\.\d+)?|\.(?:tar(?:\.(?:gz|bz2|xz))?|tgz|tbz2|txz)|\.\d{3})$/i.test(archiveLikeTarget);
+    const expectedMinSize = expectedMinBytes(item.totalBytes, isLargeBinaryLikePath(item.fileName || diskState.diskPath || ""));
     const looksComplete = diskState.exists
       && diskState.fullOnDisk
       && (
         diskState.reason === "ok"
         || item.progressPercent >= 100
         || item.downloadedBytes >= diskState.minBytes
-        || (item.totalBytes != null && item.totalBytes > 0 && diskState.size >= item.totalBytes - ALLOCATION_UNIT_SIZE)
+        || (item.totalBytes != null && item.totalBytes > 0 && diskState.size >= expectedMinSize)
       );
     if (!looksComplete || (knownShortfall > 0 && (underflowIndicated || archiveLike))) {
       return false;
@@ -8524,8 +8562,9 @@ export class DownloadManager extends EventEmitter {
           const expectedTotal = rangeTotal && rangeTotal > 0
             ? rangeTotal
             : (knownTotal && knownTotal > 0 ? knownTotal : null);
+          const sizeToleranceBytes = isLargeBinaryLikePath(item.fileName || effectiveTargetPath) ? 0 : ALLOCATION_UNIT_SIZE;
           const closeEnoughToExpected = expectedTotal != null
-            && Math.abs(existingBytes - expectedTotal) <= ALLOCATION_UNIT_SIZE;
+            && Math.abs(existingBytes - expectedTotal) <= sizeToleranceBytes;
           if (expectedTotal != null && closeEnoughToExpected) {
             const finalizedTotal = Math.max(existingBytes, expectedTotal);
             item.totalBytes = finalizedTotal;
@@ -8536,20 +8575,6 @@ export class DownloadManager extends EventEmitter {
             logAttemptEvent("INFO", "HTTP 416 als vollständig behandelt", {
               existingBytes,
               expectedTotal: finalizedTotal
-            });
-            return { resumable: true };
-          }
-          // No total available but we have substantial data - assume file is complete
-          // This prevents deleting multi-GB files when the server sends 416 without Content-Range
-          if (!expectedTotal && existingBytes > 1048576) {
-            logger.warn(`HTTP 416 ohne Größeninfo, ${humanSize(existingBytes)} vorhanden – als vollständig behandelt: ${item.fileName}`);
-            item.totalBytes = existingBytes;
-            item.downloadedBytes = existingBytes;
-            item.progressPercent = 100;
-            item.speedBps = 0;
-            item.updatedAt = nowMs();
-            logAttemptEvent("WARN", "HTTP 416 ohne Größeninfo als vollständig behandelt", {
-              existingBytes
             });
             return { resumable: true };
           }
@@ -8635,7 +8660,8 @@ export class DownloadManager extends EventEmitter {
 
         const rawContentLength = Number(response.headers.get("content-length") || 0);
         const contentLength = Number.isFinite(rawContentLength) && rawContentLength > 0 ? rawContentLength : 0;
-        const totalFromRange = parseContentRangeTotal(response.headers.get("content-range"));
+        const parsedContentRange = parseContentRange(response.headers.get("content-range"));
+        const totalFromRange = parsedContentRange?.total ?? null;
         const serverIgnoredRange = existingBytes > 0 && response.status === 200;
         const allowFreshOverwriteAfterResumeReset = serverIgnoredRange
           && active.resumeHardResetUsed
@@ -8665,6 +8691,56 @@ export class DownloadManager extends EventEmitter {
             contentLength,
             directUrl
           });
+        }
+        if (existingBytes > 0 && response.status === 206) {
+          if (!parsedContentRange) {
+            logAttemptEvent("WARN", "Resume-Range-Header ungueltig oder fehlt", {
+              attempt,
+              existingBytes,
+              contentRange: response.headers.get("content-range") || ""
+            });
+            try {
+              await response.body?.cancel();
+            } catch {
+              // ignore
+            }
+            throw new Error(`range_mismatch_on_resume:${existingBytes}/invalid`);
+          }
+          if (parsedContentRange.start !== existingBytes) {
+            const sizeToleranceBytes = isLargeBinaryLikePath(item.fileName || effectiveTargetPath) ? 0 : ALLOCATION_UNIT_SIZE;
+            const canTreatAsAlreadyComplete = contentLength === 0
+              && parsedContentRange.start === 0
+              && parsedContentRange.total != null
+              && Math.abs(existingBytes - parsedContentRange.total) <= sizeToleranceBytes;
+            if (canTreatAsAlreadyComplete) {
+              item.totalBytes = parsedContentRange.total;
+              item.downloadedBytes = existingBytes;
+              item.progressPercent = 100;
+              item.speedBps = 0;
+              item.updatedAt = nowMs();
+              logAttemptEvent("WARN", "Resume-Range-Start abweichend, Datei aber bereits vollstaendig", {
+                attempt,
+                existingBytes,
+                totalFromRange: parsedContentRange.total,
+                contentLength
+              });
+              return { resumable: true };
+            }
+            logAttemptEvent("WARN", "Resume-Range-Start stimmt nicht mit lokaler Dateigroesse ueberein", {
+              attempt,
+              expectedStart: existingBytes,
+              actualStart: parsedContentRange.start,
+              actualEnd: parsedContentRange.end,
+              totalFromRange,
+              directUrl
+            });
+            try {
+              await response.body?.cancel();
+            } catch {
+              // ignore
+            }
+            throw new Error(`range_mismatch_on_resume:${existingBytes}/${parsedContentRange.start}`);
+          }
         }
 
         const correctedRealDebridTotal = getAuthoritativeRealDebridTotal(
@@ -9257,7 +9333,8 @@ export class DownloadManager extends EventEmitter {
 
         const completionValidation = validateDownloadedFileCompletion({
           actualBytes: written,
-          plan: completionPlan
+          plan: completionPlan,
+          toleranceBytes: isLargeBinaryLikePath(item.fileName || effectiveTargetPath) ? 0 : ALLOCATION_UNIT_SIZE
         });
         if (!completionValidation.ok) {
           const shortfall = Math.max(0, completionValidation.totalBytes - written);
@@ -9330,7 +9407,10 @@ export class DownloadManager extends EventEmitter {
           error: lastError,
           targetPath: effectiveTargetPath
         });
-        if (normalizedLastError.startsWith("range_ignored_on_resume:")) {
+        if (
+          normalizedLastError.startsWith("range_ignored_on_resume:")
+          || normalizedLastError.startsWith("range_mismatch_on_resume:")
+        ) {
           throw new Error(`direct_link_retry_exhausted:${normalizedLastError}`);
         }
         if (attempt < maxAttempts && written > existingBytes && shouldRewindResumeTail(normalizedLastError)) {
@@ -9826,10 +9906,7 @@ export class DownloadManager extends EventEmitter {
           const stat = await fs.promises.stat(part);
           // Find the item that owns this file to get its expected totalBytes
           const ownerItem = this.findItemByDiskPath(pkg, part);
-          const ownerTotalBytes = ownerItem?.totalBytes ?? 0;
-          const minBytes = ownerTotalBytes > 0
-            ? ownerTotalBytes - ALLOCATION_UNIT_SIZE
-            : 10240;
+          const minBytes = expectedMinBytes(ownerItem?.totalBytes ?? 0, isLargeBinaryLikePath(part));
           if (stat.size < minBytes) {
             allMissingFullOnDisk = false;
             break;
@@ -10366,14 +10443,26 @@ export class DownloadManager extends EventEmitter {
       if (!item.targetPath) {
         continue;
       }
+      if (!isPathInsideDir(item.targetPath, pkg.outputDir)) {
+        logger.warn(`Item-Recovery: Unsicherer targetPath verworfen (${item.fileName} -> ${item.targetPath})`);
+        this.releaseTargetPath(item.id);
+        this.dropItemContribution(item.id);
+        item.targetPath = "";
+        item.status = "queued";
+        item.attempts = 0;
+        item.downloadedBytes = 0;
+        item.progressPercent = 0;
+        item.speedBps = 0;
+        item.fullStatus = "Wartet (ungueltiger Zielpfad)";
+        item.updatedAt = nowMs();
+        continue;
+      }
       try {
         const stat = await fs.promises.stat(item.targetPath);
         // Require file to be essentially complete — within one allocation unit of the
         // expected size.  The old 50% threshold incorrectly recovered partial downloads
         // (e.g. 627 MB of 1001 MB) and triggered hybrid extraction on incomplete archives.
-        const minSize = item.totalBytes && item.totalBytes > 0
-          ? Math.max(10240, item.totalBytes - ALLOCATION_UNIT_SIZE)
-          : 10240;
+        const minSize = expectedMinBytes(item.totalBytes, isLargeBinaryLikePath(item.fileName || item.targetPath));
         if (stat.size >= minSize) {
           // Re-check: another task may have started this item during the await
           const latestItem = this.session.items[item.id];
@@ -10384,7 +10473,7 @@ export class DownloadManager extends EventEmitter {
           // Guard against pre-allocated sparse files from a hard crash: file has
           // the full expected size but downloadedBytes is significantly behind.
           if (item.downloadedBytes > 0 && item.totalBytes && item.totalBytes > 0
-            && stat.size >= item.totalBytes - ALLOCATION_UNIT_SIZE
+            && stat.size >= minSize
             && item.downloadedBytes < item.totalBytes * 0.95) {
             logger.warn(`Item-Recovery: ${item.fileName} uebersprungen – vermutlich pre-alloc (stat=${humanSize(stat.size)}, bytes=${humanSize(item.downloadedBytes)}, total=${humanSize(item.totalBytes)})`);
             continue;

@@ -61,4 +61,22 @@ describe("package-log", () => {
     expect(content).toContain("archive=episode.part1.rar");
     expect(content).toContain("password=\"secret\"");
   });
+
+  it("keeps traversal-like package ids inside the package log directory", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-plog-"));
+    tempDirs.push(baseDir);
+
+    initPackageLogs(baseDir);
+    const logPath = ensurePackageLog({
+      packageId: "..\\..\\outside",
+      name: "Traversal Paket",
+      outputDir: "C:\\downloads\\Traversal Paket",
+      extractDir: "C:\\extract\\Traversal Paket"
+    });
+
+    expect(logPath).not.toBeNull();
+    const logsDir = path.resolve(path.join(baseDir, "package-logs"));
+    const resolvedLogPath = path.resolve(logPath!);
+    expect(resolvedLogPath === logsDir || resolvedLogPath.startsWith(`${logsDir}${path.sep}`)).toBe(true);
+  });
 });

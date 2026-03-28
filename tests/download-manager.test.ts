@@ -4235,7 +4235,8 @@ describe("download manager", () => {
 
     for (const [index, archiveName] of archiveNames.entries()) {
       const targetPath = path.join(outputDir, archiveName);
-      fs.writeFileSync(targetPath, Buffer.from(`part-${index}`));
+      const partBytes = Buffer.alloc(4096, 0x41 + index);
+      fs.writeFileSync(targetPath, partBytes);
       session.items[itemIds[index]!] = {
         id: itemIds[index]!,
         packageId,
@@ -4244,8 +4245,8 @@ describe("download manager", () => {
         status: "completed",
         retries: 0,
         speedBps: 0,
-        downloadedBytes: 4096,
-        totalBytes: 4096,
+        downloadedBytes: partBytes.length,
+        totalBytes: partBytes.length,
         progressPercent: 100,
         fileName: archiveName,
         targetPath,
@@ -5315,9 +5316,9 @@ describe("download manager", () => {
     const part2 = path.join(packageDir, "legacy.old.part02.rar");
     const part3 = path.join(packageDir, "legacy.old.part03.rar");
     const keep = path.join(packageDir, "keep.nfo");
-    fs.writeFileSync(part1, "part1", "utf8");
-    fs.writeFileSync(part2, "part2", "utf8");
-    fs.writeFileSync(part3, "part3", "utf8");
+    fs.writeFileSync(part1, Buffer.alloc(123, 0x61));
+    fs.writeFileSync(part2, Buffer.alloc(123, 0x62));
+    fs.writeFileSync(part3, Buffer.alloc(123, 0x63));
     fs.writeFileSync(keep, "keep", "utf8");
     fs.writeFileSync(path.join(extractDir, "episode.mkv"), "video", "utf8");
 
@@ -7846,7 +7847,12 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    await waitFor(() => fs.existsSync(path.join(extractDir, "episode.txt")), 25000);
+    await waitFor(
+      () =>
+        fs.existsSync(path.join(extractDir, "episode.txt")) &&
+        manager.getSnapshot().session.packages[packageId]?.status === "completed",
+      25000
+    );
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
     expect(snapshot.session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);

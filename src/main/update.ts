@@ -380,8 +380,11 @@ async function verifyDownloadedInstaller(filePath: string, digestRaw: string): P
 
   const expected = parseExpectedDigest(digestRaw);
   if (!expected) {
-    logger.warn("Update-Asset ohne gültigen SHA-Digest; nur EXE-Basisprüfung durchgeführt");
-    return;
+    if (String(process.env.RD_ALLOW_UNSIGNED_UPDATE || "").trim() === "1") {
+      logger.warn("Update-Asset ohne gültigen SHA-Digest (RD_ALLOW_UNSIGNED_UPDATE=1) - nur EXE-Basisprüfung durchgeführt");
+      return;
+    }
+    throw new Error("Update-Asset ohne gültigen SHA-Digest");
   }
 
   const actualRaw = await hashFile(filePath, expected.algorithm, expected.encoding);
