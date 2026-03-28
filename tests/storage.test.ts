@@ -612,6 +612,75 @@ describe("settings storage", () => {
     expect(loaded.packageOrder).toEqual(["pkg-valid"]);
   });
 
+  it("drops unsafe session ids and target paths outside the package output directory", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const outputDir = path.join(dir, "downloads", "safe");
+    const safeTargetPath = path.join(outputDir, "safe.bin");
+    const outsideTargetPath = path.join(dir, "outside.bin");
+
+    fs.writeFileSync(paths.sessionFile, JSON.stringify({
+      version: 2,
+      packageOrder: ["pkg-safe", "../pkg-evil"],
+      packages: {
+        "pkg-safe": {
+          id: "pkg-safe",
+          name: "Safe Package",
+          outputDir,
+          extractDir: path.join(dir, "extract", "safe"),
+          status: "queued",
+          itemIds: ["item-safe", "item-outside", "../item-evil"],
+          cancelled: false,
+          enabled: true
+        },
+        "../pkg-evil": {
+          id: "../pkg-evil",
+          name: "Unsafe Package",
+          outputDir,
+          extractDir: path.join(dir, "extract", "unsafe"),
+          status: "queued",
+          itemIds: ["item-evil"],
+          cancelled: false,
+          enabled: true
+        }
+      },
+      items: {
+        "item-safe": {
+          id: "item-safe",
+          packageId: "pkg-safe",
+          url: "https://example.com/safe",
+          status: "queued",
+          fileName: "safe.bin",
+          targetPath: safeTargetPath
+        },
+        "item-outside": {
+          id: "item-outside",
+          packageId: "pkg-safe",
+          url: "https://example.com/outside",
+          status: "queued",
+          fileName: "outside.bin",
+          targetPath: outsideTargetPath
+        },
+        "../item-evil": {
+          id: "../item-evil",
+          packageId: "pkg-safe",
+          url: "https://example.com/evil",
+          status: "queued",
+          fileName: "evil.bin",
+          targetPath: safeTargetPath
+        }
+      }
+    }), "utf8");
+
+    const loaded = loadSession(paths);
+    expect(Object.keys(loaded.packages)).toEqual(["pkg-safe"]);
+    expect(Object.keys(loaded.items).sort()).toEqual(["item-outside", "item-safe"]);
+    expect(loaded.packageOrder).toEqual(["pkg-safe"]);
+    expect(path.resolve(loaded.items["item-safe"]?.targetPath || "")).toBe(path.resolve(safeTargetPath));
+    expect(loaded.items["item-outside"]?.targetPath).toBe("");
+  });
+
   it("captures async session save payload before later mutations", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

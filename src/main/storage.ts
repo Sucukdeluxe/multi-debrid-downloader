@@ -23,9 +23,41 @@ const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
 ]);
 const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
 const VALID_ONLINE_STATUSES = new Set(["online", "offline", "checking"]);
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
 function asText(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function normalizeSessionId(value: unknown): string {
+  const text = asText(value);
+  if (!text || !SAFE_SESSION_ID_RE.test(text)) {
+    return "";
+  }
+  return text;
+}
+
+function isPathInsideDir(filePath: string, dirPath: string): boolean {
+  try {
+    const resolvedFile = path.resolve(filePath);
+    const resolvedDir = path.resolve(dirPath);
+    const normalizedFile = process.platform === "win32" ? resolvedFile.toLowerCase() : resolvedFile;
+    const normalizedDir = process.platform === "win32" ? resolvedDir.toLowerCase() : resolvedDir;
+    return normalizedFile === normalizedDir || normalizedFile.startsWith(`${normalizedDir}${path.sep}`);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSessionTargetPath(value: unknown, packageOutputDir: string): string {
+  const targetPath = asText(value);
+  if (!targetPath || !packageOutputDir || !path.isAbsolute(targetPath)) {
+    return "";
+  }
+  if (!isPathInsideDir(targetPath, packageOutputDir)) {
+    return "";
+  }
+  return path.resolve(targetPath);
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -544,8 +576,8 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     if (!item) {
       continue;
     }
-    const id = asText(item.id) || entryId;
-    const packageId = asText(item.packageId);
+    const id = normalizeSessionId(item.id) || normalizeSessionId(entryId);
+    const packageId = normalizeSessionId(item.packageId);
     const url = asText(item.url);
     if (!id || !packageId || !url) {
       continue;
@@ -590,7 +622,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     if (!pkg) {
       continue;
     }
-    const id = asText(pkg.id) || entryId;
+    const id = normalizeSessionId(pkg.id) || normalizeSessionId(entryId);
     if (!id) {
       continue;
     }
@@ -604,7 +636,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       extractDir: asText(pkg.extractDir),
       status,
       itemIds: rawItemIds
-        .map((value) => asText(value))
+        .map((value) => normalizeSessionId(value))
         .filter((value) => value.length > 0),
       cancelled: Boolean(pkg.cancelled),
       enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
@@ -627,6 +659,22 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     logger.warn(`normalizeLoadedSession: ${orphanedItemCount} verwaiste Items entfernt (fehlende Pakete)`);
   }
 
+  let droppedUnsafeTargetPathCount = 0;
+  for (const item of Object.values(itemsById)) {
+    const pkg = packagesById[item.packageId];
+    if (!pkg) {
+      continue;
+    }
+    const safeTargetPath = normalizeSessionTargetPath(item.targetPath, pkg.outputDir);
+    if (!safeTargetPath && asText(item.targetPath)) {
+      droppedUnsafeTargetPathCount += 1;
+    }
+    item.targetPath = safeTargetPath;
+  }
+  if (droppedUnsafeTargetPathCount > 0) {
+    logger.warn(`normalizeLoadedSession: ${droppedUnsafeTargetPathCount} unsichere targetPath-Eintraege verworfen`);
+  }
+
   for (const pkg of Object.values(packagesById)) {
     pkg.itemIds = pkg.itemIds.filter((itemId) => {
       const item = itemsById[itemId];
@@ -637,7 +685,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
   const rawOrder = Array.isArray(parsed.packageOrder) ? parsed.packageOrder : [];
   const seenOrder = new Set<string>();
   const packageOrder = rawOrder
-    .map((entry) => asText(entry))
+    .map((entry) => normalizeSessionId(entry))
     .filter((id) => {
       if (!(id in packagesById) || seenOrder.has(id)) {
         return false;

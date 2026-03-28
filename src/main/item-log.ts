@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
 const ITEM_LOG_FLUSH_INTERVAL_MS = 200;
 const ITEM_LOG_RETENTION_DAYS = 30;
@@ -21,7 +22,17 @@ const initializedThisProcess = new Set<string>();
 let flushTimer: NodeJS.Timeout | null = null;
 
 function normalizeItemId(itemId: string): string {
-  return String(itemId || "").trim();
+  const trimmed = String(itemId || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  const safePrefix = trimmed
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 64)
+    .replace(/^_+|_+$/g, "");
+  const hash = crypto.createHash("sha1").update(trimmed).digest("hex").slice(0, 12);
+  return `${safePrefix || "item"}_${hash}`;
 }
 
 function sanitizeFieldValue(value: unknown): string {
@@ -51,8 +62,7 @@ function formatFields(fields?: Record<string, unknown>): string {
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
 }
 
-function getItemLogFilePath(itemId: string): string | null {
-  const normalized = normalizeItemId(itemId);
+function getItemLogFilePathFromNormalized(normalized: string): string | null {
   if (!normalized || !itemLogsDir) {
     return null;
   }
@@ -65,12 +75,16 @@ function getItemLogFilePath(itemId: string): string | null {
   return logPath;
 }
 
+function getItemLogFilePath(itemId: string): string | null {
+  return getItemLogFilePathFromNormalized(normalizeItemId(itemId));
+}
+
 function flushPending(): void {
   for (const [itemId, lines] of pendingLinesByItem.entries()) {
     if (lines.length === 0) {
       continue;
     }
-    const logPath = getItemLogFilePath(itemId);
+    const logPath = getItemLogFilePathFromNormalized(itemId);
     if (!logPath) {
       continue;
     }
@@ -140,8 +154,8 @@ export function initItemLogs(baseDir: string): void {
 }
 
 export function ensureItemLog(meta: ItemLogMeta): string | null {
-  const itemId = normalizeItemId(meta.itemId);
-  const logPath = getItemLogFilePath(itemId);
+  const normalizedItemId = normalizeItemId(meta.itemId);
+  const logPath = getItemLogFilePath(meta.itemId);
   if (!logPath) {
     return null;
   }
@@ -150,12 +164,12 @@ export function ensureItemLog(meta: ItemLogMeta): string | null {
     if (!fs.existsSync(logPath)) {
       fs.writeFileSync(logPath, "", "utf8");
     }
-    if (!initializedThisProcess.has(itemId)) {
-      initializedThisProcess.add(itemId);
+    if (!initializedThisProcess.has(normalizedItemId)) {
+      initializedThisProcess.add(normalizedItemId);
       const startedAt = new Date().toISOString();
       fs.appendFileSync(
         logPath,
-        `=== Item-Log Start: ${startedAt} | itemId=${itemId} | fileName=${sanitizeFieldValue(meta.fileName)} ===\n`,
+        `=== Item-Log Start: ${startedAt} | itemId=${sanitizeFieldValue(String(meta.itemId || ""))} | logKey=${normalizedItemId} | fileName=${sanitizeFieldValue(meta.fileName)} ===\n`,
         "utf8"
       );
       fs.appendFileSync(
@@ -204,7 +218,7 @@ export function shutdownItemLogs(): void {
   }
   flushPending();
   for (const itemId of knownLogPaths.keys()) {
-    const logPath = getItemLogFilePath(itemId);
+    const logPath = getItemLogFilePathFromNormalized(itemId);
     if (!logPath) {
       continue;
     }
