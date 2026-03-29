@@ -11,7 +11,7 @@ import { getSessionLogPath } from "./session-log";
 import { createStoragePaths, loadHistory, loadSettings } from "./storage";
 import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
 import { getTraceConfig, getTraceConfigPath, getTraceLogPath } from "./trace-log";
-import { getWindowsHostDiagnostics } from "./windows-host-diagnostics";
+import { getCachedWindowsHostDiagnostics, getWindowsHostDiagnostics } from "./windows-host-diagnostics";
 import type { DownloadManager } from "./download-manager";
 
 const AI_MANIFEST_FILE = "debug_ai_manifest.json";
@@ -65,8 +65,47 @@ export function getSupportBundleDefaultFileName(): string {
   return `rd-support-bundle-${formatTimestampForFileName(new Date())}.zip`;
 }
 
-export function buildSupportBundle(manager: DownloadManager, baseDir: string): Buffer {
+type HostDiagnosticsMode = "full" | "cached" | "none";
+
+interface BuildSupportBundleOptions {
+  hostDiagnosticsMode?: HostDiagnosticsMode;
+}
+
+function createDeferredHostDiagnostics(reason: string): unknown {
+  return {
+    collectedAt: new Date().toISOString(),
+    supported: process.platform === "win32",
+    platform: process.platform,
+    crashControl: null,
+    recentKernelPower: [],
+    recentWerKernel: [],
+    recentKernelDump: [],
+    recentAppCrashes: [],
+    recentMinidumps: [],
+    assessmentHints: [
+      reason
+    ],
+    errors: []
+  };
+}
+
+function resolveHostDiagnostics(mode: HostDiagnosticsMode): unknown {
+  if (mode === "none") {
+    return createDeferredHostDiagnostics("Host-Diagnose wurde fuer diesen Bundle-Export deaktiviert.");
+  }
+  if (mode === "cached") {
+    const cached = getCachedWindowsHostDiagnostics();
+    if (cached) {
+      return cached;
+    }
+    return createDeferredHostDiagnostics("Host-Diagnose wurde uebersprungen, um den Export nicht zu blockieren. Fuer eine Voll-Diagnose /host/diagnostics nutzen.");
+  }
+  return getWindowsHostDiagnostics();
+}
+
+export function buildSupportBundle(manager: DownloadManager, baseDir: string, options: BuildSupportBundleOptions = {}): Buffer {
   const zip = new AdmZip();
+  const hostDiagnosticsMode = options.hostDiagnosticsMode || "full";
   const storagePaths = createStoragePaths(baseDir);
   const settings = loadSettings(storagePaths);
   const history = loadHistory(storagePaths);
@@ -107,7 +146,7 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string): B
     count: itemIds.length,
     items: itemIds.map((itemId) => snapshot.session.items[itemId]).filter(Boolean)
   });
-  addJson(zip, "overview/host-diagnostics.json", getWindowsHostDiagnostics());
+  addJson(zip, "overview/host-diagnostics.json", resolveHostDiagnostics(hostDiagnosticsMode));
   addJson(zip, "overview/trace-config.json", getTraceConfig());
 
   addFileIfExists(zip, path.join(baseDir, AI_MANIFEST_FILE), `runtime/${AI_MANIFEST_FILE}`);

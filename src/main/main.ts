@@ -525,15 +525,15 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
-    const exported = controller.exportSupportBundle();
     const options = {
-      defaultPath: exported.defaultFileName,
+      defaultPath: controller.getSupportBundleDefaultFileName(),
       filters: [{ name: "Support Bundle", extensions: ["zip"] }]
     };
     const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) {
       return { saved: false };
     }
+    const exported = controller.exportSupportBundle();
     await fs.promises.writeFile(result.filePath, exported.buffer);
     return { saved: true, filePath: result.filePath };
   });

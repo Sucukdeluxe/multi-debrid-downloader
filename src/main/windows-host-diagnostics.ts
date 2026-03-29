@@ -302,6 +302,10 @@ export function getWindowsHostDiagnostics(forceRefresh = false): WindowsHostDiag
   }
 }
 
+export function getCachedWindowsHostDiagnostics(): WindowsHostDiagnostics | null {
+  return cachedValue;
+}
+
 export function resetWindowsHostDiagnosticsCache(): void {
   cachedAt = 0;
   cachedValue = null;
