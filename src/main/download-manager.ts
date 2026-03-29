@@ -127,6 +127,8 @@ const RESUME_REWIND_BYTES = 256 * 1024;
 
 const REALDEBRID_TOTAL_MISMATCH_TOLERANCE_BYTES = 64 * 1024;
 
+const PREALLOC_RESUME_MISMATCH_THRESHOLD_BYTES = 1024 * 1024;
+
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
 function expectedMinBytes(totalBytes: number | null | undefined, strict: boolean): number {
@@ -139,6 +141,12 @@ function expectedMinBytes(totalBytes: number | null | undefined, strict: boolean
 function itemExpectedMinBytes(item: DownloadItem): number {
   const strict = isLargeBinaryLikePath(item.targetPath || item.fileName || "");
   return expectedMinBytes(item.totalBytes, strict);
+}
+
+function resolvePreallocResumeMismatchThreshold(pathHint: string): number {
+  return isLargeBinaryLikePath(pathHint)
+    ? 0
+    : PREALLOC_RESUME_MISMATCH_THRESHOLD_BYTES;
 }
 
 function resolvePackageItemDiskPath(pkg: PackageEntry, item: DownloadItem): string | null {
@@ -8479,15 +8487,37 @@ export class DownloadManager extends EventEmitter {
       } else if (resumeRewindBytesNextAttempt > 0) {
         resumeRewindBytesNextAttempt = 0;
       }
+      const persistedBytes = Math.max(0, Math.floor(Number(item.downloadedBytes) || 0));
+      const preallocMismatchThreshold = resolvePreallocResumeMismatchThreshold(item.fileName || effectiveTargetPath || "");
       // Guard against pre-allocated sparse files from a crashed session:
-      // if file size exceeds persisted downloadedBytes by >1MB, the file was
-      // likely pre-allocated but only partially written before a hard crash.
-      if (existingBytes > 0 && item.downloadedBytes > 0 && existingBytes > item.downloadedBytes + 1048576) {
+      // if file size exceeds persisted downloadedBytes beyond the allowed
+      // mismatch threshold, the file was likely pre-allocated but only
+      // partially written before a hard crash.
+      // This must also run for persistedBytes=0, otherwise startup-resume can
+      // send Range=full-size and incorrectly accept HTTP 416 as "complete".
+      if (existingBytes > 0 && existingBytes > persistedBytes + preallocMismatchThreshold) {
         try {
-          await fs.promises.truncate(effectiveTargetPath, item.downloadedBytes);
-          existingBytes = item.downloadedBytes;
-        } catch { /* best-effort */ }
+          const previousBytes = existingBytes;
+          await fs.promises.truncate(effectiveTargetPath, persistedBytes);
+          existingBytes = persistedBytes;
+          logAttemptEvent("WARN", "Pre-alloc-Rest erkannt, Teil-Datei auf persistierte Bytes gekuerzt", {
+            attempt,
+            previousBytes,
+            persistedBytes
+          });
+        } catch {
+          if (persistedBytes === 0) {
+            try {
+              await fs.promises.rm(effectiveTargetPath, { force: true });
+              existingBytes = 0;
+            } catch {
+              // ignore
+            }
+          }
+        }
       }
+      const suspiciousResumeFootprint = existingBytes > 0
+        && existingBytes > persistedBytes + preallocMismatchThreshold;
       const headers: Record<string, string> = {};
       if (existingBytes > 0) {
         headers.Range = `bytes=${existingBytes}-`;
@@ -8565,7 +8595,7 @@ export class DownloadManager extends EventEmitter {
           const sizeToleranceBytes = isLargeBinaryLikePath(item.fileName || effectiveTargetPath) ? 0 : ALLOCATION_UNIT_SIZE;
           const closeEnoughToExpected = expectedTotal != null
             && Math.abs(existingBytes - expectedTotal) <= sizeToleranceBytes;
-          if (expectedTotal != null && closeEnoughToExpected) {
+          if (expectedTotal != null && closeEnoughToExpected && !suspiciousResumeFootprint) {
             const finalizedTotal = Math.max(existingBytes, expectedTotal);
             item.totalBytes = finalizedTotal;
             item.downloadedBytes = existingBytes;
@@ -8577,6 +8607,14 @@ export class DownloadManager extends EventEmitter {
               expectedTotal: finalizedTotal
             });
             return { resumable: true };
+          }
+          if (expectedTotal != null && closeEnoughToExpected && suspiciousResumeFootprint) {
+            logAttemptEvent("WARN", "HTTP 416 trotz Vollgroesse nicht als fertig gewertet (vermutlich pre-alloc)", {
+              attempt,
+              existingBytes,
+              persistedBytes,
+              expectedTotal
+            });
           }
 
           try {
@@ -10463,11 +10501,42 @@ export class DownloadManager extends EventEmitter {
         // expected size.  The old 50% threshold incorrectly recovered partial downloads
         // (e.g. 627 MB of 1001 MB) and triggered hybrid extraction on incomplete archives.
         const minSize = expectedMinBytes(item.totalBytes, isLargeBinaryLikePath(item.fileName || item.targetPath));
+        const persistedBytes = Math.max(0, Math.floor(Number(item.downloadedBytes) || 0));
+        const preallocMismatchThreshold = resolvePreallocResumeMismatchThreshold(item.fileName || item.targetPath || "");
+        const suspiciousPreallocFootprint = item.totalBytes != null
+          && item.totalBytes > 0
+          && stat.size >= minSize
+          && stat.size > persistedBytes + preallocMismatchThreshold;
         if (stat.size >= minSize) {
           // Re-check: another task may have started this item during the await
           const latestItem = this.session.items[item.id];
           if (!latestItem || this.activeTasks.has(item.id) || latestItem.status === "downloading"
             || latestItem.status === "validating" || latestItem.status === "integrity_check") {
+            continue;
+          }
+          if (suspiciousPreallocFootprint) {
+            logger.warn(
+              `Item-Recovery: ${item.fileName} uebersprungen – pre-alloc-Verdacht ` +
+              `(stat=${humanSize(stat.size)}, bytes=${humanSize(persistedBytes)}, total=${humanSize(item.totalBytes)})`
+            );
+            try {
+              if (persistedBytes > 0) {
+                fs.truncateSync(item.targetPath, persistedBytes);
+              } else {
+                fs.rmSync(item.targetPath, { force: true });
+              }
+            } catch {
+              // best-effort
+            }
+            item.status = "queued";
+            item.attempts = 0;
+            item.downloadedBytes = persistedBytes;
+            item.progressPercent = item.totalBytes > 0
+              ? Math.max(0, Math.min(99, Math.floor((persistedBytes / item.totalBytes) * 100)))
+              : 0;
+            item.speedBps = 0;
+            item.fullStatus = "Wartet (Auto-Recovery: pre-alloc)";
+            item.updatedAt = nowMs();
             continue;
           }
           // Guard against pre-allocated sparse files from a hard crash: file has

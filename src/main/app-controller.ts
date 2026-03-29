@@ -564,9 +564,13 @@ export class AppController {
       itemCount: Object.keys(this.manager.getSnapshot().session.items).length
     });
     return {
-      buffer: buildSupportBundle(this.manager, this.storagePaths.baseDir),
+      buffer: buildSupportBundle(this.manager, this.storagePaths.baseDir, { hostDiagnosticsMode: "cached" }),
       defaultFileName: getSupportBundleDefaultFileName()
     };
+  }
+
+  public getSupportBundleDefaultFileName(): string {
+    return getSupportBundleDefaultFileName();
   }
 
   public importBackup(data: Buffer): { restored: boolean; message: string } {

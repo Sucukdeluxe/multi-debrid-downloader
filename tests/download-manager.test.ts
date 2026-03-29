@@ -4205,6 +4205,76 @@ describe("download manager", () => {
     expect(snapshot.session.packages[packageId]?.status).toBe("queued");
   });
 
+  it("does not recover queued pre-allocated archive leftovers as completed during post-processing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "postproc-prealloc-pkg";
+    const itemId = "postproc-prealloc-item";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "postproc-prealloc");
+    const targetPath = path.join(outputDir, "postproc-prealloc.part01.rar");
+    const totalBytes = 2 * 1024 * 1024;
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(totalBytes, 0));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "postproc-prealloc",
+      outputDir,
+      extractDir: path.join(root, "extract", "postproc-prealloc"),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/postproc-prealloc",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes,
+      progressPercent: 0,
+      fileName: "postproc-prealloc.part01.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).handlePackagePostProcessing(packageId);
+    const snapshot = manager.getSnapshot();
+    const item = snapshot.session.items[itemId];
+    expect(item?.status).toBe("queued");
+    expect(item?.fullStatus).toContain("pre-alloc");
+    expect(item?.downloadedBytes).toBe(0);
+    expect(item?.progressPercent).toBe(0);
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
   it("requeues completed archive parts after auto-recovery extraction failures", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -7712,6 +7782,292 @@ describe("download manager", () => {
       const item = manager.getSnapshot().session.items[itemId];
       expect(item?.status).toBe("queued");
       expect(item?.fullStatus).toBe("Wartet");
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("does not mark pre-allocated crash leftovers as 100% complete on resume", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = crypto.randomBytes(2 * 1024 * 1024);
+    const outputDir = path.join(root, "downloads", "resume-prealloc");
+    const targetPath = path.join(outputDir, "resume-prealloc.part01.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(binary.length, 0));
+
+    const session = emptySession();
+    const packageId = "resume-prealloc-pkg";
+    const itemId = "resume-prealloc-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "resume-prealloc",
+      outputDir,
+      extractDir: path.join(root, "extract", "resume-prealloc"),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/resume-prealloc",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: binary.length,
+      progressPercent: 0,
+      fileName: "resume-prealloc.part01.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const rangeStarts: number[] = [];
+    let sawRangeAtFullSize = false;
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/resume-prealloc") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      const rangeHeader = String(req.headers.range || "");
+      const match = /bytes=(\d+)-/i.exec(rangeHeader);
+      if (match) {
+        const start = Number(match[1] || 0);
+        rangeStarts.push(start);
+        if (start >= binary.length) {
+          sawRangeAtFullSize = true;
+          res.statusCode = 416;
+          res.setHeader("Content-Range", `bytes */${binary.length}`);
+          res.end();
+          return;
+        }
+        const end = binary.length - 1;
+        res.statusCode = 206;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes ${start}-${end}/${binary.length}`);
+        res.setHeader("Content-Length", String(binary.length - start));
+        res.end(binary.subarray(start));
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/resume-prealloc`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "resume-prealloc.part01.rar",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(binary.length);
+      expect(item?.progressPercent).toBe(100);
+      expect(sawRangeAtFullSize).toBe(false);
+      expect(rangeStarts).not.toContain(binary.length);
+      expect(fs.readFileSync(targetPath).equals(binary)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("resumes archive tails when persisted bytes lag slightly behind pre-allocated file size", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = crypto.randomBytes(2 * 1024 * 1024);
+    const persistedBytes = binary.length - (256 * 1024);
+    const outputDir = path.join(root, "downloads", "resume-prealloc-tail");
+    const targetPath = path.join(outputDir, "resume-prealloc-tail.part01.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const preallocated = Buffer.concat([
+      binary.subarray(0, persistedBytes),
+      Buffer.alloc(binary.length - persistedBytes, 0)
+    ]);
+    fs.writeFileSync(targetPath, preallocated);
+
+    const session = emptySession();
+    const packageId = "resume-prealloc-tail-pkg";
+    const itemId = "resume-prealloc-tail-item";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "resume-prealloc-tail",
+      outputDir,
+      extractDir: path.join(root, "extract", "resume-prealloc-tail"),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/resume-prealloc-tail",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: persistedBytes,
+      totalBytes: binary.length,
+      progressPercent: Math.floor((persistedBytes / binary.length) * 100),
+      fileName: "resume-prealloc-tail.part01.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const rangeStarts: number[] = [];
+    let sawRangeAtFullSize = false;
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/resume-prealloc-tail") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+
+      const rangeHeader = String(req.headers.range || "");
+      const match = /bytes=(\d+)-/i.exec(rangeHeader);
+      if (match) {
+        const start = Number(match[1] || 0);
+        rangeStarts.push(start);
+        if (start >= binary.length) {
+          sawRangeAtFullSize = true;
+          res.statusCode = 416;
+          res.setHeader("Content-Range", `bytes */${binary.length}`);
+          res.end();
+          return;
+        }
+        const end = binary.length - 1;
+        res.statusCode = 206;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes ${start}-${end}/${binary.length}`);
+        res.setHeader("Content-Length", String(binary.length - start));
+        res.end(binary.subarray(start));
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/resume-prealloc-tail`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({
+            download: directUrl,
+            filename: "resume-prealloc-tail.part01.rar",
+            filesize: binary.length
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          maxParallel: 1
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.downloadedBytes).toBe(binary.length);
+      expect(item?.progressPercent).toBe(100);
+      expect(sawRangeAtFullSize).toBe(false);
+      expect(rangeStarts).not.toContain(binary.length);
+      expect(rangeStarts.some((start) => start === persistedBytes)).toBe(true);
+      expect(fs.readFileSync(targetPath).equals(binary)).toBe(true);
     } finally {
       server.close();
       await once(server, "close");
