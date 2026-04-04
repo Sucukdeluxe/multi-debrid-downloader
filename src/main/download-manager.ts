@@ -10110,12 +10110,29 @@ export class DownloadManager extends EventEmitter {
         .filter((entry) => entry.isFile())
         .map((entry) => entry.name);
     } catch { /* ignore */ }
+    const archiveStems = new Set<string>();
     for (const archiveKey of readyArchives) {
       const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
       for (const part of parts) {
-        hybridFileNames.add(path.basename(part).toLowerCase());
+        const partName = path.basename(part).toLowerCase();
+        hybridFileNames.add(partName);
+        // Collect archive base stems (without .partNN.rar / .rar / .rNN) to find companion files
+        const stem = partName.replace(/\.part\d+\.rar$|\.r\d{2,3}$|\.rar$/i, "");
+        if (stem && stem !== partName) archiveStems.add(stem);
       }
       hybridFileNames.add(path.basename(archiveKey).toLowerCase());
+    }
+    // Include companion metadata files (.sfv, .nfo, etc.) that belong to the same archive set.
+    // These files share the same basename stem as the archive parts.
+    if (dirFiles && archiveStems.size > 0) {
+      for (const fileName of dirFiles) {
+        const lower = fileName.toLowerCase();
+        if (!KNOWN_SMALL_FILE_RE.test(lower)) continue;
+        const companionStem = lower.replace(/\.[^.]+$/, "");
+        if (archiveStems.has(companionStem)) {
+          hybridFileNames.add(lower);
+        }
+      }
     }
     const isHybridItem = (item: DownloadItem): boolean => {
       if (item.targetPath && hybridFileNames.has(path.basename(item.targetPath).toLowerCase())) {
