@@ -438,13 +438,26 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     }
   };
 
+  // Companion metadata files (.sfv, .nfo, .md5, etc.) share the same base stem
+  // as the archive and should be cleaned up together with the archive parts.
+  const COMPANION_EXTS_RE = /\.(?:sfv|nfo|nzb|md5|sha1|sha256|crc|srr)$/i;
+  const addCompanions = (stemRe: string): void => {
+    for (const candidate of filesInDir) {
+      if (!COMPANION_EXTS_RE.test(candidate)) continue;
+      const candidateStem = candidate.replace(/\.[^.]+$/, "");
+      if (new RegExp(`^${stemRe}$`, "i").test(candidateStem)) {
+        targets.add(path.join(dir, candidate));
+      }
+    }
+  };
+
   const multipartRar = fileName.match(/^(.*)\.part\d+\.rar$/i);
   if (multipartRar) {
     const prefix = escapeRegex(multipartRar[1]);
     addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i"));
-    // RAR5 recovery volumes: prefix.partN.rev AND legacy prefix.rev
     addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rev$`, "i"));
     addMatching(new RegExp(`^${prefix}\\.rev$`, "i"));
+    addCompanions(prefix);
     return Array.from(targets);
   }
 
@@ -453,6 +466,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     addMatching(new RegExp(`^${stem}\\.rar$`, "i"));
     addMatching(new RegExp(`^${stem}\\.r\\d{2,3}$`, "i"));
     addMatching(new RegExp(`^${stem}\\.rev$`, "i"));
+    addCompanions(stem);
     return Array.from(targets);
   }
 
@@ -460,6 +474,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     const stem = escapeRegex(fileName.replace(/\.zip$/i, ""));
     addMatching(new RegExp(`^${stem}\\.zip$`, "i"));
     addMatching(new RegExp(`^${stem}\\.z\\d{2,3}$`, "i"));
+    addCompanions(stem);
     return Array.from(targets);
   }
 
@@ -468,6 +483,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     const stem = escapeRegex(splitZip[1]);
     addMatching(new RegExp(`^${stem}\\.zip$`, "i"));
     addMatching(new RegExp(`^${stem}\\.zip\\.\\d{3}$`, "i"));
+    addCompanions(stem);
     return Array.from(targets);
   }
 
@@ -475,6 +491,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     const stem = escapeRegex(fileName.replace(/\.7z$/i, ""));
     addMatching(new RegExp(`^${stem}\\.7z$`, "i"));
     addMatching(new RegExp(`^${stem}\\.7z\\.\\d{3}$`, "i"));
+    addCompanions(stem);
     return Array.from(targets);
   }
 
@@ -483,6 +500,7 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     const stem = escapeRegex(splitSeven[1]);
     addMatching(new RegExp(`^${stem}\\.7z$`, "i"));
     addMatching(new RegExp(`^${stem}\\.7z\\.\\d{3}$`, "i"));
+    addCompanions(stem);
     return Array.from(targets);
   }
 
