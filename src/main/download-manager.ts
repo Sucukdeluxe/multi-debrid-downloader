@@ -10457,8 +10457,13 @@ export class DownloadManager extends EventEmitter {
             entry.fullStatus = "Entpacken - Error";
           } else if (result.extracted > 0) {
             entry.fullStatus = formatExtractDone(nowMs() - hybridExtractStartMs);
+          } else if (KNOWN_SMALL_FILE_RE.test(entry.fileName || "")) {
+            // Companion metadata files (.sfv, .nfo, .md5) are not archives themselves.
+            // If no archives were extracted (already done in a prior round) and no
+            // failures occurred, mark companions as extracted so they don't stay stuck.
+            entry.fullStatus = "Entpackt (Metadaten)";
           }
-          // extracted === 0 && failed === 0: keep current status (no archives to process)
+          // extracted === 0 && failed === 0 for archive items: keep current status
           entry.updatedAt = updatedAt;
         }
       }
