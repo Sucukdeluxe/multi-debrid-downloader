@@ -10116,8 +10116,12 @@ export class DownloadManager extends EventEmitter {
       for (const part of parts) {
         const partName = path.basename(part).toLowerCase();
         hybridFileNames.add(partName);
-        // Collect archive base stems (without .partNN.rar / .rar / .rNN) to find companion files
-        const stem = partName.replace(/\.part\d+\.rar$|\.r\d{2,3}$|\.rar$/i, "");
+        // Collect archive base stems (strip all archive extensions) to find companion files
+        const stem = partName
+          .replace(/\.part\d+\.rar$/i, "")
+          .replace(/\.(rar|r\d{2,3}|zip|z\d{2,3}|7z|tar|gz|bz2|xz|tgz|tbz2|txz|rev)$/i, "")
+          .replace(/\.(zip|7z)\.\d{3}$/i, "")
+          .replace(/\.\d{3}$/i, "");
         if (stem && stem !== partName) archiveStems.add(stem);
       }
       hybridFileNames.add(path.basename(archiveKey).toLowerCase());
