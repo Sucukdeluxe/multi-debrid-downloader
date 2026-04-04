@@ -6140,6 +6140,65 @@ describe("download manager", () => {
     }
   });
 
+  it("accepts small .sfv metadata files without rejecting them as suspicious", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    // SFV content is just CRC32 checksums — legitimately tiny
+    const sfvContent = Buffer.from("archive.part1.rar 1A2B3C4D\narchive.part2.rar 5E6F7A8B\n", "utf8");
+
+    const server = http.createServer((req, res) => {
+      res.statusCode = 200;
+      res.setHeader("Content-Length", String(sfvContent.length));
+      res.end(sfvContent);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("server address unavailable");
+    const directUrl = `http://127.0.0.1:${address.port}/checksum.sfv`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({ download: directUrl, filename: "archive.sfv", filesize: sfvContent.length }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "sfv-test", links: ["https://dummy/sfv-file"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 15000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(item?.retries).toBe(0);
+      expect(fs.existsSync(item.targetPath)).toBe(true);
+      const onDisk = fs.readFileSync(item.targetPath);
+      expect(onDisk.length).toBe(sfvContent.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("limits AllDebrid rapidgator starts to one active task by default", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

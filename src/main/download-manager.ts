@@ -131,6 +131,9 @@ const PREALLOC_RESUME_MISMATCH_THRESHOLD_BYTES = 1024 * 1024;
 
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
+/** Files that are legitimately tiny (< 5 KB) and should NOT be rejected as suspicious. */
+const KNOWN_SMALL_FILE_RE = /\.(?:sfv|nfo|nzb|md5|sha1|sha256|crc|txt|url|lnk|srr)$/i;
+
 function expectedMinBytes(totalBytes: number | null | undefined, strict: boolean): number {
   if (!totalBytes || totalBytes <= 0) {
     return 10240;
@@ -437,6 +440,13 @@ function shouldRejectSuspiciousSmallDownload(
   const size = Math.max(0, Math.floor(Number(fileSizeOnDisk) || 0));
   const expected = Number.isFinite(expectedTotal || NaN) ? Math.max(0, Math.floor(expectedTotal || 0)) : 0;
   const binaryLike = isLargeBinaryLikePath(filePath || fileName);
+  const name = path.basename(String(filePath || fileName || ""));
+
+  // Known small files (e.g. .sfv, .nfo) are legitimately tiny — never reject them
+  // as long as they received the expected number of bytes (or we have no expectation).
+  if (KNOWN_SMALL_FILE_RE.test(name) && (expected <= 0 || size >= expected)) {
+    return false;
+  }
 
   if (size <= 0) {
     return expected > 0 || binaryLike;
@@ -9340,32 +9350,38 @@ export class DownloadManager extends EventEmitter {
         }
 
         // Detect tiny error-response files (e.g. hoster returning "Forbidden" with HTTP 200).
-        // No legitimate file-hoster download is < 512 bytes.
+        // No legitimate file-hoster download is < 512 bytes, EXCEPT known small metadata
+        // files like .sfv (checksum verification), .nfo (release info), etc.
         if (written > 0 && written < 512) {
-          let snippet = "";
-          try {
-            snippet = await fs.promises.readFile(effectiveTargetPath, "utf8");
-            snippet = snippet.slice(0, 200).replace(/[\r\n]+/g, " ").trim();
-          } catch { /* ignore */ }
-          const exactTinyBinary = Boolean(
-            item.totalBytes
-            && item.totalBytes > 0
-            && written >= item.totalBytes
-            && isLargeBinaryLikePath(item.fileName || effectiveTargetPath)
-          );
-          const snippetSuggestsError = /<(?:!doctype|html|body)\b|\b(?:forbidden|access denied|error|not found|expired|unavailable)\b/i.test(snippet);
-          if (exactTinyBinary && !snippetSuggestsError) {
-            logger.info(`Tiny Binary akzeptiert (${written} B): ${item.fileName || effectiveTargetPath}`);
+          const knownSmallFile = KNOWN_SMALL_FILE_RE.test(item.fileName || effectiveTargetPath);
+          if (knownSmallFile && ((!item.totalBytes || item.totalBytes <= 0) || written >= item.totalBytes)) {
+            logger.info(`Kleine Metadaten-Datei akzeptiert (${written} B): ${item.fileName || effectiveTargetPath}`);
           } else {
-          logger.warn(`Tiny download erkannt (${written} B): "${snippet}"`);
-          try {
-            await fs.promises.rm(effectiveTargetPath, { force: true });
-          } catch { /* ignore */ }
-          this.releaseTargetPath(active.itemId);
-          this.dropItemContribution(active.itemId);
-          item.downloadedBytes = 0;
-          item.progressPercent = 0;
-          throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);
+            let snippet = "";
+            try {
+              snippet = await fs.promises.readFile(effectiveTargetPath, "utf8");
+              snippet = snippet.slice(0, 200).replace(/[\r\n]+/g, " ").trim();
+            } catch { /* ignore */ }
+            const exactTinyBinary = Boolean(
+              item.totalBytes
+              && item.totalBytes > 0
+              && written >= item.totalBytes
+              && isLargeBinaryLikePath(item.fileName || effectiveTargetPath)
+            );
+            const snippetSuggestsError = /<(?:!doctype|html|body)\b|\b(?:forbidden|access denied|error|not found|expired|unavailable)\b/i.test(snippet);
+            if (exactTinyBinary && !snippetSuggestsError) {
+              logger.info(`Tiny Binary akzeptiert (${written} B): ${item.fileName || effectiveTargetPath}`);
+            } else {
+              logger.warn(`Tiny download erkannt (${written} B): "${snippet}"`);
+              try {
+                await fs.promises.rm(effectiveTargetPath, { force: true });
+              } catch { /* ignore */ }
+              this.releaseTargetPath(active.itemId);
+              this.dropItemContribution(active.itemId);
+              item.downloadedBytes = 0;
+              item.progressPercent = 0;
+              throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);
+            }
           }
         }
 
