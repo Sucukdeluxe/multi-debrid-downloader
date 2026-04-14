@@ -9451,6 +9451,99 @@ describe("download manager", () => {
     expect(fs.existsSync(flattenedEpisode)).toBe(true);
   }, 20000);
 
+  it("detects dot-separated bonus subdirectories (Making.Of, Behind.The.Scenes)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Breaking.Bad.S05.GERMAN.DL.720p.BluRay.x264-TSCC";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    // Mix of dot-separated bonus subdirs - must all be detected as bonus
+    const zip = new AdmZip();
+    zip.addFile("Breaking.Bad.S05E01.GERMAN.DL.720p.BluRay.x264-TSCC.mkv", Buffer.from("real-episode"));
+    zip.addFile("Breaking.Bad.S05.Making.Of/SomeBonusClip.mkv", Buffer.from("bonus-1"));
+    zip.addFile("Breaking.Bad.S05.Behind.The.Scenes/AnotherClip.mkv", Buffer.from("bonus-2"));
+    zip.addFile("Breaking.Bad.S05.Deleted.Scenes/DeletedClip.mkv", Buffer.from("bonus-3"));
+    zip.addFile("Breaking.Bad.S05.Gag.Reel/GagClip.mkv", Buffer.from("bonus-4"));
+    const archivePath = path.join(outputDir, "episode.zip");
+    zip.writeZip(archivePath);
+    const archiveSize = fs.statSync(archivePath).size;
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const itemId = `${packageName}-item`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: `https://dummy/${packageName}`,
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "episode.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig (100 MB)",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const flattenedEpisode = path.join(mkvLibraryDir, "Breaking.Bad.S05E01.GERMAN.DL.720p.BluRay.x264-TSCC.mkv");
+    await waitFor(() => fs.existsSync(flattenedEpisode), 12000);
+
+    // None of the bonus files should have landed in the flat library
+    expect(fs.existsSync(path.join(mkvLibraryDir, "SomeBonusClip.mkv"))).toBe(false);
+    expect(fs.existsSync(path.join(mkvLibraryDir, "AnotherClip.mkv"))).toBe(false);
+    expect(fs.existsSync(path.join(mkvLibraryDir, "DeletedClip.mkv"))).toBe(false);
+    expect(fs.existsSync(path.join(mkvLibraryDir, "GagClip.mkv"))).toBe(false);
+
+    // All bonus files must still exist in their respective subfolders
+    expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Making.Of", "SomeBonusClip.mkv"))).toBe(true);
+    expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Behind.The.Scenes", "AnotherClip.mkv"))).toBe(true);
+    expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Deleted.Scenes", "DeletedClip.mkv"))).toBe(true);
+    expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Gag.Reel", "GagClip.mkv"))).toBe(true);
+  }, 20000);
+
   it("keeps existing MKV names and appends a suffix while flattening", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
