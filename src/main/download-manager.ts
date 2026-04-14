@@ -134,6 +134,39 @@ const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:
 /** Files that are legitimately tiny (< 5 KB) and should NOT be rejected as suspicious. */
 const KNOWN_SMALL_FILE_RE = /\.(?:sfv|nfo|nzb|md5|sha1|sha256|crc|txt|url|lnk|srr)$/i;
 
+/** Folder name patterns indicating bonus/extras content that should NOT be moved
+ *  to the flat MKV library or auto-renamed. Matches as a substring of the folder name. */
+const BONUS_DIR_PATTERNS = [
+  "extras", "extra", "bonus", "featurettes", "featurette", "specials", "special features",
+  "behind the scenes", "behindthescenes", "deleted scenes", "deletedscenes",
+  "making of", "makingof", "outtakes", "trailers", "interviews", "documentaries"
+];
+
+/** Filename token patterns for bonus content (e.g. "making-of-e02.mkv"). */
+const BONUS_FILENAME_RE = /(?:^|[._\-\s])(?:making[._\-\s]?of|behind[._\-\s]?the[._\-\s]?scenes|deleted[._\-\s]?scene|alternate[._\-\s]?ending|gag[._\-\s]?reel|featurette|outtakes?|bloopers?|interview|extended[._\-\s]?scene|exclusive[._\-\s]?scene)(?:[._\-\s]|$)/i;
+
+/** Detect if a file path lies inside a bonus/extras subdirectory of the package.
+ *  Walks up the path from filePath until packageDir and checks each segment. */
+function isInsideBonusDir(filePath: string, packageDir: string): boolean {
+  if (!filePath || !packageDir) return false;
+  let current = path.dirname(filePath);
+  const root = path.resolve(packageDir);
+  let safety = 0;
+  while (current && safety++ < 32) {
+    const resolvedCurrent = path.resolve(current);
+    if (resolvedCurrent === root) return false;
+    if (!isPathInsideDir(current, packageDir)) return false;
+    const segment = path.basename(current).toLowerCase();
+    for (const pattern of BONUS_DIR_PATTERNS) {
+      if (segment.includes(pattern)) return true;
+    }
+    const parent = path.dirname(current);
+    if (!parent || parent === current) break;
+    current = parent;
+  }
+  return false;
+}
+
 function expectedMinBytes(totalBytes: number | null | undefined, strict: boolean): number {
   if (!totalBytes || totalBytes <= 0) {
     return 10240;
@@ -3408,6 +3441,12 @@ export class DownloadManager extends EventEmitter {
       if (sampleTokenRe.test(sourceBaseName) || sampleDirNames.has(parentDirName) || sampleSuffixRe.test(sourceBaseName)) {
         continue;
       }
+      // Skip bonus/extras content (Featurettes, Making-Of, Behind-The-Scenes, etc.)
+      // These have generic descriptive names and would get renamed to misleading
+      // episode names if matched against the package's SxxExx pattern.
+      if (isInsideBonusDir(sourcePath, extractDir) || BONUS_FILENAME_RE.test(sourceBaseName)) {
+        continue;
+      }
       const folderCandidates: string[] = [];
       let currentDir = path.dirname(sourcePath);
       while (currentDir && isPathInsideDir(currentDir, extractDir)) {
@@ -3846,11 +3885,15 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Filter: Sample-Dateien ausschließen (Sample-Ordner + "sample" im Dateinamen)
+    // Filter: Sample- und Bonus-Dateien ausschließen
+    // - Sample-Ordner / "sample" im Dateinamen
+    // - Bonus-Subordner (Extras, Bonus, Featurettes, etc.)
+    // - Bonus-Dateinamen (Making-Of, Deleted-Scene, etc.)
     const sampleDirNames = new Set(["sample", "samples"]);
     const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
     const mkvFiles: string[] = [];
     let sampleSkipped = 0;
+    let bonusSkipped = 0;
     for (const filePath of allMkvFiles) {
       if (shouldAbort?.()) {
         return;
@@ -3861,13 +3904,21 @@ export class DownloadManager extends EventEmitter {
         sampleSkipped += 1;
         continue;
       }
+      if (isInsideBonusDir(filePath, sourceDir) || BONUS_FILENAME_RE.test(stem)) {
+        bonusSkipped += 1;
+        logger.info(`MKV-Sammelordner: Bonus-Datei uebersprungen: ${path.basename(filePath)} (Pfad: ${path.relative(sourceDir, filePath)})`);
+        continue;
+      }
       mkvFiles.push(filePath);
     }
     if (sampleSkipped > 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, ${sampleSkipped} Sample-MKV(s) übersprungen`);
     }
+    if (bonusSkipped > 0) {
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, ${bonusSkipped} Bonus-MKV(s) übersprungen (Extras/Featurettes/etc.)`);
+    }
     if (mkvFiles.length === 0) {
-      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV nach Sample-Filter`);
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV nach Sample/Bonus-Filter`);
       return;
     }
 
