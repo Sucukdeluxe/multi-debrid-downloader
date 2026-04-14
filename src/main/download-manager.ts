@@ -135,15 +135,24 @@ const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:
 const KNOWN_SMALL_FILE_RE = /\.(?:sfv|nfo|nzb|md5|sha1|sha256|crc|txt|url|lnk|srr)$/i;
 
 /** Folder name patterns indicating bonus/extras content that should NOT be moved
- *  to the flat MKV library or auto-renamed. Matches as a substring of the folder name. */
-const BONUS_DIR_PATTERNS = [
-  "extras", "extra", "bonus", "featurettes", "featurette", "specials", "special features",
-  "behind the scenes", "behindthescenes", "deleted scenes", "deletedscenes",
-  "making of", "makingof", "outtakes", "trailers", "interviews", "documentaries"
+ *  to the flat MKV library or auto-renamed. Matches after normalizing separators
+ *  (so "Making.Of", "making-of", "making of", "makingof" all match "makingof"). */
+const BONUS_DIR_NORMALIZED_PATTERNS = [
+  "extras", "extra", "bonus", "featurettes", "featurette",
+  "specials", "specialfeatures",
+  "behindthescenes", "deletedscenes", "deletedscene",
+  "makingof", "outtakes", "trailers", "interviews", "documentaries",
+  "alternateending", "gagreel"
 ];
 
 /** Filename token patterns for bonus content (e.g. "making-of-e02.mkv"). */
-const BONUS_FILENAME_RE = /(?:^|[._\-\s])(?:making[._\-\s]?of|behind[._\-\s]?the[._\-\s]?scenes|deleted[._\-\s]?scene|alternate[._\-\s]?ending|gag[._\-\s]?reel|featurette|outtakes?|bloopers?|interview|extended[._\-\s]?scene|exclusive[._\-\s]?scene)(?:[._\-\s]|$)/i;
+const BONUS_FILENAME_RE = /(?:^|[._\-\s])(?:making[._\-\s]?of|behind[._\-\s]?the[._\-\s]?scenes|deleted[._\-\s]?scene|alternate[._\-\s]?ending|gag[._\-\s]?reel|featurette|outtakes?|bloopers?|interview|extended[._\-\s]?scene|exclusive[._\-\s]?scene|inside[._\-\s]?e\d+|making[._\-\s]?of[._\-\s]?e\d+)(?:[._\-\s]|$)/i;
+
+/** Normalize a folder/file segment for bonus-pattern matching: lowercase and
+ *  strip common separators so "Making.Of" → "makingof". */
+function normalizeBonusSegment(segment: string): string {
+  return String(segment || "").toLowerCase().replace(/[._\-\s]+/g, "");
+}
 
 /** Detect if a file path lies inside a bonus/extras subdirectory of the package.
  *  Walks up the path from filePath until packageDir and checks each segment. */
@@ -156,9 +165,9 @@ function isInsideBonusDir(filePath: string, packageDir: string): boolean {
     const resolvedCurrent = path.resolve(current);
     if (resolvedCurrent === root) return false;
     if (!isPathInsideDir(current, packageDir)) return false;
-    const segment = path.basename(current).toLowerCase();
-    for (const pattern of BONUS_DIR_PATTERNS) {
-      if (segment.includes(pattern)) return true;
+    const normalized = normalizeBonusSegment(path.basename(current));
+    for (const pattern of BONUS_DIR_NORMALIZED_PATTERNS) {
+      if (normalized.includes(pattern)) return true;
     }
     const parent = path.dirname(current);
     if (!parent || parent === current) break;
