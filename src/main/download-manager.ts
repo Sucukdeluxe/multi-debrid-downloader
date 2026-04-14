@@ -3465,7 +3465,7 @@ export class DownloadManager extends EventEmitter {
           folderCandidates.push(extra);
         }
       }
-      const targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
+      let targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
         forceEpisodeForSeasonFolder: true
       });
       const resolveRenameItem = (...extra: Array<string | null | undefined>): { item: DownloadItem | null; matchedBy: string | null } => {
@@ -3474,6 +3474,60 @@ export class DownloadManager extends EventEmitter {
         }
         return this.inferItemForMediaLog(pkg, sourcePath, sourceName, folderCandidates.join(" "), targetBaseName || "", ...extra);
       };
+      // SAFETY NET: Never strip a valid SxxExx token from the source filename.
+      // If the source already has an episode token but the computed target lost it
+      // (e.g. malformed package name "S01GERMAN" with no separator), preserve the
+      // episode by either inserting it into the target or skipping the rename entirely.
+      // Without this guard, all episodes from a malformed pack collapse to one name
+      // and collide with (2)(3)(4) suffixes in the MKV library.
+      const sourceEpisodeToken = extractEpisodeToken(sourceBaseName);
+      if (targetBaseName && sourceEpisodeToken) {
+        const targetEpisodeToken = extractEpisodeToken(targetBaseName);
+        if (!targetEpisodeToken) {
+          // Try to insert the source's episode token: replace "Sxx<garbage>" with "SxxExx.<garbage>"
+          const insertedEpisode = targetBaseName.replace(
+            /(^|[._\-\s])(s\d{1,2})(?=[A-Za-z0-9])/i,
+            `$1${sourceEpisodeToken}.`
+          );
+          if (insertedEpisode !== targetBaseName && extractEpisodeToken(insertedEpisode)) {
+            logger.info(`Auto-Rename Safety: Episode-Token in Target eingefuegt: ${targetBaseName} -> ${insertedEpisode}`);
+            targetBaseName = insertedEpisode;
+          } else {
+            const repaired = applyEpisodeTokenToFolderName(targetBaseName, sourceEpisodeToken);
+            if (repaired && extractEpisodeToken(repaired)) {
+              logger.info(`Auto-Rename Safety: Episode-Token via applyToken: ${targetBaseName} -> ${repaired}`);
+              targetBaseName = repaired;
+            } else {
+              logger.warn(`Auto-Rename Safety: Skipping rename - target wuerde Episode-Token verlieren (source=${sourceBaseName}, target=${targetBaseName})`);
+              if (pkg) {
+                const resolved = resolveRenameItem();
+                this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token wuerde verloren gehen", {
+                  sourcePath,
+                  sourceName,
+                  sourceEpisodeToken,
+                  targetBaseName
+                }, resolved.item, resolved.matchedBy);
+              }
+              continue;
+            }
+          }
+        } else if (targetEpisodeToken !== sourceEpisodeToken) {
+          // Target has a DIFFERENT episode token than source — that's a clear sign
+          // the rename is wrong (would mislabel the episode). Skip to be safe.
+          logger.warn(`Auto-Rename Safety: Skipping rename - Episode-Token Mismatch (source=${sourceEpisodeToken}, target=${targetEpisodeToken})`);
+          if (pkg) {
+            const resolved = resolveRenameItem();
+            this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token Mismatch", {
+              sourcePath,
+              sourceName,
+              sourceEpisodeToken,
+              targetEpisodeToken,
+              targetBaseName
+            }, resolved.item, resolved.matchedBy);
+          }
+          continue;
+        }
+      }
       if (!targetBaseName) {
         if (pkg) {
           this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: kein Zielname", {
