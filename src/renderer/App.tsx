@@ -1532,6 +1532,11 @@ export function App(): ReactElement {
   const settingsDraftRevisionRef = useRef(0);
   const panelDirtyRevisionRef = useRef(0);
   const latestStateRef = useRef<UiSnapshot | null>(null);
+  // Master state used to apply incoming delta payloads. The wire format from
+  // the main process sends only changed items/packages (with payloadKind="delta")
+  // most of the time and a full snapshot every 30s for safety. Without this
+  // master, we'd only see the changed slice each emit.
+  const masterSnapshotRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const tabRef = useRef(tab);
@@ -1863,6 +1868,8 @@ export function App(): ReactElement {
       if (!mountedRef.current) {
         return;
       }
+      // Seed the master snapshot — incoming delta payloads will merge into this.
+      masterSnapshotRef.current = state;
       setSnapshot(state);
       if (state.settings.columnOrder?.length > 0) {
         setColumnOrder(state.settings.columnOrder);
@@ -1883,11 +1890,36 @@ export function App(): ReactElement {
     }).catch((error) => {
       showToast(`Snapshot konnte nicht geladen werden: ${String(error)}`, 2800);
     });
-    unsubscribe = window.rd.onStateUpdate((state) => {
-      latestStateRef.current = state;
+    unsubscribe = window.rd.onStateUpdate((wireState) => {
+      // Merge delta payloads into the master snapshot. Full payloads replace
+      // the master entirely (initial sync + periodic 30s resync).
+      let merged: UiSnapshot;
+      const master = masterSnapshotRef.current;
+      if (wireState.payloadKind === "delta" && master) {
+        const newItems: Record<string, DownloadItem> = { ...master.session.items, ...wireState.session.items };
+        if (wireState.removedItemIds && wireState.removedItemIds.length > 0) {
+          for (const id of wireState.removedItemIds) delete newItems[id];
+        }
+        const newPackages: Record<string, PackageEntry> = { ...master.session.packages, ...wireState.session.packages };
+        if (wireState.removedPackageIds && wireState.removedPackageIds.length > 0) {
+          for (const id of wireState.removedPackageIds) delete newPackages[id];
+        }
+        merged = {
+          ...wireState,
+          session: {
+            ...wireState.session,
+            items: newItems,
+            packages: newPackages,
+          },
+        };
+      } else {
+        merged = wireState;
+      }
+      masterSnapshotRef.current = merged;
+      latestStateRef.current = merged;
       if (stateFlushTimerRef.current) { return; }
 
-      const itemCount = Object.keys(state.session.items).length;
+      const itemCount = Object.keys(merged.session.items).length;
       let flushDelay = itemCount >= 1500
         ? 900
         : itemCount >= 700
@@ -1895,7 +1927,7 @@ export function App(): ReactElement {
           : itemCount >= 250
             ? 400
             : 150;
-      if (!state.session.running) {
+      if (!merged.session.running) {
         flushDelay = Math.min(flushDelay, 200);
       }
       if (activeTabRef.current !== "downloads") {
