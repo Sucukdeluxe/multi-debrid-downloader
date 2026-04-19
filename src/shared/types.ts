@@ -230,6 +230,15 @@ export interface UiSnapshot {
   clipboardActive: boolean;
   reconnectSeconds: number;
   packageSpeedBps: Record<string, number>;
+  /** When set to "delta", session.items contains ONLY items that changed since
+   *  the last emit, and removedItemIds lists items that were removed. The
+   *  renderer must merge these into its master state. When undefined or "full",
+   *  session.items is the complete set (initial sync or periodic resync). */
+  payloadKind?: "full" | "delta";
+  /** Item IDs to remove from the renderer's master state when payloadKind="delta". */
+  removedItemIds?: string[];
+  /** Package IDs to remove from the renderer's master state when payloadKind="delta". */
+  removedPackageIds?: string[];
 }
 
 export interface AddLinksPayload {

@@ -1578,6 +1578,17 @@ export class DownloadManager extends EventEmitter {
     this.settingsSnapshotCacheAt = 0;
   }
 
+  /** State-diffing tracking: hashes of items/packages as last sent to the
+   *  renderer. Allows getSnapshotForEmit() to return only changed entries
+   *  plus a list of removed IDs, drastically cutting IPC payload size for
+   *  large queues (5000+ items) where most items are idle between emits. */
+  private lastEmittedItemHashes = new Map<string, string>();
+  private lastEmittedPackageHashes = new Map<string, string>();
+  private firstEmitDone = false;
+  private lastFullEmitAt = 0;
+  /** Force a full resync every 30 seconds to recover from any potential drift. */
+  private static readonly FULL_RESYNC_INTERVAL_MS = 30000;
+
   private lastPersistAt = 0;
   private lastSettingsPersistAt = 0;
   private appSessionStartedAt = 0;
@@ -2017,6 +2028,104 @@ export class DownloadManager extends EventEmitter {
     this.triggerPendingExtractions();
     this.persistSoon();
     this.emitState();
+  }
+
+  /** Compact hash of the visible/mutable item fields. Two items with identical
+   *  hashes are considered "no visible change" and can be excluded from delta
+   *  emits. Field selection covers everything ItemRow/PackageCard render. */
+  private buildItemHash(item: DownloadItem): string {
+    return `${item.updatedAt}|${item.status}|${item.progressPercent}|${item.speedBps}|${item.downloadedBytes}|${item.totalBytes}|${item.retries}|${item.fullStatus || ""}|${item.fileName}|${item.providerLabel || ""}|${item.provider || ""}|${item.onlineStatus || ""}|${item.lastError || ""}`;
+  }
+
+  /** Compact hash of the visible/mutable package fields. */
+  private buildPackageHash(pkg: PackageEntry): string {
+    return `${pkg.updatedAt}|${pkg.status}|${pkg.name}|${pkg.enabled ? 1 : 0}|${pkg.cancelled ? 1 : 0}|${pkg.priority || ""}|${pkg.itemIds.length}|${pkg.postProcessLabel || ""}`;
+  }
+
+  /** Returns a snapshot suitable for IPC emit. On the first emit (or every
+   *  30s for safety, or when explicitly forced), returns a "full" payload
+   *  containing all items/packages. Otherwise returns a "delta" with only
+   *  items/packages that changed since the last emit, plus removed IDs. */
+  public getSnapshotForEmit(forceFull = false): UiSnapshot {
+    const base = this.getSnapshot();
+    const now = nowMs();
+    const needsFullResync = !this.firstEmitDone || forceFull
+      || (now - this.lastFullEmitAt) > DownloadManager.FULL_RESYNC_INTERVAL_MS;
+
+    if (needsFullResync) {
+      // Refresh tracking state to current snapshot
+      this.lastEmittedItemHashes.clear();
+      this.lastEmittedPackageHashes.clear();
+      for (const id in base.session.items) {
+        this.lastEmittedItemHashes.set(id, this.buildItemHash(base.session.items[id]));
+      }
+      for (const id in base.session.packages) {
+        this.lastEmittedPackageHashes.set(id, this.buildPackageHash(base.session.packages[id]));
+      }
+      this.firstEmitDone = true;
+      this.lastFullEmitAt = now;
+      return { ...base, payloadKind: "full" };
+    }
+
+    // Build deltas: include only items/packages whose hash changed since last emit
+    const changedItems: Record<string, DownloadItem> = {};
+    const removedItemIds: string[] = [];
+    const seenItemIds = new Set<string>();
+    let itemChangeCount = 0;
+    for (const id in base.session.items) {
+      seenItemIds.add(id);
+      const item = base.session.items[id];
+      const newHash = this.buildItemHash(item);
+      const oldHash = this.lastEmittedItemHashes.get(id);
+      if (oldHash !== newHash) {
+        changedItems[id] = item;
+        this.lastEmittedItemHashes.set(id, newHash);
+        itemChangeCount += 1;
+      }
+    }
+    // Detect removed items
+    for (const id of this.lastEmittedItemHashes.keys()) {
+      if (!seenItemIds.has(id)) {
+        removedItemIds.push(id);
+      }
+    }
+    for (const id of removedItemIds) {
+      this.lastEmittedItemHashes.delete(id);
+    }
+
+    const changedPackages: Record<string, PackageEntry> = {};
+    const removedPackageIds: string[] = [];
+    const seenPackageIds = new Set<string>();
+    for (const id in base.session.packages) {
+      seenPackageIds.add(id);
+      const pkg = base.session.packages[id];
+      const newHash = this.buildPackageHash(pkg);
+      const oldHash = this.lastEmittedPackageHashes.get(id);
+      if (oldHash !== newHash) {
+        changedPackages[id] = pkg;
+        this.lastEmittedPackageHashes.set(id, newHash);
+      }
+    }
+    for (const id of this.lastEmittedPackageHashes.keys()) {
+      if (!seenPackageIds.has(id)) {
+        removedPackageIds.push(id);
+      }
+    }
+    for (const id of removedPackageIds) {
+      this.lastEmittedPackageHashes.delete(id);
+    }
+
+    return {
+      ...base,
+      session: {
+        ...base.session,
+        items: changedItems,
+        packages: changedPackages,
+      },
+      payloadKind: "delta",
+      removedItemIds,
+      removedPackageIds,
+    };
   }
 
   public getSnapshot(): UiSnapshot {
@@ -5280,7 +5389,7 @@ export class DownloadManager extends EventEmitter {
           this.stateEmitTimer = null;
         }
         this.lastStateEmitAt = now;
-        this.emit("state", this.getSnapshot());
+        this.emit("state", this.getSnapshotForEmit());
         return;
       }
       // Too soon — replace any pending timer with a shorter forced-emit timer
@@ -5291,7 +5400,7 @@ export class DownloadManager extends EventEmitter {
       this.stateEmitTimer = setTimeout(() => {
         this.stateEmitTimer = null;
         this.lastStateEmitAt = nowMs();
-        this.emit("state", this.getSnapshot());
+        this.emit("state", this.getSnapshotForEmit());
       }, MIN_FORCE_GAP_MS - sinceLastEmit);
       return;
     }
@@ -5311,7 +5420,7 @@ export class DownloadManager extends EventEmitter {
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
       this.lastStateEmitAt = nowMs();
-      this.emit("state", this.getSnapshot());
+      this.emit("state", this.getSnapshotForEmit());
     }, emitDelay);
   }
 
