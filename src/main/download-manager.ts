@@ -2149,10 +2149,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   private resetSessionTotalsIfQueueEmpty(force = false): void {
+    // Cheap O(1) check via cached counters covers the common case.
+    // The Object.keys() cross-check below was redundant — itemCount and
+    // packageOrder are kept in sync with session.items / session.packages
+    // by every mutation site, so the second check just allocated two
+    // arrays per call without ever changing the outcome.
     if (this.itemCount > 0 || this.session.packageOrder.length > 0) {
-      return;
-    }
-    if (Object.keys(this.session.items).length > 0 || Object.keys(this.session.packages).length > 0) {
       return;
     }
     if (!force && (this.sessionDownloadedBytes > 0 || this.sessionCompletedFiles > 0 || this.itemContributedBytes.size > 0)) {
@@ -7566,22 +7568,25 @@ export class DownloadManager extends EventEmitter {
     let changed = false;
     const waitSeconds = Math.max(0, Math.ceil((this.session.reconnectUntil - nowMs()) / 1000));
     const waitText = `Reconnect-Wait (${waitSeconds}s)`;
-    const itemIds = this.runItemIds.size > 0 ? this.runItemIds : Object.keys(this.session.items);
-    for (const itemId of itemIds) {
+    // Iterate without allocating an Object.keys() array (called every 900ms
+    // during reconnect; with 5000+ items that's a 5000-string allocation per tick).
+    const updateItem = (itemId: string): void => {
       const item = this.session.items[itemId];
-      if (!item) {
-        continue;
-      }
+      if (!item) return;
       const pkg = this.session.packages[item.packageId];
-      if (!pkg || pkg.cancelled || !pkg.enabled) {
-        continue;
-      }
+      if (!pkg || pkg.cancelled || !pkg.enabled) return;
       if (item.status === "queued") {
         item.status = "reconnect_wait";
         item.fullStatus = waitText;
         item.updatedAt = nowMs();
         changed = true;
       }
+    };
+    if (this.runItemIds.size > 0) {
+      for (const itemId of this.runItemIds) updateItem(itemId);
+    } else {
+      // for-in iterates own enumerable string keys without allocating an array
+      for (const itemId in this.session.items) updateItem(itemId);
     }
     if (changed) {
       this.emitState();
