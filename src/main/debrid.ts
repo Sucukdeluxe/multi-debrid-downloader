@@ -59,6 +59,23 @@ export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyRuntimeStatuses.clear();
 }
 
+/** Drop all Debrid-Link cooldown/runtime entries for key IDs that are no
+ *  longer in the active key set. Called when settings change so removed
+ *  keys don't keep blocking the system if they're re-added later. */
+export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): void {
+  for (const keyId of debridLinkKeyCooldowns.keys()) {
+    if (!activeKeyIds.has(keyId)) {
+      debridLinkKeyCooldowns.delete(keyId);
+      debridLinkKeyCooldownDetails.delete(keyId);
+    }
+  }
+  for (const keyId of debridLinkKeyRuntimeStatuses.keys()) {
+    if (!activeKeyIds.has(keyId)) {
+      debridLinkKeyRuntimeStatuses.delete(keyId);
+    }
+  }
+}
+
 /** Periodic cleanup of expired Debrid-Link cooldown/runtime entries.
  *  Without this, module-level Maps grow unbounded over 24/7 operation.
  *  Removes entries whose cooldown expired more than 1 hour ago. */
@@ -1534,6 +1551,33 @@ class MegaDebridClient {
 
   /** Per-account pending connect deduplication: login (lowercase) → promise */
   private static pendingConnects = new Map<string, Promise<string | null>>();
+
+  /** Clear cached tokens for accounts whose login is no longer in the given set.
+   *  Called when settings change so removed accounts don't keep stale tokens. */
+  public static pruneCachedTokensNotIn(activeLogins: Iterable<string>): void {
+    const keep = new Set<string>();
+    for (const login of activeLogins) {
+      keep.add(String(login || "").toLowerCase());
+    }
+    for (const login of MegaDebridClient.cachedApiTokens.keys()) {
+      if (!keep.has(login)) {
+        MegaDebridClient.cachedApiTokens.delete(login);
+      }
+    }
+    for (const login of MegaDebridClient.pendingConnects.keys()) {
+      if (!keep.has(login)) {
+        MegaDebridClient.pendingConnects.delete(login);
+      }
+    }
+  }
+
+  /** Force-clear the API token for a specific login (e.g. when its password
+   *  changes — same login, but cached token is now invalid for new password). */
+  public static clearCachedApiToken(login: string): void {
+    const key = String(login || "").toLowerCase();
+    MegaDebridClient.cachedApiTokens.delete(key);
+    MegaDebridClient.pendingConnects.delete(key);
+  }
 
   public constructor(login: string, password: string, mode: "api" | "web", allowApiFallback: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
     this.login = login;
@@ -3065,7 +3109,53 @@ export class DebridService {
   }
 
   public setSettings(next: AppSettings): void {
+    const prev = this.settings;
     this.settings = cloneSettings(next);
+
+    // Invalidate cached provider clients whose credentials/keys changed.
+    // Without this, switching API keys or session-cookie-bound accounts
+    // (LinkSnappy, Ddownload) would keep using the previous Client instance
+    // — which holds the OLD session cookies — until the app is restarted.
+    if (prev.debridLinkApiKeys !== next.debridLinkApiKeys) {
+      this.cachedDebridLinkClient = null;
+      this.cachedDebridLinkKey = "";
+    }
+    if (prev.linkSnappyLogin !== next.linkSnappyLogin || prev.linkSnappyPassword !== next.linkSnappyPassword) {
+      this.cachedLinkSnappyClient = null;
+      this.cachedLinkSnappyKey = "";
+    }
+    if (prev.ddownloadLogin !== next.ddownloadLogin || prev.ddownloadPassword !== next.ddownloadPassword) {
+      this.cachedDdownloadClient = null;
+      this.cachedDdownloadKey = "";
+    }
+
+    // Mega-Debrid token cache (static, module-level): tokens are keyed by
+    // login (lowercase). When credentials change, drop tokens for logins
+    // that are no longer in the active account list, AND force-clear any
+    // login whose password changed. Otherwise stale tokens linger up to
+    // 20 minutes and the new credentials won't be tried until the cached
+    // token starts returning 401/403.
+    const prevAccounts = parseMegaDebridAccounts(prev.megaCredentials || "", prev.megaPassword || "");
+    const nextAccounts = parseMegaDebridAccounts(next.megaCredentials || "", next.megaPassword || "");
+    const nextLogins = new Set<string>();
+    const nextPasswordByLogin = new Map<string, string>();
+    for (const acc of nextAccounts) {
+      nextLogins.add(acc.login.toLowerCase());
+      nextPasswordByLogin.set(acc.login.toLowerCase(), acc.password);
+    }
+    // Drop tokens for logins no longer present
+    MegaDebridClient.pruneCachedTokensNotIn(nextLogins);
+    // For logins still present but with a changed password, force-clear the token
+    for (const prevAcc of prevAccounts) {
+      const loginKey = prevAcc.login.toLowerCase();
+      if (nextLogins.has(loginKey) && nextPasswordByLogin.get(loginKey) !== prevAcc.password) {
+        MegaDebridClient.clearCachedApiToken(prevAcc.login);
+      }
+    }
+    // Also prune module-level Debrid-Link cooldowns for keys that no longer exist —
+    // otherwise a key removed and re-added later would still show its old cooldown.
+    const nextDebridLinkKeyIds = new Set<string>(parseDebridLinkApiKeys(next.debridLinkApiKeys || "").map((entry) => entry.id));
+    pruneDebridLinkRuntimeStateForKeys(nextDebridLinkKeyIds);
   }
 
   private getDebridLinkClient(apiKeysRaw: string): DebridLinkClient {

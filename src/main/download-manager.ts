@@ -1987,6 +1987,37 @@ export class DownloadManager extends EventEmitter {
       this.hybridFailedArchives.clear();
     }
 
+    // When account credentials change, clear the provider-failure circuit-breaker
+    // for affected providers. Otherwise a freshly added account would inherit
+    // the cooldown that the previous (now removed) account had triggered, and
+    // the user would be confused why "their new account doesn't work right away".
+    const credChanges: Array<{ prev: string; next: string; providers: string[] }> = [
+      { prev: previous.token || "", next: next.token || "", providers: ["realdebrid"] },
+      { prev: previous.allDebridToken || "", next: next.allDebridToken || "", providers: ["alldebrid"] },
+      { prev: previous.bestDebridApiKey || "", next: next.bestDebridApiKey || "", providers: ["bestdebrid"] },
+      { prev: previous.debridLinkApiKeys || "", next: next.debridLinkApiKeys || "", providers: ["debridlink"] },
+      { prev: previous.linkSnappyLogin + "|" + previous.linkSnappyPassword, next: next.linkSnappyLogin + "|" + next.linkSnappyPassword, providers: ["linksnappy"] },
+      { prev: previous.ddownloadLogin + "|" + previous.ddownloadPassword, next: next.ddownloadLogin + "|" + next.ddownloadPassword, providers: ["ddownload"] },
+      { prev: previous.megaCredentials + "|" + previous.megaPassword, next: next.megaCredentials + "|" + next.megaPassword, providers: ["megadebrid", "megadebrid-api", "megadebrid-web"] }
+    ];
+    let clearedProviderFailures = 0;
+    for (const change of credChanges) {
+      if (change.prev === change.next) continue;
+      for (const provider of change.providers) {
+        // Provider failure keys are sometimes "provider" alone, sometimes "provider:hoster".
+        // Clear all entries that start with the provider name.
+        for (const key of [...this.providerFailures.keys()]) {
+          if (key === provider || key.startsWith(`${provider}:`)) {
+            this.providerFailures.delete(key);
+            clearedProviderFailures += 1;
+          }
+        }
+      }
+    }
+    if (clearedProviderFailures > 0) {
+      logger.info(`Settings-Update: ${clearedProviderFailures} Provider-Failure(s) gecleart wegen geaenderter Credentials`);
+    }
+
     this.resolveExistingQueuedOpaqueFilenames();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
     if (next.completedCleanupPolicy !== "never") {
