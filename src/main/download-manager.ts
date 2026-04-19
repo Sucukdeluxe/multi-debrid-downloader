@@ -7407,7 +7407,9 @@ export class DownloadManager extends EventEmitter {
 
         this.runGlobalStallWatchdog(now);
 
-        const downloadsComplete = this.activeTasks.size === 0 && !this.hasQueuedItems() && !this.hasDelayedQueuedItems();
+        // Single-pass queue presence check (saves one full O(n) iteration per tick)
+        const queuePresence = this.activeTasks.size === 0 ? this.getQueuePresence(now) : { hasImmediate: true, hasDelayed: false };
+        const downloadsComplete = this.activeTasks.size === 0 && !queuePresence.hasImmediate && !queuePresence.hasDelayed;
         const postProcessComplete = this.packagePostProcessTasks.size === 0;
         if (downloadsComplete && (postProcessComplete || this.settings.autoExtractWhenStopped)) {
           this.finishRun();
@@ -7617,56 +7619,38 @@ export class DownloadManager extends EventEmitter {
     return null;
   }
 
-  private hasQueuedItems(): boolean {
-    const now = nowMs();
+  /** Single-pass alternative to hasQueuedItems + hasDelayedQueuedItems.
+   *  Returns both flags so the scheduler termination check needs only ONE
+   *  iteration over packages/items per tick instead of two separate scans. */
+  private getQueuePresence(now = nowMs()): { hasImmediate: boolean; hasDelayed: boolean } {
+    let hasImmediate = false;
+    let hasDelayed = false;
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled || !pkg.enabled) {
-        continue;
-      }
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
-        continue;
-      }
+      if (!pkg || pkg.cancelled || !pkg.enabled) continue;
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
-        if (!item) {
-          continue;
-        }
+        if (!item) continue;
+        if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
         const retryAfter = this.retryAfterByItem.get(itemId) || 0;
         if (retryAfter > now) {
-          continue;
+          hasDelayed = true;
+        } else {
+          hasImmediate = true;
         }
-        if (item.status === "queued" || item.status === "reconnect_wait") {
-          return true;
-        }
+        if (hasImmediate && hasDelayed) return { hasImmediate, hasDelayed };
       }
     }
-    return false;
+    return { hasImmediate, hasDelayed };
+  }
+
+  private hasQueuedItems(): boolean {
+    return this.getQueuePresence().hasImmediate;
   }
 
   private hasDelayedQueuedItems(): boolean {
-    const now = nowMs();
-    for (const [itemId, readyAt] of this.retryAfterByItem.entries()) {
-      if (readyAt <= now) {
-        continue;
-      }
-      const item = this.session.items[itemId];
-      if (!item) {
-        continue;
-      }
-      if (item.status !== "queued" && item.status !== "reconnect_wait") {
-        continue;
-      }
-      const pkg = this.session.packages[item.packageId];
-      if (!pkg || pkg.cancelled || !pkg.enabled) {
-        continue;
-      }
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(item.packageId)) {
-        continue;
-      }
-      return true;
-    }
-    return false;
+    return this.getQueuePresence().hasDelayed;
   }
 
   private countQueuedItems(): number {
