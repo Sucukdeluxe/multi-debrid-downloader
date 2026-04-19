@@ -37,6 +37,7 @@ import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } fro
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
+import { initAccountRotationLog, shutdownAccountRotationLog } from "./account-rotation-log";
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
@@ -84,6 +85,7 @@ export class AppController {
     initPackageLogs(this.storagePaths.baseDir);
     initItemLogs(this.storagePaths.baseDir);
     initAuditLog(this.storagePaths.baseDir);
+    initAccountRotationLog(this.storagePaths.baseDir);
     initRenameLog(this.storagePaths.baseDir);
     initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
@@ -679,6 +681,7 @@ export class AppController {
     shutdownRenameLog();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
+    shutdownAccountRotationLog();
     shutdownAuditLog();
     if (this.settings.historyRetentionMode === "session") {
       clearHistory(this.storagePaths);

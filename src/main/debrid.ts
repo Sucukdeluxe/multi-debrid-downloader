@@ -4,6 +4,7 @@ import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostL
 import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
+import { logAccountRotation } from "./account-rotation-log";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
@@ -1808,26 +1809,39 @@ class MegaDebridClient {
     let usableAccountSeen = false;
     const cooldownFailures: string[] = [];
     let earliestCooldownUntil = 0;
-    const hasMultiple = accounts.length > 1;
+    const totalAccounts = accounts.length;
+    const providerName = `Mega-Debrid ${mode === "api" ? "API" : "Web"}`;
+    const linkShort = String(link || "").slice(0, 80);
 
     // Always start from first account — use first available, skip disabled/limited/cooldown.
     for (let idx = 0; idx < accounts.length; idx += 1) {
       const account = accounts[idx];
-      const accountLabel = hasMultiple ? ` (${account.label})` : "";
+      // Always show account number — even with 1 account — so user can tell at a
+      // glance which account is in play. Format: "(Account 2/3, fa**david@...)"
+      const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
+      const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
 
       if (isMegaDebridAccountDisabled(settings, account.id)) {
         logger.info(`Mega-Debrid${accountLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Account`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DISABLED", { reason: "manually disabled" });
         continue;
       }
       if (isMegaDebridAccountDailyLimitReached(settings, account.id)) {
         logger.info(`Mega-Debrid${accountLabel}: uebersprungen (lokales Tageslimit erreicht), pruefe naechsten Account`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DAILY_LIMIT", { reason: "local daily limit reached" });
         continue;
       }
       // Cooldown key includes mode so API failures don't block Web attempts
       const cooldownKey = `${account.id}:${mode}`;
       const accountCooldownState = getMegaDebridAccountCooldownState(cooldownKey);
       if (accountCooldownState) {
-        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (Cooldown bis ${new Date(accountCooldownState.until).toLocaleTimeString()}), pruefe naechsten Account`);
+        const untilStr = new Date(accountCooldownState.until).toLocaleTimeString();
+        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (Cooldown bis ${untilStr}), pruefe naechsten Account`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_COOLDOWN", {
+          reason: accountCooldownState.message,
+          category: accountCooldownState.category,
+          until: untilStr
+        });
         cooldownFailures.push(`Mega-Debrid${accountLabel}: ${accountCooldownState.message}`);
         if (!earliestCooldownUntil || accountCooldownState.until < earliestCooldownUntil) {
           earliestCooldownUntil = accountCooldownState.until;
@@ -1835,20 +1849,34 @@ class MegaDebridClient {
         continue;
       }
 
+      // CLEAR per-account TEST log line BEFORE the network call, so the user
+      // can always see exactly which account is currently being tested for
+      // link generation — even if the call hangs or times out.
+      logger.info(`Mega-Debrid${accountLabel}: TESTE Account fuer Link-Generierung...`);
+      logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
+      const testStartedAt = Date.now();
+
       usableAccountSeen = true;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
         const result = await client.unrestrictLink(link, signal);
         clearMegaDebridAccountCooldownState(cooldownKey);
-        logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK -> ${result.fileName || "?"}`);
+        const elapsedMs = Date.now() - testStartedAt;
+        logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
+        logAccountRotation("INFO", providerName, rotationLabel, "OK", {
+          elapsedMs,
+          fileName: result.fileName || "",
+          link: linkShort
+        });
         return {
           ...result,
-          sourceLabel: account.label,
+          sourceLabel: `${result.sourceLabel ? `${result.sourceLabel} ` : ""}${account.label}`,
           sourceAccountId: account.id,
           sourceAccountLabel: account.label
         };
       } catch (error) {
         const failure = MegaDebridClient.classifyAccountFailure(error);
+        const elapsedMs = Date.now() - testStartedAt;
         failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
         if (failure.cooldownMs > 0) {
           setMegaDebridAccountCooldownState(cooldownKey, failure.cooldownMs, failure.message, failure.category);
@@ -1856,12 +1884,35 @@ class MegaDebridClient {
           clearMegaDebridAccountCooldownState(cooldownKey);
         }
         if (failure.fatal) {
+          logAccountRotation("ERROR", providerName, rotationLabel, "FATAL", {
+            elapsedMs,
+            reason: failure.message,
+            category: failure.category,
+            link: linkShort
+          });
           throw new Error(`Mega-Debrid${accountLabel}: ${failure.message}`);
         }
         const cooldownInfo = failure.cooldownMs > 0
           ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
           : "";
-        logger.warn(`Mega-Debrid${accountLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Account`);
+        // Find the next account that will be tried (for clearer log)
+        let nextLabel = "ENDE";
+        for (let nextIdx = idx + 1; nextIdx < accounts.length; nextIdx += 1) {
+          const nextAcc = accounts[nextIdx];
+          if (!isMegaDebridAccountDisabled(settings, nextAcc.id) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
+            nextLabel = `${nextAcc.label}/${totalAccounts} (${nextAcc.maskedLogin})`;
+            break;
+          }
+        }
+        logger.warn(`Mega-Debrid${accountLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Account (${nextLabel})`);
+        logAccountRotation("WARN", providerName, rotationLabel, "FAILED", {
+          elapsedMs,
+          reason: failure.message,
+          category: failure.category,
+          cooldownSec: failure.cooldownMs > 0 ? Math.ceil(failure.cooldownMs / 1000) : 0,
+          next: nextLabel,
+          link: linkShort
+        });
       }
     }
 
@@ -1924,11 +1975,25 @@ class MegaDebridClient {
       };
     }
 
-    // Temporary/transport errors — short cooldown, try next account
+    // Mega-Web "Antwort leer" / empty body — server frequently returns transient
+    // empty responses that recover within seconds. A 2-minute cooldown for this
+    // is way too long because the account is fundamentally healthy. Use a short
+    // 20s cooldown so the next download attempt can use this account again.
+    if (/antwort\s+leer|empty\s+response|leere\s+antwort/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: 20_000,
+        message: errorText || "Mega-Web transient empty response",
+        category: "temporary"
+      };
+    }
+
+    // Temporary/transport errors — short cooldown, try next account.
+    // Plain network blips deserve a much shorter cooldown than 2 min.
     if (isRetryableErrorText(errorText) || /timeout|network|fetch|socket/i.test(errorText)) {
       return {
         fatal: false,
-        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+        cooldownMs: 30_000,
         message: errorText || "temporaerer Fehler",
         category: "temporary"
       };
@@ -1937,7 +2002,7 @@ class MegaDebridClient {
     // Unknown errors — short cooldown, try next account (non-fatal)
     return {
       fatal: false,
-      cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+      cooldownMs: 30_000,
       message: errorText || "unbekannter Fehler",
       category: "temporary"
     };
@@ -2389,23 +2454,37 @@ class DebridLinkClient {
     let earliestCooldownUntil = 0;
     const attemptedKeyFailures: Array<{ message: string; cooldownMs: number; category?: DebridLinkCooldownCategory }> = [];
     let consecutiveTransportFailures = 0;
+    const totalKeys = this.apiKeys.length;
+    const providerName = "Debrid-Link";
+    const linkShort = String(link || "").slice(0, 80);
 
     // Always start from first key — use first available, skip disabled/limited/cooldown.
     // This ensures all parallel items use the same key until it's actually exhausted.
     for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
       const apiKey = this.apiKeys[keyIdx];
-      const keyLabel = this.apiKeys.length > 1 ? ` (${apiKey.label})` : "";
+      // Always show key number — even with 1 key — so user can tell at a
+      // glance which key is in play. Format: "(Key 2/3, abc***xyz)"
+      const keyLabel = ` (${apiKey.label}/${totalKeys}, ${apiKey.masked})`;
+      const rotationLabel = `${apiKey.label}/${totalKeys} (${apiKey.masked})`;
       if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Key`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DISABLED", { reason: "manually disabled" });
         continue;
       }
       if (isDebridLinkApiKeyDailyLimitReached(settings, apiKey.id)) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (lokales Tageslimit erreicht), pruefe naechsten Key`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DAILY_LIMIT", { reason: "local daily limit reached" });
         continue;
       }
       const keyCooldownState = getDebridLinkKeyCooldownState(apiKey.id);
       if (keyCooldownState) {
-        logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${new Date(keyCooldownState.until).toLocaleTimeString()}), pruefe naechsten Key`);
+        const untilStr = new Date(keyCooldownState.until).toLocaleTimeString();
+        logger.info(`Debrid-Link${keyLabel}: uebersprungen (Cooldown bis ${untilStr}), pruefe naechsten Key`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_COOLDOWN", {
+          reason: keyCooldownState.message,
+          category: keyCooldownState.category,
+          until: untilStr
+        });
         cooldownFailures.push(`Debrid-Link${keyLabel}: ${keyCooldownState.message}`);
         if (!earliestCooldownUntil || keyCooldownState.until < earliestCooldownUntil) {
           earliestCooldownUntil = keyCooldownState.until;
@@ -2413,12 +2492,25 @@ class DebridLinkClient {
         continue;
       }
 
+      // CLEAR per-key TEST log line BEFORE the network call, so the user
+      // can always see exactly which key is currently being tested for
+      // link generation — even if the call hangs or times out.
+      logger.info(`Debrid-Link${keyLabel}: TESTE Key fuer Link-Generierung...`);
+      logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
+      const testStartedAt = Date.now();
+
       usableKeySeen = true;
       try {
         const result = await this.unrestrictWithKey(apiKey, link, signal);
         clearDebridLinkKeyCooldownState(apiKey.id);
         setDebridLinkKeyRuntimeStatus(apiKey.id, "ready", "Unrestrict erfolgreich");
-        logger.info(`Debrid-Link${keyLabel}: Unrestrict OK -> ${result.fileName || "?"}`);
+        const elapsedMs = Date.now() - testStartedAt;
+        logger.info(`Debrid-Link${keyLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
+        logAccountRotation("INFO", providerName, rotationLabel, "OK", {
+          elapsedMs,
+          fileName: result.fileName || "",
+          link: linkShort
+        });
         return {
           ...result,
           sourceLabel: apiKey.label,
@@ -2427,6 +2519,7 @@ class DebridLinkClient {
         };
       } catch (error) {
         const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
+        const elapsedMs = Date.now() - testStartedAt;
         attemptedKeyFailures.push({
           message: `Debrid-Link${keyLabel}: ${failure.message}`,
           cooldownMs: failure.cooldownMs,
@@ -2440,6 +2533,12 @@ class DebridLinkClient {
           setDebridLinkKeyRuntimeStatus(apiKey.id, failure.category === "invalid" ? "invalid" : "error", failure.message);
         }
         if (failure.fatal) {
+          logAccountRotation("ERROR", providerName, rotationLabel, "FATAL", {
+            elapsedMs,
+            reason: failure.message,
+            category: failure.category,
+            link: linkShort
+          });
           throw new Error(`Debrid-Link${keyLabel}: ${failure.message}`);
         }
         if (failure.providerWide) {
@@ -2447,6 +2546,13 @@ class DebridLinkClient {
           // Break immediately and apply a longer cooldown (5 min) to avoid burning all keys.
           const providerWideCooldownMs = 5 * 60 * 1000;
           logger.warn(`Debrid-Link${keyLabel}: ${failure.message} (provider-wide, ueberspringe verbleibende Keys, Cooldown ${providerWideCooldownMs / 1000}s)`);
+          logAccountRotation("ERROR", providerName, rotationLabel, "PROVIDER_WIDE", {
+            elapsedMs,
+            reason: failure.message,
+            category: failure.category,
+            cooldownSec: Math.ceil(providerWideCooldownMs / 1000),
+            link: linkShort
+          });
           throw new Error(`debrid_link_cooldown:${providerWideCooldownMs}:Debrid-Link${keyLabel}: ${failure.message}`);
         }
         // Track consecutive transport failures (timeout/network) to detect cascades.
@@ -2456,12 +2562,35 @@ class DebridLinkClient {
           // 2+ keys timed out in a row — likely a server/network issue, not key-specific.
           const cascadeCooldownMs = 3 * 60 * 1000;
           logger.warn(`Debrid-Link: ${consecutiveTransportFailures} Transport-Fehler in Folge, ueberspringe verbleibende Keys, Cooldown ${cascadeCooldownMs / 1000}s`);
+          logAccountRotation("ERROR", providerName, rotationLabel, "TRANSPORT_CASCADE", {
+            elapsedMs,
+            consecutive: consecutiveTransportFailures,
+            cooldownSec: Math.ceil(cascadeCooldownMs / 1000),
+            link: linkShort
+          });
           throw new Error(`debrid_link_cooldown:${cascadeCooldownMs}:Debrid-Link: Transport-Kaskade (${consecutiveTransportFailures}x)`);
+        }
+        // Find the next key that will be tried (for clearer log)
+        let nextLabel = "ENDE";
+        for (let nextIdx = keyIdx + 1; nextIdx < this.apiKeys.length; nextIdx += 1) {
+          const nextKey = this.apiKeys[nextIdx];
+          if (!isDebridLinkApiKeyDisabled(settings, nextKey.id) && !isDebridLinkApiKeyDailyLimitReached(settings, nextKey.id) && !getDebridLinkKeyCooldownState(nextKey.id)) {
+            nextLabel = `${nextKey.label}/${totalKeys} (${nextKey.masked})`;
+            break;
+          }
         }
         const cooldownInfo = failure.cooldownMs > 0
           ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
           : "";
-        logger.warn(`Debrid-Link${keyLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Key`);
+        logger.warn(`Debrid-Link${keyLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Key (${nextLabel})`);
+        logAccountRotation("WARN", providerName, rotationLabel, "FAILED", {
+          elapsedMs,
+          reason: failure.message,
+          category: failure.category,
+          cooldownSec: failure.cooldownMs > 0 ? Math.ceil(failure.cooldownMs / 1000) : 0,
+          next: nextLabel,
+          link: linkShort
+        });
       }
     }
 
