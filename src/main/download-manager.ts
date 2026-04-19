@@ -1569,6 +1569,15 @@ export class DownloadManager extends EventEmitter {
 
   private statsCacheAt = 0;
 
+  /** Cache for cloneSettings() results in getSnapshot() — invalidated after 400ms
+   *  or by explicit invalidateSettingsSnapshotCache() calls. */
+  private settingsSnapshotCache: AppSettings | null = null;
+  private settingsSnapshotCacheAt = 0;
+  private invalidateSettingsSnapshotCache(): void {
+    this.settingsSnapshotCache = null;
+    this.settingsSnapshotCacheAt = 0;
+  }
+
   private lastPersistAt = 0;
   private lastSettingsPersistAt = 0;
   private appSessionStartedAt = 0;
@@ -1934,6 +1943,7 @@ export class DownloadManager extends EventEmitter {
     const now = nowMs();
     next.totalRuntimeAllTimeMs = Math.max(next.totalRuntimeAllTimeMs || 0, this.getLiveTotalRuntimeMs(now));
     this.settings = next;
+    this.invalidateSettingsSnapshotCache();
     this.runtimePersistedTotalMs = this.settings.totalRuntimeAllTimeMs || 0;
     this.runtimePersistedAt = now;
     this.ensureProviderDailyUsageFresh(nowMs());
@@ -2047,7 +2057,23 @@ export class DownloadManager extends EventEmitter {
     const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
 
     const snapshotSession = cloneSession(this.session);
-    const snapshotSettings = cloneSettings(this.settings);
+    // Cache the cloneSettings result for ~400ms. Settings are mutated in-place
+    // (so a reference check wouldn't detect changes) but most snapshot ticks
+    // happen close together (e.g. 700ms emit interval) where settings haven't
+    // changed at all. Cloning 85+ fields + 6 nested usage Maps + bandwidth
+    // schedules every ~700ms is wasteful when we can serve from cache for
+    // most of those ticks. The 400ms TTL ensures user-driven settings changes
+    // become visible within one render cycle of normal snapshot timing.
+    // Manual invalidation via invalidateSettingsSnapshotCache() is called by
+    // any code path that needs immediate visibility (replaceSettings, etc.).
+    let snapshotSettings: AppSettings;
+    if (this.settingsSnapshotCache && now - this.settingsSnapshotCacheAt < 400) {
+      snapshotSettings = this.settingsSnapshotCache;
+    } else {
+      snapshotSettings = cloneSettings(this.settings);
+      this.settingsSnapshotCache = snapshotSettings;
+      this.settingsSnapshotCacheAt = now;
+    }
     const snapshotSummary = this.summary
       ? { ...this.summary }
       : null;
