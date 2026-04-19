@@ -22,7 +22,15 @@ const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
-const DEBRID_LINK_QUOTA_ERRORS = new Set(["maxLink", "maxLinkHost", "maxData", "maxDataHost"]);
+/** Truly key-wide quota errors: the whole key is exhausted regardless of host. */
+const DEBRID_LINK_KEY_QUOTA_ERRORS = new Set(["maxLink", "maxData"]);
+/** Per-(key, host) quota errors: only this host is exhausted for this key — the
+ *  key remains usable for other hosters. */
+const DEBRID_LINK_HOST_QUOTA_ERRORS = new Set(["maxLinkHost", "maxDataHost"]);
+/** Backward-compat union — includes BOTH key-wide and per-host quota codes.
+ *  Use this only for "is it a quota error of any kind?" checks; for behavior
+ *  branches use the more specific sets above. */
+const DEBRID_LINK_QUOTA_ERRORS = new Set([...DEBRID_LINK_KEY_QUOTA_ERRORS, ...DEBRID_LINK_HOST_QUOTA_ERRORS]);
 const DEBRID_LINK_INVALID_TOKEN_ERRORS = new Set(["badToken", "hidedToken", "expired_token"]);
 const DEBRID_LINK_RATE_LIMIT_ERRORS = new Set(["floodDetected"]);
 const DEBRID_LINK_RETRYABLE_ERRORS = new Set(["internalError", "server_error"]);
@@ -58,6 +66,8 @@ export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyCooldowns.clear();
   debridLinkKeyCooldownDetails.clear();
   debridLinkKeyRuntimeStatuses.clear();
+  debridLinkKeyHostCooldowns.clear();
+  debridLinkKeyHostCooldownDetails.clear();
 }
 
 /** Drop all Debrid-Link cooldown/runtime entries for key IDs that are no
@@ -73,6 +83,17 @@ export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): v
   for (const keyId of debridLinkKeyRuntimeStatuses.keys()) {
     if (!activeKeyIds.has(keyId)) {
       debridLinkKeyRuntimeStatuses.delete(keyId);
+    }
+  }
+  // Per-(key, host) cooldown keys have format `${keyId}|${hoster}` — drop any
+  // whose keyId is no longer in the active set so removed keys don't keep
+  // memory state around if they're re-added later.
+  for (const stateKey of debridLinkKeyHostCooldowns.keys()) {
+    const sepIdx = stateKey.indexOf("|");
+    const keyId = sepIdx >= 0 ? stateKey.slice(0, sepIdx) : stateKey;
+    if (!activeKeyIds.has(keyId)) {
+      debridLinkKeyHostCooldowns.delete(stateKey);
+      debridLinkKeyHostCooldownDetails.delete(stateKey);
     }
   }
 }
@@ -93,6 +114,13 @@ export function pruneExpiredDebridLinkRuntimeState(now = Date.now()): number {
   for (const [keyId, status] of debridLinkKeyRuntimeStatuses) {
     if (!debridLinkKeyCooldowns.has(keyId) && now - status.updatedAt > grace) {
       debridLinkKeyRuntimeStatuses.delete(keyId);
+      removed += 1;
+    }
+  }
+  for (const [stateKey, until] of debridLinkKeyHostCooldowns) {
+    if (until + grace < now) {
+      debridLinkKeyHostCooldowns.delete(stateKey);
+      debridLinkKeyHostCooldownDetails.delete(stateKey);
       removed += 1;
     }
   }
@@ -189,6 +217,92 @@ function getDebridLinkKeyCooldownState(
     remainingMs: until - now,
     message: detail?.message || "Debrid-Link Key im Cooldown",
     category: detail?.category || "temporary"
+  };
+}
+
+/** Per-(key, host) cooldown cache. When a key hits maxLinkHost / maxDataHost
+ *  for a specific host, only that combination should be blocked — the key
+ *  itself stays usable for other hosters. Map key format: `${keyId}|${hoster}`. */
+const debridLinkKeyHostCooldowns = new Map<string, number>();
+const debridLinkKeyHostCooldownDetails = new Map<string, DebridLinkCooldownDetail>();
+
+function makeDebridLinkKeyHostCooldownKey(keyId: string, hoster: string): string {
+  return `${keyId}|${hoster.toLowerCase()}`;
+}
+
+function clearDebridLinkKeyHostCooldownState(keyId: string, hoster: string): void {
+  const stateKey = makeDebridLinkKeyHostCooldownKey(keyId, hoster);
+  debridLinkKeyHostCooldowns.delete(stateKey);
+  debridLinkKeyHostCooldownDetails.delete(stateKey);
+}
+
+function setDebridLinkKeyHostCooldownState(
+  keyId: string,
+  hoster: string,
+  cooldownMs: number,
+  message: string,
+  category: DebridLinkCooldownCategory
+): void {
+  if (!hoster) {
+    // Fall back to key-wide cooldown when we can't determine the hoster — better
+    // a slightly broader block than letting the key thrash on the same failure.
+    setDebridLinkKeyCooldownState(keyId, cooldownMs, message, category);
+    return;
+  }
+  if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) {
+    clearDebridLinkKeyHostCooldownState(keyId, hoster);
+    return;
+  }
+  const stateKey = makeDebridLinkKeyHostCooldownKey(keyId, hoster);
+  // Same max-wins semantics as setDebridLinkKeyCooldownState — parallel items
+  // hitting maxDataHost on the same (key, host) shouldn't shorten an existing
+  // longer cooldown. Strong categories (quota / rate_limit / invalid) win over
+  // generic temporary regardless of duration.
+  const newUntil = Date.now() + Math.max(1000, Math.floor(cooldownMs));
+  const existingUntil = Number(debridLinkKeyHostCooldowns.get(stateKey) || 0);
+  const existingDetail = debridLinkKeyHostCooldownDetails.get(stateKey);
+  const newIsStrongCategory = category === "rate_limit" || category === "quota" || category === "invalid";
+  const existingIsStrongCategory = existingDetail
+    ? (existingDetail.category === "rate_limit" || existingDetail.category === "quota" || existingDetail.category === "invalid")
+    : false;
+  if (existingUntil > Date.now()) {
+    if (existingUntil >= newUntil && (!newIsStrongCategory || existingIsStrongCategory)) {
+      return;
+    }
+    if (existingIsStrongCategory && !newIsStrongCategory) {
+      return;
+    }
+  }
+  debridLinkKeyHostCooldowns.set(stateKey, newUntil);
+  debridLinkKeyHostCooldownDetails.set(stateKey, { message, category });
+  // Intentionally NOT updating setDebridLinkKeyRuntimeStatus here — the key
+  // is still healthy for other hosters, only this (key, host) is blocked.
+}
+
+function getDebridLinkKeyHostCooldownState(
+  keyId: string,
+  hoster: string,
+  now = Date.now()
+): { until: number; remainingMs: number; message: string; category: DebridLinkCooldownCategory } | null {
+  if (!hoster) {
+    return null;
+  }
+  const stateKey = makeDebridLinkKeyHostCooldownKey(keyId, hoster);
+  const until = Number(debridLinkKeyHostCooldowns.get(stateKey) || 0);
+  if (!until) {
+    return null;
+  }
+  if (until <= now) {
+    debridLinkKeyHostCooldowns.delete(stateKey);
+    debridLinkKeyHostCooldownDetails.delete(stateKey);
+    return null;
+  }
+  const detail = debridLinkKeyHostCooldownDetails.get(stateKey);
+  return {
+    until,
+    remainingMs: until - now,
+    message: detail?.message || "Debrid-Link Key fuer Host im Cooldown",
+    category: detail?.category || "quota"
   };
 }
 
@@ -2457,6 +2571,7 @@ class DebridLinkClient {
     const totalKeys = this.apiKeys.length;
     const providerName = "Debrid-Link";
     const linkShort = String(link || "").slice(0, 80);
+    const linkHoster = extractHosterFromUrl(link);
 
     // Always start from first key — use first available, skip disabled/limited/cooldown.
     // This ensures all parallel items use the same key until it's actually exhausted.
@@ -2488,6 +2603,25 @@ class DebridLinkClient {
         cooldownFailures.push(`Debrid-Link${keyLabel}: ${keyCooldownState.message}`);
         if (!earliestCooldownUntil || keyCooldownState.until < earliestCooldownUntil) {
           earliestCooldownUntil = keyCooldownState.until;
+        }
+        continue;
+      }
+      // Per-(key, host) cooldown — set when a previous attempt for THIS host
+      // returned maxLinkHost / maxDataHost. The key itself is healthy for other
+      // hosters, so we only skip it for this specific link.
+      const hostCooldownState = linkHoster ? getDebridLinkKeyHostCooldownState(apiKey.id, linkHoster) : null;
+      if (hostCooldownState) {
+        const untilStr = new Date(hostCooldownState.until).toLocaleTimeString();
+        logger.info(`Debrid-Link${keyLabel}: uebersprungen (Host-Cooldown ${linkHoster} bis ${untilStr}), pruefe naechsten Key`);
+        logAccountRotation("INFO", providerName, rotationLabel, "SKIP_HOST_COOLDOWN", {
+          reason: hostCooldownState.message,
+          category: hostCooldownState.category,
+          host: linkHoster,
+          until: untilStr
+        });
+        cooldownFailures.push(`Debrid-Link${keyLabel}: ${hostCooldownState.message}`);
+        if (!earliestCooldownUntil || hostCooldownState.until < earliestCooldownUntil) {
+          earliestCooldownUntil = hostCooldownState.until;
         }
         continue;
       }
@@ -2527,7 +2661,21 @@ class DebridLinkClient {
         });
         failures.push(`Debrid-Link${keyLabel}: ${failure.message}`);
         if (failure.cooldownMs > 0) {
-          setDebridLinkKeyCooldownState(apiKey.id, failure.cooldownMs, failure.message, failure.category || "temporary");
+          if (failure.hostOnly) {
+            // Per-(key, host) quota — block only this combination, not the
+            // whole key. The key remains "ready" for other hosters. If the
+            // hoster couldn't be parsed from the URL, the helper falls back
+            // to a key-wide cooldown (better safe than thrashing).
+            setDebridLinkKeyHostCooldownState(
+              apiKey.id,
+              failure.hoster || "",
+              failure.cooldownMs,
+              failure.message,
+              failure.category || "quota"
+            );
+          } else {
+            setDebridLinkKeyCooldownState(apiKey.id, failure.cooldownMs, failure.message, failure.category || "temporary");
+          }
         } else {
           clearDebridLinkKeyCooldownState(apiKey.id);
           setDebridLinkKeyRuntimeStatus(apiKey.id, failure.category === "invalid" ? "invalid" : "error", failure.message);
@@ -2750,7 +2898,7 @@ class DebridLinkClient {
     apiKey: ReturnType<typeof parseDebridLinkApiKeys>[number],
     link: string,
     signal?: AbortSignal
-  ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory; providerWide?: boolean }> {
+  ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory; providerWide?: boolean; hostOnly?: boolean; hoster?: string }> {
     const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
     if (error instanceof DebridLinkApiError) {
       const code = String(error.code || "").trim() || `HTTP ${error.status}`;
@@ -2772,13 +2920,29 @@ class DebridLinkClient {
           category: "rate_limit"
         };
       }
-      if (DEBRID_LINK_QUOTA_ERRORS.has(code)) {
+      if (DEBRID_LINK_HOST_QUOTA_ERRORS.has(code)) {
+        // Per-(key, host) quota — only this host is exhausted for this key.
+        // The key remains usable for other hosters, so we mark the failure
+        // hostOnly and let the rotation loop apply a per-(key, host) cooldown.
         const cooldownMs = await this.fetchQuotaCooldownMs(apiKey, signal);
-        const hoster = extractHosterFromUrl(link) || "host";
+        const hosterRaw = extractHosterFromUrl(link);
+        const hosterLabel = hosterRaw || "host";
         return {
           fatal: false,
           cooldownMs,
-          message: `Quota erreicht fuer ${hoster} (${code}: ${description})`,
+          message: `Quota erreicht fuer ${hosterLabel} (${code}: ${description})`,
+          category: "quota",
+          hostOnly: true,
+          hoster: hosterRaw
+        };
+      }
+      if (DEBRID_LINK_KEY_QUOTA_ERRORS.has(code)) {
+        // Key-wide quota — whole key is exhausted, blocks all hosters.
+        const cooldownMs = await this.fetchQuotaCooldownMs(apiKey, signal);
+        return {
+          fatal: false,
+          cooldownMs,
+          message: `Quota erreicht (${code}: ${description})`,
           category: "quota"
         };
       }

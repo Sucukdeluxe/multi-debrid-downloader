@@ -388,6 +388,90 @@ describe("debrid service", () => {
     expect(result.directUrl).toBe("https://debrid-link.example/quota-ok.bin");
   });
 
+  it("scopes Debrid-Link maxDataHost cooldown to the (key, host) pair so the key stays usable for other hosters", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    const unrestrictAuthHeaders: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const headers = init?.headers;
+      let authHeader = "";
+      if (headers instanceof Headers) {
+        authHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        authHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+
+      if (url.includes("debrid-link.com/api/v2/downloader/limits")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: { nextResetSeconds: { value: 900 } }
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      // Only count calls to /downloader/add (the unrestrict endpoint)
+      if (url.includes("/downloader/add")) {
+        unrestrictAuthHeaders.push(authHeader);
+        // Read the body to know which link is being unrestricted
+        const bodyText = init?.body ? String(init.body) : "";
+        const isRapidgator = /rapidgator/i.test(bodyText);
+        // Only key-one + rapidgator returns maxDataHost. All other (key, host)
+        // combinations succeed.
+        if (authHeader === "Bearer dl-key-one" && isRapidgator) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: "maxDataHost",
+            error_description: "host quota reached"
+          }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          success: true,
+          value: {
+            downloadUrl: `https://debrid-link.example/${authHeader.slice(-3)}-${isRapidgator ? "rg" : "ot"}.bin`,
+            name: "ok.bin",
+            size: 1024
+          }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+
+    // 1) First rapidgator: key-one hits maxDataHost → key-two succeeds.
+    const r1 = await service.unrestrictLink("https://rapidgator.net/file/first");
+    expect(r1.providerLabel).toContain("Key 2");
+
+    // 2) Second rapidgator request: key-one MUST be skipped (host cooldown
+    //    on (key1, rapidgator)), only key-two should be tried.
+    unrestrictAuthHeaders.length = 0;
+    const r2 = await service.unrestrictLink("https://rapidgator.net/file/second");
+    expect(unrestrictAuthHeaders).toEqual(["Bearer dl-key-two"]);
+    expect(r2.providerLabel).toContain("Key 2");
+
+    // 3) Different host: key-one must NOT be skipped — its host-cooldown is
+    //    only for rapidgator, not for uploaded.net.
+    unrestrictAuthHeaders.length = 0;
+    const r3 = await service.unrestrictLink("https://uploaded.net/file/third");
+    expect(unrestrictAuthHeaders).toEqual(["Bearer dl-key-one"]);
+    expect(r3.providerLabel).toContain("Key 1");
+  });
+
   it("treats bad Debrid-Link file passwords as fatal and does not rotate keys", async () => {
     const settings = {
       ...defaultSettings(),
