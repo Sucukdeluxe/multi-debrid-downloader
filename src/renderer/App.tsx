@@ -6117,6 +6117,153 @@ export function App(): ReactElement {
   );
 }
 
+/** Computes the user-facing status text for an item, applying business rules
+ *  about which states are visible while the session is stopped. */
+function computeDisplayedItemStatus(item: DownloadItem, sessionRunning: boolean): string {
+  const statusText = String(item.fullStatus || "").trim();
+  if (statusText === "Wartet") return "";
+  if (sessionRunning) return statusText;
+  if (item.status !== "queued" && item.status !== "reconnect_wait") return statusText;
+  if (statusText === "Paket gestoppt") return statusText;
+  if (/^Entpacken\b/i.test(statusText) || /^Entpackt\b/i.test(statusText) || /^Entpack-Fehler\b/i.test(statusText) || /^Fertig\b/i.test(statusText)) {
+    return statusText;
+  }
+  return "";
+}
+
+interface ItemRowProps {
+  item: DownloadItem;
+  packageId: string;
+  isSelected: boolean;
+  sessionRunning: boolean;
+  columnOrder: string[];
+  gridTemplate: string;
+  onSelect: (id: string, ctrlKey: boolean, shiftKey: boolean) => void;
+  onSelectMouseDown: (id: string, e: React.MouseEvent) => void;
+  onSelectMouseEnter: (id: string) => void;
+  onContextMenu: (packageId: string, itemId: string | undefined, x: number, y: number) => void;
+}
+
+/** Per-item row, memoized so a status update on one item doesn't re-render
+ *  every other item in the same package (the bottleneck on packages with
+ *  many episodes). Custom equality only checks the fields actually rendered. */
+const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunning, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onContextMenu }: ItemRowProps): ReactElement {
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelect(item.id, e.ctrlKey, e.shiftKey);
+  }, [item.id, onSelect]);
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelectMouseDown(item.id, e);
+  }, [item.id, onSelectMouseDown]);
+  const handleMouseEnter = useCallback(() => {
+    onSelectMouseEnter(item.id);
+  }, [item.id, onSelectMouseEnter]);
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onContextMenu(packageId, item.id, e.clientX, e.clientY);
+  }, [packageId, item.id, onContextMenu]);
+
+  return (
+    <div
+      className={`item-row${isSelected ? " item-selected" : ""}`}
+      style={{ gridTemplateColumns: gridTemplate }}
+      onClick={handleClick}
+      onMouseDown={handleMouseDown}
+      onMouseEnter={handleMouseEnter}
+      onContextMenu={handleContextMenu}
+    >
+      {columnOrder.map((col) => {
+        switch (col) {
+          case "name": return (
+            <span key={col} className="pkg-col pkg-col-name item-indent" title={item.fileName}>
+              {item.onlineStatus && <span className={`link-status-dot ${item.onlineStatus}`} title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : "Wird geprüft..."} />}
+              {item.fileName}
+            </span>
+          );
+          case "size": {
+            const total = item.totalBytes || item.downloadedBytes || 0;
+            const dl = item.downloadedBytes || 0;
+            const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
+            const label = `${humanSize(dl)} / ${humanSize(total)}`;
+            return (
+              <span key={col} className="pkg-col pkg-col-size">
+                {total > 0 ? (
+                  <span className="progress-size progress-size-small">
+                    <span className="progress-size-bar" style={{ width: `${pct}%` }} />
+                    <span className="progress-size-text">{label}</span>
+                    <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
+                  </span>
+                ) : ""}
+              </span>
+            );
+          }
+          case "progress": return (
+            <span key={col} className="pkg-col pkg-col-progress">
+              {(item.totalBytes || 0) > 0 ? (
+                <span className="progress-inline progress-inline-small">
+                  <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
+                  <span className="progress-inline-text">{item.progressPercent}%</span>
+                  <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
+                </span>
+              ) : ""}
+            </span>
+          );
+          case "hoster": { const h = extractHoster(item.url) || ""; return <span key={col} className="pkg-col pkg-col-hoster" title={h}>{h}</span>; }
+          case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
+          case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
+          case "status": {
+            const displayStatus = computeDisplayedItemStatus(item, sessionRunning);
+            const title = !displayStatus ? "" : (item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus);
+            return (
+              <span key={col} className="pkg-col pkg-col-status" title={title}>
+                {displayStatus}
+              </span>
+            );
+          }
+          case "speed": return <span key={col} className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
+          case "added": return <span key={col} className="pkg-col pkg-col-added">{formatDateTime(item.createdAt)}</span>;
+          default: return null;
+        }
+      })}
+    </div>
+  );
+}, (prev, next) => {
+  // Skip re-render unless something visible actually changed for THIS item.
+  if (prev.item !== next.item) {
+    const a = prev.item;
+    const b = next.item;
+    if (a.id !== b.id
+      || a.updatedAt !== b.updatedAt
+      || a.status !== b.status
+      || a.fileName !== b.fileName
+      || a.url !== b.url
+      || a.provider !== b.provider
+      || a.providerLabel !== b.providerLabel
+      || a.fullStatus !== b.fullStatus
+      || a.onlineStatus !== b.onlineStatus
+      || a.progressPercent !== b.progressPercent
+      || a.speedBps !== b.speedBps
+      || a.downloadedBytes !== b.downloadedBytes
+      || a.totalBytes !== b.totalBytes
+      || a.retries !== b.retries
+      || a.createdAt !== b.createdAt) {
+      return false;
+    }
+  }
+  if (prev.packageId !== next.packageId) return false;
+  if (prev.isSelected !== next.isSelected) return false;
+  if (prev.sessionRunning !== next.sessionRunning) return false;
+  if (prev.columnOrder !== next.columnOrder) return false;
+  if (prev.gridTemplate !== next.gridTemplate) return false;
+  if (prev.onSelect !== next.onSelect) return false;
+  if (prev.onSelectMouseDown !== next.onSelectMouseDown) return false;
+  if (prev.onSelectMouseEnter !== next.onSelectMouseEnter) return false;
+  if (prev.onContextMenu !== next.onContextMenu) return false;
+  return true;
+});
+
 interface PackageCardProps {
   pkg: PackageEntry;
   items: DownloadItem[];
@@ -6151,59 +6298,46 @@ interface PackageCardProps {
 }
 
 const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripeVariant, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, sessionRunning, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
-  const done = items.filter((item) => item.status === "completed").length;
-  const failed = items.filter((item) => item.status === "failed").length;
-  const cancelled = items.filter((item) => item.status === "cancelled").length;
-  const extracted = items.filter((item) => item.fullStatus?.startsWith("Entpackt")).length;
-  const extracting = items.some((item) => item.fullStatus?.startsWith("Entpacken"));
-  const total = Math.max(1, items.length);
-  // Use 50/50 split when extraction is active OR package is in extracting state
-  // (prevents bar jumping from 100% to 50% when extraction starts)
-  const allDownloaded = done + failed + cancelled >= total;
-  const allExtracted = extracted >= total;
-  const useExtractSplit = extracting || pkg.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0 && failed === 0 && cancelled === 0);
-  // Include fractional progress from active downloads so the bar moves continuously
-  const activeProgress = items.reduce((sum, item) => {
-    if (item.status === "downloading" || (item.status === "queued" && (item.progressPercent || 0) > 0)) {
-      return sum + (item.progressPercent || 0) / 100;
+  // Single-pass aggregation: replaces 5 separate filter()/some() + 2 reduce() calls.
+  // For a package with N items this is O(N) instead of O(7N) per render.
+  const stats = useMemo(() => {
+    let done = 0;
+    let failed = 0;
+    let cancelled = 0;
+    let extracted = 0;
+    let extracting = false;
+    let activeProgress = 0;
+    let extractingProgress = 0;
+    for (const item of items) {
+      if (item.status === "completed") done += 1;
+      else if (item.status === "failed") failed += 1;
+      else if (item.status === "cancelled") cancelled += 1;
+      const fs = item.fullStatus || "";
+      if (fs.startsWith("Entpackt")) {
+        extracted += 1;
+      } else if (fs.startsWith("Entpacken")) {
+        extracting = true;
+        const m = fs.match(/^Entpacken\s+(\d+)%/);
+        if (m) extractingProgress += Number(m[1]) / 100;
+      }
+      if (item.status === "downloading" || (item.status === "queued" && (item.progressPercent || 0) > 0)) {
+        activeProgress += (item.progressPercent || 0) / 100;
+      }
     }
-    return sum;
-  }, 0);
-  const dlProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100)));
-  // Include fractional progress from items currently being extracted
-  const extractingProgress = items.reduce((sum, item) => {
-    const fs = item.fullStatus || "";
-    if (fs.startsWith("Entpackt")) return sum;
-    const m = fs.match(/^Entpacken\s+(\d+)%/);
-    if (m) return sum + Number(m[1]) / 100;
-    return sum;
-  }, 0);
-  const exProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
-  const combinedProgress = Math.min(100, useExtractSplit ? dlProgress + exProgress : dlProgress);
+    const total = Math.max(1, items.length);
+    const allDownloaded = done + failed + cancelled >= total;
+    const allExtracted = extracted >= total;
+    const useExtractSplit = extracting || pkg.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0 && failed === 0 && cancelled === 0);
+    const dlProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100)));
+    const exProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
+    const combinedProgress = Math.min(100, useExtractSplit ? dlProgress + exProgress : dlProgress);
+    return { done, failed, cancelled, extracted, extracting, total, useExtractSplit, dlProgress, exProgress, combinedProgress };
+  }, [items, pkg.status]);
+  const { done, failed, cancelled, extracted, extracting, total, useExtractSplit, dlProgress, exProgress, combinedProgress } = stats;
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
     if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
     if (e.key === "Escape") { onFinishEdit(pkg.id, pkg.name, pkg.name); }
-  };
-
-  const getDisplayedItemStatus = (item: DownloadItem): string => {
-    const statusText = String(item.fullStatus || "").trim();
-    if (statusText === "Wartet") {
-      return "";
-    }
-    if (sessionRunning) {
-      return statusText;
-    }
-    if (item.status !== "queued" && item.status !== "reconnect_wait") {
-      return statusText;
-    }
-    if (statusText === "Paket gestoppt") {
-      return statusText;
-    }
-    if (/^Entpacken\b/i.test(statusText) || /^Entpackt\b/i.test(statusText) || /^Entpack-Fehler\b/i.test(statusText) || /^Fertig\b/i.test(statusText)) {
-      return statusText;
-    }
-    return "";
   };
 
   return (
@@ -6293,61 +6427,19 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
         {useExtractSplit && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
       </div>
       {!collapsed && items.filter((item) => !hideExtractedItems || !item.fullStatus?.startsWith("Entpackt")).map((item) => (
-        <div key={item.id} className={`item-row${selectedIds.has(item.id) ? " item-selected" : ""}`} style={{ gridTemplateColumns: gridTemplate }} onClick={(e) => { e.stopPropagation(); onSelect(item.id, e.ctrlKey, e.shiftKey); }} onMouseDown={(e) => { e.stopPropagation(); onSelectMouseDown(item.id, e); }} onMouseEnter={() => onSelectMouseEnter(item.id)} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, item.id, e.clientX, e.clientY); }}>
-          {columnOrder.map((col) => {
-            switch (col) {
-              case "name": return (
-                <span key={col} className="pkg-col pkg-col-name item-indent" title={item.fileName}>
-                  {item.onlineStatus && <span className={`link-status-dot ${item.onlineStatus}`} title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : "Wird geprüft..."} />}
-                  {item.fileName}
-                </span>
-              );
-              case "size": return (
-                <span key={col} className="pkg-col pkg-col-size">{(() => {
-                  const total = item.totalBytes || item.downloadedBytes || 0;
-                  const dl = item.downloadedBytes || 0;
-                  const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
-                  const label = `${humanSize(dl)} / ${humanSize(total)}`;
-                  return total > 0 ? (
-                    <span className="progress-size progress-size-small">
-                      <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                      <span className="progress-size-text">{label}</span>
-                      <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-                    </span>
-                  ) : "";
-                })()}</span>
-              );
-              case "progress": return (
-                <span key={col} className="pkg-col pkg-col-progress">
-                  {(item.totalBytes || 0) > 0 ? (
-                    <span className="progress-inline progress-inline-small">
-                      <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
-                      <span className="progress-inline-text">{item.progressPercent}%</span>
-                      <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
-                    </span>
-                  ) : ""}
-                </span>
-              );
-              case "hoster": { const h = extractHoster(item.url) || ""; return <span key={col} className="pkg-col pkg-col-hoster" title={h}>{h}</span>; }
-              case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
-              case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
-              case "status": return (
-                <span key={col} className="pkg-col pkg-col-status" title={(() => {
-                  const displayStatus = getDisplayedItemStatus(item);
-                  if (!displayStatus) {
-                    return "";
-                  }
-                  return item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus;
-                })()}>
-                  {getDisplayedItemStatus(item)}
-                </span>
-              );
-              case "speed": return <span key={col} className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
-              case "added": return <span key={col} className="pkg-col pkg-col-added">{formatDateTime(item.createdAt)}</span>;
-              default: return null;
-            }
-          })}
-        </div>
+        <ItemRow
+          key={item.id}
+          item={item}
+          packageId={pkg.id}
+          isSelected={selectedIds.has(item.id)}
+          sessionRunning={sessionRunning}
+          columnOrder={columnOrder}
+          gridTemplate={gridTemplate}
+          onSelect={onSelect}
+          onSelectMouseDown={onSelectMouseDown}
+          onSelectMouseEnter={onSelectMouseEnter}
+          onContextMenu={onContextMenu}
+        />
       ))}
     </article>
   );
@@ -6369,10 +6461,20 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
     || prev.isEditing !== next.isEditing
     || prev.collapsed !== next.collapsed
     || prev.hideExtractedItems !== next.hideExtractedItems
-    || prev.selectedIds !== next.selectedIds
     || prev.columnOrder !== next.columnOrder
     || prev.gridTemplate !== next.gridTemplate) {
     return false;
+  }
+  // selectedIds is a Set that gets a new reference on every selection change
+  // anywhere in the app. Only re-render this card if the selection state
+  // changed for an item that ACTUALLY belongs to this package — that way
+  // selecting an item in a different package doesn't re-render all 200+ cards.
+  if (prev.selectedIds !== next.selectedIds) {
+    for (const itemId of next.pkg.itemIds) {
+      if (prev.selectedIds.has(itemId) !== next.selectedIds.has(itemId)) {
+        return false;
+      }
+    }
   }
   if ((prev.isEditing || next.isEditing) && prev.editingName !== next.editingName) {
     return false;
