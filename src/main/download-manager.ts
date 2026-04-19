@@ -363,21 +363,25 @@ function generateHistoryId(): string {
   return `hist-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Stable empty object reference reused for snapshots when no package speeds
+ *  are active. Avoids allocating a fresh `{}` per snapshot which breaks
+ *  React.memo()/useMemo dependency comparisons in the renderer. */
+const EMPTY_PACKAGE_SPEED_BPS: Readonly<Record<string, number>> = Object.freeze({});
+
 function cloneSession(session: SessionState): SessionState {
-  const clonedItems: Record<string, DownloadItem> = {};
-  for (const key of Object.keys(session.items)) {
-    clonedItems[key] = { ...session.items[key] };
-  }
-  const clonedPackages: Record<string, PackageEntry> = {};
-  for (const key of Object.keys(session.packages)) {
-    const pkg = session.packages[key];
-    clonedPackages[key] = { ...pkg, itemIds: [...pkg.itemIds] };
-  }
+  // Shallow clone only — items/packages are emitted to the renderer via IPC,
+  // which runs structuredClone() on the payload in the same event-loop tick
+  // (so the renderer always gets an isolated deep copy). All in-process
+  // consumers of getSnapshot() (app-controller, debug-server, link export)
+  // read the snapshot synchronously without mutating it. Doing a per-item
+  // shallow clone here was a redundant ~5000 object allocations per emit
+  // for a 5000-item queue. Cloning only the outer Records keeps consumers
+  // safe from later additions/removals while avoiding per-item allocation.
   return {
     ...session,
     packageOrder: [...session.packageOrder],
-    packages: clonedPackages,
-    items: clonedItems
+    packages: { ...session.packages },
+    items: { ...session.items }
   };
 }
 
@@ -2060,9 +2064,17 @@ export class DownloadManager extends EventEmitter {
       canPause: this.session.running,
       clipboardActive: this.settings.clipboardWatch,
       reconnectSeconds: Math.ceil(reconnectMs / 1000),
-      packageSpeedBps: !this.session.running || paused ? {} : Object.fromEntries(
-        [...this.speedBytesPerPackage].map(([pid, bytes]) => [pid, Math.floor(bytes / SPEED_WINDOW_SECONDS)])
-      )
+      packageSpeedBps: !this.session.running || paused
+        ? EMPTY_PACKAGE_SPEED_BPS
+        : (() => {
+          // Direct loop avoids the [...Map].map().Object.fromEntries() allocation
+          // chain (3 allocations per entry → 1).
+          const out: Record<string, number> = {};
+          for (const [pid, bytes] of this.speedBytesPerPackage) {
+            out[pid] = Math.floor(bytes / SPEED_WINDOW_SECONDS);
+          }
+          return out;
+        })()
     };
   }
 
@@ -7579,44 +7591,56 @@ export class DownloadManager extends EventEmitter {
 
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
     const now = nowMs();
-    const priorityOrder: Array<PackagePriority> = ["high", "normal", "low"];
-    for (const prio of priorityOrder) {
-      for (const packageId of this.session.packageOrder) {
-        const pkg = this.session.packages[packageId];
-        if (!pkg || pkg.cancelled || !pkg.enabled) {
-          continue;
+    // Single-pass priority selection: instead of iterating all packages 3 times
+    // (once per priority tier), iterate once and remember the best
+    // normal/low candidate found. "high" priority returns immediately. This
+    // saves up to 2x O(n) passes per scheduler tick on large queues where
+    // most packages have the default "normal" priority.
+    let normalCandidate: { packageId: string; itemId: string } | null = null;
+    let lowCandidate: { packageId: string; itemId: string } | null = null;
+
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) continue;
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
+      const pkgPrio = pkg.priority || "normal";
+      // Once we've found a normal candidate we don't need to scan low-priority
+      // packages anymore — they would lose anyway.
+      if (normalCandidate && pkgPrio === "low") continue;
+      // If we already have a normal candidate and this package is also normal,
+      // keep scanning anyway (we still need to check if it has a startable
+      // item — but the first one wins, this is just for correctness).
+      if (normalCandidate && pkgPrio === "normal") continue;
+
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) continue;
+        const retryAfter = this.retryAfterByItem.get(itemId) || 0;
+        if (retryAfter > now) continue;
+        if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
+        if (this.delayPacedStartForItem(item, now)) continue;
+        if (this.shouldDelayStartForItem(item)) continue;
+
+        const candidate = { packageId, itemId };
+        if (pkgPrio === "high") {
+          if (retryAfter > 0) this.retryAfterByItem.delete(itemId);
+          return candidate; // highest priority — return immediately
         }
-        if ((pkg.priority || "normal") !== prio) {
-          continue;
+        if (pkgPrio === "normal") {
+          normalCandidate = candidate;
+        } else if (!lowCandidate) {
+          lowCandidate = candidate;
         }
-        if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
-          continue;
-        }
-        for (const itemId of pkg.itemIds) {
-          const item = this.session.items[itemId];
-          if (!item) {
-            continue;
-          }
-          const retryAfter = this.retryAfterByItem.get(itemId) || 0;
-          if (retryAfter > now) {
-            continue;
-          }
-          if (retryAfter > 0) {
-            this.retryAfterByItem.delete(itemId);
-          }
-          if (item.status === "queued" || item.status === "reconnect_wait") {
-            if (this.delayPacedStartForItem(item, now)) {
-              continue;
-            }
-            if (this.shouldDelayStartForItem(item)) {
-              continue;
-            }
-            return { packageId, itemId };
-          }
-        }
+        break; // stop scanning items in this package
       }
     }
-    return null;
+
+    const chosen = normalCandidate || lowCandidate;
+    if (chosen) {
+      const retryAfter = this.retryAfterByItem.get(chosen.itemId) || 0;
+      if (retryAfter > 0) this.retryAfterByItem.delete(chosen.itemId);
+    }
+    return chosen;
   }
 
   /** Single-pass alternative to hasQueuedItems + hasDelayedQueuedItems.
