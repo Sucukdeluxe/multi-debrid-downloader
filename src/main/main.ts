@@ -136,7 +136,11 @@ function createTray(): void {
   const iconPath = path.join(app.getAppPath(), "assets", "app_icon.ico");
   try {
     tray = new Tray(iconPath);
-  } catch {
+  } catch (error) {
+    // Fails on headless servers / Windows Service / RDP-disconnected sessions.
+    // Log so a user running on a non-Administrator/headless server can see
+    // why minimize-to-tray doesn't work, instead of getting an inaccessible window.
+    logger.warn(`Tray-Icon konnte nicht erstellt werden (Headless/RDP/Service?): ${String(error)} - Minimize-to-Tray steht nicht zur Verfuegung, Fenster bleibt sichtbar.`);
     return;
   }
   tray.setToolTip(APP_NAME);

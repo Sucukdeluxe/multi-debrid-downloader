@@ -530,7 +530,15 @@ export function createStoragePaths(baseDir: string): StoragePaths {
 }
 
 function ensureBaseDir(baseDir: string): void {
-  fs.mkdirSync(baseDir, { recursive: true });
+  try {
+    fs.mkdirSync(baseDir, { recursive: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code || "";
+    if (code === "EACCES" || code === "EPERM") {
+      logger.error(`AppData-Ordner kann nicht erstellt werden (${code}): ${baseDir} - pruefe Schreibrechte fuer Benutzer ${process.env.USERNAME || process.env.USER || "?"}`);
+    }
+    throw error;
+  }
 }
 
 /** JSON replacer that sanitizes NaN/Infinity to null to prevent file corruption. */
@@ -556,7 +564,18 @@ function readSettingsFile(filePath: string): AppSettings | null {
       ...parsed
     });
     return sanitizeCredentialPersistence(merged);
-  } catch {
+  } catch (error) {
+    // Distinguish permission/access errors from missing/corrupt JSON so a
+    // misconfigured server (e.g. unusual user, restricted AppData) shows a
+    // clear log entry instead of silently falling back to defaults.
+    const code = (error as NodeJS.ErrnoException)?.code || "";
+    if (code === "ENOENT") {
+      // file doesn't exist — normal on first run
+    } else if (code === "EACCES" || code === "EPERM") {
+      logger.error(`Settings-Datei nicht zugreifbar (${code}): ${filePath} - pruefe Datei-/Ordner-Berechtigungen fuer Benutzer ${process.env.USERNAME || process.env.USER || "?"}`);
+    } else {
+      logger.warn(`Settings-Datei nicht lesbar: ${filePath}: ${String(error)}`);
+    }
     return null;
   }
 }
@@ -807,7 +826,12 @@ function readSessionFile(filePath: string): SessionState | null {
     logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items)`);
     return session;
   } catch (error) {
-    logger.error(`Session-Datei nicht lesbar: ${filePath}: ${String(error)}`);
+    const code = (error as NodeJS.ErrnoException)?.code || "";
+    if (code === "EACCES" || code === "EPERM") {
+      logger.error(`Session-Datei nicht zugreifbar (${code}): ${filePath} - pruefe Datei-/Ordner-Berechtigungen fuer Benutzer ${process.env.USERNAME || process.env.USER || "?"}`);
+    } else {
+      logger.error(`Session-Datei nicht lesbar: ${filePath}: ${String(error)}`);
+    }
     return null;
   }
 }
