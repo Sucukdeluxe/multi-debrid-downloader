@@ -1673,15 +1673,22 @@ export function App(): ReactElement {
     showToast("Accounts-Spalten zurückgesetzt", 1800);
   }, []);
 
-  // Sync column order from settings (value-based comparison to avoid reference issues)
-  const columnOrderJson = JSON.stringify(snapshot.settings.columnOrder);
+  // Sync column order from settings. Avoid JSON.stringify on every render
+  // (which was a 7-element array stringify per snapshot tick). A simple
+  // join() is one O(n) string concat without Object/Array allocation overhead,
+  // and useMemo caches the resulting key so React only sees a new dep when the
+  // contents actually changed.
+  const columnOrderKey = useMemo(
+    () => (snapshot.settings.columnOrder || []).join("|"),
+    [snapshot.settings.columnOrder]
+  );
   useEffect(() => {
     const order = snapshot.settings.columnOrder;
     if (order && order.length > 0) {
       setColumnOrder(order);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [columnOrderJson]);
+  }, [columnOrderKey]);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
 
@@ -2057,14 +2064,25 @@ export function App(): ReactElement {
   const hiddenPackageCount = shouldLimitPackageRendering
     ? Math.max(0, totalPackageCount - packages.length)
     : 0;
+  // The sort-by-progress logic only runs when the session is running AND auto-sort
+  // is enabled AND there's more than one package. When any of those isn't true,
+  // the items reference is irrelevant — passing null here makes useMemo skip the
+  // re-evaluation that previously fired on EVERY item update (progress, status,
+  // speed) even when the sort would have returned the original `packages` array.
+  const sortRelevantItems = (snapshot.session.running && settingsDraft.autoSortPackagesByProgress && packages.length > 1)
+    ? snapshot.session.items
+    : null;
   const visiblePackages = useMemo(() => {
+    if (!sortRelevantItems) {
+      return packages;
+    }
     return sortPackagesForDisplay(
       packages,
-      snapshot.session.items,
-      snapshot.session.running,
-      settingsDraft.autoSortPackagesByProgress
+      sortRelevantItems,
+      true,
+      true
     );
-  }, [packages, settingsDraft.autoSortPackagesByProgress, snapshot.session.running, snapshot.session.items]);
+  }, [packages, sortRelevantItems]);
 
   const hasSavedAllDebridAccount = Boolean(snapshot.settings.allDebridUseWebLogin || snapshot.settings.allDebridToken.trim());
   const allDebridSettingsDirty = snapshot.settings.allDebridUseWebLogin !== settingsDraft.allDebridUseWebLogin
@@ -6164,6 +6182,12 @@ const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunn
     e.stopPropagation();
     onContextMenu(packageId, item.id, e.clientX, e.clientY);
   }, [packageId, item.id, onContextMenu]);
+  // Memoize the date string so it doesn't get re-formatted on every re-render
+  // when only progress/speed changed but createdAt is stable.
+  const formattedCreatedAt = useMemo(() => formatDateTime(item.createdAt), [item.createdAt]);
+  // Memoize the displayed status so we don't compute it twice (title + body)
+  const displayStatus = useMemo(() => computeDisplayedItemStatus(item, sessionRunning), [item, sessionRunning]);
+  const statusTitle = displayStatus ? (item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus) : "";
 
   return (
     <div
@@ -6213,17 +6237,13 @@ const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunn
           case "hoster": { const h = extractHoster(item.url) || ""; return <span key={col} className="pkg-col pkg-col-hoster" title={h}>{h}</span>; }
           case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
           case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
-          case "status": {
-            const displayStatus = computeDisplayedItemStatus(item, sessionRunning);
-            const title = !displayStatus ? "" : (item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus);
-            return (
-              <span key={col} className="pkg-col pkg-col-status" title={title}>
-                {displayStatus}
-              </span>
-            );
-          }
+          case "status": return (
+            <span key={col} className="pkg-col pkg-col-status" title={statusTitle}>
+              {displayStatus}
+            </span>
+          );
           case "speed": return <span key={col} className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
-          case "added": return <span key={col} className="pkg-col pkg-col-added">{formatDateTime(item.createdAt)}</span>;
+          case "added": return <span key={col} className="pkg-col pkg-col-added">{formattedCreatedAt}</span>;
           default: return null;
         }
       })}
