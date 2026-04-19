@@ -51,7 +51,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
@@ -1325,6 +1325,15 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
   return null;
 }
 
+// Hoisted regex patterns — avoid recompiling on every resolveArchiveItemsFromList() call.
+const ARCHIVE_MULTIPART_RAR_RE = /^(.*)\.part0*1\.rar$/;
+const ARCHIVE_RAR_RE = /^(.*)\.rar$/;
+const ARCHIVE_ZIP_SPLIT_RE = /^(.*)\.zip\.001$/;
+const ARCHIVE_7Z_SPLIT_RE = /^(.*)\.7z\.001$/;
+const ARCHIVE_GENERIC_001_RE = /^(.*)\.001$/;
+const ARCHIVE_KNOWN_001_RE = /\.(zip|7z)\.001$/;
+const REGEX_ESCAPE_RE = /[.*+?^${}()|[\]\\]/g;
+
 export function resolveArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
   const normalizeArchiveMatchName = (value: string): string =>
     stripDuplicateSuffixBeforeExtension(path.basename(String(value || "")));
@@ -1334,38 +1343,40 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
   const itemBaseName = (item: DownloadItem): string =>
     normalizeArchiveMatchName(item.targetPath || item.fileName || "");
 
-  // Try pattern-based matching first (for multipart archives)
+  // Try pattern-based matching first (for multipart archives).
+  // Note: the constructed RegExps below depend on the input filename so they
+  // cannot be hoisted — but the *test* regexes above are now reused.
   let pattern: RegExp | null = null;
-  const multipartMatch = entryLower.match(/^(.*)\.part0*1\.rar$/);
+  const multipartMatch = entryLower.match(ARCHIVE_MULTIPART_RAR_RE);
   if (multipartMatch) {
-    const prefix = multipartMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const prefix = multipartMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
     pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
   }
   if (!pattern) {
-    const rarMatch = entryLower.match(/^(.*)\.rar$/);
+    const rarMatch = entryLower.match(ARCHIVE_RAR_RE);
     if (rarMatch) {
-      const stem = rarMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const stem = rarMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
       pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
     }
   }
   if (!pattern) {
-    const zipSplitMatch = entryLower.match(/^(.*)\.zip\.001$/);
+    const zipSplitMatch = entryLower.match(ARCHIVE_ZIP_SPLIT_RE);
     if (zipSplitMatch) {
-      const stem = zipSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const stem = zipSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
       pattern = new RegExp(`^${stem}\\.zip(\\.\\d+)?$`, "i");
     }
   }
   if (!pattern) {
-    const sevenSplitMatch = entryLower.match(/^(.*)\.7z\.001$/);
+    const sevenSplitMatch = entryLower.match(ARCHIVE_7Z_SPLIT_RE);
     if (sevenSplitMatch) {
-      const stem = sevenSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const stem = sevenSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
       pattern = new RegExp(`^${stem}\\.7z(\\.\\d+)?$`, "i");
     }
   }
-  if (!pattern && /^(.*)\.001$/.test(entryLower) && !/\.(zip|7z)\.001$/.test(entryLower)) {
-    const genericSplitMatch = entryLower.match(/^(.*)\.001$/);
+  if (!pattern && ARCHIVE_GENERIC_001_RE.test(entryLower) && !ARCHIVE_KNOWN_001_RE.test(entryLower)) {
+    const genericSplitMatch = entryLower.match(ARCHIVE_GENERIC_001_RE);
     if (genericSplitMatch) {
-      const stem = genericSplitMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const stem = genericSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
       pattern = new RegExp(`^${stem}\\.\\d{3}$`, "i");
     }
   }
@@ -7327,6 +7338,22 @@ export class DownloadManager extends EventEmitter {
         this.providerFailures.delete(provider);
         logger.info(`Soft-Reset: Provider-Failures zurückgesetzt für ${provider}`);
       }
+    }
+    // Prune AllDebrid host info cache entries older than 5 min (TTL is 60s,
+    // so 5 min is well past usable - just unbounded growth otherwise).
+    let allDebridPruned = 0;
+    for (const [host, entry] of this.allDebridHostInfoCache) {
+      if (now - entry.cachedAt > 5 * 60 * 1000) {
+        this.allDebridHostInfoCache.delete(host);
+        allDebridPruned += 1;
+      }
+    }
+    // Prune expired Debrid-Link / Mega-Debrid runtime state (module-level Maps
+    // that would otherwise grow over 24/7 operation).
+    const dlPruned = pruneExpiredDebridLinkRuntimeState(now);
+    const mdPruned = pruneExpiredMegaDebridRuntimeState(now);
+    if (allDebridPruned > 0 || dlPruned > 0 || mdPruned > 0) {
+      logger.info(`Soft-Reset: pruned ${allDebridPruned} AllDebrid host entries, ${dlPruned} Debrid-Link entries, ${mdPruned} Mega-Debrid entries`);
     }
   }
 

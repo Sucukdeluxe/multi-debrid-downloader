@@ -1325,11 +1325,20 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   }, [running, paused]);
 
   useEffect(() => {
+    // Always draw once on mount / when running/paused state changes so the
+    // chart shows the latest history.
+    drawChart();
+    // Only schedule periodic redraws while actively downloading — when
+    // stopped or paused the speed history doesn't change, so polling
+    // every 250ms would just burn CPU on the renderer process.
+    if (!running || paused) {
+      return;
+    }
     const interval = setInterval(() => {
       drawChart();
     }, 250);
     return () => clearInterval(interval);
-  }, [drawChart]);
+  }, [drawChart, running, paused]);
 
   useEffect(() => {
     // Only record samples while the session is running and not paused

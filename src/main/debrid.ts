@@ -59,6 +59,28 @@ export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyRuntimeStatuses.clear();
 }
 
+/** Periodic cleanup of expired Debrid-Link cooldown/runtime entries.
+ *  Without this, module-level Maps grow unbounded over 24/7 operation.
+ *  Removes entries whose cooldown expired more than 1 hour ago. */
+export function pruneExpiredDebridLinkRuntimeState(now = Date.now()): number {
+  let removed = 0;
+  const grace = 60 * 60 * 1000; // keep 1h grace for debugging
+  for (const [keyId, until] of debridLinkKeyCooldowns) {
+    if (until + grace < now) {
+      debridLinkKeyCooldowns.delete(keyId);
+      debridLinkKeyCooldownDetails.delete(keyId);
+      removed += 1;
+    }
+  }
+  for (const [keyId, status] of debridLinkKeyRuntimeStatuses) {
+    if (!debridLinkKeyCooldowns.has(keyId) && now - status.updatedAt > grace) {
+      debridLinkKeyRuntimeStatuses.delete(keyId);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 export function primeDebridLinkRuntimeCooldownForTests(keyId: string, cooldownMs: number, message = "Debrid-Link Key im Cooldown"): void {
   setDebridLinkKeyCooldownState(keyId, cooldownMs, message, "temporary");
 }
@@ -138,6 +160,19 @@ const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
 
 export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
+}
+
+/** Periodic cleanup of expired Mega-Debrid cooldown entries. */
+export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
+  let removed = 0;
+  const grace = 60 * 60 * 1000;
+  for (const [id, detail] of megaDebridAccountCooldowns) {
+    if (detail.until + grace < now) {
+      megaDebridAccountCooldowns.delete(id);
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 export function primeMegaDebridRuntimeCooldownForTests(accountId: string, cooldownMs: number, message = "Mega-Debrid Account im Cooldown"): void {
