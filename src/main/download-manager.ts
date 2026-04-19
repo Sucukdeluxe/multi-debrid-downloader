@@ -7660,6 +7660,15 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    // Only items that are actually DOWNLOADING (have an open HTTP body that
+    // should be making progress) count toward the global stall watchdog.
+    // Items in "validating" are still in the unrestrict phase — they're handled
+    // by the per-item validating watchdog above (VALIDATING_STUCK_MS) which
+    // gives the multi-account/multi-key rotation enough time. Without this
+    // exclusion the global watchdog would abort the unrestrict mid-rotation
+    // (e.g. account 3 of 3 still being tested) just because no bytes had been
+    // downloaded recently — which is correct, since unrestrict doesn't
+    // produce download bytes.
     let stalledCount = 0;
     let diskBlockedCount = 0;
     for (const active of this.activeTasks.values()) {
@@ -7671,7 +7680,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       const item = this.session.items[active.itemId];
-      if (item && (item.status === "downloading" || item.status === "validating")) {
+      if (item && item.status === "downloading") {
         stalledCount += 1;
       }
     }
@@ -7689,7 +7698,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       const item = this.session.items[active.itemId];
-      if (item && (item.status === "downloading" || item.status === "validating")) {
+      if (item && item.status === "downloading") {
         active.abortReason = "stall";
         active.abortController.abort("stall");
       }
