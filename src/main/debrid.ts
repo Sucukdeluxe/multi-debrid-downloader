@@ -142,7 +142,30 @@ function setDebridLinkKeyCooldownState(
     clearDebridLinkKeyCooldownState(keyId);
     return;
   }
-  debridLinkKeyCooldowns.set(keyId, Date.now() + Math.max(1000, Math.floor(cooldownMs)));
+  // Cooldown set: max-wins. When 8 parallel items hit floodDetected on the
+  // same key, each computes its own retry-after and calls setDebridLinkKey
+  // CooldownState. Without max-wins, the LAST setter could shorten the
+  // cooldown (e.g. one item got a 1h Retry-After header, another got the
+  // default 2 min — without max-wins the 2 min would overwrite the 1h).
+  // Quota and rate_limit categories take priority over generic temporary
+  // cooldowns regardless of duration to preserve the more-specific signal.
+  const newUntil = Date.now() + Math.max(1000, Math.floor(cooldownMs));
+  const existingUntil = Number(debridLinkKeyCooldowns.get(keyId) || 0);
+  const existingDetail = debridLinkKeyCooldownDetails.get(keyId);
+  const newIsStrongCategory = category === "rate_limit" || category === "quota" || category === "invalid";
+  const existingIsStrongCategory = existingDetail
+    ? (existingDetail.category === "rate_limit" || existingDetail.category === "quota" || existingDetail.category === "invalid")
+    : false;
+  // Keep existing if it's still active and either lasts longer or has a stronger category
+  if (existingUntil > Date.now()) {
+    if (existingUntil >= newUntil && (!newIsStrongCategory || existingIsStrongCategory)) {
+      return;
+    }
+    if (existingIsStrongCategory && !newIsStrongCategory) {
+      return;
+    }
+  }
+  debridLinkKeyCooldowns.set(keyId, newUntil);
   debridLinkKeyCooldownDetails.set(keyId, { message, category });
   setDebridLinkKeyRuntimeStatus(keyId, mapDebridLinkCooldownCategoryToRuntimeState(category), message);
 }
@@ -2682,10 +2705,29 @@ class DebridLinkClient {
     }
 
     if (isRetryableErrorText(errorText) || /debrid-link.*(json|html)/i.test(errorText)) {
+      // Distinguish a single transient transport error (timeout, network blip,
+      // ECONNRESET) from a real API/server problem. Single timeouts shouldn't
+      // park a key for 2 full minutes — that just delays parallel work for
+      // no reason. Use a short 15s cooldown for transport, full 2min only
+      // for things that look like server-side faults (5xx HTML pages, etc).
+      const isTransport = /timeout|network|fetch failed|aborted|econnreset|enotfound|etimedout|socket/i.test(errorText)
+        && !(error instanceof DebridLinkApiError);
       return {
         fatal: false,
-        cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
+        cooldownMs: isTransport ? 15_000 : DEBRID_LINK_KEY_COOLDOWN_MS,
         message: errorText || "temporärer Transportfehler"
+      };
+    }
+
+    // HTTP 200 with success:false but no recognizable error code: don't kill
+    // the item permanently. Treat as a temporary blip — same key can be tried
+    // again after a short cooldown, or another key picked up.
+    if (errorText && /success.*false|kein.*json|empty.*response/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: 30_000,
+        message: errorText,
+        category: "temporary"
       };
     }
 

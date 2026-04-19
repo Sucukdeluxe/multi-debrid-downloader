@@ -8687,12 +8687,21 @@ export class DownloadManager extends EventEmitter {
             active.unrestrictRetries += 1;
             item.retries += 1;
             const failureProvider = this.getProviderFailureKeyForItem(item);
-            this.recordProviderFailure(failureProvider);
-            if (isProviderBusyUnrestrictError(errorText) || isTemporaryUnrestrictError(errorText)) {
-              const busyCooldownMs = isTemporaryUnrestrictError(errorText)
-                ? Math.min(180000, 20000 + Number(active.unrestrictRetries || 0) * 10000)
-                : Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
-              this.applyProviderBusyBackoff(failureProvider, busyCooldownMs);
+            // Debrid-Link manages its own per-key cooldowns in debrid.ts. The
+            // provider-wide circuit breaker would double-block all Debrid-Link
+            // keys when only one key (or a transient transport hiccup) failed.
+            // Skip recordProviderFailure / applyProviderBusyBackoff entirely
+            // for any Debrid-Link-flavoured error message, not just the
+            // debrid_link_cooldown sentinel that's caught above.
+            const isDebridLinkError = /debrid-link|debrid_link/i.test(errorText) || failureProvider === "debridlink";
+            if (!isDebridLinkError) {
+              this.recordProviderFailure(failureProvider);
+              if (isProviderBusyUnrestrictError(errorText) || isTemporaryUnrestrictError(errorText)) {
+                const busyCooldownMs = isTemporaryUnrestrictError(errorText)
+                  ? Math.min(180000, 20000 + Number(active.unrestrictRetries || 0) * 10000)
+                  : Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
+                this.applyProviderBusyBackoff(failureProvider, busyCooldownMs);
+              }
             }
             // Escalating backoff: 5s, 7.5s, 11s, 17s, 25s, 38s, ... up to 120s
             let unrestrictDelayMs = Math.min(120000, Math.floor(5000 * Math.pow(1.5, active.unrestrictRetries - 1)));
