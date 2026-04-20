@@ -131,6 +131,11 @@ export function primeDebridLinkRuntimeCooldownForTests(keyId: string, cooldownMs
   setDebridLinkKeyCooldownState(keyId, cooldownMs, message, "temporary");
 }
 
+export function getDebridLinkKeyRuntimeStateForTests(keyId: string): DebridLinkRuntimeState | null {
+  const status = debridLinkKeyRuntimeStatuses.get(keyId);
+  return status ? status.state : null;
+}
+
 function clearDebridLinkKeyCooldownState(keyId: string): void {
   debridLinkKeyCooldowns.delete(keyId);
   debridLinkKeyCooldownDetails.delete(keyId);
@@ -2678,7 +2683,15 @@ class DebridLinkClient {
           }
         } else {
           clearDebridLinkKeyCooldownState(apiKey.id);
-          setDebridLinkKeyRuntimeStatus(apiKey.id, failure.category === "invalid" ? "invalid" : "error", failure.message);
+          if (failure.category === "invalid") {
+            setDebridLinkKeyRuntimeStatus(apiKey.id, "invalid", failure.message);
+          } else if (failure.category !== "skip") {
+            // "skip" means the LINK or HOST is unavailable (fileNotAvailable,
+            // disabledServerHost, notFreeHost, freeServerOverload, ...), NOT
+            // that the key is broken. The key responded normally — leave its
+            // runtime status alone so the UI doesn't flag it as errored.
+            setDebridLinkKeyRuntimeStatus(apiKey.id, "error", failure.message);
+          }
         }
         if (failure.fatal) {
           logAccountRotation("ERROR", providerName, rotationLabel, "FATAL", {

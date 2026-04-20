@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, normalizeResolvedFilename, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, normalizeResolvedFilename, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -470,6 +470,63 @@ describe("debrid service", () => {
     const r3 = await service.unrestrictLink("https://uploaded.net/file/third");
     expect(unrestrictAuthHeaders).toEqual(["Bearer dl-key-one"]);
     expect(r3.providerLabel).toContain("Key 1");
+  });
+
+  it("does not mark Debrid-Link key as errored when the API returns fileNotAvailable (link-level, not key-level)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const headers = init?.headers;
+      let authHeader = "";
+      if (headers instanceof Headers) {
+        authHeader = headers.get("Authorization") || "";
+      } else if (Array.isArray(headers)) {
+        authHeader = headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] || "";
+      } else {
+        authHeader = String((headers as Record<string, unknown> | undefined)?.Authorization || "");
+      }
+
+      if (!url.includes("/downloader/add")) {
+        return new Response("not-found", { status: 404 });
+      }
+      if (authHeader === "Bearer dl-key-one") {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "fileNotAvailable",
+          error_description: "link is currently not available"
+        }), { status: 403, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        value: {
+          downloadUrl: "https://debrid-link.example/ok.bin",
+          name: "ok.bin",
+          size: 1024
+        }
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const key1Id = parseDebridLinkApiKeys("dl-key-one")[0].id;
+    const key2Id = parseDebridLinkApiKeys("dl-key-two")[0].id;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://rapidgator.net/file/example");
+    expect(result.providerLabel).toContain("Key 2");
+
+    // Key-one responded normally — just that the link was unavailable on the
+    // hoster side. Key-one is NOT broken and must not be flagged as "error".
+    expect(getDebridLinkKeyRuntimeStateForTests(key1Id)).not.toBe("error");
+    // Key-two served the link successfully, so it's "ready".
+    expect(getDebridLinkKeyRuntimeStateForTests(key2Id)).toBe("ready");
   });
 
   it("treats bad Debrid-Link file passwords as fatal and does not rotate keys", async () => {
