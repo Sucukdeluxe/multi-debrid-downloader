@@ -38,6 +38,7 @@ import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-ser
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { initAccountRotationLog, shutdownAccountRotationLog } from "./account-rotation-log";
+import { runStartupHealthCheck } from "./startup-health-check";
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
@@ -117,6 +118,38 @@ export class AppController {
       appVersion: APP_VERSION,
       runtimeDir: this.storagePaths.baseDir
     });
+    // Startup Health-Check: surface problematic state early (missing download
+    // dir, low disk space, no provider configured, corrupted state file).
+    // Never blocks startup — findings go into the normal log + audit log so
+    // the user can diagnose issues before hitting them mid-download.
+    try {
+      const report = runStartupHealthCheck(this.settings, this.storagePaths);
+      if (report.errorCount > 0 || report.warnCount > 0) {
+        logger.warn(`Health-Check: ${report.errorCount} Fehler, ${report.warnCount} Warnungen, ${report.infoCount} Info`);
+      } else {
+        logger.info(`Health-Check: alles OK (${report.infoCount} Info)`);
+      }
+      for (const finding of report.findings) {
+        const line = finding.hint
+          ? `Health-Check [${finding.code}]: ${finding.message} — ${finding.hint}`
+          : `Health-Check [${finding.code}]: ${finding.message}`;
+        if (finding.severity === "ERROR") {
+          logger.error(line);
+        } else if (finding.severity === "WARN") {
+          logger.warn(line);
+        } else {
+          logger.info(line);
+        }
+        if (finding.severity !== "INFO") {
+          logAuditEvent(finding.severity, `Health-Check: ${finding.code}`, {
+            message: finding.message,
+            hint: finding.hint || ""
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn(`Health-Check uebersprungen (Fehler): ${String((err as Error).message || err)}`);
+    }
     startDebugServer(this.manager, this.storagePaths.baseDir);
     this.runtimeStatsTimer = setInterval(() => {
       this.manager.persistRuntimeStats();
