@@ -10375,4 +10375,84 @@ describe("download manager", () => {
     const pkgLogFiles = fs.readdirSync(packageLogsDir).filter((f) => f.startsWith("package_") && f.endsWith(".txt"));
     expect(pkgLogFiles.length).toBe(60);
   });
+
+  it("serializes parallel auto-rename invocations for the same package (no Ziel existiert / ENOENT race)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rename-race-"));
+    tempDirs.push(root);
+    const stateDir = path.join(root, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    initPackageLogs(stateDir);
+    initItemLogs(stateDir);
+    initRenameLog(stateDir);
+
+    // Build extract tree with 3 episode-folders, each containing 1 obfuscated MKV
+    // mirroring the scene release pattern from the production log.
+    const extractDir = path.join(root, "extracted");
+    const episodes = [
+      { folder: "Test.Show.S02E01.Pilot.GERMAN.WS.720p.HDTV.x264-aWake", file: "awa-testshow02e01hd.mkv" },
+      { folder: "Test.Show.S02E02.Second.GERMAN.WS.720p.HDTV.x264-aWake", file: "awa-testshow02e02hd.mkv" },
+      { folder: "Test.Show.S02E03.Third.GERMAN.WS.720p.HDTV.x264-aWake", file: "awa-testshow02e03hd.mkv" }
+    ];
+    for (const ep of episodes) {
+      const dir = path.join(extractDir, ep.folder);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, ep.file), Buffer.alloc(1024, 0));
+    }
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir,
+        autoExtract: false,
+        autoReconnect: false,
+        autoRename4sf4sj: true
+      },
+      emptySession(),
+      createStoragePaths(stateDir)
+    );
+
+    const pkg: any = {
+      id: "race-pkg-1",
+      name: "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake",
+      outputDir: path.join(root, "downloads", "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake"),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      priority: "normal",
+      createdAt: 0,
+      updatedAt: 0,
+      downloadStartedAt: 0,
+      downloadCompletedAt: 0
+    };
+
+    // Fire two scans simultaneously for the SAME package — without
+    // serialization, both would race on the same fileset.
+    const [n1, n2] = await Promise.all([
+      (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg),
+      (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg)
+    ]);
+
+    // First scan should rename all 3 files. Second scan, having waited for
+    // the first via the in-flight promise, should find them already
+    // renamed (== 0 fresh renames). What matters is that BOTH calls
+    // resolved cleanly (no thrown ENOENT) and the disk state is correct.
+    expect(typeof n1).toBe("number");
+    expect(typeof n2).toBe("number");
+    expect(n1 + n2).toBe(3);
+
+    // All three episodes should now have the folder-derived name (the
+    // obfuscated source name was overridden via the v1.7.148 logic AND
+    // the rename actually succeeded for ALL of them, not just some).
+    for (const ep of episodes) {
+      const dir = path.join(extractDir, ep.folder);
+      const files = fs.readdirSync(dir);
+      const renamedFile = `${ep.folder}.mkv`;
+      expect(files).toContain(renamedFile);
+      expect(files).not.toContain(ep.file);
+    }
+  });
 });
