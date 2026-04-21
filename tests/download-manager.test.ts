@@ -10455,4 +10455,67 @@ describe("download manager", () => {
       expect(files).not.toContain(ep.file);
     }
   });
+
+  it("serializes rename and mkvMove across hybrid + deferred pipes (no ENOENT from cross-pipe race)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-crosspipe-"));
+    tempDirs.push(root);
+    const stateDir = path.join(root, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "out"), extractDir: path.join(root, "extract") },
+      emptySession(),
+      createStoragePaths(stateDir)
+    );
+
+    // Both rename and mkvMove route through the SAME chain, so any pair of
+    // invocations for the same package must run strictly sequentially —
+    // even when they come from different call sites (hybrid + deferred).
+    const pkgId = "crosspipe-pkg-1";
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const op = async (ms: number): Promise<string> => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((r) => setTimeout(r, ms));
+      concurrent -= 1;
+      return `done-${ms}`;
+    };
+
+    const [r1, r2, r3, r4] = await Promise.all([
+      (manager as any).chainPackageFileOp(pkgId, () => op(40)),
+      (manager as any).chainPackageFileOp(pkgId, () => op(20)),
+      (manager as any).chainPackageFileOp(pkgId, () => op(30)),
+      (manager as any).chainPackageFileOp(pkgId, () => op(10))
+    ]);
+
+    expect(r1).toBe("done-40");
+    expect(r2).toBe("done-20");
+    expect(r3).toBe("done-30");
+    expect(r4).toBe("done-10");
+    // Crucial: never more than 1 operation in flight at a time.
+    expect(maxConcurrent).toBe(1);
+    // Chain slot cleared after the last op completed.
+    expect((manager as any).packageFileOpChain.has(pkgId)).toBe(false);
+  });
+
+  it("chainPackageFileOp recovers from a failed op so subsequent ops still run", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-chain-recover-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "out"), extractDir: path.join(root, "extract") },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkgId = "recover-pkg";
+    const [failed, nextResult] = await Promise.allSettled([
+      (manager as any).chainPackageFileOp(pkgId, async () => { throw new Error("boom"); }),
+      (manager as any).chainPackageFileOp(pkgId, async () => "ok")
+    ]);
+    expect(failed.status).toBe("rejected");
+    expect(nextResult.status).toBe("fulfilled");
+    if (nextResult.status === "fulfilled") {
+      expect(nextResult.value).toBe("ok");
+    }
+  });
 });
