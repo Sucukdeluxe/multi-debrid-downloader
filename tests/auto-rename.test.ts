@@ -6,8 +6,30 @@ import {
   ensureRepackToken,
   buildAutoRenameBaseName,
   buildAutoRenameBaseNameFromFolders,
-  buildAutoRenameBaseNameFromFoldersWithOptions
+  buildAutoRenameBaseNameFromFoldersWithOptions,
+  hasMeaningfulSeriesPrefix
 } from "../src/main/download-manager";
+
+describe("hasMeaningfulSeriesPrefix", () => {
+  it("recognizes a real series name before the season token", () => {
+    expect(hasMeaningfulSeriesPrefix("Desperate.Housewives.S01.Synced.DL.720p.WEB-DL.AC3.h264")).toBe(true);
+    expect(hasMeaningfulSeriesPrefix("Die.Thundermans.S02E06.Tickets.und.Shreddy.GERMAN.WS.720p.HDTV.x264-aWake")).toBe(true);
+    expect(hasMeaningfulSeriesPrefix("Mistresses.2013.S02.GERMAN.DL.720p.WEB.x264-TSCC")).toBe(true);
+    expect(hasMeaningfulSeriesPrefix("show.name.s01e01.720p")).toBe(true);
+  });
+
+  it("rejects generic season-label folders without a series name", () => {
+    expect(hasMeaningfulSeriesPrefix("S01 Complete")).toBe(false);
+    expect(hasMeaningfulSeriesPrefix("S02")).toBe(false);
+    expect(hasMeaningfulSeriesPrefix("S01E01 Complete")).toBe(false);
+    expect(hasMeaningfulSeriesPrefix(".S01.bla")).toBe(false);
+  });
+
+  it("returns false when there is no season token at all", () => {
+    expect(hasMeaningfulSeriesPrefix("Some Random Folder")).toBe(false);
+    expect(hasMeaningfulSeriesPrefix("")).toBe(false);
+  });
+});
 
 describe("extractEpisodeToken", () => {
   it("extracts S01E01 from standard scene format", () => {

@@ -851,6 +851,21 @@ const SCENE_EPISODE_JOINED_RE = /s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
 // Scene typo: "S05S01" instead of "S05E01" — second S should be E
 const SCENE_EPISODE_TYPO_SS_RE = /(?:^|[._\-\s])s(\d{1,2})s(\d{1,3})(?!\d)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
+
+/** True iff the name has at least 3 alphabetic characters BEFORE the first
+ *  SxxExx / Sxx token. Used to distinguish folders/files with a real series
+ *  name ("Desperate.Housewives.S01...") from generic season labels
+ *  ("S01 Complete", "Season 1"). */
+export function hasMeaningfulSeriesPrefix(name: string): boolean {
+  const text = String(name || "");
+  const seasonMatch = text.match(/(?:^|[._\-\s])s\d{1,2}/i);
+  if (!seasonMatch || seasonMatch.index === undefined) {
+    return false;
+  }
+  const prefix = text.slice(0, seasonMatch.index);
+  const alphaChars = (prefix.match(/[A-Za-z]/g) || []).length;
+  return alphaChars >= 3;
+}
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
 const SCENE_PART_TOKEN_RE = /(?:^|[._\-\s])(?:teil|part)\s*0*(\d{1,3})(?=[._\-\s]|$)/i;
@@ -3683,6 +3698,39 @@ export class DownloadManager extends EventEmitter {
       let targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
         forceEpisodeForSeasonFolder: true
       });
+      // Defense against degenerate folder layouts: when the immediate parent
+      // folder lacks a real series name (e.g. "S01 Complete", "Season 1",
+      // "Staffel 02"), buildAutoRenameBaseName can collapse a perfect source
+      // filename like "Desperate.Housewives.S01E01.German.Synced.DL.720p.WEB-
+      // DL.AC3.h264" into garbage like "S01E01 Complete". If the source is
+      // already well-formed (has SxxExx + a meaningful series-name prefix)
+      // and the computed target is much shorter / lacks that prefix, keep
+      // the source as-is — renaming would actively destroy information.
+      if (targetBaseName && sourceBaseName.length > 0) {
+        const sourceHasEpisode = Boolean(extractEpisodeToken(sourceBaseName));
+        const targetHasEpisode = Boolean(extractEpisodeToken(targetBaseName));
+        const sourceHasSeriesPrefix = hasMeaningfulSeriesPrefix(sourceBaseName);
+        const targetHasSeriesPrefix = hasMeaningfulSeriesPrefix(targetBaseName);
+        const targetIsMuchShorter = targetBaseName.length * 2 < sourceBaseName.length;
+        if (sourceHasEpisode
+          && targetHasEpisode
+          && sourceHasSeriesPrefix
+          && !targetHasSeriesPrefix
+          && targetIsMuchShorter) {
+          logger.info(`Auto-Rename uebersprungen: Source "${sourceBaseName}" ist bereits aussagekraeftiger als computed Target "${targetBaseName}"`);
+          if (pkg) {
+            const resolved = resolveRenameItem();
+            this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename uebersprungen: Source schon besser als computed Target", {
+              sourcePath,
+              sourceName,
+              sourceBaseName,
+              targetBaseName,
+              folders: folderCandidates.join(", ")
+            }, resolved.item, resolved.matchedBy);
+          }
+          continue;
+        }
+      }
       const resolveRenameItem = (...extra: Array<string | null | undefined>): { item: DownloadItem | null; matchedBy: string | null } => {
         if (!pkg) {
           return { item: null, matchedBy: null };
@@ -3727,20 +3775,51 @@ export class DownloadManager extends EventEmitter {
             }
           }
         } else if (targetEpisodeToken !== sourceEpisodeToken) {
-          // Target has a DIFFERENT episode token than source — that's a clear sign
-          // the rename is wrong (would mislabel the episode). Skip to be safe.
-          logger.warn(`Auto-Rename Safety: Skipping rename - Episode-Token Mismatch (source=${sourceEpisodeToken}, target=${targetEpisodeToken})`);
-          if (pkg) {
-            const resolved = resolveRenameItem();
-            this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token Mismatch", {
-              sourcePath,
-              sourceName,
-              sourceEpisodeToken,
-              targetEpisodeToken,
-              targetBaseName
-            }, resolved.item, resolved.matchedBy);
+          // Target has a DIFFERENT episode token than source. Normally that's a
+          // sign the rename would mislabel the episode — BUT scene releases
+          // often place obfuscated MKVs (e.g. "awa-diethundermans02e16hd.mkv"
+          // = scrambled E16) inside an explicitly named episode folder
+          // (e.g. "Die.Thundermans.S02E01.Der.Thunder.Van.GERMAN.x264-aWake").
+          // The folder is created by the release group with the REAL episode
+          // info; the file name is anti-piracy obfuscation. So when the
+          // immediate parent folder carries the same explicit SxxExx token as
+          // our computed targetBaseName, trust the folder and override the
+          // misleading source token.
+          const parentFolderName = path.basename(path.dirname(sourcePath));
+          const parentEpisodeToken = extractEpisodeToken(parentFolderName);
+          const folderIsAuthoritative = Boolean(
+            parentEpisodeToken
+            && parentEpisodeToken === targetEpisodeToken
+            && parentFolderName.toLowerCase() !== path.basename(extractDir).toLowerCase()
+          );
+          if (folderIsAuthoritative) {
+            logger.info(`Auto-Rename: source-Token ${sourceEpisodeToken} ignoriert, Folder-Token ${targetEpisodeToken} ist authoritativ (vermutlich obfuskierter Dateiname in ${parentFolderName})`);
+            if (pkg) {
+              const resolved = resolveRenameItem();
+              this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename: Folder-Token uebersteuert obfuskierten Datei-Token", {
+                sourcePath,
+                sourceName,
+                sourceEpisodeToken,
+                targetEpisodeToken,
+                parentFolder: parentFolderName,
+                targetBaseName
+              }, resolved.item, resolved.matchedBy);
+            }
+            // Fall through to the normal rename path with targetBaseName.
+          } else {
+            logger.warn(`Auto-Rename Safety: Skipping rename - Episode-Token Mismatch (source=${sourceEpisodeToken}, target=${targetEpisodeToken})`);
+            if (pkg) {
+              const resolved = resolveRenameItem();
+              this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token Mismatch", {
+                sourcePath,
+                sourceName,
+                sourceEpisodeToken,
+                targetEpisodeToken,
+                targetBaseName
+              }, resolved.item, resolved.matchedBy);
+            }
+            continue;
           }
-          continue;
         }
       }
       if (!targetBaseName) {
