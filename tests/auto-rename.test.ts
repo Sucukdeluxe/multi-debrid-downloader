@@ -7,7 +7,8 @@ import {
   buildAutoRenameBaseName,
   buildAutoRenameBaseNameFromFolders,
   buildAutoRenameBaseNameFromFoldersWithOptions,
-  hasMeaningfulSeriesPrefix
+  hasMeaningfulSeriesPrefix,
+  looksLikeObfuscatedSceneFileName
 } from "../src/main/download-manager";
 
 describe("hasMeaningfulSeriesPrefix", () => {
@@ -28,6 +29,32 @@ describe("hasMeaningfulSeriesPrefix", () => {
   it("returns false when there is no season token at all", () => {
     expect(hasMeaningfulSeriesPrefix("Some Random Folder")).toBe(false);
     expect(hasMeaningfulSeriesPrefix("")).toBe(false);
+  });
+});
+
+describe("looksLikeObfuscatedSceneFileName", () => {
+  it("flags hoster-obfuscated names with no scene markers as obfuscated", () => {
+    // No 720p / german / x264 / bluray, no dot-separated structure
+    expect(looksLikeObfuscatedSceneFileName("awa-diethundermans02e16hd.mkv")).toBe(true);
+    expect(looksLikeObfuscatedSceneFileName("scn-dthund7-S02E06.mkv")).toBe(true);
+    expect(looksLikeObfuscatedSceneFileName("4sj-blue-bloods-s08e21-720p.mkv")).toBe(true);
+  });
+
+  it("treats clean scene releases with multiple markers as NOT obfuscated", () => {
+    // Has 720p + german + bluray + x264 — clearly a clean scene file
+    expect(looksLikeObfuscatedSceneFileName("the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f.mkv")).toBe(false);
+    expect(looksLikeObfuscatedSceneFileName("Die.Thundermans.S02E06.Tickets.und.Shreddy.GERMAN.WS.720p.HDTV.x264-aWake.mkv")).toBe(false);
+    expect(looksLikeObfuscatedSceneFileName("Desperate.Housewives.S01E01.German.Synced.DL.720p.WEB-DL.AC3.h264.mkv")).toBe(false);
+  });
+
+  it("handles edge cases (empty, very short)", () => {
+    expect(looksLikeObfuscatedSceneFileName("")).toBe(true);
+    expect(looksLikeObfuscatedSceneFileName("a.mkv")).toBe(true);
+  });
+
+  it("treats long dotted names as scene-style even with few markers", () => {
+    // 6+ dots → looks like scene structure even without quality/codec markers
+    expect(looksLikeObfuscatedSceneFileName("Some.Show.With.Many.Tokens.S01E01.mkv")).toBe(false);
   });
 });
 
