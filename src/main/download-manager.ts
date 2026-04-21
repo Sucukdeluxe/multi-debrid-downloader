@@ -866,6 +866,46 @@ export function hasMeaningfulSeriesPrefix(name: string): boolean {
   const alphaChars = (prefix.match(/[A-Za-z]/g) || []).length;
   return alphaChars >= 3;
 }
+
+/** Heuristic: returns true if the file name LOOKS LIKE an obfuscated /
+ *  scrambled hoster name (e.g. "awa-diethundermans02e16hd.mkv") rather than
+ *  a clean scene release ("the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f.mkv").
+ *
+ *  Used as a guard before we override a source-derived episode token with
+ *  a folder-derived one. A clean scene file's embedded SxxExx is
+ *  authoritative — overriding it would mislabel the episode. Only files
+ *  that lack the usual scene markers (quality, language, codec, source/
+ *  format) are treated as obfuscated and let the folder win.
+ *
+ *  Threshold: < 2 scene markers AND no proper dot-separated scene
+ *  structure → considered obfuscated. */
+export function looksLikeObfuscatedSceneFileName(name: string): boolean {
+  const text = String(name || "").toLowerCase();
+  if (!text) {
+    return true;
+  }
+  let markers = 0;
+  if (/(?:^|[._\-\s])(?:480|540|576|720|1080|1440|2160|4320)p(?:[._\-\s]|$)/.test(text)) markers += 1;
+  if (/(?:^|[._\-\s])(?:german|english|french|italian|spanish|dutch|nordic|multi|ger|eng|ita|fre|spa)(?:[._\-\s]|$)/.test(text)) markers += 1;
+  if (/(?:^|[._\-\s])(?:bluray|brrip|bdrip|webrip|web-?dl|web|hdtv|dvdrip|amazonhd|amzn|nflx|nf|hulu|dsnp)(?:[._\-\s]|$)/.test(text)) markers += 1;
+  if (/(?:^|[._\-\s])(?:x264|x265|h264|h265|hevc|xvid|divx|avc)(?:[._\-\s]|$)/.test(text)) markers += 1;
+  if (/(?:^|[._\-\s])(?:ac3|aac|dd5\.?1|dd51|dts|eac3|atmos|truehd|flac)(?:[._\-\s]|$)/.test(text)) markers += 1;
+  // 2+ scene markers → definitely a clean scene file, not obfuscated
+  if (markers >= 2) {
+    return false;
+  }
+  // No markers AND looks like glued/short hoster code → obfuscated
+  // Check for typical hoster pattern: short prefix + glued lowercase + episode digits
+  // e.g. "awa-diethundermans02e16hd", "scn-dthund7-S02E06"
+  const dotCount = (text.match(/\./g) || []).length;
+  // A clean scene file usually has 6+ dot-separated tokens (excluding extension)
+  // An obfuscated file usually has 0-2 dots (mostly using - or no separators).
+  if (dotCount >= 5) {
+    // Many dots usually means scene-style structure even with few markers
+    return false;
+  }
+  return true;
+}
 const SCENE_SEASON_CAPTURE_RE = /(?:^|[._\-\s])s(\d{1,2})(?=[._\-\s]|$)/i;
 const SCENE_EPISODE_ONLY_RE = /(?:^|[._\-\s])e(?:p(?:isode)?)?\s*0*(\d{1,3})(?:[._\-\s]|$)/i;
 const SCENE_PART_TOKEN_RE = /(?:^|[._\-\s])(?:teil|part)\s*0*(\d{1,3})(?=[._\-\s]|$)/i;
@@ -3787,10 +3827,20 @@ export class DownloadManager extends EventEmitter {
           // misleading source token.
           const parentFolderName = path.basename(path.dirname(sourcePath));
           const parentEpisodeToken = extractEpisodeToken(parentFolderName);
+          // GUARD: only let the folder override the source token when the
+          // source filename actually LOOKS obfuscated (no scene markers like
+          // 720p / german / x264 / bluray, no dot-separated structure).
+          // A clean scene release filename — e.g. "the.royals.2015.s01e09.
+          // german.dl.720p.bluray.x264-j4f.mkv" — must NEVER be overridden,
+          // because a one-off folder/file mismatch with a clean source means
+          // the FOLDER is wrong, not the file. Renaming a real S01E09 to
+          // S01E08 because the folder happens to say E08 would corrupt data.
+          const sourceLooksObfuscated = looksLikeObfuscatedSceneFileName(sourceName);
           const folderIsAuthoritative = Boolean(
             parentEpisodeToken
             && parentEpisodeToken === targetEpisodeToken
             && parentFolderName.toLowerCase() !== path.basename(extractDir).toLowerCase()
+            && sourceLooksObfuscated
           );
           if (folderIsAuthoritative) {
             logger.info(`Auto-Rename: source-Token ${sourceEpisodeToken} ignoriert, Folder-Token ${targetEpisodeToken} ist authoritativ (vermutlich obfuskierter Dateiname in ${parentFolderName})`);
