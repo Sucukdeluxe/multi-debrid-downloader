@@ -1685,6 +1685,18 @@ export class DownloadManager extends EventEmitter {
 
   private itemContributedBytes = new Map<string, number>();
 
+  /** Per-package serialization for autoRenameExtractedVideoFiles. The hybrid-
+   *  extract path fires a fire-and-forget rename after every successful
+   *  archive iteration, and the deferred post-process path runs another
+   *  rename when post-processing finishes. For a multi-archive package
+   *  (e.g. 25 episodes) these can overlap, with two concurrent scans seeing
+   *  the same files, racing to rename, and producing "Ziel existiert" /
+   *  ENOENT noise plus occasionally missed renames. We chain subsequent
+   *  invocations onto the running promise so the second scan re-scans
+   *  AFTER the first finishes — picking up any newly-arrived files while
+   *  guaranteeing no two scans operate on the same fileset simultaneously. */
+  private autoRenameInFlight = new Map<string, Promise<number>>();
+
   private runItemIds = new Set<string>();
 
   private runPackageIds = new Set<string>();
@@ -3658,6 +3670,36 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async autoRenameExtractedVideoFiles(
+    extractDir: string,
+    pkg?: PackageEntry,
+    shouldAbort?: () => boolean
+  ): Promise<number> {
+    // Serialize per-package: chain onto any in-flight scan for the same
+    // package so two scans never read the same fileset in parallel. Without
+    // this, hybrid-extract's per-archive trigger + the deferred post-process
+    // trigger frequently overlap and cause "Ziel existiert" / ENOENT
+    // log noise (and occasionally a missed rename when the second scan's
+    // chosen target file disappears between scan and rename).
+    if (!pkg) {
+      return this.autoRenameExtractedVideoFilesImpl(extractDir, undefined, shouldAbort);
+    }
+    const previous = this.autoRenameInFlight.get(pkg.id);
+    const next = (previous ?? Promise.resolve(0)).catch(() => 0).then(() =>
+      this.autoRenameExtractedVideoFilesImpl(extractDir, pkg, shouldAbort)
+    );
+    this.autoRenameInFlight.set(pkg.id, next);
+    try {
+      return await next;
+    } finally {
+      // Only clear the slot if no newer chained call took our place. This
+      // keeps the chain intact when several callers queue up at once.
+      if (this.autoRenameInFlight.get(pkg.id) === next) {
+        this.autoRenameInFlight.delete(pkg.id);
+      }
+    }
+  }
+
+  private async autoRenameExtractedVideoFilesImpl(
     extractDir: string,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean
