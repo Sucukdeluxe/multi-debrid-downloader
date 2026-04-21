@@ -2746,6 +2746,11 @@ export class DownloadManager extends EventEmitter {
         linkCount: links.length
       });
 
+      // Collect per-link summary for ONE batched package-log entry after the
+      // loop, instead of ~10 sync FS calls per link. A DLC with many packages
+      // was freezing the UI for 1-2 minutes because logPackageForItem called
+      // ensurePackageLog + ensureItemLog + appendFileSync×multiple per link.
+      const registeredLinkSummary: string[] = [];
       for (let linkIdx = 0; linkIdx < links.length; linkIdx += 1) {
         const link = links[linkIdx];
         const itemId = uuidv4();
@@ -2772,13 +2777,7 @@ export class DownloadManager extends EventEmitter {
           updatedAt: nowMs()
         };
         this.assignItemTargetPath(item, path.join(outputDir, fileName));
-        this.logPackageForItem(item, "INFO", "Link registriert", {
-          index: linkIdx + 1,
-          totalLinks: links.length,
-          url: link,
-          hintedName: hintName || "",
-          initialTargetPath: item.targetPath
-        });
+        registeredLinkSummary.push(`#${linkIdx + 1} ${fileName} <- ${link}`);
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
         this.itemCount += 1;
@@ -2793,6 +2792,22 @@ export class DownloadManager extends EventEmitter {
         }
         newItemIds.push(itemId);
         addedLinks += 1;
+      }
+
+      // One batched log entry per package instead of one per link.
+      // Item-logs are left uninitialized here — they'll be lazily created
+      // the first time the item actually gets a real lifecycle event
+      // (download start, error, etc.). For very large packages (>50 links)
+      // we only log the first 20 + a "... +N more" suffix so the single log
+      // line doesn't grow into hundreds of KB.
+      if (registeredLinkSummary.length > 0) {
+        const PREVIEW = 20;
+        const linksField = registeredLinkSummary.length <= 50
+          ? registeredLinkSummary.join(" | ")
+          : `${registeredLinkSummary.slice(0, PREVIEW).join(" | ")} | ... +${registeredLinkSummary.length - PREVIEW} more`;
+        this.logPackageForPackage(packageEntry, "INFO", `Links registriert (${registeredLinkSummary.length})`, {
+          links: linksField
+        });
       }
 
       this.session.packages[packageId] = packageEntry;

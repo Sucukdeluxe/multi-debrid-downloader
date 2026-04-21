@@ -12,6 +12,7 @@ import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
+import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { createStoragePaths, emptySession } from "../src/main/storage";
 import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
@@ -155,6 +156,7 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   resetDebridLinkRuntimeStateForTests();
   shutdownItemLogs();
+  shutdownPackageLogs();
   shutdownRenameLog();
   for (const dir of tempDirs.splice(0)) {
     await removeDirWithRetries(dir);
@@ -10314,4 +10316,63 @@ describe("download manager", () => {
       await once(server, "close");
     }
   }, 30000);
+
+  it("bulk-adds large DLC containers without initializing per-item logs (avoids 1-2 min sync-FS freeze)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bulk-add-"));
+    tempDirs.push(root);
+    const stateDir = path.join(root, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    initPackageLogs(stateDir);
+    initItemLogs(stateDir);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false
+      },
+      emptySession(),
+      createStoragePaths(stateDir)
+    );
+
+    // 60 packages with 25 links each = 1500 items. This was freezing the UI
+    // for 1-2 min on slower filesystems because every item triggered
+    // ensurePackageLog + ensureItemLog + multiple sync appendFileSync calls.
+    const packages = Array.from({ length: 60 }, (_, pkgIdx) => ({
+      name: `bulk-pkg-${pkgIdx}`,
+      links: Array.from({ length: 25 }, (_, linkIdx) => `https://dummy/bulk-${pkgIdx}-${linkIdx}.rar`)
+    }));
+
+    const tStart = Date.now();
+    const result = manager.addPackages(packages);
+    const elapsedMs = Date.now() - tStart;
+
+    expect(result.addedPackages).toBe(60);
+    expect(result.addedLinks).toBe(1500);
+
+    // Hard cap: on any reasonable CI box this should complete well under 5 s.
+    // Before the fix, the same workload produced thousands of sync-FS writes
+    // and took 60-120 s even on fast local disks.
+    expect(elapsedMs).toBeLessThan(5000);
+
+    // No per-item log files should have been created — they're only
+    // initialized lazily when an item gets a real lifecycle event later.
+    // Item log files are named item_<id>.txt.
+    const itemLogsDir = path.join(stateDir, "item-logs");
+    const itemLogFiles = fs.existsSync(itemLogsDir)
+      ? fs.readdirSync(itemLogsDir).filter((f) => f.startsWith("item_") && f.endsWith(".txt"))
+      : [];
+    expect(itemLogFiles.length).toBe(0);
+
+    // One package log per package. Package log file names are package_<id>.txt.
+    // The "Links registriert" entry is appended async (batched flush every
+    // ~250ms), so we don't assert content here — just that each package has
+    // been initialized with the startup block (ensurePackageLog wrote the
+    // "Paket-Log Start" header synchronously).
+    const packageLogsDir = path.join(stateDir, "package-logs");
+    const pkgLogFiles = fs.readdirSync(packageLogsDir).filter((f) => f.startsWith("package_") && f.endsWith(".txt"));
+    expect(pkgLogFiles.length).toBe(60);
+  });
 });
