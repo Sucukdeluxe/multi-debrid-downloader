@@ -10499,6 +10499,122 @@ describe("download manager", () => {
     expect((manager as any).packageFileOpChain.has(pkgId)).toBe(false);
   });
 
+  it("auto-rename refuses to scan when extractDir overlaps with mkvLibraryDir", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-overlap-"));
+    tempDirs.push(root);
+    const sharedDir = path.join(root, "library");
+    fs.mkdirSync(path.join(sharedDir, "EpisodeFolder"), { recursive: true });
+    fs.writeFileSync(path.join(sharedDir, "EpisodeFolder", "obfus.mkv"), Buffer.alloc(1024, 0));
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "out"),
+        extractDir: sharedDir,
+        mkvLibraryDir: sharedDir,
+        autoRename4sf4sj: true
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkg: any = {
+      id: "overlap-pkg",
+      name: "Overlap.Test.S01.GERMAN.x264-aWake",
+      outputDir: path.join(root, "out", "Overlap.Test"),
+      extractDir: sharedDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      priority: "normal",
+      createdAt: 0,
+      updatedAt: 0,
+      downloadStartedAt: 0,
+      downloadCompletedAt: 0
+    };
+
+    const renamed = await (manager as any).autoRenameExtractedVideoFiles(sharedDir, pkg);
+    expect(renamed).toBe(0);
+    // File must remain untouched — no rename performed.
+    expect(fs.existsSync(path.join(sharedDir, "EpisodeFolder", "obfus.mkv"))).toBe(true);
+  });
+
+  it("auto-rename also renames matching subtitle / .nfo companion files", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-companion-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    const epFolder = path.join(extractDir, "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake");
+    fs.mkdirSync(epFolder, { recursive: true });
+    fs.writeFileSync(path.join(epFolder, "awa-testshow02e05hd.mkv"), Buffer.alloc(1024, 0));
+    fs.writeFileSync(path.join(epFolder, "awa-testshow02e05hd.srt"), "subtitle");
+    fs.writeFileSync(path.join(epFolder, "awa-testshow02e05hd.de.srt"), "german subtitle");
+    fs.writeFileSync(path.join(epFolder, "awa-testshow02e05hd.nfo"), "info");
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "out"), extractDir, autoRename4sf4sj: true },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkg: any = {
+      id: "companion-pkg",
+      name: "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake",
+      outputDir: path.join(root, "out", "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake"),
+      extractDir,
+      status: "completed", itemIds: [], cancelled: false, enabled: true, priority: "normal",
+      createdAt: 0, updatedAt: 0, downloadStartedAt: 0, downloadCompletedAt: 0
+    };
+
+    const renamed = await (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg);
+    expect(renamed).toBe(1);
+    const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
+    const files = fs.readdirSync(epFolder);
+    // Video renamed.
+    expect(files).toContain(`${expectedBase}.mkv`);
+    expect(files).not.toContain("awa-testshow02e05hd.mkv");
+    // Companions renamed alongside.
+    expect(files).toContain(`${expectedBase}.srt`);
+    expect(files).toContain(`${expectedBase}.de.srt`);
+    expect(files).toContain(`${expectedBase}.nfo`);
+    expect(files).not.toContain("awa-testshow02e05hd.srt");
+    expect(files).not.toContain("awa-testshow02e05hd.de.srt");
+    expect(files).not.toContain("awa-testshow02e05hd.nfo");
+  });
+
+  it("auto-rename appends a numeric suffix when target already exists (no silent skip)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-collision-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    const epFolder = path.join(extractDir, "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake");
+    fs.mkdirSync(epFolder, { recursive: true });
+    fs.writeFileSync(path.join(epFolder, "awa-testshow02e05hd.mkv"), Buffer.alloc(1024, 0));
+    fs.writeFileSync(path.join(epFolder, "awa-testshow02e05hd.alt.mkv"), Buffer.alloc(2048, 0));
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "out"), extractDir, autoRename4sf4sj: true },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkg: any = {
+      id: "collision-pkg",
+      name: "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake",
+      outputDir: path.join(root, "out", "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake"),
+      extractDir,
+      status: "completed", itemIds: [], cancelled: false, enabled: true, priority: "normal",
+      createdAt: 0, updatedAt: 0, downloadStartedAt: 0, downloadCompletedAt: 0
+    };
+
+    const renamed = await (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg);
+    expect(renamed).toBe(2);
+    const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
+    const files = fs.readdirSync(epFolder).sort();
+    // First file got the canonical name; second got a numeric suffix.
+    expect(files).toContain(`${expectedBase}.mkv`);
+    expect(files).toContain(`${expectedBase}.2.mkv`);
+    expect(files).not.toContain("awa-testshow02e05hd.mkv");
+    expect(files).not.toContain("awa-testshow02e05hd.alt.mkv");
+  });
+
   it("chainPackageFileOp recovers from a failed op so subsequent ops still run", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-chain-recover-"));
     tempDirs.push(root);

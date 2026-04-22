@@ -1017,9 +1017,15 @@ function hasSceneGroupSuffix(fileName: string): boolean {
   return isValidSceneGroupSuffix(suffix);
 }
 
+/** Older scene releases used "1x01" / "01x100" instead of "S01E01". */
+const SCENE_EPISODE_X_RE = /(?:^|[._\-\s])(\d{1,2})x(\d{1,3})(?:x(\d{1,3}))?(?!\d)/i;
+
 export function extractEpisodeToken(fileName: string): string | null {
   const text = String(fileName || "");
-  const match = text.match(SCENE_EPISODE_RE) || text.match(SCENE_EPISODE_JOINED_RE) || text.match(SCENE_EPISODE_TYPO_SS_RE);
+  const match = text.match(SCENE_EPISODE_RE)
+    || text.match(SCENE_EPISODE_JOINED_RE)
+    || text.match(SCENE_EPISODE_TYPO_SS_RE)
+    || text.match(SCENE_EPISODE_X_RE);
   if (!match) {
     return null;
   }
@@ -1697,6 +1703,17 @@ export class DownloadManager extends EventEmitter {
    *  operation runs per package at any time, regardless of which pipe
    *  triggered it. */
   private packageFileOpChain = new Map<string, Promise<unknown>>();
+
+  /** Minimum age (ms) a video file must reach before auto-rename will touch
+   *  it. Guards against renaming files mid-write during hybrid extract.
+   *  Disabled (0) under Vitest so tests that create files immediately before
+   *  triggering a rename don't have to sleep. Tests can also override via
+   *  setFileStabilizeMinAgeMsForTests. */
+  private fileStabilizeMinAgeMs = process.env.VITEST ? 0 : 2000;
+
+  public setFileStabilizeMinAgeMsForTests(ms: number): void {
+    this.fileStabilizeMinAgeMs = Math.max(0, Math.floor(ms));
+  }
 
   private runItemIds = new Set<string>();
 
@@ -3516,6 +3533,14 @@ export class DownloadManager extends EventEmitter {
 
       for (const entry of entries) {
         const fullPath = path.join(current, entry.name);
+        // NEVER follow symlinks / junctions / reparse points. Following them
+        // can leak the scan into unrelated directories — including the shared
+        // mkv library — and cause cross-package renames (the v1.7.107 bug).
+        // Dirent.isDirectory() returns true for symlinks pointing to dirs,
+        // so we MUST also exclude symbolic links explicitly.
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
         if (entry.isDirectory()) {
           stack.push(fullPath);
           continue;
@@ -3550,20 +3575,172 @@ export class DownloadManager extends EventEmitter {
   private async renamePathWithExdevFallback(sourcePath: string, targetPath: string): Promise<void> {
     const sourceFsPath = toWindowsLongPathIfNeeded(sourcePath);
     const targetFsPath = toWindowsLongPathIfNeeded(targetPath);
-    try {
-      await fs.promises.rename(sourceFsPath, targetFsPath);
-      return;
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error
-        ? String((error as NodeJS.ErrnoException).code || "")
-        : "";
-      if (code !== "EXDEV") {
+    // Transient lock codes — antivirus scan, Windows Search Indexer, OneDrive
+    // sync, an open video player. These typically clear within a second or
+    // two, so a tiny retry loop converts a hard failure into a quiet wait.
+    const TRANSIENT_RENAME_ERROR_CODES = new Set(["EBUSY", "EACCES", "EPERM", "EEXIST"]);
+    const RENAME_RETRY_DELAYS_MS = [200, 500, 1000];
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= RENAME_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        await fs.promises.rename(sourceFsPath, targetFsPath);
+        if (attempt > 0) {
+          logger.info(`Rename erfolgreich nach ${attempt} Retry(s): ${path.basename(sourcePath)}`);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        const code = error && typeof error === "object" && "code" in error
+          ? String((error as NodeJS.ErrnoException).code || "")
+          : "";
+        if (code === "EXDEV") {
+          // Cross-volume — fall through to copy+rm fallback below.
+          break;
+        }
+        if (TRANSIENT_RENAME_ERROR_CODES.has(code) && attempt < RENAME_RETRY_DELAYS_MS.length) {
+          const delay = RENAME_RETRY_DELAYS_MS[attempt];
+          logger.info(`Rename ${code} (vermutlich Antivirus/Indexer/Player), Retry in ${delay}ms: ${path.basename(sourcePath)}`);
+          await sleep(delay);
+          continue;
+        }
         throw error;
       }
     }
 
+    // EXDEV (cross-volume) fallback: copy + remove source.
+    const lastCode = lastError && typeof lastError === "object" && "code" in lastError
+      ? String((lastError as NodeJS.ErrnoException).code || "")
+      : "";
+    if (lastCode !== "EXDEV") {
+      throw lastError;
+    }
     await fs.promises.copyFile(sourceFsPath, targetFsPath);
     await fs.promises.rm(sourceFsPath, { force: true });
+  }
+
+  /** When a video file is renamed, rename matching subtitle / metadata
+   *  companions in the same folder so they keep their pairing. Without this,
+   *  a media player can no longer auto-load subs after the rename because
+   *  the player matches by base filename. */
+  private async renameCompanionFiles(
+    sourceVideoPath: string,
+    targetVideoPath: string,
+    pkg?: PackageEntry
+  ): Promise<void> {
+    const COMPANION_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".smi", ".nfo"]);
+    const sourceDir = path.dirname(sourceVideoPath);
+    const targetDir = path.dirname(targetVideoPath);
+    const sourceVideoBase = path.basename(sourceVideoPath, path.extname(sourceVideoPath));
+    const targetVideoBase = path.basename(targetVideoPath, path.extname(targetVideoPath));
+    if (!sourceVideoBase || !targetVideoBase || sourceVideoBase === targetVideoBase) {
+      return;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        continue;
+      }
+      const entryName = entry.name;
+      const entryExt = path.extname(entryName).toLowerCase();
+      if (!COMPANION_EXTENSIONS.has(entryExt)) {
+        continue;
+      }
+      // Match by basename prefix (handles language tags like "movie.de.srt"):
+      //   "awa-show02e16hd.srt"     -> base "awa-show02e16hd"
+      //   "awa-show02e16hd.de.srt"  -> base "awa-show02e16hd.de"
+      // We accept any companion whose basename starts with the source video's
+      // basename + "." OR equals the source basename (no language tag).
+      const entryBase = path.basename(entryName, path.extname(entryName));
+      const isExactMatch = entryBase === sourceVideoBase;
+      const isPrefixMatch = entryBase.startsWith(`${sourceVideoBase}.`);
+      if (!isExactMatch && !isPrefixMatch) {
+        continue;
+      }
+      // Preserve any suffix after the video basename (e.g. language tag ".de").
+      const suffixAfterBase = isExactMatch ? "" : entryBase.slice(sourceVideoBase.length);
+      const newCompanionName = `${targetVideoBase}${suffixAfterBase}${entryExt}`;
+      const sourceCompanionPath = path.join(sourceDir, entryName);
+      const targetCompanionPath = path.join(targetDir, newCompanionName);
+      if (sourceCompanionPath === targetCompanionPath) {
+        continue;
+      }
+      try {
+        await this.renamePathWithExdevFallback(sourceCompanionPath, targetCompanionPath);
+        logger.info(`Auto-Rename Companion: ${entryName} -> ${newCompanionName}`);
+        if (pkg) {
+          this.logPackageForPackage(pkg, "INFO", "Auto-Rename Companion umbenannt", {
+            source: sourceCompanionPath,
+            target: targetCompanionPath
+          });
+        }
+      } catch (err) {
+        logger.warn(`Auto-Rename Companion fehlgeschlagen: ${entryName} -> ${newCompanionName}: ${compactErrorText(err as Error)}`);
+      }
+    }
+  }
+
+  /** Move matching subtitle / metadata companions alongside a video that
+   *  was just collected into the library. Mirrors renameCompanionFiles but
+   *  for cross-directory moves. */
+  private async moveCompanionFiles(
+    sourceVideoPath: string,
+    targetVideoPath: string,
+    pkg?: PackageEntry
+  ): Promise<void> {
+    const COMPANION_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".smi", ".nfo"]);
+    const sourceDir = path.dirname(sourceVideoPath);
+    const targetDir = path.dirname(targetVideoPath);
+    const sourceVideoBase = path.basename(sourceVideoPath, path.extname(sourceVideoPath));
+    const targetVideoBase = path.basename(targetVideoPath, path.extname(targetVideoPath));
+    if (!sourceVideoBase || !targetVideoBase) {
+      return;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        continue;
+      }
+      const entryName = entry.name;
+      const entryExt = path.extname(entryName).toLowerCase();
+      if (!COMPANION_EXTENSIONS.has(entryExt)) {
+        continue;
+      }
+      const entryBase = path.basename(entryName, path.extname(entryName));
+      const isExactMatch = entryBase === sourceVideoBase;
+      const isPrefixMatch = entryBase.startsWith(`${sourceVideoBase}.`);
+      if (!isExactMatch && !isPrefixMatch) {
+        continue;
+      }
+      const suffixAfterBase = isExactMatch ? "" : entryBase.slice(sourceVideoBase.length);
+      const newCompanionName = `${targetVideoBase}${suffixAfterBase}${entryExt}`;
+      const sourceCompanionPath = path.join(sourceDir, entryName);
+      const targetCompanionPath = path.join(targetDir, newCompanionName);
+      if (sourceCompanionPath === targetCompanionPath) {
+        continue;
+      }
+      try {
+        await this.moveFileWithExdevFallback(sourceCompanionPath, targetCompanionPath);
+        logger.info(`MKV-Move Companion: ${entryName} -> ${newCompanionName}`);
+        if (pkg) {
+          this.logPackageForPackage(pkg, "INFO", "Companion mit-verschoben", {
+            source: sourceCompanionPath,
+            target: targetCompanionPath
+          });
+        }
+      } catch (err) {
+        logger.warn(`MKV-Move Companion fehlgeschlagen: ${entryName}: ${compactErrorText(err as Error)}`);
+      }
+    }
   }
 
   private isPathLengthRenameError(error: unknown): boolean {
@@ -3594,6 +3771,18 @@ export class DownloadManager extends EventEmitter {
 
     const fileName = path.basename(candidatePath);
     if (fileName.length > 255) {
+      return null;
+    }
+
+    // Windows MAX_PATH is 260 chars without the \\?\ long-path prefix.
+    // The actual rename via renamePathWithExdevFallback ALWAYS wraps with
+    // toWindowsLongPathIfNeeded, so paths up to ~32K technically work, but
+    // many downstream consumers (Explorer, MediaPlayers, scripts) struggle
+    // beyond ~248. Use a conservative 247-char limit so the renamed file
+    // remains usable. Caller will fall back to buildShortPackageFallback
+    // when this returns null.
+    const SAFE_TOTAL_PATH_CHARS = 247;
+    if (candidatePath.length > SAFE_TOTAL_PATH_CHARS) {
       return null;
     }
 
@@ -3710,6 +3899,30 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
 
+    // SAFETY: refuse to scan if extractDir is identical to or contains
+    // the shared MKV library. Otherwise the scan would treat already-
+    // collected library files as "extracted videos" and rename them based
+    // on whatever folder candidates happen to surface — corrupting files
+    // from OTHER packages. This is the v1.7.107 bug vector and must never
+    // come back. extractDir INSIDE mkvLibraryDir is also rejected: it
+    // would put extracted files directly into the library tree where
+    // subsequent scans would rename them out of their package context.
+    const mkvLibraryDir = String(this.settings.mkvLibraryDir || "").trim();
+    if (mkvLibraryDir) {
+      const sameOrLibraryInside = isPathInsideDir(mkvLibraryDir, extractDir);
+      const extractInsideLibrary = isPathInsideDir(extractDir, mkvLibraryDir);
+      if (sameOrLibraryInside || extractInsideLibrary) {
+        logger.warn(`Auto-Rename ABGEBROCHEN: extractDir=${extractDir} ueberlappt mit mkvLibraryDir=${mkvLibraryDir} — Cross-Package Korruption verhindert`);
+        if (pkg) {
+          this.logPackageForPackage(pkg, "ERROR", "Auto-Rename abgebrochen: extractDir ueberlappt mit MKV-Bibliothek", {
+            extractDir,
+            mkvLibraryDir
+          });
+        }
+        return 0;
+      }
+    }
+
     const videoFiles = await this.collectVideoFiles(extractDir);
     logger.info(`Auto-Rename: ${videoFiles.length} Video-Dateien gefunden in ${extractDir}`);
     if (pkg) {
@@ -3740,6 +3953,14 @@ export class DownloadManager extends EventEmitter {
     const sampleDirNames = new Set(["sample", "samples"]);
     // Short suffix pattern: scene groups often use "-s.mkv" for samples (e.g. itn-continuum.s01e10.720p-s.mkv)
     const sampleSuffixRe = /[._\-]s$/i;
+    // Files that were still being written to by the extractor in the last
+    // few seconds must not be renamed — hybrid-extract produces MKVs
+    // progressively and a concurrent rename scan can catch a file mid-write.
+    // We skip such "fresh" files and let the next scan pick them up once
+    // they've stabilized (hybrid-extract fires a new rename scan after every
+    // archive completes, so nothing gets missed).
+    const FILE_STABILIZE_MIN_AGE_MS = this.fileStabilizeMinAgeMs;
+    const now = Date.now();
     for (const sourcePath of videoFiles) {
       if (shouldAbort?.()) {
         return renamed;
@@ -3749,11 +3970,41 @@ export class DownloadManager extends EventEmitter {
       const sourceBaseName = path.basename(sourceName, sourceExt);
       const parentDirName = path.basename(path.dirname(sourcePath)).toLowerCase();
 
+      // Skip files that are still being written. stat() may fail if the file
+      // disappeared (another pipe's mkvMove) — treat as "skip this scan".
+      let sourceStat: fs.Stats | null = null;
+      try {
+        sourceStat = await fs.promises.stat(sourcePath);
+      } catch {
+        continue;
+      }
+      const ageMs = now - sourceStat.mtimeMs;
+      if (ageMs < FILE_STABILIZE_MIN_AGE_MS) {
+        logger.info(`Auto-Rename: ${sourceName} uebersprungen — Datei noch frisch (${Math.floor(ageMs)}ms), wird beim naechsten Scan behandelt`);
+        continue;
+      }
+
       // Skip sample files — renaming them strips the "-sample" suffix,
       // making them indistinguishable from the main MKV and causing (2)
       // duplicates during MKV collection.
-      if (sampleTokenRe.test(sourceBaseName) || sampleDirNames.has(parentDirName) || sampleSuffixRe.test(sourceBaseName)) {
+      // BUT: a series with "Sample" in the title (e.g. "Sample.Squad.S01E01")
+      // would match sampleTokenRe as a false positive. Real samples are
+      // small (typically <150 MB); the actual episode is always larger.
+      // Use the file size as a sanity check — only treat as sample if the
+      // file is small. Folder-based detection (sampleDirNames) doesn't need
+      // the size guard because sample subfolders are unambiguous.
+      const SAMPLE_MAX_BYTES = 150 * 1024 * 1024;
+      const looksLikeSampleByName = sampleTokenRe.test(sourceBaseName) || sampleSuffixRe.test(sourceBaseName);
+      const insideSampleDir = sampleDirNames.has(parentDirName);
+      if (insideSampleDir) {
         continue;
+      }
+      if (looksLikeSampleByName) {
+        if (sourceStat.size <= SAMPLE_MAX_BYTES) {
+          continue;
+        }
+        // Large file with "sample" in the name — series-title false positive.
+        logger.info(`Auto-Rename: ${sourceName} matcht Sample-Pattern, aber Groesse ${Math.round(sourceStat.size / (1024 * 1024))} MB > Schwelle — wird als echter Inhalt behandelt`);
       }
       // Skip bonus/extras content (Featurettes, Making-Of, Behind-The-Scenes, etc.)
       // These have generic descriptive names and would get renamed to misleading
@@ -4007,9 +4258,10 @@ export class DownloadManager extends EventEmitter {
       }
       if (pathKey(targetPath) === pathKey(sourcePath) && targetPath !== sourcePath) {
         // Same file on case-insensitive FS but different casing — rename in-place.
-        // On Windows, fs.rename handles case-only renames correctly.
+        // Route through renamePathWithExdevFallback so we get the long-path /
+        // UNC handling AND the transient-error retry for free.
         try {
-          await fs.promises.rename(sourcePath, targetPath);
+          await this.renamePathWithExdevFallback(sourcePath, targetPath);
           renamedCount += 1;
           if (pkg) {
             const resolved = resolveRenameItem(targetPath);
@@ -4027,21 +4279,48 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       if (await this.existsAsync(targetPath)) {
-        if (pkg) {
-          this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: Ziel existiert", {
-            sourceName,
-            targetPath
-          });
-          const resolved = resolveRenameItem(targetPath);
-          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename übersprungen: Ziel existiert", {
-            sourcePath,
-            sourceName,
-            targetPath,
-            targetBaseName
-          }, resolved.item, resolved.matchedBy);
+        // A previous successful rename (this scan or an earlier one) already
+        // produced the target. Try numbered variants: "<base>.2.mkv",
+        // "<base>.3.mkv", ... — caps at 99 to bound the loop. This handles
+        // legit multi-MKV-per-folder cases (alternate audio, A/B parts in the
+        // same folder) without dropping the second file silently.
+        const targetDir = path.dirname(targetPath);
+        const targetExt = path.extname(targetPath);
+        const targetBase = path.basename(targetPath, targetExt);
+        let resolvedTarget: string | null = null;
+        for (let suffixN = 2; suffixN <= 99; suffixN += 1) {
+          const candidate = path.join(targetDir, `${targetBase}.${suffixN}${targetExt}`);
+          if (!(await this.existsAsync(candidate))) {
+            resolvedTarget = candidate;
+            break;
+          }
         }
-        logger.warn(`Auto-Rename übersprungen (Ziel existiert): ${targetPath}`);
-        continue;
+        if (!resolvedTarget) {
+          if (pkg) {
+            this.logPackageForPackage(pkg, "WARN", "Auto-Rename übersprungen: Ziel existiert (>99 Varianten belegt)", {
+              sourceName,
+              targetPath
+            });
+            const resolved = resolveRenameItem(targetPath);
+            this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename übersprungen: Ziel existiert", {
+              sourcePath,
+              sourceName,
+              targetPath,
+              targetBaseName
+            }, resolved.item, resolved.matchedBy);
+          }
+          logger.warn(`Auto-Rename übersprungen (Ziel existiert, >99 Varianten belegt): ${targetPath}`);
+          continue;
+        }
+        if (pkg) {
+          this.logPackageForPackage(pkg, "INFO", "Auto-Rename mit Suffix (Ziel existierte)", {
+            sourceName,
+            originalTarget: targetPath,
+            resolvedTarget
+          });
+        }
+        logger.info(`Auto-Rename mit Suffix: Ziel ${path.basename(targetPath)} existierte → benutze ${path.basename(resolvedTarget)}`);
+        targetPath = resolvedTarget;
       }
 
       try {
@@ -4063,6 +4342,9 @@ export class DownloadManager extends EventEmitter {
         }
         logger.info(`Auto-Rename: ${sourceName} -> ${path.basename(targetPath)}`);
         renamed += 1;
+        // Rename matching companion files (subtitles, .nfo, .idx/.sub) so they
+        // stay paired with the renamed video for media-player auto-loading.
+        await this.renameCompanionFiles(sourcePath, targetPath, pkg);
       } catch (error) {
         if (this.isPathLengthRenameError(error)) {
           const fallbackCandidates = [
@@ -4309,6 +4591,18 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const targetDir = path.resolve(targetDirRaw);
+    // SAFETY: never move files WITHIN the library tree, and never treat the
+    // library itself as a source. sourceDir == targetDir would scan the
+    // library, match files collected from OTHER packages via the same rename
+    // heuristics, and move them around — a cross-package corruption vector.
+    if (isPathInsideDir(sourceDir, targetDir) || isPathInsideDir(targetDir, sourceDir)) {
+      logger.warn(`MKV-Sammelordner ABGEBROCHEN: pkg=${pkg.name}, sourceDir=${sourceDir} ueberlappt mit mkvLibraryDir=${targetDir}`);
+      this.logPackageForPackage(pkg, "ERROR", "MKV-Sammelordner abgebrochen: sourceDir ueberlappt mit MKV-Bibliothek", {
+        sourceDir,
+        targetDir
+      });
+      return;
+    }
     if (!await this.existsAsync(sourceDir)) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, Quelle fehlt (${sourceDir})`);
       return;
@@ -4456,6 +4750,9 @@ export class DownloadManager extends EventEmitter {
           targetPath,
           sourceSize
         }, resolved.item, resolved.matchedBy);
+        // Move matching companion files (subtitles, .nfo) alongside the video
+        // so the media player can still find them next to the file.
+        await this.moveCompanionFiles(sourcePath, targetPath, pkg);
       } catch (error) {
         failed += 1;
         logger.warn(`MKV verschieben fehlgeschlagen: ${sourcePath} -> ${targetPath} (${compactErrorText(error)})`);
