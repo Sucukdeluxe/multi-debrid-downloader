@@ -1017,8 +1017,10 @@ function hasSceneGroupSuffix(fileName: string): boolean {
   return isValidSceneGroupSuffix(suffix);
 }
 
-/** Older scene releases used "1x01" / "01x100" instead of "S01E01". */
-const SCENE_EPISODE_X_RE = /(?:^|[._\-\s])(\d{1,2})x(\d{1,3})(?:x(\d{1,3}))?(?!\d)/i;
+/** Older scene releases used "1x01" instead of "S01E01". The episode group
+ *  is capped at 2 digits so the regex does NOT falsely match codec tokens
+ *  like "x264" / "x265" / "x266" or aspect ratios like "1920x1080". */
+const SCENE_EPISODE_X_RE = /(?:^|[._\-\s])(\d{1,2})x(\d{1,2})(?:x(\d{1,2}))?(?![\dx])/i;
 
 export function extractEpisodeToken(fileName: string): string | null {
   const text = String(fileName || "");
@@ -3979,7 +3981,10 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       const ageMs = now - sourceStat.mtimeMs;
-      if (ageMs < FILE_STABILIZE_MIN_AGE_MS) {
+      // Negative age = mtime in the future (clock skew, NTP correction,
+      // VM resume after suspension). Treat as "definitely stable" so the
+      // file doesn't get stuck waiting for the wall clock to catch up.
+      if (ageMs >= 0 && ageMs < FILE_STABILIZE_MIN_AGE_MS) {
         logger.info(`Auto-Rename: ${sourceName} uebersprungen — Datei noch frisch (${Math.floor(ageMs)}ms), wird beim naechsten Scan behandelt`);
         continue;
       }
@@ -4290,6 +4295,15 @@ export class DownloadManager extends EventEmitter {
         let resolvedTarget: string | null = null;
         for (let suffixN = 2; suffixN <= 99; suffixN += 1) {
           const candidate = path.join(targetDir, `${targetBase}.${suffixN}${targetExt}`);
+          // Defensive: never pick the source file as our resolved target.
+          // If sourceName is already e.g. "<base>.2.mkv", existsAsync would
+          // see it as "existing" and the loop would otherwise pick "<base>.3"
+          // — but if pathKey matches (case-insensitive), bail to next idx
+          // so we don't accidentally rename source-onto-itself with a
+          // surprising suffix.
+          if (pathKey(candidate) === pathKey(sourcePath)) {
+            continue;
+          }
           if (!(await this.existsAsync(candidate))) {
             resolvedTarget = candidate;
             break;
