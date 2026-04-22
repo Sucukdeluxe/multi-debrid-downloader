@@ -3686,15 +3686,16 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  /** Move matching subtitle / metadata companions alongside a video that
-   *  was just collected into the library. Mirrors renameCompanionFiles but
-   *  for cross-directory moves. */
+  /** Move matching SUBTITLE companions alongside a video collected into the
+   *  library. Note: .nfo / metadata files are intentionally NOT moved — the
+   *  library should contain video + subs only. .nfo stays in the extract
+   *  dir and is removed by normal cleanup. */
   private async moveCompanionFiles(
     sourceVideoPath: string,
     targetVideoPath: string,
     pkg?: PackageEntry
   ): Promise<void> {
-    const COMPANION_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".smi", ".nfo"]);
+    const COMPANION_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".smi"]);
     const sourceDir = path.dirname(sourceVideoPath);
     const targetDir = path.dirname(targetVideoPath);
     const sourceVideoBase = path.basename(sourceVideoPath, path.extname(sourceVideoPath));
@@ -3776,17 +3777,18 @@ export class DownloadManager extends EventEmitter {
       return null;
     }
 
-    // Windows MAX_PATH is 260 chars without the \\?\ long-path prefix.
-    // The actual rename via renamePathWithExdevFallback ALWAYS wraps with
-    // toWindowsLongPathIfNeeded, so paths up to ~32K technically work, but
-    // many downstream consumers (Explorer, MediaPlayers, scripts) struggle
-    // beyond ~248. Use a conservative 247-char limit so the renamed file
-    // remains usable. Caller will fall back to buildShortPackageFallback
-    // when this returns null.
-    const SAFE_TOTAL_PATH_CHARS = 247;
-    if (candidatePath.length > SAFE_TOTAL_PATH_CHARS) {
-      return null;
-    }
+    // Note: total-path length is intentionally NOT checked here. We used to
+    // cap it at 247 chars (v1.7.151) on the assumption that paths beyond
+    // Windows MAX_PATH (260) would fail or be unusable downstream. That
+    // turned out to be ACTIVELY HARMFUL: renamePathWithExdevFallback wraps
+    // every rename via toWindowsLongPathIfNeeded (\\?\ prefix), and the
+    // file ends up in the library dir after mkv-move where the parent path
+    // is short. Imposing a 247-char cap on the EXTRACT-dir intermediate
+    // path threw away perfectly-good scene-release names like
+    // "Dr.House.S04E02.Der.Stoff.aus.dem.die.Heldin.ist.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR.mkv"
+    // and replaced them with ugly "Dr.House.S04E02.mkv" via fallback.
+    // We rely on the long-path prefix for the rename and on the 255-char
+    // NTFS file-name limit above for the actual constraint.
 
     return candidatePath;
   }

@@ -10540,6 +10540,54 @@ describe("download manager", () => {
     expect(fs.existsSync(path.join(sharedDir, "EpisodeFolder", "obfus.mkv"))).toBe(true);
   });
 
+  it("mkv-move moves SUBTITLES to library but NOT .nfo metadata files", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mvcompanion-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    const libDir = path.join(root, "library");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.mkdirSync(libDir, { recursive: true });
+    const epFolder = path.join(extractDir, "Show.S01E01.GERMAN.x264-GROUP");
+    fs.mkdirSync(epFolder, { recursive: true });
+    fs.writeFileSync(path.join(epFolder, "Show.S01E01.GERMAN.x264-GROUP.mkv"), Buffer.alloc(1024, 0));
+    fs.writeFileSync(path.join(epFolder, "Show.S01E01.GERMAN.x264-GROUP.srt"), "subs");
+    fs.writeFileSync(path.join(epFolder, "Show.S01E01.GERMAN.x264-GROUP.nfo"), "info");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "out"),
+        extractDir,
+        autoExtract: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir: libDir
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkg: any = {
+      id: "movecomp-pkg",
+      name: "Show.S01.GERMAN.x264-GROUP",
+      outputDir: path.join(root, "out", "Show"),
+      extractDir,
+      status: "completed", itemIds: [], cancelled: false, enabled: true, priority: "normal",
+      createdAt: 0, updatedAt: 0, downloadStartedAt: 0, downloadCompletedAt: 0
+    };
+
+    await (manager as any).collectMkvFilesToLibrary("movecomp-pkg", pkg);
+
+    const libFiles = fs.readdirSync(libDir);
+    // Video AND subtitle moved to library.
+    expect(libFiles).toContain("Show.S01E01.GERMAN.x264-GROUP.mkv");
+    expect(libFiles).toContain("Show.S01E01.GERMAN.x264-GROUP.srt");
+    // .nfo MUST NOT end up in the library — that's the user-visible bug
+    // we are fixing. (It gets cleaned up with other residual files in
+    // cleanupNonMkvResidualFiles after the move; we don't care whether it
+    // survives in the extract dir, only that the library stays clean.)
+    expect(libFiles).not.toContain("Show.S01E01.GERMAN.x264-GROUP.nfo");
+  });
+
   it("auto-rename also renames matching subtitle / .nfo companion files", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-companion-"));
     tempDirs.push(root);
