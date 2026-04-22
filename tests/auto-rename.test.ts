@@ -59,10 +59,15 @@ describe("looksLikeObfuscatedSceneFileName", () => {
 });
 
 describe("extractEpisodeToken (extended formats)", () => {
-  it("recognizes the older xX format", () => {
+  it("recognizes the older xX format (capped at 2 episode digits)", () => {
     expect(extractEpisodeToken("show.1x01.720p.mkv")).toBe("S01E01");
-    expect(extractEpisodeToken("Show.Name.10x100.mkv")).toBe("S10E100");
     expect(extractEpisodeToken("show-2x05-hdtv.mkv")).toBe("S02E05");
+    expect(extractEpisodeToken("Show.Name.10x99.mkv")).toBe("S10E99");
+    // 3-digit episode in xX format is intentionally NOT supported — would
+    // collide with codec tokens (x264/x265/x266). 3-digit episodes still
+    // work in the modern SxxEnnn format which has explicit S/E delimiters.
+    expect(extractEpisodeToken("Show.Name.10x100.mkv")).toBeNull();
+    expect(extractEpisodeToken("Show.Name.S10E100.mkv")).toBe("S10E100");
   });
 
   it("does not falsely match resolution tokens like 1080x720", () => {
@@ -70,6 +75,20 @@ describe("extractEpisodeToken (extended formats)", () => {
     // there's no second number group in 1080p / 720p / etc.
     expect(extractEpisodeToken("show.1080p.mkv")).toBeNull();
     expect(extractEpisodeToken("show.S01E01.1080p.mkv")).toBe("S01E01");
+  });
+
+  it("does not falsely match codec tokens like x264 / x265 (caps episode digits)", () => {
+    // First number 5, second number capped to 2 digits → "5x265" CANNOT
+    // match because 265 has 3 digits. Same for x264, x266, h264, h265.
+    expect(extractEpisodeToken("Movie.x264-GROUP.mkv")).toBeNull();
+    expect(extractEpisodeToken("Movie.5x265.x265.mkv")).toBeNull();
+    // SxxExx still wins ahead of phantom xX matches.
+    expect(extractEpisodeToken("Show.S01E01.x265-GROUP.mkv")).toBe("S01E01");
+  });
+
+  it("does not falsely match common aspect ratios like 1920x1080", () => {
+    // 1920 has 4 digits, first group capped at 2 → no match.
+    expect(extractEpisodeToken("Movie.1920x1080.mkv")).toBeNull();
   });
 });
 
