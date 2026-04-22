@@ -58,6 +58,21 @@ describe("looksLikeObfuscatedSceneFileName", () => {
   });
 });
 
+describe("extractEpisodeToken (extended formats)", () => {
+  it("recognizes the older xX format", () => {
+    expect(extractEpisodeToken("show.1x01.720p.mkv")).toBe("S01E01");
+    expect(extractEpisodeToken("Show.Name.10x100.mkv")).toBe("S10E100");
+    expect(extractEpisodeToken("show-2x05-hdtv.mkv")).toBe("S02E05");
+  });
+
+  it("does not falsely match resolution tokens like 1080x720", () => {
+    // The xX regex is bounded; 1080p shouldn't match as "1080x???" because
+    // there's no second number group in 1080p / 720p / etc.
+    expect(extractEpisodeToken("show.1080p.mkv")).toBeNull();
+    expect(extractEpisodeToken("show.S01E01.1080p.mkv")).toBe("S01E01");
+  });
+});
+
 describe("extractEpisodeToken", () => {
   it("extracts S01E01 from standard scene format", () => {
     expect(extractEpisodeToken("show.name.s01e01.720p")).toBe("S01E01");
