@@ -6,6 +6,7 @@ import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
+import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
@@ -3574,6 +3575,29 @@ export class DebridService {
         }
         // ignore and continue with host page fallback
       }
+    }
+
+    // Mega.nz Pre-Resolve via Public API (kein Mega-Debrid-Quota-Verbrauch).
+    // Liefert echten Filename sobald Links in die Queue kommen, anstatt erst
+    // beim Unrestrict. Concurrency 4 — Mega's Public API ist tolerant gegen
+    // kleine Bursts.
+    const megaLinks = unresolved.filter((link) => !clean.has(link) && isMegaFileUrl(link));
+    if (megaLinks.length > 0) {
+      await runWithConcurrency(megaLinks, 4, async (link) => {
+        try {
+          const info = await resolveMegaFilename(link, signal);
+          if (info?.name) {
+            reportResolved(link, info.name);
+          }
+        } catch (error) {
+          const errorText = compactErrorText(error);
+          if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+            throw error;
+          }
+          // Schluck — Public API kann fehlen oder rate-limiten; faellt auf
+          // den normalen Mega-Debrid Unrestrict-Pfad zurueck.
+        }
+      });
     }
 
     const remaining = unresolved.filter((link) => !clean.has(link) && isRapidgatorLink(link));
