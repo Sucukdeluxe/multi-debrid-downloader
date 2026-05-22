@@ -4600,27 +4600,57 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const sourceDir = this.settings.autoExtract ? pkg.extractDir : pkg.outputDir;
+    // SOURCE DIRECTORIES:
+    // - Wenn autoExtract aktiv: extractDir ist primäre Quelle (entpackte Videos).
+    // - IMMER zusätzlich outputDir: Provider wie Mega-Debrid liefern direkte
+    //   .mkv (kein Archiv), die sonst im outputDir liegen bleiben und nie in
+    //   der Library landen würden.
+    const sourceDirCandidates: string[] = [];
+    if (this.settings.autoExtract && pkg.extractDir) {
+      sourceDirCandidates.push(pkg.extractDir);
+    }
+    if (pkg.outputDir) {
+      sourceDirCandidates.push(pkg.outputDir);
+    }
+    // Dedupe nach resolved Pfad (extractDir kann == outputDir sein).
+    const sourceDirSeen = new Set<string>();
+    const sourceDirsAll: string[] = [];
+    for (const dir of sourceDirCandidates) {
+      const resolved = path.resolve(dir).toLowerCase();
+      if (sourceDirSeen.has(resolved)) continue;
+      sourceDirSeen.add(resolved);
+      sourceDirsAll.push(dir);
+    }
+
     const targetDirRaw = String(this.settings.mkvLibraryDir || "").trim();
-    if (!sourceDir || !targetDirRaw) {
+    if (sourceDirsAll.length === 0 || !targetDirRaw) {
       logger.warn(`MKV-Sammelordner übersprungen: pkg=${pkg.name}, ungültiger Pfad`);
       return;
     }
     const targetDir = path.resolve(targetDirRaw);
+
     // SAFETY: never move files WITHIN the library tree, and never treat the
     // library itself as a source. sourceDir == targetDir would scan the
     // library, match files collected from OTHER packages via the same rename
     // heuristics, and move them around — a cross-package corruption vector.
-    if (isPathInsideDir(sourceDir, targetDir) || isPathInsideDir(targetDir, sourceDir)) {
-      logger.warn(`MKV-Sammelordner ABGEBROCHEN: pkg=${pkg.name}, sourceDir=${sourceDir} ueberlappt mit mkvLibraryDir=${targetDir}`);
-      this.logPackageForPackage(pkg, "ERROR", "MKV-Sammelordner abgebrochen: sourceDir ueberlappt mit MKV-Bibliothek", {
-        sourceDir,
-        targetDir
-      });
-      return;
+    // Pro Source-Dir prüfen — einer kann safe sein, der andere nicht.
+    const sourceDirs: string[] = [];
+    for (const dir of sourceDirsAll) {
+      if (isPathInsideDir(dir, targetDir) || isPathInsideDir(targetDir, dir)) {
+        logger.warn(`MKV-Sammelordner: Source uebersprungen (ueberlappt mit mkvLibraryDir): pkg=${pkg.name}, dir=${dir}, target=${targetDir}`);
+        this.logPackageForPackage(pkg, "WARN", "MKV-Sammelordner: Source uebersprungen (ueberlappt mit MKV-Bibliothek)", {
+          sourceDir: dir,
+          targetDir
+        });
+        continue;
+      }
+      if (!await this.existsAsync(dir)) {
+        continue;
+      }
+      sourceDirs.push(dir);
     }
-    if (!await this.existsAsync(sourceDir)) {
-      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, Quelle fehlt (${sourceDir})`);
+    if (sourceDirs.length === 0) {
+      logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine nutzbare Quelle (alle Source-Dirs fehlen oder ueberlappen mit Library)`);
       return;
     }
 
@@ -4631,8 +4661,21 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const allMkvFiles = await this.collectFilesByExtensions(sourceDir, SAMPLE_VIDEO_EXTENSIONS);
-    if (allMkvFiles.length === 0) {
+    // Sammle aus ALLEN safe source dirs. Dedupe nach basename (lowercase) —
+    // extractDir wird zuerst gescannt und gewinnt bei Kollision (entpackte
+    // Datei hat Vorrang vor evtl. noch liegengebliebenem Quell-File).
+    const seenBasenames = new Set<string>();
+    const collected: { filePath: string; sourceRoot: string }[] = [];
+    for (const dir of sourceDirs) {
+      const filesInDir = await this.collectFilesByExtensions(dir, SAMPLE_VIDEO_EXTENSIONS);
+      for (const filePath of filesInDir) {
+        const baseLower = path.basename(filePath).toLowerCase();
+        if (seenBasenames.has(baseLower)) continue;
+        seenBasenames.add(baseLower);
+        collected.push({ filePath, sourceRoot: dir });
+      }
+    }
+    if (collected.length === 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV gefunden`);
       return;
     }
@@ -4646,7 +4689,7 @@ export class DownloadManager extends EventEmitter {
     const mkvFiles: string[] = [];
     let sampleSkipped = 0;
     let bonusSkipped = 0;
-    for (const filePath of allMkvFiles) {
+    for (const { filePath, sourceRoot } of collected) {
       if (shouldAbort?.()) {
         return;
       }
@@ -4656,9 +4699,9 @@ export class DownloadManager extends EventEmitter {
         sampleSkipped += 1;
         continue;
       }
-      if (isInsideBonusDir(filePath, sourceDir) || BONUS_FILENAME_RE.test(stem)) {
+      if (isInsideBonusDir(filePath, sourceRoot) || BONUS_FILENAME_RE.test(stem)) {
         bonusSkipped += 1;
-        logger.info(`MKV-Sammelordner: Bonus-Datei uebersprungen: ${path.basename(filePath)} (Pfad: ${path.relative(sourceDir, filePath)})`);
+        logger.info(`MKV-Sammelordner: Bonus-Datei uebersprungen: ${path.basename(filePath)} (Pfad: ${path.relative(sourceRoot, filePath)})`);
         continue;
       }
       mkvFiles.push(filePath);
@@ -4675,7 +4718,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Sammelordner Scan gestartet", {
-      sourceDir,
+      sourceDirs: sourceDirs.join(" | "),
       targetDir,
       mkvFiles: mkvFiles.length
     });
@@ -4787,20 +4830,25 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    if ((sourceArtifactsChanged || sourceCleanupRelevant) && await this.existsAsync(sourceDir)) {
-      const removedResidual = await this.cleanupNonMkvResidualFiles(sourceDir, targetDir);
-      if (removedResidual > 0) {
-        logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, entfernt=${removedResidual}`);
-      }
-      const removedDirs = await this.removeEmptyDirectoryTree(sourceDir);
-      if (removedDirs > 0) {
-        logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, entfernt=${removedDirs}`);
+    if (sourceArtifactsChanged || sourceCleanupRelevant) {
+      // Cleanup pro Source-Dir — beide können Restdateien hinterlassen haben
+      // (Mega-Direct .mkv weg aus outputDir, oder extracted .mkv weg aus extractDir).
+      for (const dir of sourceDirs) {
+        if (!await this.existsAsync(dir)) continue;
+        const removedResidual = await this.cleanupNonMkvResidualFiles(dir, targetDir);
+        if (removedResidual > 0) {
+          logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, dir=${dir}, entfernt=${removedResidual}`);
+        }
+        const removedDirs = await this.removeEmptyDirectoryTree(dir);
+        if (removedDirs > 0) {
+          logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, dir=${dir}, entfernt=${removedDirs}`);
+        }
       }
     }
 
     logger.info(`MKV-Sammelordner: pkg=${pkg.name}, packageId=${packageId}, moved=${moved}, skipped=${skipped}, failed=${failed}, target=${targetDir}`);
     this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Sammelordner abgeschlossen", {
-      sourceDir,
+      sourceDirs: sourceDirs.join(" | "),
       targetDir,
       moved,
       skipped,
