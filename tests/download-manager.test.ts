@@ -9358,6 +9358,89 @@ describe("download manager", () => {
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   }, 20000);
 
+  it("moves direct MKV download from outputDir to library when no archive present (Mega-Debrid flow)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Mega-Direct-Pack";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    // Direct .mkv download (no archive) — wie es Mega-Debrid bei mega.nz liefert.
+    const directMkvName = "Direct.Show.S01E01.German.1080p.WEB.x264-DIRECT.mkv";
+    const directMkvPath = path.join(outputDir, directMkvName);
+    fs.writeFileSync(directMkvPath, Buffer.alloc(2048, 1));
+    const directMkvSize = fs.statSync(directMkvPath).size;
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const itemId = `${packageName}-item`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: `https://mega.nz/file/${packageName}`,
+      provider: "megadebrid-api",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: directMkvSize,
+      totalBytes: directMkvSize,
+      progressPercent: 100,
+      fileName: directMkvName,
+      targetPath: directMkvPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    const libraryPath = path.join(mkvLibraryDir, directMkvName);
+    await waitFor(() => fs.existsSync(libraryPath), 12000);
+
+    expect(fs.existsSync(libraryPath)).toBe(true);
+    // Filename darf NICHT umbenannt werden (Mega-Files sind oft schon korrekt benannt).
+    expect(fs.readFileSync(libraryPath).length).toBe(directMkvSize);
+    // Quelle ist weg (verschoben).
+    expect(fs.existsSync(directMkvPath)).toBe(false);
+
+    void manager;
+  }, 20000);
+
   it("does NOT move bonus files from Extras subdirectory to flat library", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
