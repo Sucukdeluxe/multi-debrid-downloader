@@ -664,7 +664,20 @@ function registerIpcHandlers(): void {
       return { restored: false, message: `Backup-Datei zu groß (max 50 MB, Datei hat ${(stat.size / 1024 / 1024).toFixed(1)} MB)` };
     }
     const data = await fs.promises.readFile(filePath);
-    return controller.importBackup(data);
+    const importResult = controller.importBackup(data);
+    if (importResult.restored) {
+      // M2: Nach erfolgreichem Import die App automatisch neu starten. Der frische
+      // Prozess lädt die wiederhergestellte Session sauber vom Disk (kein Stale-
+      // In-Memory-State, kein dauerhaft blockierter Persist in einer lebenden Session).
+      // Vom Main getrieben (nicht Renderer), damit ein Renderer-Fehler den Restart
+      // nicht verhindern kann. Kurze Verzögerung, damit das Ergebnis den Renderer
+      // erreicht (Toast "App startet automatisch neu…").
+      setTimeout(() => {
+        app.relaunch();
+        app.quit();
+      }, 1500);
+    }
+    return importResult;
   });
 
   controller.onState = (snapshot) => {
