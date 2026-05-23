@@ -673,15 +673,23 @@ export class AppController {
 
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
 
-    // Prevent prepareForShutdown from overwriting the restored data
+    // Block runtime + shutdown persistence so the STALE in-memory session (the
+    // manager still holds the PRE-import session — importBackup only wrote to disk)
+    // cannot overwrite the restored data in the brief window before the auto-relaunch.
+    // The relaunch (triggered in main.ts when restored===true) starts a fresh process
+    // that loads the restored session cleanly via the normal startup path, so these
+    // flags never linger in a live session.
+    // M2-Fix: vorher blieb blockAllPersistence dauerhaft true wenn der User die
+    // manuelle "Bitte neustarten"-Aufforderung ignorierte → stille Persistenz-Blockade,
+    // alle weiteren Änderungen gingen bei hartem Crash verloren. Jetzt: Auto-Relaunch.
     this.manager.skipShutdownPersist = true;
     this.manager.blockAllPersistence = true;
-    logger.info("Backup wiederhergestellt (verschlüsseltes Format)");
+    logger.info("Backup wiederhergestellt — App startet automatisch neu");
     this.audit("WARN", "Backup importiert", {
       historyEntries: Array.isArray(parsed.history) ? parsed.history.length : 0,
       accountSummary: buildAccountSummary(this.settings)
     });
-    return { restored: true, message: "Backup wiederhergestellt. Bitte App neustarten." };
+    return { restored: true, message: "Backup wiederhergestellt – App startet automatisch neu…" };
   }
 
   public getSessionLogPath(): string | null {
