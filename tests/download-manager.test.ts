@@ -9441,6 +9441,92 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("does NOT delete pending RAR archive sets in outputDir when collecting MKVs from extractDir", async () => {
+    // Regression v1.7.156: bei einem Multi-Archive-Set-Paket (z.B. S01 + S02 RARs
+    // im selben outputDir) wurde nach dem Extrahieren von S01 die MKV-Collection
+    // getriggert. Diese loeschte als "Restdateien" ALLE Nicht-Video-Files im
+    // outputDir — also auch die noch nicht entpackten S02-RAR-Parts. Folge:
+    // S02 ging verloren ("missing_file" beim spaeteren Extract).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Ugly.Americans.MultiSeason-Pack";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    // outputDir: S02-RAR-Set noch NICHT entpackt (pending). Muss erhalten bleiben.
+    const s02Parts = [
+      "Ugly.Americans.S02.COMPLETE.German.part1.rar",
+      "Ugly.Americans.S02.COMPLETE.German.part2.rar",
+      "Ugly.Americans.S02.COMPLETE.German.part3.rar"
+    ];
+    for (const part of s02Parts) {
+      fs.writeFileSync(path.join(outputDir, part), Buffer.alloc(1024, 7));
+    }
+    // Auch eine harmlose Nicht-Video-Restdatei im outputDir (z.B. .nfo).
+    fs.writeFileSync(path.join(outputDir, "info.nfo"), Buffer.from("nfo"));
+
+    // extractDir: S01 wurde bereits entpackt → MKVs liegen hier.
+    const s01Mkvs = [
+      "Ugly.Americans.S01E01.German.mkv",
+      "Ugly.Americans.S01E02.German.mkv"
+    ];
+    for (const mkv of s01Mkvs) {
+      fs.writeFileSync(path.join(extractDir, mkv), Buffer.alloc(4096, 9));
+    }
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    // Direkt aufrufen (umgeht die volle Download/Extract-Pipeline).
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId]);
+
+    // S01-MKVs sind in der Library angekommen.
+    for (const mkv of s01Mkvs) {
+      expect(fs.existsSync(path.join(mkvLibraryDir, mkv))).toBe(true);
+    }
+    // KRITISCH: S02-RAR-Parts im outputDir wurden NICHT geloescht.
+    for (const part of s02Parts) {
+      expect(fs.existsSync(path.join(outputDir, part))).toBe(true);
+    }
+
+    void manager;
+  }, 20000);
+
   it("does NOT move bonus files from Extras subdirectory to flat library", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
