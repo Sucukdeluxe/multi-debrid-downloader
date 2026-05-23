@@ -1,15 +1,16 @@
 :root {
   font-family: "Manrope", "Segoe UI Variable", "Segoe UI", sans-serif;
-  --bg: #040912;
-  --bg-glow: #10203b;
-  --surface: #0b1424;
-  --card: #101d31;
-  --field: #081120;
-  --border: #233954;
-  --text: #e2e8f0;
-  --muted: #90a4bf;
-  --accent: #38bdf8;
-  --danger: #f43f5e;
+  --bg: #050810;
+  --bg-glow: #1e1730;
+  --surface: #0c1322;
+  --card: #12192c;
+  --field: #090f1c;
+  --border: #283447;
+  --text: #ece6dd;
+  --muted: #a59c8e;
+  --accent: #f2942d;
+  --accent-2: #ff7a5c;
+  --danger: #f4564b;
   --button-bg: #0d1a2c;
   --button-bg-hover: #12243d;
   --tab-bg: #0b1321;
@@ -33,8 +34,9 @@
   --field: #ffffff;
   --border: #c7d5ea;
   --text: #0f223d;
-  --muted: #4e6482;
-  --accent: #1168d9;
+  --muted: #6b6052;
+  --accent: #c2701a;
+  --accent-2: #d9542b;
   --danger: #c0392b;
   --button-bg: #f3f7ff;
   --button-bg-hover: #e6efff;
@@ -472,9 +474,9 @@ body,
 }
 
 .btn.accent {
-  background: linear-gradient(180deg, #56d6ff, #33b9f4);
-  color: #07111c;
-  border-color: #41c6f9;
+  background: linear-gradient(180deg, #f9a948, #e9881f);
+  color: #1c1206;
+  border-color: #f0982f;
 }
 
 .btn.danger {
@@ -753,7 +755,7 @@ body,
   top: 0;
   left: 0;
   height: 100%;
-  background: linear-gradient(90deg, #3bc9ff, #22d3ee);
+  background: linear-gradient(90deg, #f2942d, #ff7a5c);
   border-radius: 4px;
   transition: width 0.15s ease;
 }
@@ -2268,7 +2270,7 @@ body,
 
 .progress-dl {
   height: 100%;
-  background: linear-gradient(90deg, #3bc9ff, #22d3ee);
+  background: linear-gradient(90deg, #f2942d, #ff7a5c);
 }
 
 .progress-ex {
@@ -2709,7 +2711,7 @@ td {
 }
 
 .bar-fill.completed {
-  background: linear-gradient(90deg, #3bc9ff, #22d3ee);
+  background: linear-gradient(90deg, #f2942d, #ff7a5c);
 }
 
 .provider-detail {

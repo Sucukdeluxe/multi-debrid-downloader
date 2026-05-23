@@ -1227,8 +1227,8 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     const isDark = document.documentElement.getAttribute("data-theme") !== "light";
     const gridColor = isDark ? "rgba(35, 57, 84, 0.5)" : "rgba(199, 213, 234, 0.5)";
     const textColor = isDark ? "#90a4bf" : "#4e6482";
-    const accentColor = isDark ? "#38bdf8" : "#1168d9";
-    const fillColor = isDark ? "rgba(56, 189, 248, 0.15)" : "rgba(17, 104, 217, 0.15)";
+    const accentColor = isDark ? "#f2942d" : "#c2701a";
+    const fillColor = isDark ? "rgba(242, 148, 45, 0.15)" : "rgba(194, 112, 26, 0.15)";
 
     const history = speedHistoryRef.current;
     const now = Date.now();
