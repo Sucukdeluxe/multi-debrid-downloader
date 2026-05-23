@@ -1672,6 +1672,14 @@ export class DownloadManager extends EventEmitter {
 
   private packageDeferredPostProcessAbortControllers = new Map<string, AbortController>();
 
+  // Hybrid post-extract (Rename + MKV-Collect) läuft als detached Promise sobald
+  // ein Archiv-Set fertig ist. Separat von der Deferred-Pipe getrackt, damit
+  // runDeferredPostExtraction's replace-Logik die laufende Hybrid-Arbeit nicht
+  // killt — und damit globaler Abort (Stop/Shutdown) + Run-Abschluss sie sehen.
+  // Set pro Package, da mehrere Archive-Sets dicht hintereinander fertig werden
+  // können. (H1/H2/M1)
+  private packageHybridPostProcessControllers = new Map<string, Set<AbortController>>();
+
   private packagePostProcessVersions = new Map<string, number>();
 
   private hybridExtractRequeue = new Set<string>();
@@ -2478,6 +2486,17 @@ export class DownloadManager extends EventEmitter {
     }
     this.packageDeferredPostProcessAbortControllers.delete(packageId);
 
+    // Auch laufende Hybrid-Post-Extract-Promises (Rename/MKV-Collect) abbrechen. (H2)
+    const hybridSet = this.packageHybridPostProcessControllers.get(packageId);
+    if (hybridSet) {
+      for (const controller of hybridSet) {
+        if (!controller.signal.aborted) {
+          controller.abort(reason);
+        }
+      }
+      this.packageHybridPostProcessControllers.delete(packageId);
+    }
+
     this.hybridExtractRequeue.delete(packageId);
     this.clearHybridArchiveState(packageId);
   }
@@ -2781,6 +2800,8 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesPerPackage.clear();
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
+    this.packageDeferredPostProcessAbortControllers.clear();
+    this.packageHybridPostProcessControllers.clear();
     this.hybridExtractRequeue.clear();
     this.hybridExtractedPaths.clear();
     this.hybridFailedArchives.clear();
@@ -4558,7 +4579,37 @@ export class DownloadManager extends EventEmitter {
 
   private hasDeferredPostProcessPending(packageId: string): boolean {
     const controller = this.packageDeferredPostProcessAbortControllers.get(packageId);
-    return Boolean(controller && !controller.signal.aborted);
+    if (controller && !controller.signal.aborted) {
+      return true;
+    }
+    const hybridSet = this.packageHybridPostProcessControllers.get(packageId);
+    if (hybridSet) {
+      for (const c of hybridSet) {
+        if (!c.signal.aborted) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** M1: True wenn IRGENDWO noch Deferred- oder Hybrid-Post-Processing läuft.
+   *  Verhindert dass der Scheduler/finishRun den Run als beendet meldet und
+   *  State zurücksetzt, während im Hintergrund noch Dateien verschoben werden. */
+  private hasAnyDeferredPostProcessPending(): boolean {
+    for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
+      if (!controller.signal.aborted) {
+        return true;
+      }
+    }
+    for (const hybridSet of this.packageHybridPostProcessControllers.values()) {
+      for (const c of hybridSet) {
+        if (!c.signal.aborted) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private async buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): Promise<string> {
@@ -7083,6 +7134,24 @@ export class DownloadManager extends EventEmitter {
         }
       }
     }
+
+    // H1: Globaler Stop/Shutdown/clearAll/external muss AUCH das Deferred-Post-
+    // Processing (MKV-Move, Cleanup, Rename) und die Hybrid-Promises abbrechen,
+    // sonst rasen FS-Operationen gegen den Shutdown-Save und schreiben halbe
+    // Verschiebungen / löschen halbe Archive. Per-Package wird das von
+    // abortPackagePostProcessing erledigt — hier der globale Sweep.
+    for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    }
+    for (const hybridSet of this.packageHybridPostProcessControllers.values()) {
+      for (const controller of hybridSet) {
+        if (!controller.signal.aborted) {
+          controller.abort(reason);
+        }
+      }
+    }
   }
 
   private async acquirePostProcessSlot(packageId: string): Promise<void> {
@@ -8151,7 +8220,7 @@ export class DownloadManager extends EventEmitter {
         // Single-pass queue presence check (saves one full O(n) iteration per tick)
         const queuePresence = this.activeTasks.size === 0 ? this.getQueuePresence(now) : { hasImmediate: true, hasDelayed: false };
         const downloadsComplete = this.activeTasks.size === 0 && !queuePresence.hasImmediate && !queuePresence.hasDelayed;
-        const postProcessComplete = this.packagePostProcessTasks.size === 0;
+        const postProcessComplete = this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending();
         if (downloadsComplete && (postProcessComplete || this.settings.autoExtractWhenStopped)) {
           this.finishRun();
           break;
@@ -10790,24 +10859,9 @@ export class DownloadManager extends EventEmitter {
       return ready;
     }
 
-    // Build lookup: pathKey → item status for pending items.
-    // Also map by filename (resolved against outputDir) so items without
-    // targetPath (never started) are still found by the disk-fallback check.
     const packageItems = pkg.itemIds
       .map((itemId) => this.session.items[itemId])
       .filter(Boolean) as DownloadItem[];
-    const pendingItemStatus = new Map<string, string>();
-    for (const item of packageItems) {
-      if (item.status === "completed") {
-        continue;
-      }
-      if (item.targetPath) {
-        pendingItemStatus.set(pathKey(item.targetPath), item.status);
-      }
-      if (item.fileName && pkg.outputDir) {
-        pendingItemStatus.set(pathKey(path.join(pkg.outputDir, item.fileName)), item.status);
-      }
-    }
 
     for (const candidate of candidates) {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
@@ -10848,54 +10902,6 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${nonCompletedCount} Part(s) laut Session ohne completed-Status)`);
       ready.add(pathKey(candidate));
       continue;
-
-      // Disk-fallback: if all parts exist on disk at their full expected size but some
-      // items lack "completed" status, allow extraction.  This handles items that finished
-      // downloading but whose status was not updated (crash between write and persist).
-      const missingParts = partsOnDisk.filter((part) => !completedPaths.has(pathKey(part)));
-      let allMissingFullOnDisk = true;
-      for (const part of missingParts) {
-        try {
-          const stat = await fs.promises.stat(part);
-          // Find the item that owns this file to get its expected totalBytes
-          const ownerItem = this.findItemByDiskPath(pkg, part);
-          const minBytes = expectedMinBytes(ownerItem?.totalBytes ?? 0, isLargeBinaryLikePath(part));
-          if (stat.size < minBytes) {
-            allMissingFullOnDisk = false;
-            break;
-          }
-        } catch {
-          allMissingFullOnDisk = false;
-          break;
-        }
-      }
-      if (!allMissingFullOnDisk) {
-        continue;
-      }
-      // Any non-completed item blocks extraction — failed/cancelled/stopped items may
-      // have partial files on disk that would corrupt the extraction.
-      const anyNonCompletedItem = missingParts.some((part) => {
-        const status = pendingItemStatus.get(pathKey(part));
-        return status !== undefined;
-      });
-      if (anyNonCompletedItem) {
-        continue;
-      }
-      // Safety: if any pending item in the package has neither targetPath nor fileName,
-      // we cannot map it to a file on disk. It could correspond to any missingPart
-      // (e.g. after a reset before re-unrestrict), so skip disk-fallback for this archive.
-      const hasUntrackedPendingItem = pkg.itemIds.some((itemId) => {
-        const pendingItem = this.session.items[itemId];
-        return pendingItem
-          && !isFinishedStatus(pendingItem.status)
-          && !pendingItem.targetPath
-          && !pendingItem.fileName;
-      });
-      if (hasUntrackedPendingItem) {
-        continue;
-      }
-      logger.info(`Hybrid-Extract Disk-Fallback: ${path.basename(candidate)} (${missingParts.length} Part(s) auf Disk ohne completed-Status)`);
-      ready.add(pathKey(candidate));
     }
 
     return ready;
@@ -11331,16 +11337,37 @@ export class DownloadManager extends EventEmitter {
         // race with the deferred-post-process pipe's rename / mkvMove for
         // the same package — without that, hybrid mkvMove could move a
         // file while deferred rename was still scanning it (ENOENT).
+        //
+        // Der Controller wird SYNCHRON (vor dem void-Promise) registriert, damit
+        // es kein Zeitfenster gibt in dem packagePostProcessTasks leer UND die
+        // Hybrid-Arbeit ungetrackt ist. shouldAbort stoppt Rename + MKV-Collect
+        // bei Stop/Shutdown/Cancel/Reset oder wenn das Package ersetzt wurde. (H2)
+        const hybridController = new AbortController();
+        let hybridSet = this.packageHybridPostProcessControllers.get(packageId);
+        if (!hybridSet) {
+          hybridSet = new Set<AbortController>();
+          this.packageHybridPostProcessControllers.set(packageId, hybridSet);
+        }
+        hybridSet.add(hybridController);
+        const hybridShouldAbort = (): boolean => hybridController.signal.aborted || this.session.packages[packageId] !== pkg;
         void (async () => {
           try {
-            await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg);
+            await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, hybridShouldAbort);
           } catch (err) {
             logger.warn(`Hybrid Auto-Rename Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
           }
           try {
-            await this.chainPackageFileOp(pkg.id, () => this.collectMkvFilesToLibrary(packageId, pkg));
+            await this.chainPackageFileOp(pkg.id, () => this.collectMkvFilesToLibrary(packageId, pkg, hybridShouldAbort));
           } catch (err) {
             logger.warn(`Hybrid MKV-Collection Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
+          } finally {
+            const set = this.packageHybridPostProcessControllers.get(packageId);
+            if (set) {
+              set.delete(hybridController);
+              if (set.size === 0) {
+                this.packageHybridPostProcessControllers.delete(packageId);
+              }
+            }
           }
         })();
       }
@@ -12307,7 +12334,9 @@ export class DownloadManager extends EventEmitter {
     // Keep runPackageIds and runCompletedPackages alive when post-processing tasks
     // are still running (autoExtractWhenStopped) so handlePackagePostProcessing()
     // can still update runCompletedPackages.  They are cleared by the next start().
-    if (this.packagePostProcessTasks.size === 0) {
+    // M1: auch laufende Deferred/Hybrid-Arbeit berücksichtigen, sonst werden die
+    // Run-Maps geleert während noch MKVs verschoben werden.
+    if (this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending()) {
       this.runPackageIds.clear();
       this.runCompletedPackages.clear();
     }
