@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="de" data-flavor="ember">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aurora Flavors — Real-Debrid-Downloader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  /* ===== BASELINE = TEAL ===== */
+  :root {
+    --bg: #060b18; --bg-2: #0a1326;
+    --surface: rgba(18, 30, 54, 0.66);
+    --card: rgba(22, 36, 64, 0.72);
+    --field: #0a1426;
+    --border: rgba(86, 124, 178, 0.22);
+    --border-strong: rgba(96, 140, 200, 0.4);
+    --text: #eaf1fb; --muted: #93a8c8; --faint: #6982a6;
+    --accent: #3ad4ce; --accent-2: #4aa8ff; --accent-glow: rgba(58, 212, 206, 0.55);
+    --green: #43e08a; --amber: #ffb13d; --red: #ff5d76; --violet: #9d7bff;
+    --bg-grad:
+      radial-gradient(900px 520px at 84% -8%, rgba(74,168,255,0.16), transparent 60%),
+      radial-gradient(820px 480px at 8% 0%, rgba(58,212,206,0.13), transparent 55%),
+      radial-gradient(1200px 700px at 50% 120%, rgba(157,123,255,0.10), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+  /* ===== INDIGO ===== */
+  html[data-flavor="indigo"] {
+    --bg: #0a0a1c; --bg-2: #100f28;
+    --accent: #8f7bff; --accent-2: #5b8cff; --accent-glow: rgba(143,123,255,0.55);
+    --border: rgba(120,110,210,0.24); --border-strong: rgba(140,120,240,0.42);
+    --bg-grad:
+      radial-gradient(900px 520px at 84% -8%, rgba(91,140,255,0.18), transparent 60%),
+      radial-gradient(820px 480px at 8% 0%, rgba(143,123,255,0.15), transparent 55%),
+      radial-gradient(1200px 700px at 50% 120%, rgba(120,90,255,0.12), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+  /* ===== EMERALD ===== */
+  html[data-flavor="emerald"] {
+    --bg: #04130e; --bg-2: #08211a;
+    --accent: #34e0a1; --accent-2: #2dd4bf; --accent-glow: rgba(52,224,161,0.5);
+    --border: rgba(70,160,130,0.24); --border-strong: rgba(80,200,160,0.4);
+    --bg-grad:
+      radial-gradient(900px 520px at 84% -8%, rgba(45,212,191,0.16), transparent 60%),
+      radial-gradient(820px 480px at 8% 0%, rgba(52,224,161,0.14), transparent 55%),
+      radial-gradient(1200px 700px at 50% 120%, rgba(34,197,150,0.10), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+  /* ===== EMBER (warm accent / cool base) ===== */
+  html[data-flavor="ember"] {
+    --bg: #090b18; --bg-2: #0e1124;
+    --accent: #ff9e57; --accent-2: #ff6f91; --accent-glow: rgba(255,158,87,0.5);
+    --border: rgba(150,120,150,0.22); --border-strong: rgba(255,158,87,0.36);
+    --bg-grad:
+      radial-gradient(900px 520px at 84% -8%, rgba(255,111,145,0.15), transparent 60%),
+      radial-gradient(820px 480px at 8% 0%, rgba(255,158,87,0.13), transparent 55%),
+      radial-gradient(1200px 700px at 50% 120%, rgba(91,140,255,0.10), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+  /* ===== ICE (desaturated steel, low glow) ===== */
+  html[data-flavor="ice"] {
+    --bg: #080d16; --bg-2: #0d1622;
+    --accent: #82d4ff; --accent-2: #abc0db; --accent-glow: rgba(130,212,255,0.32);
+    --border: rgba(100,130,165,0.22); --border-strong: rgba(130,160,195,0.4);
+    --bg-grad:
+      radial-gradient(900px 520px at 84% -8%, rgba(130,212,255,0.12), transparent 60%),
+      radial-gradient(820px 480px at 8% 0%, rgba(171,192,219,0.08), transparent 55%),
+      radial-gradient(1200px 700px at 50% 120%, rgba(90,120,160,0.08), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Hanken Grotesk", system-ui, sans-serif;
+    background: var(--bg-grad); color: var(--text); font-size: 14px;
+    -webkit-font-smoothing: antialiased; height: 100vh; overflow: hidden;
+    transition: background .4s ease;
+  }
+  .app { display: grid; grid-template-rows: auto auto auto auto 1fr auto; height: 100vh; padding: 10px 16px 10px; gap: 10px; }
+
+  /* flavor switcher */
+  .flavors { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 12px;
+    background: var(--surface); border: 1px solid var(--border); backdrop-filter: blur(16px); }
+  .flavors .lbl { font-family: "JetBrains Mono"; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin-right: 4px; }
+  .fbtn { display: flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--field); color: var(--muted); font-weight: 600; font-size: 12.5px; transition: all .15s; }
+  .fbtn:hover { color: var(--text); transform: translateY(-1px); }
+  .fbtn.on { color: var(--text); border-color: var(--accent); box-shadow: 0 0 14px var(--accent-glow); }
+  .sw { width: 13px; height: 13px; border-radius: 50%; }
+  .sw.teal { background: linear-gradient(135deg,#3ad4ce,#4aa8ff); }
+  .sw.indigo { background: linear-gradient(135deg,#8f7bff,#5b8cff); }
+  .sw.emerald { background: linear-gradient(135deg,#34e0a1,#2dd4bf); }
+  .sw.ember { background: linear-gradient(135deg,#ff9e57,#ff6f91); }
+  .sw.ice { background: linear-gradient(135deg,#82d4ff,#abc0db); }
+  .flavors .hint { margin-left: auto; font-size: 12px; color: var(--faint); }
+
+  .menubar { display: flex; align-items: center; gap: 4px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: 18px; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 9px;
+    background: conic-gradient(from 200deg, var(--accent), var(--accent-2), var(--violet), var(--accent));
+    box-shadow: 0 0 18px var(--accent-glow), inset 0 0 12px rgba(255,255,255,0.18); display: grid; place-items: center; }
+  .brand .logo::after { content: ""; width: 13px; height: 13px; border-radius: 4px; background: var(--bg); }
+  .brand .name { font-family: "Bricolage Grotesque"; font-weight: 800; font-size: 16px; letter-spacing: -0.02em; }
+  .brand .ver { font-size: 11px; color: var(--faint); font-family: "JetBrains Mono"; margin-top: 3px; text-transform: capitalize; }
+  .menu-item { padding: 6px 12px; border-radius: 8px; color: var(--muted); font-weight: 600; font-size: 13px; cursor: pointer; transition: all .15s; }
+  .menu-item:hover { background: var(--surface); color: var(--text); }
+  .menubar .spacer { flex: 1; }
+  .conn-pill { display: flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+
+  .control { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 16px;
+    background: var(--surface); border: 1px solid var(--border); backdrop-filter: blur(18px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.05); }
+  .ctrl-group { display: flex; gap: 7px; }
+  .ic { width: 38px; height: 38px; border-radius: 11px; border: 1px solid var(--border); background: var(--field);
+    display: grid; place-items: center; cursor: pointer; transition: all .15s; color: var(--muted); }
+  .ic:hover { transform: translateY(-1px); border-color: var(--border-strong); color: var(--text); }
+  .ic svg { width: 17px; height: 17px; }
+  .ic.play { color: var(--green); } .ic.play:hover { box-shadow: 0 0 16px rgba(67,224,138,0.35); border-color: rgba(67,224,138,0.5); }
+  .ic.pause { color: var(--amber); } .ic.stop { color: var(--red); } .ic.sched { color: var(--accent); }
+  .sep { width: 1px; height: 26px; background: var(--border); margin: 0 2px; }
+  .control .spacer { flex: 1; }
+  .live-stats { display: flex; gap: 22px; padding-right: 6px; }
+  .ls { text-align: right; }
+  .ls .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); }
+  .ls .val { font-family: "JetBrains Mono"; font-weight: 600; font-size: 16px; margin-top: 2px; }
+  .ls .val .u { font-size: 11px; color: var(--muted); }
+  .ls .val.accent { color: var(--accent); }
+
+  .tabs { display: flex; gap: 6px; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 11px 11px 0 0; cursor: pointer;
+    color: var(--muted); font-weight: 600; font-size: 13px; border: 1px solid transparent; border-bottom: none; transition: all .15s; }
+  .tab svg { width: 15px; height: 15px; opacity: 0.8; }
+  .tab:hover { color: var(--text); background: var(--surface); }
+  .tab.active { color: var(--text); background: var(--card); border-color: var(--border); position: relative; }
+  .tab.active::after { content: ""; position: absolute; left: 14px; right: 14px; top: 0; height: 2px; border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2)); box-shadow: 0 0 12px var(--accent-glow); }
+  .tab .count { font-family: "JetBrains Mono"; font-size: 11px; background: var(--field); padding: 1px 7px; border-radius: 999px; color: var(--muted); }
+
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 0 14px 14px 14px;
+    backdrop-filter: blur(20px); overflow: hidden; display: flex; flex-direction: column;
+    box-shadow: 0 16px 44px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04); }
+  .thead { display: grid; grid-template-columns: minmax(0,1fr) 168px 96px 116px 130px 80px 168px 96px;
+    padding: 11px 16px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+  .thead > div:not(:first-child) { text-align: center; }
+  .tbody { overflow-y: auto; flex: 1; }
+  .tbody::-webkit-scrollbar { width: 10px; }
+  .tbody::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .pkg { border-bottom: 1px solid rgba(86,124,178,0.1); }
+  .pkg-row { display: grid; grid-template-columns: minmax(0,1fr) 168px 96px 116px 130px 80px 168px 96px;
+    align-items: center; padding: 12px 16px; cursor: pointer; transition: background .15s; }
+  .pkg-row:hover { background: rgba(127,170,220,0.06); }
+  .pkg-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .chev { color: var(--faint); transition: transform .2s; flex-shrink: 0; }
+  .pkg.open .chev { transform: rotate(90deg); }
+  .pkg-icon { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0;
+    background: linear-gradient(140deg, var(--accent-glow), transparent); border: 1px solid var(--border); }
+  .pkg-icon svg { width: 15px; height: 15px; color: var(--accent); }
+  .pkg-title { min-width: 0; }
+  .pkg-title .t { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pkg-title .s { font-size: 11px; color: var(--faint); margin-top: 1px; font-family: "JetBrains Mono"; }
+  .cell { text-align: center; font-size: 12.5px; color: var(--muted); }
+  .cell.mono { font-family: "JetBrains Mono"; }
+
+  .pbar { height: 22px; border-radius: 7px; background: var(--field); position: relative; overflow: hidden; border: 1px solid var(--border); }
+  .pbar .fill { position: absolute; inset: 0; width: var(--p, 0%); border-radius: 6px;
+    background: linear-gradient(90deg, var(--accent-2), var(--accent)); box-shadow: 0 0 14px var(--accent-glow); }
+  .pbar .fill.ext { background: linear-gradient(90deg, #2fbf6e, var(--green)); box-shadow: 0 0 14px rgba(67,224,138,0.4); }
+  .pbar .txt { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; font-weight: 700;
+    font-family: "JetBrains Mono"; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.6); z-index: 2; }
+
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .b-dl { background: color-mix(in srgb, var(--accent) 16%, transparent); color: color-mix(in srgb, var(--accent) 80%, white); }
+  .b-ext { background: rgba(67,224,138,0.14); color: var(--green); }
+  .b-done { background: rgba(67,224,138,0.12); color: var(--green); }
+  .b-err { background: rgba(255,93,118,0.14); color: var(--red); }
+  .b-queue { background: rgba(147,168,200,0.12); color: var(--muted); }
+  .hoster { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+  .hoster .hd { width: 7px; height: 7px; border-radius: 2px; }
+  .svc { font-size: 11.5px; color: var(--muted); }
+  .prio-high { color: var(--amber); font-weight: 700; font-size: 11px; }
+
+  .items { background: rgba(6,12,24,0.45); display: none; }
+  .pkg.open .items { display: block; }
+  .item { display: grid; grid-template-columns: minmax(0,1fr) 168px 96px 116px 130px 80px 168px 96px;
+    align-items: center; padding: 7px 16px; font-size: 12px; border-top: 1px solid rgba(86,124,178,0.07); }
+  .item:hover { background: rgba(127,170,220,0.04); }
+  .item-name { display: flex; align-items: center; gap: 9px; padding-left: 40px; min-width: 0; }
+  .ldot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .ldot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .ldot.off { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  .item-name .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-family: "JetBrains Mono"; font-size: 11.5px; }
+  .mini { height: 6px; border-radius: 3px; background: var(--field); overflow: hidden; position: relative; }
+  .mini .mf { position: absolute; inset: 0; width: var(--p,0%); background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+
+  .statusbar { display: flex; align-items: center; gap: 18px; padding: 8px 16px; border-radius: 12px;
+    background: var(--surface); border: 1px solid var(--border); font-size: 12px; color: var(--muted); backdrop-filter: blur(14px); }
+  .statusbar .sb-item { display: flex; align-items: center; gap: 7px; }
+  .statusbar .spacer { flex: 1; }
+  .statusbar b { color: var(--text); font-family: "JetBrains Mono"; font-weight: 600; }
+  .qbar { width: 120px; height: 6px; border-radius: 3px; background: var(--field); overflow: hidden; }
+  .qbar > div { height: 100%; width: 62%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- FLAVOR SWITCHER -->
+  <div class="flavors">
+    <span class="lbl">Aurora Flavor</span>
+    <div class="fbtn" data-f="teal"><span class="sw teal"></span> Teal</div>
+    <div class="fbtn" data-f="indigo"><span class="sw indigo"></span> Indigo</div>
+    <div class="fbtn" data-f="emerald"><span class="sw emerald"></span> Emerald</div>
+    <div class="fbtn on" data-f="ember"><span class="sw ember"></span> Ember</div>
+    <div class="fbtn" data-f="ice"><span class="sw ice"></span> Ice</div>
+    <span class="hint">Klick zum Wechseln · Tasten 1–5 · Pakete ausklappbar</span>
+  </div>
+
+  <!-- MENU BAR -->
+  <div class="menubar">
+    <div class="brand">
+      <div class="logo"></div>
+      <div><div class="name">Debrid Downloader</div><div class="ver" id="verLabel">v1.7.156 · Aurora Ember</div></div>
+    </div>
+    <div class="menu-item">Datei</div>
+    <div class="menu-item">Einstellungen</div>
+    <div class="menu-item">Hilfe</div>
+    <div class="spacer"></div>
+    <div class="conn-pill"><span class="dot"></span> 4 Provider aktiv · Mega-Debrid bereit</div>
+  </div>
+
+  <!-- CONTROL STRIP -->
+  <div class="control">
+    <div class="ctrl-group">
+      <div class="ic play" title="Start"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
+      <div class="ic pause" title="Pause"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></div>
+      <div class="ic stop" title="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></div>
+    </div>
+    <div class="sep"></div>
+    <div class="ctrl-group">
+      <div class="ic sched" title="Zeitplan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+      <div class="ic" title="Hoch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+      <div class="ic" title="Runter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="live-stats">
+      <div class="ls"><div class="lbl">Geschwindigkeit</div><div class="val accent">48.2<span class="u"> MB/s</span></div></div>
+      <div class="ls"><div class="lbl">Verbleibend</div><div class="val">02:14<span class="u"> min</span></div></div>
+      <div class="ls"><div class="lbl">Aktiv</div><div class="val">8<span class="u"> / 24</span></div></div>
+    </div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg> Downloads <span class="count">5</span></div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1m-2 9a5 5 0 01-7 0 5 5 0 010-7l1-1"/></svg> Linksammler</div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8M4.6 9a1.6 1.6 0 00-.3-1.8"/></svg> Einstellungen</div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109-9 9 9 0 00-9 9zm9-5v5l3 2"/></svg> Verlauf</div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg> Statistiken</div>
+  </div>
+
+  <!-- TABLE -->
+  <div class="panel">
+    <div class="thead"><div>Name</div><div>Geladen / Größe</div><div>Fortschritt</div><div>Hoster</div><div>Service</div><div>Priorität</div><div>Status</div><div>Tempo</div></div>
+    <div class="tbody">
+      <div class="pkg open">
+        <div class="pkg-row">
+          <div class="pkg-name"><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg><div class="pkg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 21V11"/></svg></div><div class="pkg-title"><div class="t">Ugly.Americans.S02.COMPLETE.German.DL.720p.WEB-DL.h264-NERDS</div><div class="s">10 Dateien · 14.2 GB</div></div></div>
+          <div class="cell mono">8.9 / 14.2 GB</div>
+          <div class="cell"><div class="pbar"><div class="fill" style="--p:63%"></div><div class="txt">63%</div></div></div>
+          <div class="cell"><span class="hoster"><span class="hd" style="background:#ff5722"></span>mega</span></div>
+          <div class="cell"><span class="svc">Mega-Debrid</span></div>
+          <div class="cell"><span class="prio-high">HOCH</span></div>
+          <div class="cell"><span class="badge b-dl">↓ 6/10 läuft</span></div>
+          <div class="cell mono" style="color:var(--accent)">48 MB/s</div>
+        </div>
+        <div class="items">
+          <div class="item"><div class="item-name"><span class="ldot on"></span><span class="nm">…h264-NERDS.part1.rar</span></div><div class="cell mono">2.0 / 2.0 GB</div><div class="cell"><div class="mini"><div class="mf" style="--p:100%"></div></div></div><div class="cell">mega</div><div class="cell"></div><div class="cell"></div><div class="cell"><span class="badge b-done">✓ Fertig</span></div><div class="cell mono">—</div></div>
+          <div class="item"><div class="item-name"><span class="ldot on"></span><span class="nm">…h264-NERDS.part2.rar</span></div><div class="cell mono">2.0 / 2.0 GB</div><div class="cell"><div class="mini"><div class="mf" style="--p:100%"></div></div></div><div class="cell">mega</div><div class="cell"></div><div class="cell"></div><div class="cell"><span class="badge b-done">✓ Fertig</span></div><div class="cell mono">—</div></div>
+          <div class="item"><div class="item-name"><span class="ldot on"></span><span class="nm">…h264-NERDS.part3.rar</span></div><div class="cell mono">1.4 / 2.0 GB</div><div class="cell"><div class="mini"><div class="mf" style="--p:70%"></div></div></div><div class="cell">mega</div><div class="cell"></div><div class="cell"></div><div class="cell"><span class="badge b-dl">↓ 70%</span></div><div class="cell mono" style="color:var(--accent)">26 MB/s</div></div>
+          <div class="item"><div class="item-name"><span class="ldot on"></span><span class="nm">…h264-NERDS.part4.rar</span></div><div class="cell mono">0.8 / 2.0 GB</div><div class="cell"><div class="mini"><div class="mf" style="--p:40%"></div></div></div><div class="cell">mega</div><div class="cell"></div><div class="cell"></div><div class="cell"><span class="badge b-dl">↓ 40%</span></div><div class="cell mono" style="color:var(--accent)">22 MB/s</div></div>
+          <div class="item"><div class="item-name"><span class="ldot off"></span><span class="nm">…h264-NERDS.part5.rar</span></div><div class="cell mono">0 / 1.1 GB</div><div class="cell"><div class="mini"><div class="mf" style="--p:0%"></div></div></div><div class="cell">mega</div><div class="cell"></div><div class="cell"></div><div class="cell"><span class="badge b-queue">Wartet</span></div><div class="cell mono">—</div></div>
+        </div>
+      </div>
+      <div class="pkg">
+        <div class="pkg-row">
+          <div class="pkg-name"><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg><div class="pkg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 21V11"/></svg></div><div class="pkg-title"><div class="t">The.Bear.S03.German.DL.1080p.WEB.h264-WvF</div><div class="s">8 Dateien · 11.6 GB</div></div></div>
+          <div class="cell mono">11.6 / 11.6 GB</div>
+          <div class="cell"><div class="pbar"><div class="fill ext" style="--p:82%"></div><div class="txt">Entpacken 82%</div></div></div>
+          <div class="cell"><span class="hoster"><span class="hd" style="background:#22c55e"></span>rapidgator</span></div>
+          <div class="cell"><span class="svc">Real-Debrid</span></div>
+          <div class="cell"></div>
+          <div class="cell"><span class="badge b-ext">⚙ Entpacken</span></div>
+          <div class="cell mono">—</div>
+        </div>
+      </div>
+      <div class="pkg">
+        <div class="pkg-row">
+          <div class="pkg-name"><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg><div class="pkg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 21V11"/></svg></div><div class="pkg-title"><div class="t">Dune.Part.Two.2024.German.DL.2160p.UHD.BluRay.x265-NERDS</div><div class="s">1 Datei · 18.4 GB → Library</div></div></div>
+          <div class="cell mono">18.4 / 18.4 GB</div>
+          <div class="cell"><div class="pbar"><div class="fill ext" style="--p:100%"></div><div class="txt">100%</div></div></div>
+          <div class="cell"><span class="hoster"><span class="hd" style="background:#3b82f6"></span>ddownload</span></div>
+          <div class="cell"><span class="svc">AllDebrid</span></div>
+          <div class="cell"></div>
+          <div class="cell"><span class="badge b-done">✓ Abgeschlossen</span></div>
+          <div class="cell mono">—</div>
+        </div>
+      </div>
+      <div class="pkg">
+        <div class="pkg-row">
+          <div class="pkg-name"><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg><div class="pkg-icon" style="border-color:rgba(255,93,118,0.4)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/></svg></div><div class="pkg-title"><div class="t">Shogun.S01E05.German.DL.1080p.WEB.h264-EDITION</div><div class="s" style="color:var(--red)">Hoster nicht verfügbar · Link tot</div></div></div>
+          <div class="cell mono">0 / 2.4 GB</div>
+          <div class="cell"><div class="pbar"><div class="fill" style="--p:0%"></div><div class="txt" style="color:var(--red);text-shadow:none">Fehler</div></div></div>
+          <div class="cell"><span class="hoster"><span class="hd" style="background:#a855f7"></span>uploaded</span></div>
+          <div class="cell"><span class="svc">—</span></div>
+          <div class="cell"></div>
+          <div class="cell"><span class="badge b-err">✗ Fehlgeschlagen</span></div>
+          <div class="cell mono">—</div>
+        </div>
+      </div>
+      <div class="pkg">
+        <div class="pkg-row">
+          <div class="pkg-name"><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg><div class="pkg-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 21V11"/></svg></div><div class="pkg-title"><div class="t">Severance.S02.COMPLETE.German.DL.1080p.ATVP.WEB.h265-NERDS</div><div class="s">10 Dateien · 22.1 GB</div></div></div>
+          <div class="cell mono">0 / 22.1 GB</div>
+          <div class="cell"><div class="pbar"><div class="fill" style="--p:0%"></div><div class="txt" style="color:var(--faint);text-shadow:none">In Warteschlange</div></div></div>
+          <div class="cell"><span class="hoster"><span class="hd" style="background:#ff5722"></span>mega</span></div>
+          <div class="cell"><span class="svc">Mega-Debrid</span></div>
+          <div class="cell"></div>
+          <div class="cell"><span class="badge b-queue">Wartet</span></div>
+          <div class="cell mono">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="statusbar">
+    <div class="sb-item"><span class="dot"></span> Läuft</div>
+    <div class="sb-item">Queue: <b>5 Pakete</b> · <b>34 Dateien</b></div>
+    <div class="sb-item">Heute geladen: <b>147 GB</b></div>
+    <div class="spacer"></div>
+    <div class="sb-item">Gesamt-Fortschritt <div class="qbar"><div></div></div> <b>62%</b></div>
+  </div>
+</div>
+<script>
+  const names = { teal:"Teal", indigo:"Indigo", emerald:"Emerald", ember:"Ember", ice:"Ice" };
+  const order = ["teal","indigo","emerald","ember","ice"];
+  function setFlavor(f) {
+    document.documentElement.dataset.flavor = f;
+    document.querySelectorAll('.fbtn').forEach(b => b.classList.toggle('on', b.dataset.f === f));
+    document.getElementById('verLabel').textContent = "v1.7.156 · Aurora " + names[f];
+  }
+  document.querySelectorAll('.fbtn').forEach(b => b.addEventListener('click', () => setFlavor(b.dataset.f)));
+  document.querySelectorAll('.pkg-row').forEach(r => r.addEventListener('click', () => r.parentElement.classList.toggle('open')));
+  window.addEventListener('keydown', e => { const i = parseInt(e.key,10); if (i>=1 && i<=5) setFlavor(order[i-1]); });
+</script>
+</body>
+</html>

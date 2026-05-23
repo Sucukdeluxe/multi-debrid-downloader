@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Forge — Real-Debrid-Downloader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* FORGE — warmes, ehrliches Werkzeug. Keine Glas/Glow/Gradient-Tropes.
+     Flache opake Flächen, präzise 1px-Linien, eine Amber-Signalfarbe. */
+  :root {
+    --bg: #141210;
+    --panel: #1a1713;
+    --row: #1e1a16;
+    --row-alt: #211d18;
+    --sunk: #100e0b;       /* recessed: tracks, fields */
+    --line: #322c23;       /* hairline */
+    --line-2: #453c30;
+    --line-strong: #574b3b;
+    --text: #ece3d3;
+    --muted: #9d907d;
+    --faint: #6c6253;
+    --amber: #e8973a;      /* signal */
+    --amber-deep: #c97c24;
+    --amber-ink: #1a1206;  /* text on amber */
+    --green: #84a85f;      /* muted sage = done */
+    --red: #cf5e47;        /* terracotta = error */
+    --steel: #6f93a3;      /* sparingly = info/extract alt */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Archivo", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); font-size: 13.5px;
+    -webkit-font-smoothing: antialiased; height: 100vh; overflow: hidden;
+  }
+  .mono { font-family: "JetBrains Mono", monospace; }
+  .lbl { font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; }
+  .app { display: grid; grid-template-rows: auto auto auto 1fr auto; height: 100vh; }
+
+  /* ── Menu bar ── */
+  .menubar { display: flex; align-items: center; height: 46px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 11px; margin-right: 22px; }
+  .mark { width: 30px; height: 30px; border: 2px solid var(--amber); display: grid; place-items: center; }
+  .mark svg { width: 16px; height: 16px; color: var(--amber); }
+  .brand .nm { font-weight: 800; font-size: 15px; letter-spacing: 0.02em; }
+  .brand .nm .accent { color: var(--amber); }
+  .menu-item { padding: 7px 13px; color: var(--muted); font-weight: 600; font-size: 13px; cursor: pointer; }
+  .menu-item:hover { color: var(--text); }
+  .menubar .spacer { flex: 1; }
+  .conn { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--muted); font-weight: 500; }
+  .conn .sq { width: 8px; height: 8px; background: var(--green); }
+
+  /* ── Control strip ── */
+  .control { display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 16px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .grp { display: flex; gap: 0; border: 1px solid var(--line-strong); }
+  .grp .ic { width: 40px; height: 38px; display: grid; place-items: center; cursor: pointer; color: var(--muted); background: var(--panel); border-right: 1px solid var(--line-strong); }
+  .grp .ic:last-child { border-right: none; }
+  .grp .ic:hover { background: var(--row-alt); color: var(--text); }
+  .grp .ic svg { width: 16px; height: 16px; }
+  .grp .ic.play { background: var(--amber); color: var(--amber-ink); }
+  .grp .ic.play:hover { background: var(--amber-deep); }
+  .grp .ic.pause { color: var(--amber); } .grp .ic.stop { color: var(--red); }
+  .control .spacer { flex: 1; }
+  .gauges { display: flex; }
+  .gauge { padding: 0 18px; border-left: 1px solid var(--line); text-align: right; }
+  .gauge .g-l { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); font-weight: 700; }
+  .gauge .g-v { font-family: "JetBrains Mono"; font-weight: 700; font-size: 17px; margin-top: 1px; }
+  .gauge .g-v .u { font-size: 11px; color: var(--muted); font-weight: 500; }
+  .gauge .g-v.amber { color: var(--amber); }
+
+  /* ── Tabs ── */
+  .tabs { display: flex; align-items: stretch; height: 40px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 0 17px; cursor: pointer; color: var(--faint);
+    font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 2px solid transparent; }
+  .tab svg { width: 14px; height: 14px; }
+  .tab:hover { color: var(--muted); }
+  .tab.active { color: var(--text); border-bottom-color: var(--amber); }
+  .tab .ct { font-family: "JetBrains Mono"; font-size: 11px; color: var(--amber); letter-spacing: 0; }
+
+  /* ── Table ── */
+  .panel { background: var(--bg); overflow: hidden; display: flex; flex-direction: column; }
+  .thead { display: grid; grid-template-columns: minmax(0,1fr) 158px 132px 118px 128px 78px 158px 92px;
+    height: 32px; align-items: center; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line-strong);
+    font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .thead > div:not(:first-child) { text-align: center; }
+  .tbody { overflow-y: auto; flex: 1; }
+  .tbody::-webkit-scrollbar { width: 12px; }
+  .tbody::-webkit-scrollbar-thumb { background: var(--line-strong); border: 4px solid var(--bg); }
+  .tbody::-webkit-scrollbar-track { background: var(--bg); }
+
+  .pkg { border-bottom: 1px solid var(--line); }
+  .prow { display: grid; grid-template-columns: minmax(0,1fr) 158px 132px 118px 128px 78px 158px 92px;
+    align-items: center; height: 52px; padding: 0 16px; cursor: pointer; }
+  .prow:hover { background: var(--row); }
+  .pkg.open .prow { background: var(--row); }
+  .pn { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .tw { width: 14px; color: var(--faint); font-family: "JetBrains Mono"; font-size: 13px; flex-shrink: 0; text-align: center; }
+  .pkg.open .tw::before { content: "–"; } .tw::before { content: "+"; }
+  .pic { width: 28px; height: 28px; border: 1px solid var(--line-strong); display: grid; place-items: center; flex-shrink: 0; color: var(--amber); }
+  .pic svg { width: 14px; height: 14px; }
+  .pic.err { border-color: var(--red); color: var(--red); }
+  .ptt { min-width: 0; }
+  .ptt .t { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ptt .s { font-family: "JetBrains Mono"; font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+  .ptt .s.err { color: var(--red); }
+  .c { text-align: center; font-size: 12.5px; color: var(--muted); }
+  .c.mono { font-family: "JetBrains Mono"; font-size: 11.5px; }
+  .c.amber { color: var(--amber); }
+
+  /* progress: solid, recessed, crisp. no gradient/glow. */
+  .bar { height: 18px; background: var(--sunk); border: 1px solid var(--line); position: relative; overflow: hidden; }
+  .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; width: var(--p,0%); background: var(--amber); }
+  .bar .fill.gr { background: var(--green); }
+  .bar .fill.rd { background: var(--red); }
+  .bar .tx { position: absolute; inset: 0; display: grid; place-items: center; font-family: "JetBrains Mono"; font-size: 10.5px; font-weight: 600; color: var(--text); mix-blend-mode: difference; }
+
+  .tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; font-family: "JetBrains Mono"; font-size: 10.5px; font-weight: 600; border: 1px solid; text-transform: uppercase; letter-spacing: 0.04em; }
+  .t-dl { color: var(--amber); border-color: var(--amber-deep); }
+  .t-ext { color: var(--green); border-color: #5e7a44; }
+  .t-done { color: var(--green); border-color: #4a6135; }
+  .t-err { color: var(--red); border-color: #93412f; }
+  .t-q { color: var(--faint); border-color: var(--line-strong); }
+  .host { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+  .host .hd { width: 7px; height: 7px; }
+  .prio { font-family: "JetBrains Mono"; font-size: 10px; font-weight: 700; color: var(--amber); letter-spacing: 0.05em; }
+
+  .items { display: none; background: var(--sunk); }
+  .pkg.open .items { display: block; }
+  .item { display: grid; grid-template-columns: minmax(0,1fr) 158px 132px 118px 128px 78px 158px 92px; align-items: center; height: 34px; padding: 0 16px; border-top: 1px solid var(--line); }
+  .item:hover { background: var(--row); }
+  .in { display: flex; align-items: center; gap: 10px; padding-left: 39px; min-width: 0; }
+  .ld { width: 7px; height: 7px; flex-shrink: 0; }
+  .ld.on { background: var(--green); } .ld.off { background: var(--red); }
+  .in .nm { font-family: "JetBrains Mono"; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .minibar { height: 5px; background: var(--bg); border: 1px solid var(--line); position: relative; }
+  .minibar .mf { position: absolute; left:0; top:0; bottom:0; width: var(--p,0%); background: var(--amber); }
+
+  /* statusbar */
+  .statusbar { display: flex; align-items: center; height: 30px; background: var(--panel); border-top: 1px solid var(--line-strong); font-family: "JetBrains Mono"; font-size: 11px; color: var(--muted); }
+  .statusbar .si { padding: 0 14px; height: 30px; line-height: 30px; border-right: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  .statusbar .si.first { color: var(--green); font-weight: 600; }
+  .statusbar b { color: var(--text); }
+  .statusbar .spacer { flex: 1; }
+  .qtrack { width: 130px; height: 6px; background: var(--sunk); border: 1px solid var(--line); position: relative; }
+  .qtrack > i { position: absolute; left:0; top:0; bottom:0; width: 62%; background: var(--amber); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- MENU BAR -->
+  <div class="menubar">
+    <div class="brand">
+      <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg></div>
+      <div class="nm">DEBRID<span class="accent">·</span>DOWNLOADER</div>
+    </div>
+    <div class="menu-item">Datei</div>
+    <div class="menu-item">Einstellungen</div>
+    <div class="menu-item">Hilfe</div>
+    <div class="spacer"></div>
+    <div class="conn"><span class="sq"></span> 4 PROVIDER AKTIV · MEGA-DEBRID BEREIT</div>
+  </div>
+
+  <!-- CONTROL STRIP -->
+  <div class="control">
+    <div class="grp">
+      <div class="ic play" title="Start"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
+      <div class="ic pause" title="Pause"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></div>
+      <div class="ic stop" title="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg></div>
+    </div>
+    <div class="grp">
+      <div class="ic" title="Zeitplan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+      <div class="ic" title="Hoch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+      <div class="ic" title="Runter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="gauges">
+      <div class="gauge"><div class="g-l">Tempo</div><div class="g-v amber">48.2<span class="u"> MB/s</span></div></div>
+      <div class="gauge"><div class="g-l">Verbleibend</div><div class="g-v">02:14</div></div>
+      <div class="gauge"><div class="g-l">Aktiv</div><div class="g-v">8<span class="u">/24</span></div></div>
+    </div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg> Downloads <span class="ct">5</span></div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/></svg> Linksammler</div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8M4.6 9a1.6 1.6 0 00-.3-1.8"/></svg> Einstellungen</div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109-9 9 9 0 00-9 9zm9-5v5l3 2"/></svg> Verlauf</div>
+    <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg> Statistiken</div>
+  </div>
+
+  <!-- TABLE -->
+  <div class="panel">
+    <div class="thead"><div>Name</div><div>Geladen / Größe</div><div>Fortschritt</div><div>Hoster</div><div>Service</div><div>Prio</div><div>Status</div><div>Tempo</div></div>
+    <div class="tbody">
+
+      <div class="pkg open">
+        <div class="prow">
+          <div class="pn"><span class="tw"></span><div class="pic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4"/></svg></div><div class="ptt"><div class="t">Ugly.Americans.S02.COMPLETE.German.DL.720p.WEB-DL.h264-NERDS</div><div class="s">10 Dateien · 14.2 GB</div></div></div>
+          <div class="c mono">8.9 / 14.2 GB</div>
+          <div class="c"><div class="bar"><div class="fill" style="--p:63%"></div><div class="tx">63 %</div></div></div>
+          <div class="c"><span class="host"><span class="hd" style="background:#d2693e"></span>mega</span></div>
+          <div class="c">Mega-Debrid</div>
+          <div class="c"><span class="prio">HOCH</span></div>
+          <div class="c"><span class="tag t-dl">6/10 lädt</span></div>
+          <div class="c mono amber">48 MB/s</div>
+        </div>
+        <div class="items">
+          <div class="item"><div class="in"><span class="ld on"></span><span class="nm">…h264-NERDS.part1.rar</span></div><div class="c mono">2.0 / 2.0</div><div class="c"><div class="minibar"><div class="mf gr" style="--p:100%;background:var(--green)"></div></div></div><div class="c">mega</div><div class="c"></div><div class="c"></div><div class="c"><span class="tag t-done">fertig</span></div><div class="c mono">—</div></div>
+          <div class="item"><div class="in"><span class="ld on"></span><span class="nm">…h264-NERDS.part2.rar</span></div><div class="c mono">2.0 / 2.0</div><div class="c"><div class="minibar"><div class="mf" style="--p:100%;background:var(--green)"></div></div></div><div class="c">mega</div><div class="c"></div><div class="c"></div><div class="c"><span class="tag t-done">fertig</span></div><div class="c mono">—</div></div>
+          <div class="item"><div class="in"><span class="ld on"></span><span class="nm">…h264-NERDS.part3.rar</span></div><div class="c mono">1.4 / 2.0</div><div class="c"><div class="minibar"><div class="mf" style="--p:70%"></div></div></div><div class="c">mega</div><div class="c"></div><div class="c"></div><div class="c"><span class="tag t-dl">70 %</span></div><div class="c mono amber">26 MB/s</div></div>
+          <div class="item"><div class="in"><span class="ld on"></span><span class="nm">…h264-NERDS.part4.rar</span></div><div class="c mono">0.8 / 2.0</div><div class="c"><div class="minibar"><div class="mf" style="--p:40%"></div></div></div><div class="c">mega</div><div class="c"></div><div class="c"></div><div class="c"><span class="tag t-dl">40 %</span></div><div class="c mono amber">22 MB/s</div></div>
+          <div class="item"><div class="in"><span class="ld off"></span><span class="nm">…h264-NERDS.part5.rar</span></div><div class="c mono">0 / 1.1</div><div class="c"><div class="minibar"><div class="mf" style="--p:0%"></div></div></div><div class="c">mega</div><div class="c"></div><div class="c"></div><div class="c"><span class="tag t-q">wartet</span></div><div class="c mono">—</div></div>
+        </div>
+      </div>
+
+      <div class="pkg">
+        <div class="prow">
+          <div class="pn"><span class="tw"></span><div class="pic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4"/></svg></div><div class="ptt"><div class="t">The.Bear.S03.German.DL.1080p.WEB.h264-WvF</div><div class="s">8 Dateien · 11.6 GB</div></div></div>
+          <div class="c mono">11.6 / 11.6 GB</div>
+          <div class="c"><div class="bar"><div class="fill gr" style="--p:82%"></div><div class="tx">Entpacken 82 %</div></div></div>
+          <div class="c"><span class="host"><span class="hd" style="background:#6f9a52"></span>rapidgator</span></div>
+          <div class="c">Real-Debrid</div>
+          <div class="c"></div>
+          <div class="c"><span class="tag t-ext">entpacken</span></div>
+          <div class="c mono">—</div>
+        </div>
+      </div>
+
+      <div class="pkg">
+        <div class="prow">
+          <div class="pn"><span class="tw"></span><div class="pic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4"/></svg></div><div class="ptt"><div class="t">Dune.Part.Two.2024.German.DL.2160p.UHD.BluRay.x265-NERDS</div><div class="s">1 Datei · 18.4 GB → Library</div></div></div>
+          <div class="c mono">18.4 / 18.4 GB</div>
+          <div class="c"><div class="bar"><div class="fill gr" style="--p:100%"></div><div class="tx">100 %</div></div></div>
+          <div class="c"><span class="host"><span class="hd" style="background:#5683b0"></span>ddownload</span></div>
+          <div class="c">AllDebrid</div>
+          <div class="c"></div>
+          <div class="c"><span class="tag t-done">abgeschlossen</span></div>
+          <div class="c mono">—</div>
+        </div>
+      </div>
+
+      <div class="pkg">
+        <div class="prow">
+          <div class="pn"><span class="tw"></span><div class="pic err"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5m0 3h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></div><div class="ptt"><div class="t">Shogun.S01E05.German.DL.1080p.WEB.h264-EDITION</div><div class="s err">Hoster nicht verfügbar · Link tot · kein Fallback</div></div></div>
+          <div class="c mono">0 / 2.4 GB</div>
+          <div class="c"><div class="bar"><div class="fill rd" style="--p:8%"></div><div class="tx">Fehler</div></div></div>
+          <div class="c"><span class="host"><span class="hd" style="background:#9a6fb0"></span>uploaded</span></div>
+          <div class="c">—</div>
+          <div class="c"></div>
+          <div class="c"><span class="tag t-err">fehler</span></div>
+          <div class="c mono">—</div>
+        </div>
+      </div>
+
+      <div class="pkg">
+        <div class="prow">
+          <div class="pn"><span class="tw"></span><div class="pic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4"/></svg></div><div class="ptt"><div class="t">Severance.S02.COMPLETE.German.DL.1080p.ATVP.WEB.h265-NERDS</div><div class="s">10 Dateien · 22.1 GB</div></div></div>
+          <div class="c mono">0 / 22.1 GB</div>
+          <div class="c"><div class="bar"><div class="fill" style="--p:0%"></div><div class="tx" style="color:var(--faint);mix-blend-mode:normal">Warteschlange</div></div></div>
+          <div class="c"><span class="host"><span class="hd" style="background:#d2693e"></span>mega</span></div>
+          <div class="c">Mega-Debrid</div>
+          <div class="c"></div>
+          <div class="c"><span class="tag t-q">wartet</span></div>
+          <div class="c mono">—</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- STATUSBAR -->
+  <div class="statusbar">
+    <div class="si first"><span style="width:8px;height:8px;background:var(--green);display:inline-block"></span> LÄUFT</div>
+    <div class="si">Queue: <b>5</b> Pakete · <b>34</b> Dateien</div>
+    <div class="si">Heute: <b>147 GB</b></div>
+    <div class="si">Platte: <b>1.54 TB</b> frei</div>
+    <div class="spacer"></div>
+    <div class="si">Gesamt <div class="qtrack"><i></i></div> <b>62 %</b></div>
+  </div>
+</div>
+<script>
+  document.querySelectorAll('.prow').forEach(r => r.addEventListener('click', () => r.parentElement.classList.toggle('open')));
+</script>
+</body>
+</html>
