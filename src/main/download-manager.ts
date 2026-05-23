@@ -4654,6 +4654,21 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    // CLEANUP-DIR: NUR dieser Ordner darf nach dem Move destruktiv aufgeraeumt
+    // werden (Restdateien loeschen + leere Ordner entfernen).
+    // - autoExtract=true  -> extractDir (entpackter Inhalt, fertig verarbeitet)
+    // - autoExtract=false -> outputDir (kein Extract, das ist der finale Inhalt)
+    //
+    // WICHTIG: Bei autoExtract=true wird der outputDir NICHT hier aufgeraeumt!
+    // Dort liegen die RAR-Archive, die von der separaten Archive-Cleanup-Pipeline
+    // (mit Extraktions-Guards) verwaltet werden. Ein blindes Loeschen aller
+    // Nicht-Video-Dateien im outputDir wuerde noch nicht entpackte Archive-Sets
+    // anderer Staffeln/Items zerstoeren (Regression v1.7.154, gefixt v1.7.156).
+    const cleanupDirCandidate = this.settings.autoExtract ? pkg.extractDir : pkg.outputDir;
+    const cleanupDir = (cleanupDirCandidate && sourceDirs.some(
+      (d) => path.resolve(d).toLowerCase() === path.resolve(cleanupDirCandidate).toLowerCase()
+    )) ? cleanupDirCandidate : null;
+
     try {
       await fs.promises.mkdir(targetDir, { recursive: true });
     } catch (error) {
@@ -4830,19 +4845,16 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    if (sourceArtifactsChanged || sourceCleanupRelevant) {
-      // Cleanup pro Source-Dir — beide können Restdateien hinterlassen haben
-      // (Mega-Direct .mkv weg aus outputDir, oder extracted .mkv weg aus extractDir).
-      for (const dir of sourceDirs) {
-        if (!await this.existsAsync(dir)) continue;
-        const removedResidual = await this.cleanupNonMkvResidualFiles(dir, targetDir);
-        if (removedResidual > 0) {
-          logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, dir=${dir}, entfernt=${removedResidual}`);
-        }
-        const removedDirs = await this.removeEmptyDirectoryTree(dir);
-        if (removedDirs > 0) {
-          logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, dir=${dir}, entfernt=${removedDirs}`);
-        }
+    if ((sourceArtifactsChanged || sourceCleanupRelevant) && cleanupDir && await this.existsAsync(cleanupDir)) {
+      // NUR cleanupDir aufraeumen — niemals den outputDir bei autoExtract=true,
+      // sonst werden noch nicht entpackte Archive-Sets geloescht (s.o.).
+      const removedResidual = await this.cleanupNonMkvResidualFiles(cleanupDir, targetDir);
+      if (removedResidual > 0) {
+        logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, dir=${cleanupDir}, entfernt=${removedResidual}`);
+      }
+      const removedDirs = await this.removeEmptyDirectoryTree(cleanupDir);
+      if (removedDirs > 0) {
+        logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, dir=${cleanupDir}, entfernt=${removedDirs}`);
       }
     }
 
