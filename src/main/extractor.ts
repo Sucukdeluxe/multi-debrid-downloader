@@ -742,6 +742,35 @@ function clearCachedPackagePassword(cacheKey: string): void {
   packageLearnedPasswords.delete(cacheKey);
 }
 
+/**
+ * Setzt den Extractor-Zustand zurück, wenn der User die Archiv-Passwortliste
+ * ändert. Repliziert, was ein App-Neustart am Extractor-Subsystem tut:
+ *  - leert den In-Memory Learned-Password-Cache (gelernte Passwörter aller Pakete)
+ *  - fährt den langlebigen JVM-Daemon herunter (sofern nicht gerade beschäftigt),
+ *    damit die nächste Extraktion mit einem frischen Prozess + frischen Passwörtern
+ *    startet.
+ *
+ * Hintergrund: User-Report — ein neu hinzugefügtes Passwort griff bei "Jetzt
+ * entpacken" erst NACH App-Neustart. Die gesamte TS/Java-Kette propagiert die
+ * Liste pro Request korrekt; die einzige zustandsbehaftete Komponente, die ein
+ * Neustart zurücksetzt (und dieser Aufruf ebenfalls), ist der Daemon-Prozess.
+ *
+ * Bewusst KEIN Shutdown eines beschäftigten Daemons: läuft gerade eine Extraktion
+ * (z.B. weil Settings während des Entpackens gespeichert werden), bleibt sie
+ * unangetastet — der nächste Lauf bekommt dann ggf. noch den alten Daemon, aber
+ * der häufige Fall (Liste im Leerlauf ändern) wird sauber abgedeckt.
+ */
+export function resetExtractorCachesForPasswordChange(): { learnedCleared: number; daemonRestarted: boolean } {
+  const learnedCleared = packageLearnedPasswords.size;
+  packageLearnedPasswords.clear();
+  let daemonRestarted = false;
+  if (daemonProcess && !daemonBusy) {
+    shutdownDaemon();
+    daemonRestarted = true;
+  }
+  return { learnedCleared, daemonRestarted };
+}
+
 export function archiveFilenamePasswords(archiveName: string): string[] {
   const name = String(archiveName || "");
   if (!name) return [];
