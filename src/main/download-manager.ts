@@ -52,7 +52,7 @@ function releaseTlsSkip(): void {
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
-import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, type ExtractArchiveFailureInfo } from "./extractor";
+import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
@@ -2080,6 +2080,16 @@ export class DownloadManager extends EventEmitter {
     if (previousArchivePasswords !== nextArchivePasswords) {
       this.hybridExtractedPaths.clear();
       this.hybridFailedArchives.clear();
+      // Bug-Fix: ein neu hinzugefügtes Passwort griff bei "Jetzt entpacken" erst
+      // nach App-Neustart. Der gesamte Settings-/Extract-Pfad propagiert die Liste
+      // korrekt pro Request — aber der langlebige JVM-Daemon + der In-Memory
+      // Learned-Password-Cache überleben einen Settings-Save (nur ein App-Neustart
+      // setzt sie zurück). Wir replizieren den Neustart-Effekt am Extractor-
+      // Subsystem: Learned-Cache leeren + idle Daemon herunterfahren, damit die
+      // nächste Extraktion frisch mit der neuen Passwortliste startet.
+      const pwCount = nextArchivePasswords.split("\n").filter(Boolean).length;
+      const reset = resetExtractorCachesForPasswordChange();
+      logger.info(`Archiv-Passwortliste geaendert (${pwCount} Eintraege): Extractor-Caches zurueckgesetzt (learned=${reset.learnedCleared}, daemonRestart=${reset.daemonRestarted})`);
     }
 
     // When account credentials change, clear the provider-failure circuit-breaker
