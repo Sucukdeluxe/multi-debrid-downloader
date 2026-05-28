@@ -3915,20 +3915,28 @@ export class DownloadManager extends EventEmitter {
   private async autoRenameExtractedVideoFiles(
     extractDir: string,
     pkg?: PackageEntry,
-    shouldAbort?: () => boolean
+    shouldAbort?: () => boolean,
+    treatFilesAsStable = false
   ): Promise<number> {
     if (!pkg) {
-      return this.autoRenameExtractedVideoFilesImpl(extractDir, undefined, shouldAbort);
+      return this.autoRenameExtractedVideoFilesImpl(extractDir, undefined, shouldAbort, treatFilesAsStable);
     }
     return this.chainPackageFileOp(pkg.id, () =>
-      this.autoRenameExtractedVideoFilesImpl(extractDir, pkg, shouldAbort)
+      this.autoRenameExtractedVideoFilesImpl(extractDir, pkg, shouldAbort, treatFilesAsStable)
     );
   }
 
   private async autoRenameExtractedVideoFilesImpl(
     extractDir: string,
     pkg?: PackageEntry,
-    shouldAbort?: () => boolean
+    shouldAbort?: () => boolean,
+    // Im finalen Deferred-Pass ist die Extraktion abgeschlossen (awaited) — es gibt
+    // keinen concurrent Extractor-Write mehr. Der Frische-Gate (unten) ist dort ein
+    // False Positive: er wuerde eine eben extrahierte (noch "frische") Datei vom
+    // Rename ausschliessen, woraufhin der nachgelagerte Collect (deferFreshFiles=false)
+    // sie mit Original-Scene-Namen in die Library moved. treatFilesAsStable=true
+    // umgeht den Gate, sodass der Final-Pass garantiert ALLE Dateien umbenennt.
+    treatFilesAsStable = false
   ): Promise<number> {
     if (!this.settings.autoRename4sf4sj) {
       return 0;
@@ -4023,7 +4031,7 @@ export class DownloadManager extends EventEmitter {
       // Negative age = mtime in the future (clock skew, NTP correction,
       // VM resume after suspension). Treat as "definitely stable" so the
       // file doesn't get stuck waiting for the wall clock to catch up.
-      if (ageMs >= 0 && ageMs < FILE_STABILIZE_MIN_AGE_MS) {
+      if (!treatFilesAsStable && ageMs >= 0 && ageMs < FILE_STABILIZE_MIN_AGE_MS) {
         logger.info(`Auto-Rename: ${sourceName} uebersprungen — Datei noch frisch (${Math.floor(ageMs)}ms), wird beim naechsten Scan behandelt`);
         continue;
       }
@@ -12114,7 +12122,12 @@ export class DownloadManager extends EventEmitter {
           extractDir: pkg.extractDir
         });
         throwIfAborted();
-        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort);
+        // treatFilesAsStable=true: Final-Pass — die Extraktion (inkl. Nested oben) ist
+        // abgeschlossen/awaited, es gibt keinen concurrent Extractor-Write mehr. Ohne
+        // diesen Gate-Bypass wuerde eine eben extrahierte, noch frische (< 2s) Datei vom
+        // Rename uebersprungen und vom nachfolgenden Collect (deferFreshFiles=false) mit
+        // Original-Scene-Namen in die Library gemoved (1-2 unbenannte Dateien pro Staffel).
+        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort, true);
       }
 
       // ── Archive cleanup (source archives in outputDir) ──
