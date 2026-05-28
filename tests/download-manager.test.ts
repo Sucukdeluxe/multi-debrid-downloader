@@ -9510,6 +9510,72 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("deferred post-extraction wiring renames fresh files end-to-end (treatFilesAsStable reaches the rename)", async () => {
+    // Wiring-Lock zum vorherigen Test: stellt sicher, dass runDeferredPostExtraction
+    // den Rename TATSAECHLICH mit treatFilesAsStable=true aufruft. Wuerde jemand das
+    // `true` an der Call-Site (autoRenameExtractedVideoFiles(..., true)) entfernen,
+    // faellt dieser Test (frische Datei landet wieder unbenannt) — der reine
+    // Mechanism-Test wuerde das NICHT bemerken (er ruft den Rename selbst mit true).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    const epFolder = path.join(extractDir, "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake");
+    fs.mkdirSync(epFolder, { recursive: true });
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const sceneName = "awa-testshow02e05hd.mkv";
+    fs.writeFileSync(path.join(epFolder, sceneName), Buffer.alloc(4096, 5)); // mtime = jetzt → "frisch"
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    (manager as any).fileStabilizeMinAgeMs = 30_000;
+
+    const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
+    // Treibt den ECHTEN Produktionspfad: runDeferredPostExtraction → Rename
+    // (Call-Site mit treatFilesAsStable=true) → Collect (deferFreshFiles=false).
+    // success=1 (Collect-Gate), alreadyMarkedExtracted=true (Rename-Gate), failed=0.
+    await (manager as any).runDeferredPostExtraction(packageId, session.packages[packageId], 1, 0, true, 1);
+
+    expect(fs.existsSync(path.join(mkvLibraryDir, `${expectedBase}.mkv`))).toBe(true);
+    expect(fs.existsSync(path.join(mkvLibraryDir, sceneName))).toBe(false);
+
+    void manager;
+  }, 20000);
+
   it("moves direct MKV download from outputDir to library when no archive present (Mega-Debrid flow)", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
