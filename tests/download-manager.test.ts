@@ -9429,6 +9429,87 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("deferred final pass renames fresh files before collecting them (no scene names in library)", async () => {
+    // Folge-Fund zu 18eada9 (verifiziert via Advisor-Gate): 18eada9 schloss den
+    // "frische Datei landet unbenannt"-Bug nur fuer den HYBRID-Pfad (deferFreshFiles=true
+    // + Mehrfach-Pässe). Der finale Deferred-Pass (runDeferredPostExtraction) macht
+    // Rename (treatFilesAsStable? nein) -> Collect (deferFreshFiles=false). Ist eine
+    // Datei beim Deferred-Rename noch "frisch" (< fileStabilizeMinAgeMs) — z.B. eine
+    // gerade per Nested-Extraction (12045) geschriebene Datei — ueberspringt der
+    // Frische-Gate sie, und der Collect moved sie mit Original-Scene-Namen in die
+    // Library. Im Deferred-FINAL-Pass laeuft aber KEIN concurrent Extractor mehr
+    // (Extraktion abgeschlossen/awaited), der Frische-Gate ist dort ein False
+    // Positive. Fix: der Final-Pass-Rename behandelt alle Dateien als stabil
+    // (treatFilesAsStable=true) → benennt um, bevor der Collect sie sammelt.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    // Episoden-Ordner liefert den kanonischen Zielnamen (enthaelt SxxExx).
+    const epFolder = path.join(extractDir, "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake");
+    fs.mkdirSync(epFolder, { recursive: true });
+
+    const sceneName = "awa-testshow02e05hd.mkv";
+    const scenePath = path.join(epFolder, sceneName);
+    fs.writeFileSync(scenePath, Buffer.alloc(4096, 5)); // mtime = jetzt → "frisch"
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    // Produktion: fileStabilizeMinAgeMs=2000. Hier 30s, damit die gerade erstellte
+    // Datei garantiert als "frisch" gilt — wie eine eben extrahierte Datei, die der
+    // Deferred-Pass sofort danach verarbeitet.
+    (manager as any).fileStabilizeMinAgeMs = 30_000;
+
+    const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
+    const renamedLibPath = path.join(mkvLibraryDir, `${expectedBase}.mkv`);
+    const sceneLibPath = path.join(mkvLibraryDir, sceneName);
+
+    // Deferred-FINAL-Pass-Sequenz, exakt wie runDeferredPostExtraction:
+    //  1) Rename — treatFilesAsStable=true (Extraktion abgeschlossen, kein Frische-Skip)
+    //  2) Collect — deferFreshFiles=false
+    await (manager as any).autoRenameExtractedVideoFiles(extractDir, session.packages[packageId], undefined, true);
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    // Die Datei landet UMBENANNT in der Library — nicht mit dem Scene-Namen.
+    expect(fs.existsSync(renamedLibPath)).toBe(true);
+    expect(fs.existsSync(sceneLibPath)).toBe(false);
+
+    void manager;
+  }, 20000);
+
   it("moves direct MKV download from outputDir to library when no archive present (Mega-Debrid flow)", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
