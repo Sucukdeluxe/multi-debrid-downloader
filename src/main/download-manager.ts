@@ -3995,7 +3995,6 @@ export class DownloadManager extends EventEmitter {
     // they've stabilized (hybrid-extract fires a new rename scan after every
     // archive completes, so nothing gets missed).
     const FILE_STABILIZE_MIN_AGE_MS = this.fileStabilizeMinAgeMs;
-    const now = Date.now();
     for (const sourcePath of videoFiles) {
       if (shouldAbort?.()) {
         return renamed;
@@ -4013,6 +4012,13 @@ export class DownloadManager extends EventEmitter {
       } catch {
         continue;
       }
+      // now PER FILE erfassen (nicht einmal am Scan-Start): bei Hybrid-Extraktion
+      // werden weitere Dateien WÄHREND dieses Scans geschrieben. Ein am Scan-Start
+      // erfasstes now waere fuer solche Dateien aelter als ihre mtime → negatives
+      // ageMs → der Clock-Skew-Zweig unten wuerde sie faelschlich als "stabil"
+      // werten und einen Rename mitten im Extractor-Write ausloesen (EBUSY →
+      // deferred → der Collect moved die Datei mit Original-Namen, statt umbenannt).
+      const now = Date.now();
       const ageMs = now - sourceStat.mtimeMs;
       // Negative age = mtime in the future (clock skew, NTP correction,
       // VM resume after suspension). Treat as "definitely stable" so the
@@ -4655,7 +4661,8 @@ export class DownloadManager extends EventEmitter {
   private async collectMkvFilesToLibrary(
     packageId: string,
     pkg: PackageEntry,
-    shouldAbort?: () => boolean
+    shouldAbort?: () => boolean,
+    deferFreshFiles = false
   ): Promise<void> {
     if (!this.settings.collectMkvToLibrary) {
       return;
@@ -4817,12 +4824,28 @@ export class DownloadManager extends EventEmitter {
 
       // Skip 0-byte files from failed/partial extractions
       let sourceSize = 0;
+      let sourceMtimeMs = 0;
       try {
         const stat = await fs.promises.stat(sourcePath);
         sourceSize = stat.size;
+        sourceMtimeMs = stat.mtimeMs;
       } catch {
         skipped += 1;
         continue;
+      }
+      // Frische-Skip (nur Hybrid-Pfad: deferFreshFiles=true): eine gerade extrahierte
+      // Datei wird vom Auto-Rename absichtlich deferred (noch nicht stabil / EBUSY).
+      // Wuerde der Collect sie JETZT moven, landet sie mit Original-Namen in der
+      // Library statt umbenannt (genau der gemeldete "1-2 pro Staffel nicht
+      // umbenannt"-Bug). Wir defern sie ebenfalls → eine spaetere Hybrid-Runde oder
+      // der finale Deferred-Pass (deferFreshFiles=false) benennt sie um + sammelt sie.
+      if (deferFreshFiles && this.fileStabilizeMinAgeMs > 0) {
+        const ageMs = Date.now() - sourceMtimeMs;
+        if (ageMs >= 0 && ageMs < this.fileStabilizeMinAgeMs) {
+          logger.info(`MKV-Sammelordner: ${path.basename(sourcePath)} uebersprungen — Datei noch frisch (${Math.floor(ageMs)}ms), wird nach Stabilisierung gesammelt`);
+          skipped += 1;
+          continue;
+        }
       }
       if (sourceSize === 0) {
         logger.warn(`MKV-Sammelordner: überspringe 0-Byte-Datei ${path.basename(sourcePath)}`);
@@ -11361,15 +11384,21 @@ export class DownloadManager extends EventEmitter {
         hybridSet.add(hybridController);
         const hybridShouldAbort = (): boolean => hybridController.signal.aborted || this.session.packages[packageId] !== pkg;
         void (async () => {
+          // Atomare Kopplung von Rename + Collect in EINER chainPackageFileOp-Kette,
+          // damit zwischen ihnen keine andere (ueberlappende) Hybrid-Runde ihren
+          // Collect einschieben kann (das war der Rename-Race: ein Collect moved
+          // eine Datei bevor der zugehoerige Rename lief). Wichtig: die IMPL-Variante
+          // des Renames verwenden — die Public-Variante ruft selbst chainPackageFileOp
+          // auf, was hier zu verschachteltem Chaining (Deadlock) fuehren wuerde.
+          // deferFreshFiles=true: Dateien die der Rename als "noch frisch" auslaesst
+          // werden vom Collect ebenfalls deferred (statt mit Original-Namen gemoved).
           try {
-            await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, hybridShouldAbort);
+            await this.chainPackageFileOp(pkg.id, async () => {
+              await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, pkg, hybridShouldAbort);
+              await this.collectMkvFilesToLibrary(packageId, pkg, hybridShouldAbort, true);
+            });
           } catch (err) {
-            logger.warn(`Hybrid Auto-Rename Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
-          }
-          try {
-            await this.chainPackageFileOp(pkg.id, () => this.collectMkvFilesToLibrary(packageId, pkg, hybridShouldAbort));
-          } catch (err) {
-            logger.warn(`Hybrid MKV-Collection Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
+            logger.warn(`Hybrid Post-Extract (Rename+Collect) Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
           } finally {
             const set = this.packageHybridPostProcessControllers.get(packageId);
             if (set) {

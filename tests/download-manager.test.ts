@@ -9358,6 +9358,77 @@ describe("download manager", () => {
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   }, 20000);
 
+  it("hybrid collect defers fresh files instead of moving them unrenamed; final pass collects them", async () => {
+    // Regression: User-Report — bei Hybrid-Extraktion blieben 1-2 Dateien pro
+    // Staffel unbenannt (mit Original-Scene-Namen in der Library). Ursache: eine
+    // frisch extrahierte Datei wird vom Auto-Rename absichtlich deferred (noch nicht
+    // stabil), aber der Collect moved sie vorher mit Original-Namen. Fix: der
+    // Hybrid-Collect (deferFreshFiles=true) ueberspringt frische Dateien; der finale
+    // Deferred-Pass (deferFreshFiles=false) sammelt sie nach Stabilisierung ein.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Fresh.Defer.Test.S01.German.720p.BluRay.x264-GRP";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const mkvName = "grp-freshshow.s01e07-720p.mkv";
+    const mkvPath = path.join(extractDir, mkvName);
+    fs.writeFileSync(mkvPath, Buffer.alloc(4096, 7)); // mtime = jetzt → "frisch"
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    // In Tests ist fileStabilizeMinAgeMs=0 (Frische-Erkennung aus) — fuer diesen
+    // Test aktivieren, damit die gerade erstellte Datei als "frisch" gilt.
+    (manager as any).fileStabilizeMinAgeMs = 30_000;
+
+    const libPath = path.join(mkvLibraryDir, mkvName);
+
+    // Hybrid-Collect (deferFreshFiles=true): frische Datei darf NICHT gemoved werden.
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, true);
+    expect(fs.existsSync(libPath)).toBe(false);
+    expect(fs.existsSync(mkvPath)).toBe(true);
+
+    // Finaler Deferred-Pass (deferFreshFiles=false): sammelt die Datei trotzdem ein.
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+    expect(fs.existsSync(libPath)).toBe(true);
+    expect(fs.existsSync(mkvPath)).toBe(false);
+
+    void manager;
+  }, 20000);
+
   it("moves direct MKV download from outputDir to library when no archive present (Mega-Debrid flow)", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
