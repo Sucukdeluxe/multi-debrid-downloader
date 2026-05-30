@@ -1386,7 +1386,15 @@ describe("debrid service", () => {
     try {
       await expect(service.unrestrictLink("https://rapidgator.net/file/abort-mega-web", controller.signal)).rejects.toThrow(/aborted/i);
       expect(megaWeb).toHaveBeenCalledTimes(1);
-      expect(megaWeb.mock.calls[0]?.[1]).toBe(controller.signal);
+      // Der Rotations-Loop (unrestrictWithAccounts) wickelt das Caller-Signal jetzt
+      // mit einem Per-Account-Timeout (AbortSignal.any([signal, attemptController.signal])).
+      // Die an den Web-Unrestrict gereichte Signal-INSTANZ ist daher absichtlich NICHT
+      // mehr identisch mit controller.signal — entscheidend ist das VERHALTEN: das
+      // Caller-Cancel propagiert weiterhin durch (das gereichte Signal ist aborted),
+      // worauf der Web-Unrestrict abbricht. (Bitte nicht zurueck auf .toBe aendern.)
+      const passedSignal = megaWeb.mock.calls[0]?.[1];
+      expect(passedSignal).toBeInstanceOf(AbortSignal);
+      expect(passedSignal?.aborted).toBe(true);
     } finally {
       clearTimeout(abortTimer);
     }
