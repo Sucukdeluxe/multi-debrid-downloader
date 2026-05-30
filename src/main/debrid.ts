@@ -10,13 +10,6 @@ import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
-/** Per-account/key attempt timeout for the rotation loops. Bounds a SINGLE
- *  account's unrestrict so a hanging account no longer eats the whole shared
- *  unrestrict budget (the download-manager wraps the entire rotation in one
- *  ~60s signal). Without this, account 1 hanging for 60s meant accounts 2/3
- *  were never tried. With it, a hang fails this account (temporary cooldown)
- *  and the loop moves on to the next. */
-const PER_ACCOUNT_ATTEMPT_TIMEOUT_MS = Math.max(8000, Math.min(45000, Number(process.env.RD_PER_ACCOUNT_TIMEOUT_MS) || 25000));
 const DEBRID_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
 const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 
@@ -1984,17 +1977,9 @@ class MegaDebridClient {
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
-      // Per-account timeout: a hang on THIS account must not consume the whole
-      // shared unrestrict budget — otherwise the loop never reaches the next.
-      const attemptController = new AbortController();
-      const attemptTimer = setTimeout(() => attemptController.abort(), PER_ACCOUNT_ATTEMPT_TIMEOUT_MS);
-      const attemptSignal = signal
-        ? AbortSignal.any([signal, attemptController.signal])
-        : attemptController.signal;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
-        const result = await client.unrestrictLink(link, attemptSignal);
-        clearTimeout(attemptTimer);
+        const result = await client.unrestrictLink(link, signal);
         clearMegaDebridAccountCooldownState(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
         logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
@@ -2010,19 +1995,7 @@ class MegaDebridClient {
           sourceAccountLabel: account.label
         };
       } catch (error) {
-        clearTimeout(attemptTimer);
-        // If the GLOBAL signal aborted (user stop / overall unrestrict budget),
-        // stop the whole rotation — don't keep hammering the next account.
-        if (signal?.aborted) {
-          throw error;
-        }
-        // If only THIS account's own timeout fired, treat it as a temporary
-        // failure (short cooldown) and move on to the next account — instead of
-        // letting it be misclassified as a fatal abort.
-        const perAccountTimedOut = attemptController.signal.aborted;
-        const failure = perAccountTimedOut
-          ? { fatal: false, cooldownMs: 30000, message: `Account-Timeout nach ${Math.ceil(PER_ACCOUNT_ATTEMPT_TIMEOUT_MS / 1000)}s`, category: "temporary" as MegaDebridCooldownCategory }
-          : MegaDebridClient.classifyAccountFailure(error);
+        const failure = MegaDebridClient.classifyAccountFailure(error);
         const elapsedMs = Date.now() - testStartedAt;
         failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
         if (failure.cooldownMs > 0) {
@@ -2667,16 +2640,8 @@ class DebridLinkClient {
       const testStartedAt = Date.now();
 
       usableKeySeen = true;
-      // Per-key timeout: a hang on THIS key must not consume the whole shared
-      // unrestrict budget — otherwise the loop never reaches the next key.
-      const attemptController = new AbortController();
-      const attemptTimer = setTimeout(() => attemptController.abort(), PER_ACCOUNT_ATTEMPT_TIMEOUT_MS);
-      const attemptSignal = signal
-        ? AbortSignal.any([signal, attemptController.signal])
-        : attemptController.signal;
       try {
-        const result = await this.unrestrictWithKey(apiKey, link, attemptSignal);
-        clearTimeout(attemptTimer);
+        const result = await this.unrestrictWithKey(apiKey, link, signal);
         clearDebridLinkKeyCooldownState(apiKey.id);
         setDebridLinkKeyRuntimeStatus(apiKey.id, "ready", "Unrestrict erfolgreich");
         const elapsedMs = Date.now() - testStartedAt;
@@ -2693,16 +2658,7 @@ class DebridLinkClient {
           sourceAccountLabel: apiKey.label
         };
       } catch (error) {
-        clearTimeout(attemptTimer);
-        // Global abort (user stop / overall budget) → stop the whole rotation.
-        if (signal?.aborted) {
-          throw error;
-        }
-        // Only THIS key's own timeout fired → temporary failure, try the next key.
-        const perKeyTimedOut = attemptController.signal.aborted;
-        const failure = perKeyTimedOut
-          ? { fatal: false, cooldownMs: 30000, message: `Key-Timeout nach ${Math.ceil(PER_ACCOUNT_ATTEMPT_TIMEOUT_MS / 1000)}s`, category: "temporary" as DebridLinkCooldownCategory }
-          : await this.classifyKeyFailure(error, apiKey, link, signal);
+        const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         const elapsedMs = Date.now() - testStartedAt;
         attemptedKeyFailures.push({
           message: `Debrid-Link${keyLabel}: ${failure.message}`,
