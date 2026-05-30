@@ -1392,6 +1392,54 @@ describe("debrid service", () => {
     }
   });
 
+  it("rotates to the next Mega-Debrid account when one hits its daily limit (error-based)", async () => {
+    // User-Anforderung: bei mehreren Mega-Debrid-Accounts (Tageslimit pro Premium-
+    // Account) MUSS die Rotation feuern, sobald ein Account den Limit-FEHLER liefert
+    // — der naechste Account wird probiert. (Fehler-basiert, NICHT timeout-basiert.)
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    // API-Connect schlaegt schnell fehl -> Web-Pfad (megaWeb) pro Account.
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    let webCalls = 0;
+    const megaWeb = vi.fn(async (_link: string, _signal?: AbortSignal) => {
+      webCalls += 1;
+      // Account 1: liefert bei jedem seiner REQUEST_RETRIES-Versuche den Tageslimit-Fehler.
+      if (webCalls <= 3) {
+        throw new Error("Mega-Web: daily limit reached (Tageslimit erreicht)");
+      }
+      // Account 2: hat noch Kontingent -> loest den Link auf.
+      return {
+        fileName: "rotated-to-acc2.rar",
+        directUrl: "https://mega-web.example/rotated-to-acc2.rar",
+        fileSize: null,
+        retriesUsed: 0
+      };
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/limit-rotation-test");
+
+    // Beweis der Rotation: das Ergebnis stammt vom ZWEITEN Account, nicht vom ersten.
+    expect(result.directUrl).toBe("https://mega-web.example/rotated-to-acc2.rar");
+    // acc1 wurde versucht (und fiel mit Limit-Fehler), dann acc2 erfolgreich.
+    expect(webCalls).toBeGreaterThanOrEqual(4);
+  }, 30000);
+
   it("respects provider selection and does not append hidden providers", async () => {
     const settings = {
       ...defaultSettings(),
