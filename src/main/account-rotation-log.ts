@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { RotationEvent } from "../shared/types";
 
 /** Dedicated log file for multi-account/key rotation events:
  *  Mega-Debrid account selection, Debrid-Link key selection, per-attempt
@@ -8,6 +9,70 @@ import path from "node:path";
  *  without the noise of normal download activity. */
 
 type RotationLevel = "INFO" | "WARN" | "ERROR";
+
+/** In-memory ring buffer of the most recent rotation events so the UI can show
+ *  a live "which account was tried and why it failed" panel — the same events
+ *  written to account-rotation.log, but surfaced to the renderer via snapshot. */
+const ROTATION_EVENT_RING_MAX = 60;
+const rotationEventRing: RotationEvent[] = [];
+let rotationEventSeq = 0;
+let rotationEventListener: ((event: RotationEvent) => void) | null = null;
+
+/** Register a callback fired whenever a new rotation event is recorded (used by
+ *  the download-manager to push a fresh snapshot to the UI immediately). */
+export function setRotationEventListener(listener: ((event: RotationEvent) => void) | null): void {
+  rotationEventListener = listener;
+}
+
+/** Returns the recent rotation events, newest first. */
+export function getRecentRotationEvents(limit = ROTATION_EVENT_RING_MAX): RotationEvent[] {
+  const slice = rotationEventRing.slice(-limit);
+  slice.reverse();
+  return slice;
+}
+
+/** Events that are noise for the UI panel (per-attempt TEST markers). The panel
+ *  focuses on outcomes: OK / FAILED / FATAL / skips. */
+function isUiRelevantRotationEvent(event: string): boolean {
+  return event !== "TEST";
+}
+
+function pushRotationEvent(
+  level: RotationLevel,
+  provider: string,
+  accountLabel: string,
+  event: string,
+  fields?: Record<string, unknown>,
+  at = Date.now()
+): void {
+  if (!isUiRelevantRotationEvent(event)) {
+    return;
+  }
+  rotationEventSeq += 1;
+  const entry: RotationEvent = {
+    id: `rot_${at}_${rotationEventSeq}`,
+    at,
+    level,
+    provider,
+    accountLabel,
+    event,
+    reason: fields && fields.reason != null ? String(fields.reason) : undefined,
+    category: fields && fields.category != null ? String(fields.category) : undefined,
+    cooldownSec: fields && fields.cooldownSec != null ? Number(fields.cooldownSec) || 0 : undefined,
+    next: fields && fields.next != null ? String(fields.next) : undefined
+  };
+  rotationEventRing.push(entry);
+  if (rotationEventRing.length > ROTATION_EVENT_RING_MAX) {
+    rotationEventRing.splice(0, rotationEventRing.length - ROTATION_EVENT_RING_MAX);
+  }
+  if (rotationEventListener) {
+    try {
+      rotationEventListener(entry);
+    } catch {
+      // never let a UI push break the rotation flow
+    }
+  }
+}
 
 const ROTATION_LOG_MAX_FILE_BYTES = Number(process.env.RD_ACCOUNT_ROTATION_LOG_MAX_BYTES || 5 * 1024 * 1024);
 const ROTATION_LOG_RETENTION_DAYS = Number(process.env.RD_ACCOUNT_ROTATION_LOG_RETENTION_DAYS || 14);
@@ -108,6 +173,8 @@ export function logAccountRotation(
   event: string,
   fields?: Record<string, unknown>
 ): void {
+  // Surface to the UI ring buffer regardless of whether the file log is ready.
+  pushRotationEvent(level, provider, accountLabel, event, fields);
   if (!rotationLogPath) {
     return;
   }

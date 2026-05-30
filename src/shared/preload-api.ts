@@ -2,6 +2,7 @@ import type {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  DebridAccountStatus,
   DebugSetupCheckResult,
   DebridLinkHostLimitInfo,
   DebridProvider,
@@ -72,6 +73,7 @@ export interface ElectronApi {
   importBestDebridCookies: () => Promise<number>;
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
+  checkDebridAccounts: () => Promise<DebridAccountStatus[]>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;

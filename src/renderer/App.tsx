@@ -1,6 +1,6 @@
 import { CSSProperties, DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { parseMegaDebridAccounts, serializeMegaDebridAccounts, maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountId, parseMegaDebridAccounts, serializeMegaDebridAccounts, maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
 import type {
   AllDebridHostInfo,
   AppSettings,
@@ -866,6 +866,7 @@ const emptySnapshot = (): UiSnapshot => ({
     megaDebridAccountDailyLimitBytes: {},
     megaDebridAccountDailyUsageBytes: {},
     megaDebridAccountTotalUsageBytes: {},
+    debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   },
@@ -1119,6 +1120,37 @@ function formatDebridLinkCountQuota(info: DebridLinkHostLimitInfo | null | undef
     return String(info.linksCurrent);
   }
   return info.note || "Nicht verfügbar";
+}
+
+function formatCheckedAgo(checkedAt: number): string {
+  const deltaMs = Date.now() - checkedAt;
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "gerade eben";
+  const min = Math.floor(deltaMs / 60000);
+  if (min < 1) return "gerade eben";
+  if (min < 60) return `vor ${min} Min`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `vor ${hours} Std`;
+  const days = Math.floor(hours / 24);
+  return `vor ${days} Tag${days === 1 ? "" : "en"}`;
+}
+
+function rotationEventText(ev: { event: string; cooldownSec?: number; next?: string }): string {
+  switch (ev.event) {
+    case "OK": return "erfolgreich";
+    case "FAILED": {
+      const cd = ev.cooldownSec ? `, Cooldown ${ev.cooldownSec}s` : "";
+      const nx = ev.next && ev.next !== "ENDE" ? ` → ${ev.next}` : "";
+      return `fehlgeschlagen${cd}${nx}`;
+    }
+    case "FATAL": return "abgebrochen (fataler Fehler)";
+    case "SKIP_COOLDOWN": return "übersprungen (Cooldown aktiv)";
+    case "SKIP_DISABLED": return "übersprungen (deaktiviert)";
+    case "SKIP_DAILY_LIMIT": return "übersprungen (Tageslimit erreicht)";
+    case "SKIP_HOST_COOLDOWN": return "übersprungen (Host-Cooldown)";
+    case "PROVIDER_WIDE": return "Provider-weiter Fehler, restliche Keys übersprungen";
+    case "TRANSPORT_CASCADE": return "Netzwerk-Kaskade, restliche Keys übersprungen";
+    default: return ev.event;
+  }
 }
 
 function getDebridLinkKeyStatusDisplay(
@@ -1569,6 +1601,7 @@ export function App(): ReactElement {
   const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [accountCheckBusy, setAccountCheckBusy] = useState(false);
   const actionBusyRef = useRef(false);
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -1893,6 +1926,12 @@ export function App(): ReactElement {
     unsubscribe = window.rd.onStateUpdate((wireState) => {
       // Merge delta payloads into the master snapshot. Full payloads replace
       // the master entirely (initial sync + periodic 30s resync).
+      // NOTE: `settings` and `rotationEvents` are NOT delta-filtered — every emit
+      // (full or delta) carries the complete `settings` object and recent
+      // rotationEvents. The account-validity badges read
+      // `snapshot.settings.debridAccountStatuses` and the rotation panel reads
+      // `snapshot.rotationEvents`; if `settings` is ever delta-optimized, both
+      // must keep flowing on every emit or those views go stale.
       let merged: UiSnapshot;
       const master = masterSnapshotRef.current;
       if (wireState.payloadKind === "delta" && master) {
@@ -2596,6 +2635,24 @@ export function App(): ReactElement {
         return null;
     }
   };
+
+  const checkAllAccounts = useCallback(async (): Promise<void> => {
+    setAccountCheckBusy(true);
+    try {
+      const statuses = await window.rd.checkDebridAccounts();
+      if (!statuses || statuses.length === 0) {
+        showToast("Keine Mega-Debrid-/Debrid-Link-Accounts zum Prüfen konfiguriert.", 3200);
+      } else {
+        const valid = statuses.filter((st) => st.valid).length;
+        const premium = statuses.filter((st) => st.isPremium).length;
+        showToast(`Account-Check: ${valid}/${statuses.length} Login gültig, ${premium} mit Premium.`, 3600);
+      }
+    } catch (error) {
+      showToast(`Account-Check fehlgeschlagen: ${String(error)}`, 3600);
+    } finally {
+      setAccountCheckBusy(false);
+    }
+  }, [showToast]);
 
   const openCreateAccountDialog = (): void => {
     setAccountDialogSearch("");
@@ -4868,9 +4925,14 @@ export function App(): ReactElement {
                           <h3>Accounts</h3>
                           <div className="hint">Accounts werden als Liste verwaltet. Neue Einträge kommen über den Dialog oben rechts dazu.</div>
                         </div>
-                        <button className="btn accent" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
-                          Account hinzufügen
-                        </button>
+                        <div className="account-board-header-actions">
+                          <button className="btn" disabled={actionBusy || accountCheckBusy} onClick={() => { void checkAllAccounts(); }} title="Prüft Login-Gültigkeit und Premium-Restlaufzeit aller Mega-Debrid-/Debrid-Link-Accounts">
+                            {accountCheckBusy ? "Prüfe Accounts…" : "Alle prüfen"}
+                          </button>
+                          <button className="btn accent" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
+                            Account hinzufügen
+                          </button>
+                        </div>
                       </div>
 
                       <div className="account-board-summary">
@@ -5033,6 +5095,31 @@ export function App(): ReactElement {
                           })}
                         </div>
                       )}
+                    </div>
+
+                    <div className="settings-section card">
+                      <div className="account-board-header">
+                        <div>
+                          <h3>Rotations-Verlauf</h3>
+                          <div className="hint">Zeigt, welcher Account/Key zuletzt für die Link-Umwandlung versucht wurde und warum gewechselt wurde.</div>
+                        </div>
+                      </div>
+                      <div className="rotation-panel">
+                        {(!snapshot?.rotationEvents || snapshot.rotationEvents.length === 0) ? (
+                          <div className="rotation-empty">Noch keine Rotations-Ereignisse. Sobald ein Account/Key bei der Link-Umwandlung fehlschlägt oder gewechselt wird, erscheint es hier.</div>
+                        ) : (
+                          snapshot.rotationEvents.map((ev) => (
+                            <div key={ev.id} className={`rotation-event ${ev.level}`}>
+                              <span className="rotation-time">{new Date(ev.at).toLocaleTimeString()}</span>
+                              <span className="rotation-body">
+                                <strong>{ev.provider} · {ev.accountLabel}</strong>{" "}
+                                {rotationEventText(ev)}
+                                {ev.reason ? <span className="rotation-reason"> ({ev.reason})</span> : null}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
 
                     <div className="settings-section card">
@@ -5600,6 +5687,15 @@ export function App(): ReactElement {
                                     <div className="account-dl-key-meta">
                                       <strong>Account {index + 1}</strong>
                                       <span>{maskMegaDebridLogin(account.login)}</span>
+                                      {(() => {
+                                        const st = snapshot?.settings?.debridAccountStatuses?.[getMegaDebridAccountId(account.login)];
+                                        if (!st) return <span className="account-validity-badge unknown" title="Noch nicht geprüft – auf „Alle prüfen“ klicken">Noch nicht geprüft</span>;
+                                        const checkedAgo = formatCheckedAgo(st.checkedAt);
+                                        const tip = `${st.message}${st.email ? ` · ${st.email}` : ""} · geprüft ${checkedAgo}`;
+                                        if (!st.valid) return <span className="account-validity-badge invalid" title={tip}>Login ungültig</span>;
+                                        if (!st.isPremium) return <span className="account-validity-badge free" title={tip}>Login OK · kein Premium</span>;
+                                        return <span className="account-validity-badge ok" title={tip}>{st.message}</span>;
+                                      })()}
                                     </div>
                                     <button
                                       className="btn danger"
@@ -5672,6 +5768,14 @@ export function App(): ReactElement {
                                 <div className="account-dl-key-meta">
                                   <strong>{key.label}</strong>
                                   <span>{key.masked}</span>
+                                  {(() => {
+                                    const st = snapshot?.settings?.debridAccountStatuses?.[key.id];
+                                    if (!st) return <span className="account-validity-badge unknown" title="Noch nicht geprüft – auf „Alle prüfen“ klicken">Noch nicht geprüft</span>;
+                                    const tip = `${st.message}${st.email ? ` · ${st.email}` : ""} · geprüft ${formatCheckedAgo(st.checkedAt)}`;
+                                    if (!st.valid) return <span className="account-validity-badge invalid" title={tip}>Key ungültig</span>;
+                                    if (!st.isPremium) return <span className="account-validity-badge free" title={tip}>Key OK · kein Premium</span>;
+                                    return <span className="account-validity-badge ok" title={tip}>{st.message}</span>;
+                                  })()}
                                 </div>
                                 <input
                                   inputMode="decimal"

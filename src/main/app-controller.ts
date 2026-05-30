@@ -5,6 +5,7 @@ import {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  DebridAccountStatus,
   DebridProvider,
   DuplicatePolicy,
   HistoryEntry,
@@ -23,6 +24,7 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
+import { checkAllDebridAccounts } from "./account-check";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
@@ -374,6 +376,19 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
+  /** Check login validity + premium expiry for ALL configured multi-account
+   *  credentials (Mega-Debrid accounts + Debrid-Link keys), persist the result
+   *  into settings (so badges survive restart), and return the statuses. */
+public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
+    const statuses = await checkAllDebridAccounts(this.settings);
+    this.manager.applyDebridAccountStatuses(statuses);
+    this.audit("INFO", "Debrid-Accounts geprueft", {
+      total: statuses.length,
+      valid: statuses.filter((s) => s.valid).length,
+      premium: statuses.filter((s) => s.isPremium).length
+    });
+    return statuses;
+  }
   public async checkUpdates(): Promise<UpdateCheckResult> {
     const result = await checkGitHubUpdate(this.settings.updateRepo);
     if (!result.error) {

@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds } from "../shared/mega-debrid-accounts";
-import { AppSettings, BandwidthScheduleEntry, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { AppSettings, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
@@ -230,6 +230,39 @@ function normalizeNamedByteMap(raw: unknown, allowedKeys: readonly string[]): Re
   return result;
 }
 
+function normalizeDebridAccountStatuses(
+  value: unknown,
+  megaIds: string[],
+  debridLinkIds: string[]
+): Record<string, DebridAccountStatus> {
+  const allowed = new Set([...megaIds, ...debridLinkIds]);
+  const result: Record<string, DebridAccountStatus> = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (!allowed.has(key) || !raw || typeof raw !== "object") {
+        continue;
+      }
+      const entry = raw as Partial<DebridAccountStatus>;
+      if (typeof entry.accountId !== "string" || typeof entry.checkedAt !== "number") {
+        continue;
+      }
+      result[key] = {
+        accountId: entry.accountId,
+        provider: entry.provider === "debridlink" ? "debridlink" : "megadebrid",
+        label: String(entry.label || ""),
+        maskedLogin: String(entry.maskedLogin || ""),
+        valid: Boolean(entry.valid),
+        isPremium: Boolean(entry.isPremium),
+        premiumUntilMs: typeof entry.premiumUntilMs === "number" ? entry.premiumUntilMs : null,
+        email: typeof entry.email === "string" ? entry.email : undefined,
+        message: String(entry.message || ""),
+        checkedAt: entry.checkedAt
+      };
+    }
+  }
+  return result;
+}
+
 function normalizeStringList(raw: unknown, allowedKeys: readonly string[]): string[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -452,6 +485,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       ? normalizeNamedByteMap(settings.megaDebridAccountDailyUsageBytes, megaDebridAccountIds)
       : {},
     megaDebridAccountTotalUsageBytes: normalizeNamedByteMap(settings.megaDebridAccountTotalUsageBytes, megaDebridAccountIds),
+    debridAccountStatuses: normalizeDebridAccountStatuses(settings.debridAccountStatuses, megaDebridAccountIds, debridLinkApiKeyIds),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };
