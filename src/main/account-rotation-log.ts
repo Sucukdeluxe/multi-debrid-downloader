@@ -1,6 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { RotationEvent } from "../shared/types";
+
+/** Item-scoped sink: while a single item's link-unrestrict runs, the
+ *  download-manager wraps it in runWithRotationItemSink() so EVERY rotation
+ *  event for that item (Account 1 wird versucht, fehlgeschlagen, → Account 2)
+ *  lands in that item's own log — exactly where the user looks. AsyncLocalStorage
+ *  keeps this correct even with 8 items unrestricting in parallel: each runs in
+ *  its own async context, so events never cross-attribute. */
+export type RotationItemSink = (event: RotationEvent) => void;
+const rotationItemContext = new AsyncLocalStorage<RotationItemSink>();
+
+/** Run `fn` with an item-scoped rotation sink active for its whole async chain. */
+export function runWithRotationItemSink<T>(sink: RotationItemSink, fn: () => Promise<T>): Promise<T> {
+  return rotationItemContext.run(sink, fn);
+}
 
 /** Dedicated log file for multi-account/key rotation events:
  *  Mega-Debrid account selection, Debrid-Link key selection, per-attempt
@@ -45,9 +60,6 @@ function pushRotationEvent(
   fields?: Record<string, unknown>,
   at = Date.now()
 ): void {
-  if (!isUiRelevantRotationEvent(event)) {
-    return;
-  }
   rotationEventSeq += 1;
   const entry: RotationEvent = {
     id: `rot_${at}_${rotationEventSeq}`,
@@ -61,6 +73,24 @@ function pushRotationEvent(
     cooldownSec: fields && fields.cooldownSec != null ? Number(fields.cooldownSec) || 0 : undefined,
     next: fields && fields.next != null ? String(fields.next) : undefined
   };
+
+  // Always route to the item-scoped sink (if any) — the per-item log wants the
+  // FULL trail including "TEST" (Account X wird versucht), so the user sees the
+  // rotation right where they look.
+  const itemSink = rotationItemContext.getStore();
+  if (itemSink) {
+    try {
+      itemSink(entry);
+    } catch {
+      // never let item logging break the rotation flow
+    }
+  }
+
+  // The global UI panel ring + live push skip noisy per-attempt TEST markers;
+  // it focuses on outcomes (OK / FAILED / FATAL / skips).
+  if (!isUiRelevantRotationEvent(event)) {
+    return;
+  }
   rotationEventRing.push(entry);
   if (rotationEventRing.length > ROTATION_EVENT_RING_MAX) {
     rotationEventRing.splice(0, rotationEventRing.length - ROTATION_EVENT_RING_MAX);
