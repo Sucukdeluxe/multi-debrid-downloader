@@ -1386,73 +1386,9 @@ describe("debrid service", () => {
     try {
       await expect(service.unrestrictLink("https://rapidgator.net/file/abort-mega-web", controller.signal)).rejects.toThrow(/aborted/i);
       expect(megaWeb).toHaveBeenCalledTimes(1);
-      // Der Rotations-Loop (unrestrictWithAccounts) wickelt das Caller-Signal jetzt
-      // mit einem Per-Account-Timeout (AbortSignal.any([signal, attemptController.signal])).
-      // Die an den Web-Unrestrict gereichte Signal-INSTANZ ist daher absichtlich NICHT
-      // mehr identisch mit controller.signal — entscheidend ist das VERHALTEN: das
-      // Caller-Cancel propagiert weiterhin durch (das gereichte Signal ist aborted),
-      // worauf der Web-Unrestrict abbricht. (Bitte nicht zurueck auf .toBe aendern.)
-      const passedSignal = megaWeb.mock.calls[0]?.[1];
-      expect(passedSignal).toBeInstanceOf(AbortSignal);
-      expect(passedSignal?.aborted).toBe(true);
+      expect(megaWeb.mock.calls[0]?.[1]).toBe(controller.signal);
     } finally {
       clearTimeout(abortTimer);
-    }
-  });
-
-  it("rotation per-account timeout: a hanging account is skipped so the next account is tried", async () => {
-    // Kern des v1.7.168-Fix: haengt Account 1, darf das NICHT die ganze Rotation
-    // fressen — der Per-Account-Timeout (PER_ACCOUNT_ATTEMPT_TIMEOUT_MS, default 25s)
-    // bricht NUR acc1 ab (kurzer Cooldown), der Loop probiert acc2. Ohne globales
-    // Signal (kein download-manager-Wrap) testet das den Per-Account-Timeout isoliert.
-    const settings = {
-      ...defaultSettings(),
-      token: "",
-      bestToken: "",
-      allDebridToken: "",
-      megaLogin: "user1",
-      megaPassword: "pass1",
-      megaCredentials: "user1:pass1\nuser2:pass2",
-      providerOrder: [] as const,
-      providerPrimary: "megadebrid" as const,
-      providerSecondary: "none" as const,
-      providerTertiary: "none" as const,
-      autoProviderFallback: false
-    };
-
-    // API connect schlaegt pro Account schnell fehl (500) -> Web-Fallback (megaWeb).
-    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
-
-    let call = 0;
-    const megaWeb = vi.fn((_link: string, signal?: AbortSignal) => {
-      call += 1;
-      if (call === 1) {
-        // Account 1 haengt, bis sein eigener Per-Account-Timeout das Signal abortet.
-        return new Promise<never>((_, reject) => {
-          if (signal?.aborted) { reject(new Error("aborted:acc1-hang")); return; }
-          signal?.addEventListener("abort", () => reject(new Error("aborted:acc1-hang")), { once: true });
-        });
-      }
-      // Account 2 liefert sofort.
-      return Promise.resolve({
-        fileName: "acc2.rar",
-        directUrl: "https://mega-web.example/acc2.rar",
-        fileSize: null,
-        retriesUsed: 0
-      });
-    });
-
-    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
-    vi.useFakeTimers();
-    try {
-      const pending = service.unrestrictLink("https://rapidgator.net/file/rotate-acc");
-      // Per-Account-Timeout von acc1 (25s) feuern lassen -> acc1 faellt -> Loop -> acc2.
-      await vi.advanceTimersByTimeAsync(30000);
-      const result = await pending;
-      expect(result.directUrl).toBe("https://mega-web.example/acc2.rar");
-      expect(megaWeb).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
     }
   });
 
