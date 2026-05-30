@@ -123,6 +123,7 @@ export function defaultSettings(): AppSettings {
     megaDebridAccountDailyLimitBytes: {},
     megaDebridAccountDailyUsageBytes: {},
     megaDebridAccountTotalUsageBytes: {},
+    debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
     scheduledStartEpochMs: 0
   };

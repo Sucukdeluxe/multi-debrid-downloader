@@ -55,6 +55,7 @@ export const IPC_CHANNELS = {
   IMPORT_BESTDEBRID_COOKIES: "app:import-bestdebrid-cookies",
   GET_ALLDEBRID_HOST_INFO: "app:get-alldebrid-host-info",
   GET_DEBRIDLINK_HOST_LIMITS: "app:get-debridlink-host-limits",
+  CHECK_DEBRID_ACCOUNTS: "app:check-debrid-accounts",
   RETRY_EXTRACTION: "queue:retry-extraction",
   EXTRACT_NOW: "queue:extract-now",
   RESET_PACKAGE: "queue:reset-package",

@@ -644,6 +644,10 @@ function registerIpcHandlers(): void {
     return controller.getDebridLinkHostLimits();
   });
 
+  ipcMain.handle(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async () => {
+    return controller.checkDebridAccounts();
+  });
+
   ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {
     const options = {
       properties: ["openFile"] as Array<"openFile">,

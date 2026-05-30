@@ -19,12 +19,13 @@ import {
   SessionState,
   StartConflictEntry,
   StartConflictResolutionResult,
-  UiSnapshot
-} from "../shared/types";
+  UiSnapshot, DebridAccountStatus } from "../shared/types";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import {
   addDebridLinkApiKeyDailyUsageBytes,
   addDebridLinkApiKeyTotalUsageBytes,
+  addMegaDebridAccountDailyUsageBytes,
+  addMegaDebridAccountTotalUsageBytes,
   addProviderDailyUsageBytes,
   addProviderTotalUsageBytes,
   getProviderUsageDayKey,
@@ -55,6 +56,7 @@ import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, Meg
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { logger } from "./logger";
+import { getRecentRotationEvents, setRotationEventListener } from "./account-rotation-log";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
 import { ensurePackageLog, getPackageLogPath as getPersistedPackageLogPath, logPackageEvent as writePackageLogEvent } from "./package-log";
 import { logRenameEvent as writeRenameLogEvent } from "./rename-log";
@@ -1808,7 +1810,25 @@ export class DownloadManager extends EventEmitter {
     this.recoverPostProcessingOnStartup();
     this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
+    // Push a fresh snapshot to the UI whenever a rotation event is recorded so
+    // the live rotation panel updates immediately. The listener is module-global,
+    // so guard against firing on a torn-down manager after shutdown.
+    setRotationEventListener(() => {
+      if (this.rotationListenerActive === false) {
+        return;
+      }
+      try {
+        // Forced emit: rotation happens during the idle link-resolve phase (no
+        // downloads running), where the normal emit cadence can be starved. The
+        // forced path has a 120ms floor — the right cadence for a live log panel.
+        this.emitState(true);
+      } catch {
+        // never let a UI push break the rotation flow
+      }
+    });
   }
+
+  private rotationListenerActive = true;
 
   public getPackageLogPath(packageId: string): string | null {
     const pkg = this.session.packages[packageId];
@@ -2040,6 +2060,17 @@ export class DownloadManager extends EventEmitter {
         ...fields
       });
     }
+  }
+
+  public applyDebridAccountStatuses(statuses: DebridAccountStatus[]): void {
+    const map: Record<string, DebridAccountStatus> = { ...(this.settings.debridAccountStatuses || {}) };
+    for (const status of statuses) {
+      map[status.accountId] = status;
+    }
+    this.settings.debridAccountStatuses = map;
+    this.invalidateSettingsSnapshotCache();
+    void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler (account-status): ${compactErrorText(err as Error)}`));
+    this.emitState();
   }
 
   public setSettings(next: AppSettings): void {
@@ -2324,6 +2355,7 @@ export class DownloadManager extends EventEmitter {
       : null;
 
     return {
+      rotationEvents: getRecentRotationEvents(40),
       settings: snapshotSettings,
       session: snapshotSession,
       summary: snapshotSummary,
@@ -5643,6 +5675,7 @@ export class DownloadManager extends EventEmitter {
 
   public prepareForShutdown(): void {
     logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
+    this.rotationListenerActive = false;
     this.clearPersistTimer();
     if (this.stateEmitTimer) {
       clearTimeout(this.stateEmitTimer);
@@ -7781,6 +7814,15 @@ export class DownloadManager extends EventEmitter {
       this.settings.debridLinkApiKeyDailyUsageBytes = nextKeyUsage.debridLinkApiKeyDailyUsageBytes;
       this.settings.debridLinkApiKeyTotalUsageBytes = nextKeyTotalUsage.debridLinkApiKeyTotalUsageBytes;
     }
+    // Bug-Fix: Mega-Debrid Per-Account-Verbrauch wurde nie erfasst (nur Debrid-Link),
+    // sodass die "Heute"/"Insgesamt"-Statistik pro Mega-Account immer 0 anzeigte.
+    if ((effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") && providerAccountId) {
+      const nextAcctUsage = addMegaDebridAccountDailyUsageBytes(this.settings, providerAccountId, byteDelta);
+      const nextAcctTotalUsage = addMegaDebridAccountTotalUsageBytes(this.settings, providerAccountId, byteDelta);
+      this.settings.providerDailyUsageDay = nextAcctUsage.providerDailyUsageDay;
+      this.settings.megaDebridAccountDailyUsageBytes = nextAcctUsage.megaDebridAccountDailyUsageBytes;
+      this.settings.megaDebridAccountTotalUsageBytes = nextAcctTotalUsage.megaDebridAccountTotalUsageBytes;
+    }
   }
 
   private isProviderConfigured(provider: DebridProvider): boolean {
@@ -7796,12 +7838,12 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
     }
     if (effectiveProvider === "megadebrid-api") {
-      return Boolean(resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-api" && this.settings.megaLogin.trim() && this.settings.megaPassword.trim()
-        || this.settings.megaDebridApiEnabled && this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
+      const hasMegaCreds = Boolean(this.settings.megaCredentials.trim() || (this.settings.megaLogin.trim() && this.settings.megaPassword.trim()));
+      return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-api" || this.settings.megaDebridApiEnabled));
     }
     if (effectiveProvider === "megadebrid-web") {
-      return Boolean(resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-web" && this.settings.megaLogin.trim() && this.settings.megaPassword.trim()
-        || this.settings.megaDebridWebEnabled && this.settings.megaLogin.trim() && this.settings.megaPassword.trim());
+      const hasMegaCreds = Boolean(this.settings.megaCredentials.trim() || (this.settings.megaLogin.trim() && this.settings.megaPassword.trim()));
+      return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-web" || this.settings.megaDebridWebEnabled));
     }
     if (effectiveProvider === "bestdebrid") {
       return Boolean(this.settings.bestDebridUseWebLogin || this.settings.bestToken.trim());
