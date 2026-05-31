@@ -256,7 +256,10 @@ async function createOrGetRelease(baseApi, tag, authHeader, notes) {
     target_commitish: "main",
     name: tag,
     body: notes || `Release ${tag}`,
-    draft: false,
+    // Als Draft anlegen — der Auto-Updater ueberspringt Drafts. So wird das Release erst
+    // NACH dem Asset-Upload (unten via PATCH draft:false) "latest"; ein Update-Check kann
+    // nie ein Release ohne Setup/latest.yml sehen ("Setup-Asset nicht gefunden").
+    draft: true,
     prerelease: false
   };
   const created = await apiRequest("POST", `${baseApi}/releases`, authHeader, JSON.stringify(payload));
@@ -362,6 +365,14 @@ async function main() {
   const baseApi = `${repo.baseUrl}/api/v1/repos/${repo.owner}/${repo.repo}`;
   const release = await createOrGetRelease(baseApi, tag, authHeader, releaseNotes);
   await uploadReleaseAssets(baseApi, release.id, authHeader, assets.releaseDir, assets.files);
+
+  // Erst JETZT veroeffentlichen (draft:false), nachdem ALLE Assets oben hochgeladen sind.
+  // Davor war das Release den ganzen Upload ueber sichtbar, aber ohne latest.yml/Setup →
+  // Auto-Update-Checks in diesem Fenster scheiterten mit "Setup-Asset nicht gefunden".
+  const published = await apiRequest("PATCH", `${baseApi}/releases/${release.id}`, authHeader, JSON.stringify({ draft: false }));
+  if (!published.ok) {
+    throw new Error(`Failed to publish release (${published.status}): ${JSON.stringify(published.body)}`);
+  }
 
   process.stdout.write(`Release published: ${release.html_url || `${repo.baseUrl}/${repo.owner}/${repo.repo}/releases/tag/${tag}`}\n`);
 }
