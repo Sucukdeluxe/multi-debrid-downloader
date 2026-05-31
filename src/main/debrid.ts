@@ -6,6 +6,7 @@ import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
+import { MEGA_DEBRID_NO_SERVER_RE } from "./mega-web-fallback";
 import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
@@ -1866,8 +1867,11 @@ class MegaDebridClient {
       if (!lastError) {
         lastError = "Mega-Web Antwort leer";
       }
-      // Don't retry permanent hoster errors (dead link, file removed, etc.)
-      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError)) {
+      // Don't retry permanent hoster errors (dead link, file removed, etc.) — and
+      // don't hammer a "Kein Server für diesen Hoster" (account hoster quota) message:
+      // immediate retries are futile (the limit persists) and waste the shared
+      // rotation budget, so break and let the rotation move to the next account.
+      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError) || MEGA_DEBRID_NO_SERVER_RE.test(lastError)) {
         break;
       }
       if (attempt < REQUEST_RETRIES) {
@@ -2081,6 +2085,17 @@ class MegaDebridClient {
         fatal: false,
         cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
         message: `Quota/Limit erreicht (${errorText})`,
+        category: "quota"
+      };
+    }
+
+    // "Kein Server für diesen Hoster verfügbar" = Account-Tageslimit für diesen
+    // Hoster erschöpft (oder Hoster kurz nicht bedient). Quota-Cooldown, nächster Account.
+    if (MEGA_DEBRID_NO_SERVER_RE.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+        message: "Kein Server fuer diesen Hoster (Tageslimit/Hoster nicht verfuegbar)",
         category: "quota"
       };
     }
