@@ -292,6 +292,12 @@ export class AppController {
     nextSettings.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
       Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
     );
+    // debridAccountStatuses ist main-owned Runtime-State (wird NUR von
+    // applyDebridAccountStatuses gesetzt). Der Renderer schickt in seinem Settings-
+    // Patch eine evtl. veraltete Kopie mit; die Live-Version bewahren, damit ein
+    // Settings-Save (z.B. direkt nach Hinzufuegen+Pruefen eines Mega-Accounts im
+    // Dialog) einen frisch geprueften Status nicht ueberschreibt.
+    nextSettings.debridAccountStatuses = { ...(liveSettings.debridAccountStatuses || {}) };
     const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
     this.settings = nextSettings;
     if (retentionChanged) {
