@@ -313,15 +313,44 @@ function getDebridLinkKeyHostCooldownState(
   };
 }
 
-/** Per-account cooldown cache for Mega-Debrid: accountId → expiry timestamp. */
+/** Per-account cooldown cache for Mega-Debrid: accountId → expiry timestamp.
+ *  untilRestart: ein Tageslimit-Account wird fuer den REST der Laufzeit uebersprungen
+ *  (nicht alle 20s/2min neu getestet) und kommt erst nach einem Neustart zurueck — die
+ *  Map liegt nur im RAM, ein Neustart loescht sie also automatisch. */
 type MegaDebridCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary" | "skip";
-type MegaDebridCooldownDetail = { until: number; message: string; category: MegaDebridCooldownCategory };
+type MegaDebridCooldownDetail = { until: number; message: string; category: MegaDebridCooldownCategory; untilRestart?: boolean };
 const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
 const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000; // 2 min cooldown per failed account
 const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
 
+/** Zaehlt aufeinanderfolgende "Antwort leer"-Fehlversuche je Account-Key. Ein
+ *  tageslimitierter Mega-Debrid-Account liefert im Web-Pfad KEINE unterscheidbare
+ *  Meldung ("Kein Server" taucht in echten Logs nie auf — immer nur "Antwort leer"),
+ *  ist aber daran erkennbar, dass er PERSISTENT leer antwortet. Nach
+ *  MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART aufeinanderfolgenden Leer-Antworten wird der
+ *  Account bis Neustart geparkt; ein einzelner transienter Blip (Streak < Schwelle)
+ *  behaelt den kurzen 20s-Cooldown. Ein Erfolg oder ein anderer Fehlertyp setzt den
+ *  Zaehler zurueck. */
+const megaDebridEmptyResponseStreaks = new Map<string, number>();
+export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
+
+/** Verbucht eine "Antwort leer"-Antwort fuer den Account-Key und liefert die neue
+ *  Streak-Laenge. Ab MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART parkt der Aufrufer den
+ *  Account bis Neustart. Exportiert fuer deterministische Tests. */
+export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
+  const streak = (megaDebridEmptyResponseStreaks.get(accountId) || 0) + 1;
+  megaDebridEmptyResponseStreaks.set(accountId, streak);
+  return streak;
+}
+
+/** Setzt die "Antwort leer"-Streak zurueck (bei Erfolg oder einem anderen Fehlertyp). */
+export function clearMegaDebridEmptyResponseStreak(accountId: string): void {
+  megaDebridEmptyResponseStreaks.delete(accountId);
+}
+
 export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
+  megaDebridEmptyResponseStreaks.clear();
 }
 
 /** Periodic cleanup of expired Mega-Debrid cooldown entries. */
@@ -341,6 +370,11 @@ export function primeMegaDebridRuntimeCooldownForTests(accountId: string, cooldo
   setMegaDebridAccountCooldownState(accountId, cooldownMs, message, "temporary");
 }
 
+/** Parkt einen Account-Key bis Neustart (Tageslimit). Exportiert fuer Tests. */
+export function primeMegaDebridUntilRestartForTests(accountId: string, message = "Tageslimit (Test) — bis Neustart gesperrt"): void {
+  setMegaDebridAccountCooldownState(accountId, 0, message, "quota", true);
+}
+
 function clearMegaDebridAccountCooldownState(accountId: string): void {
   megaDebridAccountCooldowns.delete(accountId);
 }
@@ -349,8 +383,21 @@ function setMegaDebridAccountCooldownState(
   accountId: string,
   cooldownMs: number,
   message: string,
-  category: MegaDebridCooldownCategory
+  category: MegaDebridCooldownCategory,
+  untilRestart = false
 ): void {
+  if (untilRestart) {
+    // Bis-Neustart-Sperre: never expires in-process (Number.MAX_SAFE_INTEGER liegt
+    // ausserhalb des gueltigen Date-Bereichs → Anzeige wird via untilRestart-Flag
+    // gesondert behandelt, nicht ueber new Date(until)).
+    megaDebridAccountCooldowns.set(accountId, {
+      until: Number.MAX_SAFE_INTEGER,
+      message,
+      category,
+      untilRestart: true
+    });
+    return;
+  }
   if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) {
     clearMegaDebridAccountCooldownState(accountId);
     return;
@@ -365,7 +412,7 @@ function setMegaDebridAccountCooldownState(
 export function getMegaDebridAccountCooldownState(
   accountId: string,
   now = Date.now()
-): { until: number; remainingMs: number; message: string; category: MegaDebridCooldownCategory } | null {
+): { until: number; remainingMs: number; message: string; category: MegaDebridCooldownCategory; untilRestart: boolean } | null {
   const detail = megaDebridAccountCooldowns.get(accountId);
   if (!detail) {
     return null;
@@ -378,7 +425,8 @@ export function getMegaDebridAccountCooldownState(
     until: detail.until,
     remainingMs: detail.until - now,
     message: detail.message,
-    category: detail.category
+    category: detail.category,
+    untilRestart: detail.untilRestart === true
   };
 }
 
@@ -1933,6 +1981,7 @@ class MegaDebridClient {
     let usableAccountSeen = false;
     const cooldownFailures: string[] = [];
     let earliestCooldownUntil = 0;
+    let parkedUntilRestartSeen = false;
     const totalAccounts = accounts.length;
     const providerName = `Mega-Debrid ${mode === "api" ? "API" : "Web"}`;
     const linkShort = String(link || "").slice(0, 80);
@@ -1959,15 +2008,25 @@ class MegaDebridClient {
       const cooldownKey = `${account.id}:${mode}`;
       const accountCooldownState = getMegaDebridAccountCooldownState(cooldownKey);
       if (accountCooldownState) {
-        const untilStr = new Date(accountCooldownState.until).toLocaleTimeString();
-        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (Cooldown bis ${untilStr}), pruefe naechsten Account`);
+        const untilStr = accountCooldownState.untilRestart
+          ? "Neustart"
+          : new Date(accountCooldownState.until).toLocaleTimeString();
+        const reasonText = accountCooldownState.untilRestart
+          ? "Tageslimit erreicht — bis Neustart gesperrt"
+          : `Cooldown bis ${untilStr}`;
+        logger.info(`Mega-Debrid${accountLabel}: uebersprungen (${reasonText}), pruefe naechsten Account`);
         logAccountRotation("INFO", providerName, rotationLabel, "SKIP_COOLDOWN", {
           reason: accountCooldownState.message,
           category: accountCooldownState.category,
           until: untilStr
         });
         cooldownFailures.push(`Mega-Debrid${accountLabel}: ${accountCooldownState.message}`);
-        if (!earliestCooldownUntil || accountCooldownState.until < earliestCooldownUntil) {
+        // Eine Bis-Neustart-Sperre traegt NICHT zu earliestCooldownUntil bei: es gibt
+        // keinen sinnvollen endlichen Retry-Zeitpunkt (der Account kommt erst nach
+        // Neustart zurueck). Sonst wuerde MAX_SAFE_INTEGER einen absurden Retry-Timer setzen.
+        if (accountCooldownState.untilRestart) {
+          parkedUntilRestartSeen = true;
+        } else if (!earliestCooldownUntil || accountCooldownState.until < earliestCooldownUntil) {
           earliestCooldownUntil = accountCooldownState.until;
         }
         continue;
@@ -1985,6 +2044,7 @@ class MegaDebridClient {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
         const result = await client.unrestrictLink(link, signal);
         clearMegaDebridAccountCooldownState(cooldownKey);
+        clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
         logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
         logAccountRotation("INFO", providerName, rotationLabel, "OK", {
@@ -2002,7 +2062,27 @@ class MegaDebridClient {
         const failure = MegaDebridClient.classifyAccountFailure(error);
         const elapsedMs = Date.now() - testStartedAt;
         failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
-        if (failure.cooldownMs > 0) {
+
+        // "Antwort leer"-Streak fuehren: ein tageslimitierter Account antwortet
+        // PERSISTENT leer (siehe Kommentar an megaDebridEmptyResponseStreaks). Erreicht
+        // der Account die Schwelle, wird er bis Neustart geparkt — statt alle 20s neu
+        // getestet zu werden. failure.untilRestart deckt zusaetzlich den Fall ab, dass
+        // generate() die "Kein Server"-Meldung doch mal direkt liefert.
+        let parkUntilRestart = false;
+        let parkMessage = failure.message;
+        if (failure.limitSignal) {
+          const streak = recordMegaDebridEmptyResponseStreak(cooldownKey);
+          if (streak >= MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART) {
+            parkUntilRestart = true;
+            parkMessage = `Tageslimit erreicht (${streak}x kein Server/leere Antwort) — bis Neustart gesperrt`;
+          }
+        } else {
+          clearMegaDebridEmptyResponseStreak(cooldownKey);
+        }
+
+        if (parkUntilRestart) {
+          setMegaDebridAccountCooldownState(cooldownKey, 0, parkMessage, "quota", true);
+        } else if (failure.cooldownMs > 0) {
           setMegaDebridAccountCooldownState(cooldownKey, failure.cooldownMs, failure.message, failure.category);
         } else {
           clearMegaDebridAccountCooldownState(cooldownKey);
@@ -2016,9 +2096,11 @@ class MegaDebridClient {
           });
           throw new Error(`Mega-Debrid${accountLabel}: ${failure.message}`);
         }
-        const cooldownInfo = failure.cooldownMs > 0
-          ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
-          : "";
+        const cooldownInfo = parkUntilRestart
+          ? ", bis Neustart gesperrt"
+          : failure.cooldownMs > 0
+            ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
+            : "";
         // Find the next account that will be tried (for clearer log)
         let nextLabel = "ENDE";
         for (let nextIdx = idx + 1; nextIdx < accounts.length; nextIdx += 1) {
@@ -2028,12 +2110,12 @@ class MegaDebridClient {
             break;
           }
         }
-        logger.warn(`Mega-Debrid${accountLabel}: ${failure.message}${cooldownInfo}, pruefe naechsten Account (${nextLabel})`);
+        logger.warn(`Mega-Debrid${accountLabel}: ${parkUntilRestart ? parkMessage : failure.message}${cooldownInfo}, pruefe naechsten Account (${nextLabel})`);
         logAccountRotation("WARN", providerName, rotationLabel, "FAILED", {
+          reason: parkUntilRestart ? parkMessage : failure.message,
           elapsedMs,
-          reason: failure.message,
-          category: failure.category,
-          cooldownSec: failure.cooldownMs > 0 ? Math.ceil(failure.cooldownMs / 1000) : 0,
+          category: parkUntilRestart ? "quota" : failure.category,
+          cooldownSec: parkUntilRestart || failure.cooldownMs <= 0 ? 0 : Math.ceil(failure.cooldownMs / 1000),
           next: nextLabel,
           link: linkShort
         });
@@ -2044,6 +2126,12 @@ class MegaDebridClient {
       if (cooldownFailures.length > 0 && earliestCooldownUntil > Date.now()) {
         const retryMs = Math.max(1000, earliestCooldownUntil - Date.now() + 1000);
         throw new Error(`mega_debrid_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
+      }
+      if (parkedUntilRestartSeen) {
+        // Alle (verbliebenen) Accounts haben ihr Tageslimit erreicht und sind bis
+        // Neustart gesperrt. KEIN mega_debrid_cooldown:<ms> — es gibt keinen sinnvollen
+        // Retry-Zeitpunkt; ein endlicher Timer wuerde nur erneut leer pollen.
+        throw new Error(`Mega-Debrid: Alle Accounts am Tageslimit (bis Neustart gesperrt)${cooldownFailures.length > 0 ? ` | ${cooldownFailures.join(" | ")}` : ""}`);
       }
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar");
     }
@@ -2056,7 +2144,7 @@ class MegaDebridClient {
    */
   private static classifyAccountFailure(
     error: unknown
-  ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory } {
+  ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory; limitSignal?: boolean } {
     const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
 
     // Abort — don't retry other accounts
@@ -2089,14 +2177,18 @@ class MegaDebridClient {
       };
     }
 
-    // "Kein Server für diesen Hoster verfügbar" = Account-Tageslimit für diesen
-    // Hoster erschöpft (oder Hoster kurz nicht bedient). Quota-Cooldown, nächster Account.
+    // "Kein Server für diesen Hoster verfügbar" = Account-Tageslimit erschöpft (oder der
+    // Hoster ist kurz nicht bedient — laut Kommentar an MEGA_DEBRID_NO_SERVER_RE moeglich).
+    // Wie "Antwort leer" ein Limit-Signal: feedet die Streak (limitSignal). Erst nach
+    // mehreren Treffern wird der Account bis Neustart geparkt — ein einzelner (evtl.
+    // transienter) Treffer erzwingt KEINEN Neustart, behaelt aber den 2-Min-Cooldown.
     if (MEGA_DEBRID_NO_SERVER_RE.test(errorText)) {
       return {
         fatal: false,
         cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
         message: "Kein Server fuer diesen Hoster (Tageslimit/Hoster nicht verfuegbar)",
-        category: "quota"
+        category: "quota",
+        limitSignal: true
       };
     }
 
@@ -2110,16 +2202,19 @@ class MegaDebridClient {
       };
     }
 
-    // Mega-Web "Antwort leer" / empty body — server frequently returns transient
-    // empty responses that recover within seconds. A 2-minute cooldown for this
-    // is way too long because the account is fundamentally healthy. Use a short
-    // 20s cooldown so the next download attempt can use this account again.
+    // Mega-Web "Antwort leer" / empty body — kann zweierlei sein: (a) ein transienter
+    // Blip (erholt sich in Sekunden → kurzer 20s-Cooldown reicht) ODER (b) ein
+    // tageslimitierter Account, der PERSISTENT leer antwortet. Da beide Faelle auf
+    // Message-Ebene identisch aussehen (in echten Logs taucht "Kein Server" nie auf,
+    // immer nur "Antwort leer"), markieren wir emptyResponse=true; der Aufrufer zaehlt
+    // die Streak und parkt den Account erst nach mehreren Leer-Antworten bis Neustart.
     if (/antwort\s+leer|empty\s+response|leere\s+antwort/i.test(errorText)) {
       return {
         fatal: false,
         cooldownMs: 20_000,
         message: errorText || "Mega-Web transient empty response",
-        category: "temporary"
+        category: "temporary",
+        limitSignal: true
       };
     }
 

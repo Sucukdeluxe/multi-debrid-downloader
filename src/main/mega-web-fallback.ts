@@ -375,6 +375,15 @@ export class MegaWebFallback {
       throw new Error(`Mega-Web: Link permanent ungültig (${permanentError})`);
     }
 
+    // Tageslimit dieses Accounts: die DEBRID-Seite enthaelt dann KEINEN processDebrid-
+    // Code (parseCodes leer → wir wuerden gleich null/"Antwort leer" liefern). Steht die
+    // "Kein Server für diesen Hoster"-Meldung als Page-Error im HTML, surface sie hier,
+    // damit die Rotation den Account als tageslimitiert erkennt statt als Leer-Blip.
+    const noServerError = pageErrors.find((err) => MEGA_DEBRID_NO_SERVER_RE.test(err));
+    if (noServerError) {
+      throw new Error(`Mega-Web: ${noServerError}`);
+    }
+
     const code = pickCode(parseCodes(html), link);
     if (!code) {
       return null;
