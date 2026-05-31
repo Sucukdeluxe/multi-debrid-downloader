@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { setLogListener } from "./logger";
 
@@ -86,7 +87,7 @@ export function initSessionLog(baseDir: string): void {
   const timestamp = formatTimestamp();
   sessionLogPath = path.join(sessionLogsDir, `session_${timestamp}.txt`);
 
-  const isoTimestamp = new Date().toISOString();
+  const isoTimestamp = logTimestamp();
   try {
     fs.writeFileSync(sessionLogPath, `=== Session gestartet: ${isoTimestamp} ===\n`, "utf8");
   } catch {
@@ -116,7 +117,7 @@ export function shutdownSessionLog(): void {
   flushPending();
 
   // Write closing line
-  const isoTimestamp = new Date().toISOString();
+  const isoTimestamp = logTimestamp();
   try {
     fs.appendFileSync(sessionLogPath, `=== Session beendet: ${isoTimestamp} ===\n`, "utf8");
   } catch {

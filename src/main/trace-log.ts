@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { addLogListener, removeLogListener } from "./logger";
 import type { SupportTraceConfig } from "../shared/types";
@@ -189,10 +190,10 @@ function disableTraceDueToExpiry(): void {
     ...traceConfig,
     enabled: false,
     autoDisableAt: null,
-    updatedAt: new Date().toISOString()
+    updatedAt: logTimestamp()
   });
   persistTraceConfig();
-  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Support-Trace automatisch deaktiviert | reason=expired\n`);
+  appendTraceLine(`${logTimestamp()} [INFO] [trace] Support-Trace automatisch deaktiviert | reason=expired\n`);
 }
 
 function scheduleAutoDisable(): void {
@@ -230,7 +231,7 @@ export function initTraceLog(baseDir: string): void {
     }
     traceConfig = loadTraceConfig();
     persistTraceConfig();
-    fs.appendFileSync(traceLogPath, `=== Trace-Log Start: ${new Date().toISOString()} ===\n`, "utf8");
+    fs.appendFileSync(traceLogPath, `=== Trace-Log Start: ${logTimestamp()} ===\n`, "utf8");
   } catch {
     traceLogPath = null;
     traceConfigPath = null;
@@ -263,11 +264,11 @@ export function updateTraceConfig(patch: Partial<SupportTraceConfig>): SupportTr
   traceConfig = normalizeTraceConfig({
     ...traceConfig,
     ...patch,
-    updatedAt: new Date().toISOString()
+    updatedAt: logTimestamp()
   });
   persistTraceConfig();
   scheduleAutoDisable();
-  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Konfiguration aktualisiert${formatFields(traceConfig as unknown as Record<string, unknown>)}\n`);
+  appendTraceLine(`${logTimestamp()} [INFO] [trace] Konfiguration aktualisiert${formatFields(traceConfig as unknown as Record<string, unknown>)}\n`);
   return getTraceConfig();
 }
 
@@ -276,7 +277,7 @@ export function setTraceEnabled(enabled: boolean, note = "", durationMs: number 
     ? new Date(Date.now() + durationMs).toISOString()
     : null;
   const next = updateTraceConfig({ enabled, autoDisableAt });
-  appendTraceLine(`${new Date().toISOString()} [INFO] [trace] Support-Trace ${enabled ? "aktiviert" : "deaktiviert"}${formatFields({ note, autoDisableAt })}\n`);
+  appendTraceLine(`${logTimestamp()} [INFO] [trace] Support-Trace ${enabled ? "aktiviert" : "deaktiviert"}${formatFields({ note, autoDisableAt })}\n`);
   return next;
 }
 
@@ -292,7 +293,7 @@ export function logTraceEvent(
   if (category === "audit" && !traceConfig.includeAudit) {
     return;
   }
-  appendTraceLine(`${new Date().toISOString()} [${level}] [${category}] ${message}${formatFields(fields)}\n`);
+  appendTraceLine(`${logTimestamp()} [${level}] [${category}] ${message}${formatFields(fields)}\n`);
 }
 
 export function shutdownTraceLog(): void {
@@ -307,7 +308,7 @@ export function shutdownTraceLog(): void {
   }
   flushPending();
   try {
-    fs.appendFileSync(traceLogPath, `=== Trace-Log Ende: ${new Date().toISOString()} ===\n`, "utf8");
+    fs.appendFileSync(traceLogPath, `=== Trace-Log Ende: ${logTimestamp()} ===\n`, "utf8");
   } catch {
     // ignore
   }

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 
 type AuditLevel = "INFO" | "WARN" | "ERROR";
@@ -78,7 +79,7 @@ export function initAuditLog(baseDir: string): void {
     if (!fs.existsSync(auditLogPath)) {
       fs.writeFileSync(auditLogPath, "", "utf8");
     }
-    fs.appendFileSync(auditLogPath, `=== Audit-Log Start: ${new Date().toISOString()} ===\n`, "utf8");
+    fs.appendFileSync(auditLogPath, `=== Audit-Log Start: ${logTimestamp()} ===\n`, "utf8");
   } catch {
     auditLogPath = null;
   }
@@ -95,7 +96,7 @@ export function logAuditEvent(level: AuditLevel, message: string, fields?: Recor
     }
     fs.appendFileSync(
       auditLogPath,
-      `${new Date().toISOString()} [${level}] ${message}${formatFields(fields)}\n`,
+      `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`,
       "utf8"
     );
   } catch {
@@ -115,7 +116,7 @@ export function shutdownAuditLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(auditLogPath, `=== Audit-Log Ende: ${new Date().toISOString()} ===\n`, "utf8");
+    fs.appendFileSync(auditLogPath, `=== Audit-Log Ende: ${logTimestamp()} ===\n`, "utf8");
   } catch {
     // ignore
   }

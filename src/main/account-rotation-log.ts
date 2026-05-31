@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RotationEvent } from "../shared/types";
@@ -181,7 +182,7 @@ export function initAccountRotationLog(baseDir: string): void {
     }
     fs.appendFileSync(
       rotationLogPath,
-      `=== Account-Rotation Log Start: ${new Date().toISOString()} ===\n`,
+      `=== Account-Rotation Log Start: ${logTimestamp()} ===\n`,
       "utf8"
     );
   } catch {
@@ -213,7 +214,7 @@ export function logAccountRotation(
     if (!fs.existsSync(rotationLogPath)) {
       fs.writeFileSync(rotationLogPath, "", "utf8");
     }
-    const head = `${new Date().toISOString()} [${level}] ${provider} | ${accountLabel} | ${event}`;
+    const head = `${logTimestamp()} [${level}] ${provider} | ${accountLabel} | ${event}`;
     fs.appendFileSync(rotationLogPath, `${head}${formatFields(fields)}\n`, "utf8");
   } catch {
     // ignore write errors
@@ -234,7 +235,7 @@ export function shutdownAccountRotationLog(): void {
   try {
     fs.appendFileSync(
       rotationLogPath,
-      `=== Account-Rotation Log Ende: ${new Date().toISOString()} ===\n`,
+      `=== Account-Rotation Log Ende: ${logTimestamp()} ===\n`,
       "utf8"
     );
   } catch {
