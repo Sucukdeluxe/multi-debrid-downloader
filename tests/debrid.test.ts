@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
+import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, normalizeResolvedFilename, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
@@ -1439,6 +1440,47 @@ describe("debrid service", () => {
     // acc1 wurde versucht (und fiel mit Limit-Fehler), dann acc2 erfolgreich.
     expect(webCalls).toBeGreaterThanOrEqual(4);
   }, 30000);
+
+  it("skips a manually disabled Mega-Debrid account and uses the next one", async () => {
+    // User-Feature: einen Account temporaer deaktivieren (statt loeschen) -> die
+    // Rotation ueberspringt ihn und nutzt die anderen. Beweist den ID-Seam: die ID in
+    // megaDebridDisabledAccountIds MUSS exakt der ID entsprechen, die die Rotation via
+    // getMegaDebridAccountId(login) liest (sonst greift das Deaktivieren nicht).
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridDisabledAccountIds: [getMegaDebridAccountId("user1")], // acc1 deaktiviert
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const megaWeb = vi.fn(async () => ({
+      fileName: "from-acc2.rar",
+      directUrl: "https://mega-web.example/from-acc2.rar",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/disabled-acc-test");
+
+    // Der deaktivierte acc1 wird uebersprungen -> acc2 loest den Link auf.
+    expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
+    expect(result.directUrl).toBe("https://mega-web.example/from-acc2.rar");
+    // acc1 wurde gar nicht erst versucht -> megaWeb nur 1x (fuer acc2) aufgerufen.
+    expect(megaWeb).toHaveBeenCalledTimes(1);
+  }, 20000);
 
   it("respects provider selection and does not append hidden providers", async () => {
     const settings = {

@@ -115,6 +115,9 @@ interface AccountDialogState {
   megaAccounts: MegaDialogAccount[];
   megaNewLogin: string;
   megaNewPassword: string;
+  // IDs der im Bearbeiten-Dialog (temporär) deaktivierten Mega-Debrid-Accounts.
+  // Draft-State: wird erst beim Speichern in settings.megaDebridDisabledAccountIds übernommen.
+  megaDisabledIds: string[];
 }
 
 interface DebridLinkAccountKeyEntry {
@@ -584,7 +587,7 @@ function summarizeAccountLines(kind: AccountKind, settings: AppSettings): string
 }
 
 function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | null, settings: AppSettings): AccountDialogState {
-  const baseMega: Pick<AccountDialogState, "megaAccounts" | "megaNewLogin" | "megaNewPassword"> = { megaAccounts: [], megaNewLogin: "", megaNewPassword: "" };
+  const baseMega: Pick<AccountDialogState, "megaAccounts" | "megaNewLogin" | "megaNewPassword" | "megaDisabledIds"> = { megaAccounts: [], megaNewLogin: "", megaNewPassword: "", megaDisabledIds: [] };
   if (!kind) {
     return {
       mode,
@@ -613,7 +616,9 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       }
       const parsed = parseMegaDebridAccounts(megaToken);
       const megaAccounts = parsed.map((a) => ({ login: a.login, password: a.password }));
-      return { mode, kind, token: megaToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, megaAccounts, megaNewLogin: "", megaNewPassword: "" };
+      const loadedIds = new Set(parsed.map((a) => a.id));
+      const megaDisabledIds = (settings.megaDebridDisabledAccountIds || []).filter((id) => loadedIds.has(id));
+      return { mode, kind, token: megaToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, megaAccounts, megaNewLogin: "", megaNewPassword: "", megaDisabledIds };
     }
     case "bestdebrid-api":
       return { mode, kind, token: settings.bestToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
@@ -678,14 +683,18 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
       const megaParsed = parseMegaDebridAccounts(megaSerialized);
       const firstLogin = megaParsed.length > 0 ? megaParsed[0].login : "";
       const firstPassword = megaParsed.length > 0 ? megaParsed[0].password : "";
-      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridApiEnabled: true, megaDebridPreferApi: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+      const validIds = new Set(megaParsed.map((a) => a.id));
+      const megaDebridDisabledAccountIds = (dialog.megaDisabledIds || []).filter((id) => validIds.has(id));
+      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridApiEnabled: true, megaDebridPreferApi: true, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     }
     case "megadebrid-web": {
       const megaSerialized = serializeMegaDebridAccounts(dialog.megaAccounts);
       const megaParsed = parseMegaDebridAccounts(megaSerialized);
       const firstLogin = megaParsed.length > 0 ? megaParsed[0].login : "";
       const firstPassword = megaParsed.length > 0 ? megaParsed[0].password : "";
-      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridWebEnabled: true, megaDebridPreferApi: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+      const validIds = new Set(megaParsed.map((a) => a.id));
+      const megaDebridDisabledAccountIds = (dialog.megaDisabledIds || []).filter((id) => validIds.has(id));
+      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridWebEnabled: true, megaDebridPreferApi: false, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     }
     case "bestdebrid-api":
       return { ...settings, bestToken: token, bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
@@ -5682,13 +5691,17 @@ export function App(): ReactElement {
                             <div style={{ marginTop: 12 }}>
                               <label>Konfigurierte Accounts ({accountDialog.megaAccounts.length})</label>
                               <div className="account-dl-key-limit-list">
-                                {accountDialog.megaAccounts.map((account, index) => (
-                                  <div key={index} className="account-dl-key-limit-row">
+                                {accountDialog.megaAccounts.map((account, index) => {
+                                  const accId = getMegaDebridAccountId(account.login);
+                                  const accDisabled = (accountDialog.megaDisabledIds || []).includes(accId);
+                                  return (
+                                  <div key={index} className={`account-dl-key-limit-row${accDisabled ? " disabled" : ""}`}>
                                     <div className="account-dl-key-meta">
                                       <strong>Account {index + 1}</strong>
                                       <span>{maskMegaDebridLogin(account.login)}</span>
+                                      {accDisabled && <span className="account-validity-badge invalid" title="Dieser Account wird beim Download übersprungen, bleibt aber gespeichert.">Deaktiviert</span>}
                                       {(() => {
-                                        const st = snapshot?.settings?.debridAccountStatuses?.[getMegaDebridAccountId(account.login)];
+                                        const st = snapshot?.settings?.debridAccountStatuses?.[accId];
                                         if (!st) return <span className="account-validity-badge unknown" title="Noch nicht geprüft – auf „Alle prüfen“ klicken">Noch nicht geprüft</span>;
                                         const checkedAgo = formatCheckedAgo(st.checkedAt);
                                         const tip = `${st.message}${st.email ? ` · ${st.email}` : ""} · geprüft ${checkedAgo}`;
@@ -5697,18 +5710,35 @@ export function App(): ReactElement {
                                         return <span className="account-validity-badge ok" title={tip}>{st.message}</span>;
                                       })()}
                                     </div>
-                                    <button
-                                      className="btn danger"
-                                      onClick={() => setAccountDialog((prev) => {
-                                        if (!prev) return prev;
-                                        const nextAccounts = prev.megaAccounts.filter((_, i) => i !== index);
-                                        return { ...prev, megaAccounts: nextAccounts, token: serializeMegaDebridAccounts(nextAccounts) };
-                                      })}
-                                    >
-                                      Entfernen
-                                    </button>
+                                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                                      <button
+                                        className={accDisabled ? "btn success" : "btn"}
+                                        title={accDisabled ? "Account wieder aktivieren" : "Account temporär deaktivieren — wird beim Download übersprungen, aber nicht gelöscht"}
+                                        onClick={() => setAccountDialog((prev) => {
+                                          if (!prev) return prev;
+                                          const cur = prev.megaDisabledIds || [];
+                                          const nextDisabled = cur.includes(accId)
+                                            ? cur.filter((id) => id !== accId)
+                                            : [...cur, accId];
+                                          return { ...prev, megaDisabledIds: nextDisabled };
+                                        })}
+                                      >
+                                        {accDisabled ? "Aktivieren" : "Deaktivieren"}
+                                      </button>
+                                      <button
+                                        className="btn danger"
+                                        onClick={() => setAccountDialog((prev) => {
+                                          if (!prev) return prev;
+                                          const nextAccounts = prev.megaAccounts.filter((_, i) => i !== index);
+                                          return { ...prev, megaAccounts: nextAccounts, megaDisabledIds: (prev.megaDisabledIds || []).filter((id) => id !== accId), token: serializeMegaDebridAccounts(nextAccounts) };
+                                        })}
+                                      >
+                                        Entfernen
+                                      </button>
+                                    </div>
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             </div>
                           )}
