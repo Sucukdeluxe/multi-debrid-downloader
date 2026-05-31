@@ -74,6 +74,7 @@ export interface ElectronApi {
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
   checkDebridAccounts: () => Promise<DebridAccountStatus[]>;
+  checkMegaDebridAccount: (login: string, password: string) => Promise<DebridAccountStatus | null>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;

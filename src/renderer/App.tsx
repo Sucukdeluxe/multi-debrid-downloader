@@ -1611,6 +1611,8 @@ export function App(): ReactElement {
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [accountCheckBusy, setAccountCheckBusy] = useState(false);
+  // Account-IDs, die gerade beim Hinzufügen einzeln geprüft werden (Mega-Debrid).
+  const [megaCheckingIds, setMegaCheckingIds] = useState<Set<string>>(() => new Set());
   const actionBusyRef = useRef(false);
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -2660,6 +2662,24 @@ export function App(): ReactElement {
       showToast(`Account-Check fehlgeschlagen: ${String(error)}`, 3600);
     } finally {
       setAccountCheckBusy(false);
+    }
+  }, [showToast]);
+
+  const runMegaAccountCheck = useCallback(async (login: string, password: string): Promise<void> => {
+    const trimmedLogin = login.trim();
+    const trimmedPassword = password.trim();
+    if (!trimmedLogin || !trimmedPassword) return;
+    const accId = getMegaDebridAccountId(trimmedLogin);
+    setMegaCheckingIds((prev) => { const next = new Set(prev); next.add(accId); return next; });
+    try {
+      const status = await window.rd.checkMegaDebridAccount(trimmedLogin, trimmedPassword);
+      if (status) {
+        showToast(status.valid ? `Account geprüft — ${status.message}` : `Account ungültig — ${status.message}`, 3200);
+      }
+    } catch (error) {
+      showToast(`Account-Check fehlgeschlagen: ${String(error)}`, 3200);
+    } finally {
+      setMegaCheckingIds((prev) => { const next = new Set(prev); next.delete(accId); return next; });
     }
   }, [showToast]);
 
@@ -5677,13 +5697,23 @@ export function App(): ReactElement {
                           <button
                             className="btn"
                             disabled={!accountDialog.megaNewLogin.trim() || !accountDialog.megaNewPassword.trim()}
-                            onClick={() => setAccountDialog((prev) => {
-                              if (!prev || !prev.megaNewLogin.trim() || !prev.megaNewPassword.trim()) return prev;
-                              const exists = prev.megaAccounts.some((a) => a.login.trim().toLowerCase() === prev.megaNewLogin.trim().toLowerCase());
-                              if (exists) return prev;
-                              const nextAccounts = [...prev.megaAccounts, { login: prev.megaNewLogin.trim(), password: prev.megaNewPassword.trim() }];
-                              return { ...prev, megaAccounts: nextAccounts, megaNewLogin: "", megaNewPassword: "", token: serializeMegaDebridAccounts(nextAccounts) };
-                            })}
+                            onClick={() => {
+                              const login = accountDialog.megaNewLogin.trim();
+                              const password = accountDialog.megaNewPassword.trim();
+                              if (!login || !password) return;
+                              const exists = accountDialog.megaAccounts.some((a) => a.login.trim().toLowerCase() === login.toLowerCase());
+                              setAccountDialog((prev) => {
+                                if (!prev || !prev.megaNewLogin.trim() || !prev.megaNewPassword.trim()) return prev;
+                                if (prev.megaAccounts.some((a) => a.login.trim().toLowerCase() === login.toLowerCase())) return prev;
+                                const nextAccounts = [...prev.megaAccounts, { login, password }];
+                                return { ...prev, megaAccounts: nextAccounts, megaNewLogin: "", megaNewPassword: "", token: serializeMegaDebridAccounts(nextAccounts) };
+                              });
+                              // Sofort beim Anlegen pruefen (Gueltigkeit + Premium-Restlaufzeit) —
+                              // Badge aktualisiert sich via Snapshot, ohne Tab schliessen / "Alle pruefen".
+                              if (!exists) {
+                                void runMegaAccountCheck(login, password);
+                              }
+                            }}
                           >
                             Hinzufügen
                           </button>
@@ -5700,7 +5730,9 @@ export function App(): ReactElement {
                                       <strong>Account {index + 1}</strong>
                                       <span>{maskMegaDebridLogin(account.login)}</span>
                                       {accDisabled && <span className="account-validity-badge invalid" title="Dieser Account wird beim Download übersprungen, bleibt aber gespeichert.">Deaktiviert</span>}
-                                      {(() => {
+                                      {megaCheckingIds.has(accId)
+                                        ? <span className="account-validity-badge unknown" title="Account wird gerade geprüft…">Prüfe…</span>
+                                        : (() => {
                                         const st = snapshot?.settings?.debridAccountStatuses?.[accId];
                                         if (!st) return <span className="account-validity-badge unknown" title="Noch nicht geprüft – auf „Alle prüfen“ klicken">Noch nicht geprüft</span>;
                                         const checkedAgo = formatCheckedAgo(st.checkedAt);
