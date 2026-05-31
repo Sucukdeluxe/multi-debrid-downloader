@@ -1522,6 +1522,50 @@ describe("debrid service", () => {
     expect(calls).toBe(2);
   }, 20000);
 
+  it("passes each account's OWN credentials to the Mega web unrestrict during rotation", async () => {
+    // Echter Root-Cause (Support-Bundle): der Web-Pfad nutzte fuer JEDEN rotierten
+    // Account die Creds des ersten/Legacy-Accounts → "Account 2" lief in Wahrheit mit
+    // Account-1-Login → der zweite (funktionierende) Account wurde nie verwendet.
+    // Jetzt muss jeder Account-Versuch SEINE eigenen Creds an den Web-Unrestrict reichen.
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const accountsSeen: Array<string | undefined> = [];
+    const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
+      accountsSeen.push(account?.login);
+      if (account?.login === "user1") {
+        // Account 1 am Tageslimit.
+        throw new Error("Mega-Web: Kein Server für diesen Hoster verfügbar. Bitte versuchen Sie es später noch einmal.");
+      }
+      // Account 2 (eigene Creds) loest auf.
+      return { fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 };
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/per-account-creds");
+
+    // Jeder Account wurde mit SEINEM eigenen Login angesprochen (nicht 2x user1).
+    expect(accountsSeen).toContain("user1");
+    expect(accountsSeen).toContain("user2");
+    // Und der funktionierende Account 2 loest auf.
+    expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
+    expect(result.directUrl).toBe("https://mega-web.example/ok.rar");
+  }, 20000);
+
   it("respects provider selection and does not append hidden providers", async () => {
     const settings = {
       ...defaultSettings(),
