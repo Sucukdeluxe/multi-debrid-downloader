@@ -77,6 +77,7 @@ const api: ElectronApi = {
   getAllDebridHostInfo: (): Promise<AllDebridHostInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO),
   getDebridLinkHostLimits: (): Promise<DebridLinkHostLimitInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_DEBRIDLINK_HOST_LIMITS),
   checkDebridAccounts: (): Promise<DebridAccountStatus[]> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS),
+  checkMegaDebridAccount: (login: string, password: string): Promise<DebridAccountStatus | null> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_MEGA_DEBRID_ACCOUNT, login, password),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
   resetPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PACKAGE, packageId),

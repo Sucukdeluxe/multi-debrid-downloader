@@ -648,6 +648,10 @@ function registerIpcHandlers(): void {
     return controller.checkDebridAccounts();
   });
 
+  ipcMain.handle(IPC_CHANNELS.CHECK_MEGA_DEBRID_ACCOUNT, async (_event, login: string, password: string) => {
+    return controller.checkSingleMegaDebridAccount(String(login || ""), String(password || ""));
+  });
+
   ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {
     const options = {
       properties: ["openFile"] as Array<"openFile">,

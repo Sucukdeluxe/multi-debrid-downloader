@@ -56,6 +56,7 @@ export const IPC_CHANNELS = {
   GET_ALLDEBRID_HOST_INFO: "app:get-alldebrid-host-info",
   GET_DEBRIDLINK_HOST_LIMITS: "app:get-debridlink-host-limits",
   CHECK_DEBRID_ACCOUNTS: "app:check-debrid-accounts",
+  CHECK_MEGA_DEBRID_ACCOUNT: "app:check-mega-debrid-account",
   RETRY_EXTRACTION: "queue:retry-extraction",
   EXTRACT_NOW: "queue:extract-now",
   RESET_PACKAGE: "queue:reset-package",

@@ -24,7 +24,8 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts } from "./account-check";
+import { checkAllDebridAccounts, checkMegaDebridAccount } from "./account-check";
+import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
@@ -388,6 +389,20 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       premium: statuses.filter((s) => s.isPremium).length
     });
     return statuses;
+  }
+
+  /** Check a SINGLE Mega-Debrid account by raw credentials (used when an account
+   *  is added in the dialog, before it is saved) and merge the result so the
+   *  validity/premium badge updates immediately — without a full "Alle pruefen". */
+  public async checkSingleMegaDebridAccount(login: string, password: string): Promise<DebridAccountStatus | null> {
+    const entry = parseMegaDebridAccounts(`${login.trim()}:${password.trim()}`)[0];
+    if (!entry) {
+      return null;
+    }
+    const status = await checkMegaDebridAccount(entry);
+    this.manager.applyDebridAccountStatuses([status]);
+    this.audit("INFO", "Mega-Debrid-Account einzeln geprueft", { valid: status.valid, premium: status.isPremium });
+    return status;
   }
   public async checkUpdates(): Promise<UpdateCheckResult> {
     const result = await checkGitHubUpdate(this.settings.updateRepo);
