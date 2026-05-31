@@ -279,42 +279,66 @@ async function createOrGetRelease(baseApi, tag, authHeader, notes) {
 }
 
 async function uploadReleaseAssets(baseApi, releaseId, authHeader, releaseDir, files) {
+  const MAX_ATTEMPTS = 3;
   for (const fileName of files) {
     const filePath = path.join(releaseDir, fileName);
     const fileSize = fs.statSync(filePath).size;
     const uploadUrl = `${baseApi}/releases/${releaseId}/assets?name=${encodeURIComponent(fileName)}`;
 
-    // Stream large files instead of loading them entirely into memory
-    const fileStream = fs.createReadStream(filePath);
-    const response = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        Authorization: authHeader,
-        "Content-Type": "application/octet-stream",
-        "Content-Length": String(fileSize)
-      },
-      body: fileStream,
-      duplex: "half"
-    });
+    // Grosse Assets (~80MB Setup/portable) brechen gelegentlich mitten im Upload ab
+    // (Netzwerk-Reset oder 5xx). Da das Release vorher als Draft angelegt wird, bleibt ein
+    // Fehlschlag hier unsichtbar — aber der Release ist dann unvollstaendig. Deshalb je Asset
+    // bis zu MAX_ATTEMPTS Versuche mit Backoff; ein konsumierter Stream laesst sich nicht
+    // erneut senden, also pro Versuch einen FRISCHEN createReadStream.
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const fileStream = fs.createReadStream(filePath);
+      let response;
+      try {
+        response = await fetch(uploadUrl, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            Authorization: authHeader,
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(fileSize)
+          },
+          body: fileStream,
+          duplex: "half"
+        });
+      } catch (error) {
+        fileStream.destroy();
+        if (attempt < MAX_ATTEMPTS) {
+          process.stdout.write(`Upload ${fileName} abgebrochen (Netzwerk, Versuch ${attempt}/${MAX_ATTEMPTS}), neuer Versuch...\n`);
+          await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
+          continue;
+        }
+        throw new Error(`Asset upload failed for ${fileName} after ${MAX_ATTEMPTS} attempts: ${String(error?.message || error)}`);
+      }
 
-    const text = await response.text();
-    let parsed;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      parsed = text;
-    }
+      const text = await response.text();
+      let parsed;
+      try {
+        parsed = text ? JSON.parse(text) : null;
+      } catch {
+        parsed = text;
+      }
 
-    if (response.ok) {
-      process.stdout.write(`Uploaded: ${fileName}\n`);
-      continue;
+      if (response.ok) {
+        process.stdout.write(`Uploaded: ${fileName}\n`);
+        break;
+      }
+      if (response.status === 409 || response.status === 422) {
+        process.stdout.write(`Skipped existing asset: ${fileName}\n`);
+        break;
+      }
+      // 5xx = transient -> neu versuchen; 4xx (ausser 409/422) = echter Fehler -> abbrechen.
+      if (response.status >= 500 && attempt < MAX_ATTEMPTS) {
+        process.stdout.write(`Upload ${fileName} fehlgeschlagen (${response.status}, Versuch ${attempt}/${MAX_ATTEMPTS}), neuer Versuch...\n`);
+        await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
+        continue;
+      }
+      throw new Error(`Asset upload failed for ${fileName} (${response.status}): ${JSON.stringify(parsed)}`);
     }
-    if (response.status === 409 || response.status === 422) {
-      process.stdout.write(`Skipped existing asset: ${fileName}\n`);
-      continue;
-    }
-    throw new Error(`Asset upload failed for ${fileName} (${response.status}): ${JSON.stringify(parsed)}`);
   }
 }
 
