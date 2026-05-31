@@ -16,6 +16,15 @@ const DEBRID_URL = "https://www.mega-debrid.eu/index.php?form=debrid";
 const DEBRID_AJAX_URL = "https://www.mega-debrid.eu/index.php?ajax=debrid&json";
 const DEBRID_REFERER = "https://www.mega-debrid.eu/index.php?page=debrideur&lang=de";
 
+/**
+ * Mega-Debrid-Antwort "Kein Server für diesen Hoster verfügbar". Kommt zurück, wenn
+ * das Tageslimit DIESES Accounts für den Hoster erschöpft ist (oder der Hoster kurz
+ * nicht bedient wird). KEIN Session-/Leer-Fall — der Account soll schnell scheitern,
+ * damit die Multi-Account-Rotation sofort zum nächsten (nicht limitierten) Account
+ * wechselt, statt re-Login + Retry-Sturm das geteilte Unrestrict-Budget zu fressen.
+ */
+export const MEGA_DEBRID_NO_SERVER_RE = /kein server f(?:ü|u)r diesen hoster|no server (?:is )?available for this host|aucun serveur disponible/i;
+
 function normalizeLink(link: string): string {
   return link.trim().toLowerCase();
 }
@@ -394,6 +403,15 @@ export class MegaWebFallback {
         if (/hoster does not respond correctly|could not be done for this moment/i.test(parsed.text || "")) {
           await sleepWithSignal(1200, signal);
           continue;
+        }
+        const serverMsg = (parsed.text || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+        // "Kein Server für diesen Hoster verfügbar" = Account-Tageslimit erschöpft.
+        // Surface die Meldung statt null zurückzugeben — sonst re-loggt unrestrict()
+        // ein + pollt erneut (Retry-Sturm), was bei einem limitierten Account zwecklos
+        // ist und das geteilte Rotations-Budget verbrennt. So scheitert der Account
+        // schnell und die Rotation nutzt den nächsten Account.
+        if (serverMsg && MEGA_DEBRID_NO_SERVER_RE.test(serverMsg)) {
+          throw new Error(`Mega-Web: ${serverMsg}`);
         }
         return null;
       }

@@ -1482,6 +1482,46 @@ describe("debrid service", () => {
     expect(megaWeb).toHaveBeenCalledTimes(1);
   }, 20000);
 
+  it("fails fast on Mega-Debrid hoster quota ('Kein Server') and rotates to the next account", async () => {
+    // User-Report: Account 1 am Tageslimit liefert "Kein Server für diesen Hoster
+    // verfügbar". Frueher lief das durch die volle Retry-Maschine (re-Login + 3x) und
+    // fraß das geteilte Rotations-Budget -> der funktionierende Account 2 lief in den
+    // Timeout (aborted:debrid -> fatal). Jetzt: schnell scheitern (1 Versuch) + rotieren.
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    let calls = 0;
+    const megaWeb = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("Mega-Web: Kein Server für diesen Hoster verfügbar. Bitte versuchen Sie es später noch einmal.");
+      }
+      return { fileName: "acc2.rar", directUrl: "https://mega-web.example/acc2.rar", fileSize: null, retriesUsed: 0 };
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/quota-rotate-test");
+
+    expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
+    expect(result.directUrl).toBe("https://mega-web.example/acc2.rar");
+    // Fail-fast: acc1 darf NICHT 3x (REQUEST_RETRIES) probiert werden -> genau 1x acc1, dann acc2.
+    expect(calls).toBe(2);
+  }, 20000);
+
   it("respects provider selection and does not append hidden providers", async () => {
     const settings = {
       ...defaultSettings(),
