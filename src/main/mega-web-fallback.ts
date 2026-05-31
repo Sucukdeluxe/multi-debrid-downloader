@@ -228,43 +228,45 @@ export class MegaWebFallback {
 
   private getCredentials: () => MegaCredentials;
 
-  private cookie = "";
-
-  private cookieSetAt = 0;
+  // Per-Login Session-Cache: login(lowercase) → { cookie, setAt }. Multi-Account-
+  // Rotation: jeder Account nutzt SEINE eigene Session. Frueher gab es nur EINE
+  // geteilte Cookie-Session → der Web-Unrestrict lief fuer JEDEN rotierten Account mit
+  // den Creds des ersten/Legacy-Accounts (settings.megaLogin); der naechste Account
+  // wurde nie wirklich verwendet (Rotation war wirkungslos).
+  private sessions = new Map<string, { cookie: string; setAt: number }>();
 
   public constructor(getCredentials: () => MegaCredentials) {
     this.getCredentials = getCredentials;
   }
 
-  public async unrestrict(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
+  public async unrestrict(
+    link: string,
+    signal?: AbortSignal,
+    account?: { login: string; password: string }
+  ): Promise<UnrestrictedLink | null> {
     const overallSignal = withTimeoutSignal(signal, 180000);
     return this.runExclusive(async () => {
       throwIfAborted(overallSignal);
-      const creds = this.getCredentials();
+      // Per-Account-Creds aus der Rotation bevorzugen; sonst Legacy-Default.
+      const creds = (account && account.login.trim() && account.password.trim())
+        ? account
+        : this.getCredentials();
       if (!creds.login.trim() || !creds.password.trim()) {
         return null;
       }
+      const key = creds.login.trim().toLowerCase();
+      let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal);
 
-      if (!this.cookie || Date.now() - this.cookieSetAt > 20 * 60 * 1000) {
-        await this.login(creds.login, creds.password, overallSignal);
-      }
-
-      const generated = await this.generate(link, overallSignal);
+      let generated = await this.generate(link, cookie, overallSignal);
       if (!generated) {
-        this.cookie = "";
-        await this.login(creds.login, creds.password, overallSignal);
-        const retry = await this.generate(link, overallSignal);
-        if (!retry) {
+        // Session evtl. abgelaufen → fuer DIESEN Login neu einloggen + einmal erneut.
+        this.sessions.delete(key);
+        cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal);
+        generated = await this.generate(link, cookie, overallSignal);
+        if (!generated) {
           return null;
         }
-        return {
-          directUrl: retry.directUrl,
-          fileName: retry.fileName || filenameFromUrl(link),
-          fileSize: null,
-          retriesUsed: 0
-        };
       }
-
       return {
         directUrl: generated.directUrl,
         fileName: generated.fileName || filenameFromUrl(link),
@@ -274,9 +276,20 @@ export class MegaWebFallback {
     }, overallSignal);
   }
 
+  /** Liefert ein gueltiges Session-Cookie fuer den gegebenen Login (aus Cache oder
+   *  via frischem Login). Cache-TTL 20 min. */
+  private async ensureSession(key: string, login: string, password: string, signal?: AbortSignal): Promise<string> {
+    const existing = this.sessions.get(key);
+    if (existing && existing.cookie && Date.now() - existing.setAt <= 20 * 60 * 1000) {
+      return existing.cookie;
+    }
+    const cookie = await this.login(login, password, signal);
+    this.sessions.set(key, { cookie, setAt: Date.now() });
+    return cookie;
+  }
+
   public invalidateSession(): void {
-    this.cookie = "";
-    this.cookieSetAt = 0;
+    this.sessions.clear();
   }
 
   private async runExclusive<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -295,7 +308,7 @@ export class MegaWebFallback {
     return raceWithAbort(run, signal);
   }
 
-  private async login(login: string, password: string, signal?: AbortSignal): Promise<void> {
+  private async login(login: string, password: string, signal?: AbortSignal): Promise<string> {
     throwIfAborted(signal);
     const response = await fetch(LOGIN_URL, {
       method: "POST",
@@ -332,18 +345,17 @@ export class MegaWebFallback {
       throw new Error("Mega-Web Login ungültig oder Session blockiert");
     }
 
-    this.cookie = cookie;
-    this.cookieSetAt = Date.now();
+    return cookie;
   }
 
-  private async generate(link: string, signal?: AbortSignal): Promise<{ directUrl: string; fileName: string } | null> {
+  private async generate(link: string, cookie: string, signal?: AbortSignal): Promise<{ directUrl: string; fileName: string } | null> {
     throwIfAborted(signal);
     const page = await fetch(DEBRID_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0",
-        Cookie: this.cookie,
+        Cookie: cookie,
         Referer: DEBRID_REFERER
       },
       body: new URLSearchParams({
@@ -375,7 +387,7 @@ export class MegaWebFallback {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           "User-Agent": "Mozilla/5.0",
-          Cookie: this.cookie,
+          Cookie: cookie,
           Referer: DEBRID_REFERER
         },
         body: new URLSearchParams({
@@ -433,7 +445,7 @@ export class MegaWebFallback {
   }
 
   public dispose(): void {
-    this.cookie = "";
+    this.sessions.clear();
   }
 }
 

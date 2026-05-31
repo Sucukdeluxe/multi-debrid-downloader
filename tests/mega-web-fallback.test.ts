@@ -89,6 +89,38 @@ describe("mega-web-fallback", () => {
       expect(ajaxCalls).toBe(1);
     });
 
+    it("logs in with the per-account credentials passed to unrestrict, not the default", async () => {
+      const loginsUsed: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string | URL | Request, opts?: { body?: unknown }) => {
+        const urlStr = String(url);
+        if (urlStr.includes("form=login")) {
+          const params = new URLSearchParams(String(opts?.body ?? ""));
+          loginsUsed.push(params.get("login") || "");
+          const headers = new Headers();
+          headers.append("set-cookie", "session=goodcookie; path=/");
+          return new Response("", { headers, status: 200 });
+        }
+        if (urlStr.includes("page=debrideur")) {
+          return new Response('<form id="debridForm"></form>', { status: 200 });
+        }
+        if (urlStr.includes("form=debrid")) {
+          return new Response(`<div class="acp-box"><h3>Link: https://mega.debrid/l1</h3><a href="javascript:processDebrid(1,'code1',0)">d</a></div>`, { status: 200 });
+        }
+        if (urlStr.includes("ajax=debrid")) {
+          return new Response(JSON.stringify({ link: "https://mega.direct/ok" }), { status: 200 });
+        }
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      // getCredentials liefert den DEFAULT/Legacy-Account ...
+      const fallback = new MegaWebFallback(() => ({ login: "defaultacc", password: "defpw" }));
+      // ... aber die Rotation übergibt explizit Account 2 — DESSEN Login MUSS verwendet werden.
+      const result = await fallback.unrestrict("https://mega.debrid/l1", undefined, { login: "account2", password: "pw2" });
+      expect(result?.directUrl).toBe("https://mega.direct/ok");
+      expect(loginsUsed).toContain("account2");
+      expect(loginsUsed).not.toContain("defaultacc");
+    });
+
     it("throws if login fails to set cookie", async () => {
       globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
         const urlStr = String(url);

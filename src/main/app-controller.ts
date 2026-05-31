@@ -103,7 +103,7 @@ export class AppController {
     this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
     this.bestDebridWebFallback = new BestDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
-      megaWebUnrestrict: (link: string, signal?: AbortSignal) => this.megaWebFallback.unrestrict(link, signal),
+      megaWebUnrestrict: (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => this.megaWebFallback.unrestrict(link, signal, account),
       allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
       realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.realDebridWebFallback.unrestrict(link, signal),
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),

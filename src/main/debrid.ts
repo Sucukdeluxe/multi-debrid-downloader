@@ -412,7 +412,7 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
   providerLabel: string;
 }
 
-export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
+export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => Promise<UnrestrictedLink | null>;
 export type AllDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type RealDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type BestDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
@@ -1849,7 +1849,7 @@ class MegaDebridClient {
       if (signal?.aborted) {
         throw new Error("aborted:debrid");
       }
-      const web = await this.megaWebUnrestrict(link, signal).catch((error) => {
+      const web = await this.megaWebUnrestrict(link, signal, { login: this.login, password: this.password }).catch((error) => {
         lastError = compactErrorText(error);
         return null;
       });
