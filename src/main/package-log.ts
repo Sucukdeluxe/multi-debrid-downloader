@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -165,7 +166,7 @@ export function ensurePackageLog(meta: PackageLogMeta): string | null {
     }
     if (!initializedThisProcess.has(normalizedPackageId)) {
       initializedThisProcess.add(normalizedPackageId);
-      const startedAt = new Date().toISOString();
+      const startedAt = logTimestamp();
       fs.appendFileSync(
         logPath,
         `=== Paket-Log Start: ${startedAt} | packageId=${sanitizeFieldValue(String(meta.packageId || ""))} | logKey=${normalizedPackageId} | name=${sanitizeFieldValue(meta.name)} ===\n`,
@@ -173,7 +174,7 @@ export function ensurePackageLog(meta: PackageLogMeta): string | null {
       );
       fs.appendFileSync(
         logPath,
-        `${new Date().toISOString()} [INFO] Paket-Kontext initialisiert${formatFields({
+        `${logTimestamp()} [INFO] Paket-Kontext initialisiert${formatFields({
           name: meta.name,
           outputDir: meta.outputDir,
           extractDir: meta.extractDir
@@ -197,7 +198,7 @@ export function logPackageEvent(
   if (!logPath) {
     return;
   }
-  const line = `${new Date().toISOString()} [${level}] ${message}${formatFields(fields)}\n`;
+  const line = `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`;
   appendLine(packageId, line);
 }
 
@@ -221,7 +222,7 @@ export function shutdownPackageLogs(): void {
       continue;
     }
     try {
-      fs.appendFileSync(logPath, `=== Paket-Log Ende: ${new Date().toISOString()} ===\n`, "utf8");
+      fs.appendFileSync(logPath, `=== Paket-Log Ende: ${logTimestamp()} ===\n`, "utf8");
     } catch {
       // ignore
     }

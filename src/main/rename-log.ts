@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 
 type RenameLogLevel = "INFO" | "WARN" | "ERROR";
@@ -78,7 +79,7 @@ export function initRenameLog(baseDir: string): void {
     if (!fs.existsSync(renameLogPath)) {
       fs.writeFileSync(renameLogPath, "", "utf8");
     }
-    fs.appendFileSync(renameLogPath, `=== Rename-Log Start: ${new Date().toISOString()} ===\n`, "utf8");
+    fs.appendFileSync(renameLogPath, `=== Rename-Log Start: ${logTimestamp()} ===\n`, "utf8");
   } catch {
     renameLogPath = null;
   }
@@ -95,7 +96,7 @@ export function logRenameEvent(level: RenameLogLevel, message: string, fields?: 
     }
     fs.appendFileSync(
       renameLogPath,
-      `${new Date().toISOString()} [${level}] ${message}${formatFields(fields)}\n`,
+      `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`,
       "utf8"
     );
   } catch {
@@ -115,7 +116,7 @@ export function shutdownRenameLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(renameLogPath, `=== Rename-Log Ende: ${new Date().toISOString()} ===\n`, "utf8");
+    fs.appendFileSync(renameLogPath, `=== Rename-Log Ende: ${logTimestamp()} ===\n`, "utf8");
   } catch {
     // ignore
   }

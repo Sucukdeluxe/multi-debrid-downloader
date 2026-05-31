@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 
 let logFilePath = path.resolve(process.cwd(), "rd_downloader.log");
@@ -209,7 +210,7 @@ function ensureExitHook(): void {
 
 function write(level: "INFO" | "WARN" | "ERROR", message: string): void {
   ensureExitHook();
-  const line = `${new Date().toISOString()} [${level}] ${message}\n`;
+  const line = `${logTimestamp()} [${level}] ${message}\n`;
   pendingLines.push(line);
   pendingChars += line.length;
 
