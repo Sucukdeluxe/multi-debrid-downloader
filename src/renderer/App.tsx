@@ -1143,16 +1143,21 @@ function formatCheckedAgo(checkedAt: number): string {
   return `vor ${days} Tag${days === 1 ? "" : "en"}`;
 }
 
-function rotationEventText(ev: { event: string; cooldownSec?: number; next?: string }): string {
+function rotationEventText(ev: { event: string; cooldownSec?: number; next?: string; reason?: string }): string {
+  const untilRestart = /bis Neustart gesperrt/i.test(ev.reason || "");
   switch (ev.event) {
     case "OK": return "erfolgreich";
     case "FAILED": {
+      if (untilRestart) {
+        const nx = ev.next && ev.next !== "ENDE" ? ` → ${ev.next}` : "";
+        return `Tageslimit erreicht, bis Neustart gesperrt${nx}`;
+      }
       const cd = ev.cooldownSec ? `, Cooldown ${ev.cooldownSec}s` : "";
       const nx = ev.next && ev.next !== "ENDE" ? ` → ${ev.next}` : "";
       return `fehlgeschlagen${cd}${nx}`;
     }
     case "FATAL": return "abgebrochen (fataler Fehler)";
-    case "SKIP_COOLDOWN": return "übersprungen (Cooldown aktiv)";
+    case "SKIP_COOLDOWN": return untilRestart ? "übersprungen (bis Neustart gesperrt)" : "übersprungen (Cooldown aktiv)";
     case "SKIP_DISABLED": return "übersprungen (deaktiviert)";
     case "SKIP_DAILY_LIMIT": return "übersprungen (Tageslimit erreicht)";
     case "SKIP_HOST_COOLDOWN": return "übersprungen (Host-Cooldown)";

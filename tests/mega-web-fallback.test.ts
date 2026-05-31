@@ -89,6 +89,39 @@ describe("mega-web-fallback", () => {
       expect(ajaxCalls).toBe(1);
     });
 
+    it("surfaces 'Kein Server für diesen Hoster' from the debrid PAGE (daily limit, no debrid code) instead of empty", async () => {
+      // Tageslimit dieses Accounts: die DEBRID-Seite enthält KEINEN processDebrid-Code,
+      // sondern die Limit-Meldung als Page-Error. Früher -> kein Code -> null -> "Antwort
+      // leer" (auf Message-Ebene nicht als Tageslimit erkennbar). Jetzt muss die Meldung
+      // als Fehler hochkommen, damit die Rotation den Account als limitiert behandelt.
+      let ajaxCalls = 0;
+      globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+        const urlStr = String(url);
+        if (urlStr.includes("form=login")) {
+          const headers = new Headers();
+          headers.append("set-cookie", "session=goodcookie; path=/");
+          return new Response("", { headers, status: 200 });
+        }
+        if (urlStr.includes("page=debrideur")) {
+          return new Response('<form id="debridForm"></form>', { status: 200 });
+        }
+        if (urlStr.includes("form=debrid")) {
+          // Keine processDebrid(...)-Codes — nur die Tageslimit-Meldung als Page-Error.
+          return new Response('<div class="error">Erreur : Kein Server für diesen Hoster verfügbar. Bitte versuchen Sie es später noch einmal.</div>', { status: 200 });
+        }
+        if (urlStr.includes("ajax=debrid")) {
+          ajaxCalls += 1;
+          return new Response(JSON.stringify({ link: "https://should.not/happen" }), { status: 200 });
+        }
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const fallback = new MegaWebFallback(() => ({ login: "user", password: "pwd" }));
+      await expect(fallback.unrestrict("https://mega.debrid/l1")).rejects.toThrow(/kein server für diesen hoster/i);
+      // Ohne Code wird gar nicht erst gepollt — die Meldung kommt direkt von der Seite.
+      expect(ajaxCalls).toBe(0);
+    });
+
     it("logs in with the per-account credentials passed to unrestrict, not the default", async () => {
       const loginsUsed: string[] = [];
       globalThis.fetch = vi.fn(async (url: string | URL | Request, opts?: { body?: unknown }) => {
