@@ -45,6 +45,7 @@ import { runStartupHealthCheck } from "./startup-health-check";
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
+import { getDesktopRenameLogPath, initDesktopRenameLog, shutdownDesktopRenameLog } from "./desktop-rename-log";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
@@ -91,6 +92,19 @@ export class AppController {
     initAuditLog(this.storagePaths.baseDir);
     initAccountRotationLog(this.storagePaths.baseDir);
     initRenameLog(this.storagePaths.baseDir);
+    // Session-eigenes Rename-Protokoll auf dem Desktop (eigener Ordner Downloader-Log,
+    // selbstheilend) — luekenlose Uebersicht + Post-Rename-Verifikation fuer kuenftige
+    // Renaming-Diagnose, getrennt von den userData-Logs. app.getPath("desktop") wird vom
+    // Aufrufer ausgewertet (ausserhalb der modul-internen try/catch) — der "desktop"-
+    // Known-Folder kann in Headless-/Service-Account-Setups scheitern, daher hier gegen
+    // einen Startup-Crash absichern (initDesktopRenameLog behandelt null als no-op).
+    let desktopDir: string | null = null;
+    try {
+      desktopDir = app.getPath("desktop");
+    } catch {
+      desktopDir = null;
+    }
+    initDesktopRenameLog(desktopDir);
     initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
@@ -235,6 +249,10 @@ export class AppController {
 
   public getRenameLogPath(): string | null {
     return getRenameLogPath();
+  }
+
+  public getDesktopRenameLogPath(): string | null {
+    return getDesktopRenameLogPath();
   }
 
   public getTraceLogPath(): string | null {
@@ -756,6 +774,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     shutdownPackageLogs();
     shutdownItemLogs();
     shutdownRenameLog();
+    shutdownDesktopRenameLog();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAccountRotationLog();

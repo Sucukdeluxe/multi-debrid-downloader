@@ -61,6 +61,7 @@ import type { RotationEvent } from "../shared/types";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
 import { ensurePackageLog, getPackageLogPath as getPersistedPackageLogPath, logPackageEvent as writePackageLogEvent } from "./package-log";
 import { logRenameEvent as writeRenameLogEvent } from "./rename-log";
+import { logDesktopRename, verifyRename, verifyRenameAsync, type RenameVerification } from "./desktop-rename-log";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 
@@ -828,6 +829,17 @@ const EMPTY_DIR_IGNORED_FILE_RE = /^\.rd_extract_progress(?:_[^.\\/]+)?\.json$/i
 function isIgnorableEmptyDirFileName(fileName: string): boolean {
   const normalized = String(fileName || "").trim().toLowerCase();
   return EMPTY_DIR_IGNORED_FILE_NAMES.has(normalized) || EMPTY_DIR_IGNORED_FILE_RE.test(normalized);
+}
+
+/** Kopfzeile fuer eine Rename-Verifikation im Desktop-Log (passend zum Level). */
+function verifyHeadline(v: RenameVerification): string {
+  if (v.ok) {
+    return "Rename verifiziert";
+  }
+  if (v.level === "WARN") {
+    return "Rename vollzogen, aber Schreibweise nicht verifiziert";
+  }
+  return "Rename meldet OK, aber Verifikation FEHLGESCHLAGEN";
 }
 
 function toWindowsLongPathIfNeeded(filePath: string): string {
@@ -2051,6 +2063,13 @@ export class DownloadManager extends EventEmitter {
       packageId: pkg.id,
       packageName: pkg.name,
       ...(item ? { itemId: item.id, fileName: item.fileName } : {}),
+      ...(matchedBy ? { matchedBy } : {}),
+      ...fields
+    });
+    // Spiegeln ins Desktop-Rename-Log (luekenlose Sitzungs-Uebersicht beim User).
+    logDesktopRename(level, `[${stage}] ${message}`, {
+      paket: pkg.name,
+      ...(item ? { datei: item.fileName } : {}),
       ...(matchedBy ? { matchedBy } : {}),
       ...fields
     });
@@ -3638,7 +3657,56 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private async renamePathWithExdevFallback(sourcePath: string, targetPath: string): Promise<void> {
+  /** Verify+Log fuer SYNCHRONE Rename-Sites (startup-Dedup, Suffix-Fix, Deobfuskation),
+   *  die nicht ueber renamePathWithExdevFallback laufen. Nach erfolgreichem renameSync
+   *  aufrufen — verifiziert das On-Disk-Ergebnis und protokolliert es ins Desktop-Log. */
+  private logVerifiedRenameSync(label: string, sourcePath: string, targetPath: string, extraFields?: Record<string, unknown>): void {
+    const v = verifyRename(sourcePath, targetPath);
+    logDesktopRename(v.level, `${label}: ${verifyHeadline(v)}`, {
+      ...(extraFields || {}),
+      source: path.basename(sourcePath),
+      requested: path.basename(targetPath),
+      onDisk: v.onDiskName,
+      targetDir: path.dirname(targetPath),
+      sourceGone: v.sourceGone,
+      sizeBytes: v.targetSize,
+      ...(v.ok ? {} : { grund: v.reason })
+    });
+  }
+
+  /** Verifizierter Wrapper um jeden Media-Rename/-Move: protokolliert den Vorgang
+   *  ins Desktop-Rename-Log UND verifiziert danach, dass die Datei wirklich unter
+   *  dem Zielnamen auf der Platte liegt (Quelle weg, korrekte Schreibweise). Nur weil
+   *  fs.rename "ok" meldet, ist der Rename noch nicht bewiesen. Verifikations-Fehler
+   *  werden NUR geloggt (kein throw) — reine Beobachtbarkeit, keine Verhaltensaenderung. */
+  private async renamePathWithExdevFallback(sourcePath: string, targetPath: string, ctx?: { label?: string; fields?: Record<string, unknown> }): Promise<void> {
+    const label = ctx?.label || "rename";
+    try {
+      await this.renamePathWithExdevFallbackRaw(sourcePath, targetPath);
+    } catch (error) {
+      logDesktopRename("ERROR", `${label}: Rename fehlgeschlagen`, {
+        ...(ctx?.fields || {}),
+        source: path.basename(sourcePath),
+        sourceDir: path.dirname(sourcePath),
+        target: path.basename(targetPath),
+        error: compactErrorText(error)
+      });
+      throw error;
+    }
+    const v = await verifyRenameAsync(sourcePath, targetPath);
+    logDesktopRename(v.level, `${label}: ${verifyHeadline(v)}`, {
+      ...(ctx?.fields || {}),
+      source: path.basename(sourcePath),
+      requested: path.basename(targetPath),
+      onDisk: v.onDiskName,
+      targetDir: path.dirname(targetPath),
+      sourceGone: v.sourceGone,
+      sizeBytes: v.targetSize,
+      ...(v.ok ? {} : { grund: v.reason })
+    });
+  }
+
+  private async renamePathWithExdevFallbackRaw(sourcePath: string, targetPath: string): Promise<void> {
     const sourceFsPath = toWindowsLongPathIfNeeded(sourcePath);
     const targetFsPath = toWindowsLongPathIfNeeded(targetPath);
     // Transient lock codes — antivirus scan, Windows Search Indexer, OneDrive
@@ -3736,7 +3804,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       try {
-        await this.renamePathWithExdevFallback(sourceCompanionPath, targetCompanionPath);
+        await this.renamePathWithExdevFallback(sourceCompanionPath, targetCompanionPath, { label: "companion" });
         logger.info(`Auto-Rename Companion: ${entryName} -> ${newCompanionName}`);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Auto-Rename Companion umbenannt", {
@@ -4346,7 +4414,7 @@ export class DownloadManager extends EventEmitter {
         // Route through renamePathWithExdevFallback so we get the long-path /
         // UNC handling AND the transient-error retry for free.
         try {
-          await this.renamePathWithExdevFallback(sourcePath, targetPath);
+          await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename (Schreibweise)" });
           renamedCount += 1;
           if (pkg) {
             const resolved = resolveRenameItem(targetPath);
@@ -4418,7 +4486,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       try {
-        await this.renamePathWithExdevFallback(sourcePath, targetPath);
+        await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename" });
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Auto-Rename durchgeführt", {
             sourcePath,
@@ -4455,7 +4523,7 @@ export class DownloadManager extends EventEmitter {
               continue;
             }
             try {
-              await this.renamePathWithExdevFallback(sourcePath, fallbackPath);
+              await this.renamePathWithExdevFallback(sourcePath, fallbackPath, { label: "auto-rename (Pfadlaenge-Fallback)" });
               logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(fallbackPath)}`);
               renamed += 1;
               if (pkg) {
@@ -4513,7 +4581,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async moveFileWithExdevFallback(sourcePath: string, targetPath: string): Promise<void> {
-    await this.renamePathWithExdevFallback(sourcePath, targetPath);
+    await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "mkv-move" });
   }
 
   private async cleanupNonMkvResidualFiles(rootDir: string, targetDir: string): Promise<number> {
@@ -4615,7 +4683,7 @@ export class DownloadManager extends EventEmitter {
             if (await this.existsAsync(candidate)) {
               continue;
             }
-            await this.renamePathWithExdevFallback(targetPath, candidate);
+            await this.renamePathWithExdevFallback(targetPath, candidate, { label: "mkv-move (Konflikt-Aufloesung)" });
             moved = true;
             break;
           }
@@ -6343,8 +6411,14 @@ export class DownloadManager extends EventEmitter {
           try {
             fs.renameSync(duplicateTargetPath, canonicalPath);
             canonicalExists = true;
+            this.logVerifiedRenameSync("startup-dedup", duplicateTargetPath, canonicalPath);
             logger.info(`startupDuplicateMerge: ${path.basename(duplicateTargetPath)} → ${canonicalBaseName}`);
           } catch (err) {
+            logDesktopRename("ERROR", "startup-dedup: Rename fehlgeschlagen", {
+              source: path.basename(duplicateTargetPath),
+              target: canonicalBaseName,
+              error: compactErrorText(err)
+            });
             logger.warn(`startupDuplicateMerge: Umbenennung fehlgeschlagen ${duplicateTargetPath}: ${compactErrorText(err)}`);
           }
         } else if (duplicateExists && canonicalExists && primaryWins) {
@@ -6358,8 +6432,14 @@ export class DownloadManager extends EventEmitter {
             fs.rmSync(canonicalPath, { force: true });
             fs.renameSync(duplicateTargetPath, canonicalPath);
             canonicalExists = true;
+            this.logVerifiedRenameSync("startup-dedup (Austausch)", duplicateTargetPath, canonicalPath);
             logger.info(`startupDuplicateMerge: ersetze verwaisten Originalpfad ${canonicalBaseName} durch ${path.basename(duplicateTargetPath)}`);
           } catch (err) {
+            logDesktopRename("ERROR", "startup-dedup (Austausch): Rename fehlgeschlagen", {
+              source: path.basename(duplicateTargetPath),
+              target: canonicalBaseName,
+              error: compactErrorText(err)
+            });
             logger.warn(`startupDuplicateMerge: Austausch fehlgeschlagen ${canonicalPath}: ${compactErrorText(err)}`);
           }
         }
@@ -6971,6 +7051,7 @@ export class DownloadManager extends EventEmitter {
         }
 
         await fs.promises.rename(filePath, newPath);
+        this.logVerifiedRenameSync("deobfuskation", filePath, newPath, { paket: pkg.name, signatur: sig });
         item.fileName = newName;
         item.targetPath = newPath;
         // Update the path lookup
@@ -6984,6 +7065,11 @@ export class DownloadManager extends EventEmitter {
           signature: sig
         });
       } catch (err) {
+        logDesktopRename("ERROR", "deobfuskation: Rename fehlgeschlagen", {
+          source: path.basename(filePath),
+          paket: pkg.name,
+          error: compactErrorText(err as Error)
+        });
         logger.warn(`Deobfuskation fehlgeschlagen: ${filePath}: ${compactErrorText(err as Error)}`);
       }
     }
@@ -7146,6 +7232,7 @@ export class DownloadManager extends EventEmitter {
       }
       try {
         fs.renameSync(tp, originalPath);
+        this.logVerifiedRenameSync("suffix-fix", tp, originalPath);
         this.reservedTargetPaths.delete(pathKey(tp));
         this.reservedTargetPaths.set(originalKey, item.id);
         this.claimedTargetPathByItem.set(item.id, originalPath);
@@ -7154,6 +7241,11 @@ export class DownloadManager extends EventEmitter {
         fixed += 1;
         logger.info(`fixDuplicateSuffix: ${path.basename(tp)} → ${originalName}`);
       } catch (err) {
+        logDesktopRename("ERROR", "suffix-fix: Rename fehlgeschlagen", {
+          source: path.basename(tp),
+          target: originalName,
+          error: compactErrorText(err)
+        });
         logger.warn(`fixDuplicateSuffix: Umbenennung fehlgeschlagen ${tp}: ${compactErrorText(err)}`);
       }
     }
