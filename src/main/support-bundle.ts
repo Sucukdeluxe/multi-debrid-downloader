@@ -7,6 +7,7 @@ import { getDebugSetupCheck } from "./debug-setup";
 import { getLogFilePath } from "./logger";
 import { getPackageLogPath } from "./package-log";
 import { getRenameLogPath } from "./rename-log";
+import { getDesktopRenameLogPath } from "./desktop-rename-log";
 import { getSessionLogPath } from "./session-log";
 import { createStoragePaths, loadHistory, loadSettings } from "./storage";
 import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
@@ -181,6 +182,7 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string, op
   addFileIfExists(zip, getAuditLogPath() ? `${getAuditLogPath()}.old` : null, "logs/audit.log.old");
   addFileIfExists(zip, getRenameLogPath(), "logs/rename.log");
   addFileIfExists(zip, getRenameLogPath() ? `${getRenameLogPath()}.old` : null, "logs/rename.log.old");
+  addFileIfExists(zip, getDesktopRenameLogPath(), "logs/rename-session-desktop.txt");
   addFileIfExists(zip, getSessionLogPath(), "logs/session.log");
   addFileIfExists(zip, getTraceLogPath(), "logs/trace.log");
   addFileIfExists(zip, getTraceLogPath() ? `${getTraceLogPath()}.old` : null, "logs/trace.log.old");
