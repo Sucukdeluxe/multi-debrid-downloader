@@ -8,8 +8,111 @@ import {
   buildAutoRenameBaseNameFromFolders,
   buildAutoRenameBaseNameFromFoldersWithOptions,
   hasMeaningfulSeriesPrefix,
-  looksLikeObfuscatedSceneFileName
+  looksLikeObfuscatedSceneFileName,
+  decideAutoRenameBaseName
 } from "../src/main/download-manager";
+
+describe("decideAutoRenameBaseName (shared naming decision — used by auto-rename AND mkv-collect)", () => {
+  // Characterization corpus: pins the EXACT decision for the real failures from
+  // rename-session_2026-06-02 (17 raw files that mkv-move moved un-renamed) plus
+  // the guard cases. mkv-collect now routes through this same function so a file
+  // auto-rename missed still lands clean in the library.
+
+  it("derives the clean name for a Herzflimmern episode from the per-episode folder (S07E12 — the reported failure)", () => {
+    const source = "tvarchiv.herzflimmern.die.klinik.am.see.s07e12-720.mkv";
+    const folders = [
+      "Herzflimmern.Die.Klinik.am.See.S07E12.German.720p.Webrip.x264-TVARCHiV",
+      "Herzflimmern.Die.Klinik.am.See.S07.German.720p.Webrip.x264-TVARCHiV"
+    ];
+    const decision = decideAutoRenameBaseName(
+      folders,
+      source,
+      "tvarchiv.herzflimmern.die.klinik.am.see.s07e12-720",
+      folders[0],
+      folders[1]
+    );
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe("Herzflimmern.Die.Klinik.am.See.S07E12.German.720p.Webrip.x264-TVARCHiV");
+  });
+
+  it("derives the clean name from a SEASON-only folder by injecting the source episode token (Herzflimmern S03E14)", () => {
+    const source = "tvarchiv.herzflimmern.die.klinik.am.see.s03e14-720.mkv";
+    const seasonFolder = "Herzflimmern.die.Klinik.am.See.S03.German.720p.Webrip.x264-TVARCHiV";
+    const decision = decideAutoRenameBaseName(
+      [seasonFolder],
+      source,
+      "tvarchiv.herzflimmern.die.klinik.am.see.s03e14-720",
+      seasonFolder,
+      seasonFolder
+    );
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe("Herzflimmern.die.Klinik.am.See.S03E14.German.720p.Webrip.x264-TVARCHiV");
+  });
+
+  it("derives the clean name for the Fritzie S04 files that sat raw in Downloader Unfertig (4sf- scene group, season folder)", () => {
+    const source = "4sf-fritzie.himmel.muss.warten.web.7p-s04e01.mkv";
+    const seasonFolder = "Fritzie.-.Der.Himmel.muss.warten.S04.GERMAN.720p.WEB.AVC-4SF";
+    const decision = decideAutoRenameBaseName(
+      [seasonFolder],
+      source,
+      "4sf-fritzie.himmel.muss.warten.web.7p-s04e01",
+      seasonFolder,
+      seasonFolder
+    );
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe("Fritzie.-.Der.Himmel.muss.warten.S04E01.GERMAN.720p.WEB.AVC-4SF");
+  });
+
+  it("is idempotent: an already-clean file in its clean folder derives to the same name (no worse-than-now)", () => {
+    const clean = "Herzflimmern.Die.Klinik.am.See.S07E02.German.720p.Webrip.x264-TVARCHiV";
+    const decision = decideAutoRenameBaseName(
+      [clean, "Herzflimmern.Die.Klinik.am.See.S07.German.720p.Webrip.x264-TVARCHiV"],
+      `${clean}.mkv`,
+      clean,
+      clean,
+      "Herzflimmern.Die.Klinik.am.See.S07.German.720p.Webrip.x264-TVARCHiV"
+    );
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe(clean);
+  });
+
+  it("GUARD: lets the parent folder token override an OBFUSCATED source filename (anti-piracy scramble)", () => {
+    // Obfuscated file (E16) inside an explicitly-named E01 folder → trust the folder.
+    const decision = decideAutoRenameBaseName(
+      ["Die.Thundermans.S02E01.Der.Thunder.Van.GERMAN.x264-aWake"],
+      "awa-diethundermans02e16hd.mkv",
+      "awa-diethundermans02e16hd",
+      "Die.Thundermans.S02E01.Der.Thunder.Van.GERMAN.x264-aWake",
+      "Die.Thundermans.S02.GERMAN.x264-aWake"
+    );
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toContain("S02E01");
+  });
+
+  it("GUARD: a CLEAN scene source is NEVER overridden by a mismatching folder token (folder is wrong, not the file)", () => {
+    // Clean source S01E09 in a folder that says E08 → must NOT rename to E08.
+    const decision = decideAutoRenameBaseName(
+      ["The.Royals.2015.S01E08.German.DL.720p.BluRay.x264-iNTENTiON"],
+      "the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f.mkv",
+      "the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f",
+      "The.Royals.2015.S01E08.German.DL.720p.BluRay.x264-iNTENTiON",
+      "The.Royals.2015.S01.German.DL.720p.BluRay.x264-iNTENTiON"
+    );
+    expect(decision.kind).toBe("skip");
+    expect(decision.kind === "skip" && decision.reason).toBe("token-mismatch");
+  });
+
+  it("skips (no-target) when no folder candidate yields a usable scene name", () => {
+    const decision = decideAutoRenameBaseName(
+      ["random user folder", "another plain dir"],
+      "some.file.mkv",
+      "some.file",
+      "random user folder",
+      "another plain dir"
+    );
+    expect(decision.kind).toBe("skip");
+  });
+});
 
 describe("hasMeaningfulSeriesPrefix", () => {
   it("recognizes a real series name before the season token", () => {

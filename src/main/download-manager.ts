@@ -1407,6 +1407,107 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
   return null;
 }
 
+/** Final auto-rename naming DECISION for one video file. Factored out of
+ *  autoRenameExtractedVideoFilesImpl so the MKV-collect stage can reuse the
+ *  IDENTICAL derivation + guards — single source of truth, so the two can never
+ *  drift (that drift is exactly why files auto-rename missed landed raw in the
+ *  library). Pure: no fs, no logging, no chainPackageFileOp. Returns either the
+ *  clean target base name to rename to, or a skip with the reason (the caller
+ *  logs and falls back to KEEPING the current name — raw-keep is the floor). */
+export type AutoRenameNameDecision =
+  | { kind: "rename"; baseName: string; note?: "token-inserted" | "token-applyToken" | "folder-override"; sourceEpisodeToken?: string; targetEpisodeToken?: string }
+  | { kind: "skip"; reason: "no-target" | "source-better" | "token-loss" | "token-mismatch"; targetBaseName?: string; sourceEpisodeToken?: string; targetEpisodeToken?: string };
+
+export function decideAutoRenameBaseName(
+  folderCandidates: string[],
+  sourceName: string,
+  sourceBaseName: string,
+  parentFolderName: string,
+  extractDirName: string
+): AutoRenameNameDecision {
+  let targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
+    forceEpisodeForSeasonFolder: true
+  });
+
+  // Wurzel-Schutz gegen Namens-Fabrikation: produziert der Helper einen Namen, OBWOHL KEIN
+  // folderCandidate einen Season-/Episode-Token traegt (z.B. ein generischer Paketname wie
+  // "Mega-Direct-Pack", den hasSceneGroupSuffix faelschlich als Scene-Gruppe wertet), stammt
+  // die Episode rein aus dem QUELLnamen und wird an einen token-losen Ordner angehaengt
+  // ("Mega-Direct-Pack.S01E01"). Ein Ordner ohne Season/Episode kann eine Episode nicht
+  // autoritativ benennen → kein Rename. Schuetzt Auto-Rename UND den MKV-Collect an der Wurzel.
+  if (targetBaseName) {
+    const anyFolderHasSeasonOrEpisode = folderCandidates.some(
+      (folderName) => Boolean(extractSeasonToken(folderName)) || Boolean(extractEpisodeToken(folderName))
+    );
+    if (!anyFolderHasSeasonOrEpisode) {
+      return { kind: "skip", reason: "no-target" };
+    }
+  }
+
+  // Guard A — degenerate folder layout: when the computed target would DISCARD a
+  // well-formed source (source has SxxExx + a real series prefix, target lost the
+  // prefix and is much shorter), keep the source. Renaming would destroy info.
+  if (targetBaseName && sourceBaseName.length > 0) {
+    const sourceHasEpisode = Boolean(extractEpisodeToken(sourceBaseName));
+    const targetHasEpisode = Boolean(extractEpisodeToken(targetBaseName));
+    const sourceHasSeriesPrefix = hasMeaningfulSeriesPrefix(sourceBaseName);
+    const targetHasSeriesPrefix = hasMeaningfulSeriesPrefix(targetBaseName);
+    const targetIsMuchShorter = targetBaseName.length * 2 < sourceBaseName.length;
+    if (sourceHasEpisode && targetHasEpisode && sourceHasSeriesPrefix && !targetHasSeriesPrefix && targetIsMuchShorter) {
+      return { kind: "skip", reason: "source-better", targetBaseName };
+    }
+  }
+
+  // Guard B — never strip or mislabel a valid SxxExx token from the source.
+  let note: "token-inserted" | "token-applyToken" | "folder-override" | undefined;
+  const sourceEpisodeToken = extractEpisodeToken(sourceBaseName);
+  if (targetBaseName && sourceEpisodeToken) {
+    const targetEpisodeToken = extractEpisodeToken(targetBaseName);
+    if (!targetEpisodeToken) {
+      const insertedEpisode = targetBaseName.replace(
+        /(^|[._\-\s])(s\d{1,2})(?=[A-Za-z0-9])/i,
+        `$1${sourceEpisodeToken}.`
+      );
+      if (insertedEpisode !== targetBaseName && extractEpisodeToken(insertedEpisode)) {
+        targetBaseName = insertedEpisode;
+        note = "token-inserted";
+      } else {
+        const repaired = applyEpisodeTokenToFolderName(targetBaseName, sourceEpisodeToken);
+        if (repaired && extractEpisodeToken(repaired)) {
+          targetBaseName = repaired;
+          note = "token-applyToken";
+        } else {
+          return { kind: "skip", reason: "token-loss", targetBaseName, sourceEpisodeToken };
+        }
+      }
+    } else if (targetEpisodeToken !== sourceEpisodeToken) {
+      // Target has a DIFFERENT episode token than source. Trust the folder ONLY when
+      // the source filename looks obfuscated (anti-piracy scramble) AND the immediate
+      // parent folder carries the same explicit token as the computed target. A clean
+      // scene source must NEVER be overridden (a one-off folder mismatch means the
+      // FOLDER is wrong, not the file).
+      const parentEpisodeToken = extractEpisodeToken(parentFolderName);
+      const sourceLooksObfuscated = looksLikeObfuscatedSceneFileName(sourceName);
+      const folderIsAuthoritative = Boolean(
+        parentEpisodeToken
+        && parentEpisodeToken === targetEpisodeToken
+        && parentFolderName.toLowerCase() !== extractDirName.toLowerCase()
+        && sourceLooksObfuscated
+      );
+      if (folderIsAuthoritative) {
+        note = "folder-override";
+        return { kind: "rename", baseName: targetBaseName, note, sourceEpisodeToken, targetEpisodeToken };
+      }
+      return { kind: "skip", reason: "token-mismatch", targetBaseName, sourceEpisodeToken, targetEpisodeToken };
+    }
+  }
+
+  if (!targetBaseName) {
+    return { kind: "skip", reason: "no-target" };
+  }
+  return { kind: "rename", baseName: targetBaseName, note };
+}
+
 // Hoisted regex patterns — avoid recompiling on every resolveArchiveItemsFromList() call.
 const ARCHIVE_MULTIPART_RAR_RE = /^(.*)\.part0*1\.rar$/;
 const ARCHIVE_RAR_RE = /^(.*)\.rar$/;
@@ -4183,141 +4284,85 @@ export class DownloadManager extends EventEmitter {
           folderCandidates.push(extra);
         }
       }
-      let targetBaseName = buildAutoRenameBaseNameFromFoldersWithOptions(folderCandidates, sourceBaseName, {
-        forceEpisodeForSeasonFolder: true
-      });
-      // Defense against degenerate folder layouts: when the immediate parent
-      // folder lacks a real series name (e.g. "S01 Complete", "Season 1",
-      // "Staffel 02"), buildAutoRenameBaseName can collapse a perfect source
-      // filename like "Desperate.Housewives.S01E01.German.Synced.DL.720p.WEB-
-      // DL.AC3.h264" into garbage like "S01E01 Complete". If the source is
-      // already well-formed (has SxxExx + a meaningful series-name prefix)
-      // and the computed target is much shorter / lacks that prefix, keep
-      // the source as-is — renaming would actively destroy information.
-      if (targetBaseName && sourceBaseName.length > 0) {
-        const sourceHasEpisode = Boolean(extractEpisodeToken(sourceBaseName));
-        const targetHasEpisode = Boolean(extractEpisodeToken(targetBaseName));
-        const sourceHasSeriesPrefix = hasMeaningfulSeriesPrefix(sourceBaseName);
-        const targetHasSeriesPrefix = hasMeaningfulSeriesPrefix(targetBaseName);
-        const targetIsMuchShorter = targetBaseName.length * 2 < sourceBaseName.length;
-        if (sourceHasEpisode
-          && targetHasEpisode
-          && sourceHasSeriesPrefix
-          && !targetHasSeriesPrefix
-          && targetIsMuchShorter) {
-          logger.info(`Auto-Rename uebersprungen: Source "${sourceBaseName}" ist bereits aussagekraeftiger als computed Target "${targetBaseName}"`);
-          if (pkg) {
-            const resolved = resolveRenameItem();
-            this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename uebersprungen: Source schon besser als computed Target", {
-              sourcePath,
-              sourceName,
-              sourceBaseName,
-              targetBaseName,
-              folders: folderCandidates.join(", ")
-            }, resolved.item, resolved.matchedBy);
-          }
-          continue;
-        }
-      }
+      // Naming-Entscheidung ueber die GEMEINSAME Funktion (decideAutoRenameBaseName) —
+      // exakt dieselbe, die der MKV-Collect nutzt. Single source of truth: ein Guard-Fix
+      // gilt damit immer fuer BEIDE Pfade. Frueher lag die Logik nur hier inline, der
+      // Collect hatte keine → von Auto-Rename verpasste Dateien landeten roh in der Library.
+      const decision = decideAutoRenameBaseName(
+        folderCandidates,
+        sourceName,
+        sourceBaseName,
+        path.basename(path.dirname(sourcePath)),
+        path.basename(extractDir)
+      );
+      // Skip-Branches behalten den BERECHNETEN Zielnamen fuer die Log-Attribution
+      // (resolveRenameItem speist ihn in inferItemForMediaLog) — wie im Original; no-target
+      // bleibt null, damit der `if (!targetBaseName)`-Zweig weiter greift.
+      let targetBaseName: string | null = decision.kind === "rename" ? decision.baseName : (decision.targetBaseName ?? null);
       const resolveRenameItem = (...extra: Array<string | null | undefined>): { item: DownloadItem | null; matchedBy: string | null } => {
         if (!pkg) {
           return { item: null, matchedBy: null };
         }
         return this.inferItemForMediaLog(pkg, sourcePath, sourceName, folderCandidates.join(" "), targetBaseName || "", ...extra);
       };
-      // SAFETY NET: Never strip a valid SxxExx token from the source filename.
-      // If the source already has an episode token but the computed target lost it
-      // (e.g. malformed package name "S01GERMAN" with no separator), preserve the
-      // episode by either inserting it into the target or skipping the rename entirely.
-      // Without this guard, all episodes from a malformed pack collapse to one name
-      // and collide with (2)(3)(4) suffixes in the MKV library.
-      const sourceEpisodeToken = extractEpisodeToken(sourceBaseName);
-      if (targetBaseName && sourceEpisodeToken) {
-        const targetEpisodeToken = extractEpisodeToken(targetBaseName);
-        if (!targetEpisodeToken) {
-          // Try to insert the source's episode token: replace "Sxx<garbage>" with "SxxExx.<garbage>"
-          const insertedEpisode = targetBaseName.replace(
-            /(^|[._\-\s])(s\d{1,2})(?=[A-Za-z0-9])/i,
-            `$1${sourceEpisodeToken}.`
-          );
-          if (insertedEpisode !== targetBaseName && extractEpisodeToken(insertedEpisode)) {
-            logger.info(`Auto-Rename Safety: Episode-Token in Target eingefuegt: ${targetBaseName} -> ${insertedEpisode}`);
-            targetBaseName = insertedEpisode;
-          } else {
-            const repaired = applyEpisodeTokenToFolderName(targetBaseName, sourceEpisodeToken);
-            if (repaired && extractEpisodeToken(repaired)) {
-              logger.info(`Auto-Rename Safety: Episode-Token via applyToken: ${targetBaseName} -> ${repaired}`);
-              targetBaseName = repaired;
-            } else {
-              logger.warn(`Auto-Rename Safety: Skipping rename - target wuerde Episode-Token verlieren (source=${sourceBaseName}, target=${targetBaseName})`);
-              if (pkg) {
-                const resolved = resolveRenameItem();
-                this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token wuerde verloren gehen", {
-                  sourcePath,
-                  sourceName,
-                  sourceEpisodeToken,
-                  targetBaseName
-                }, resolved.item, resolved.matchedBy);
-              }
-              continue;
-            }
-          }
-        } else if (targetEpisodeToken !== sourceEpisodeToken) {
-          // Target has a DIFFERENT episode token than source. Normally that's a
-          // sign the rename would mislabel the episode — BUT scene releases
-          // often place obfuscated MKVs (e.g. "awa-diethundermans02e16hd.mkv"
-          // = scrambled E16) inside an explicitly named episode folder
-          // (e.g. "Die.Thundermans.S02E01.Der.Thunder.Van.GERMAN.x264-aWake").
-          // The folder is created by the release group with the REAL episode
-          // info; the file name is anti-piracy obfuscation. So when the
-          // immediate parent folder carries the same explicit SxxExx token as
-          // our computed targetBaseName, trust the folder and override the
-          // misleading source token.
-          const parentFolderName = path.basename(path.dirname(sourcePath));
-          const parentEpisodeToken = extractEpisodeToken(parentFolderName);
-          // GUARD: only let the folder override the source token when the
-          // source filename actually LOOKS obfuscated (no scene markers like
-          // 720p / german / x264 / bluray, no dot-separated structure).
-          // A clean scene release filename — e.g. "the.royals.2015.s01e09.
-          // german.dl.720p.bluray.x264-j4f.mkv" — must NEVER be overridden,
-          // because a one-off folder/file mismatch with a clean source means
-          // the FOLDER is wrong, not the file. Renaming a real S01E09 to
-          // S01E08 because the folder happens to say E08 would corrupt data.
-          const sourceLooksObfuscated = looksLikeObfuscatedSceneFileName(sourceName);
-          const folderIsAuthoritative = Boolean(
-            parentEpisodeToken
-            && parentEpisodeToken === targetEpisodeToken
-            && parentFolderName.toLowerCase() !== path.basename(extractDir).toLowerCase()
-            && sourceLooksObfuscated
-          );
-          if (folderIsAuthoritative) {
-            logger.info(`Auto-Rename: source-Token ${sourceEpisodeToken} ignoriert, Folder-Token ${targetEpisodeToken} ist authoritativ (vermutlich obfuskierter Dateiname in ${parentFolderName})`);
-            if (pkg) {
-              const resolved = resolveRenameItem();
-              this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename: Folder-Token uebersteuert obfuskierten Datei-Token", {
-                sourcePath,
-                sourceName,
-                sourceEpisodeToken,
-                targetEpisodeToken,
-                parentFolder: parentFolderName,
-                targetBaseName
-              }, resolved.item, resolved.matchedBy);
-            }
-            // Fall through to the normal rename path with targetBaseName.
-          } else {
-            logger.warn(`Auto-Rename Safety: Skipping rename - Episode-Token Mismatch (source=${sourceEpisodeToken}, target=${targetEpisodeToken})`);
-            if (pkg) {
-              const resolved = resolveRenameItem();
-              this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token Mismatch", {
-                sourcePath,
-                sourceName,
-                sourceEpisodeToken,
-                targetEpisodeToken,
-                targetBaseName
-              }, resolved.item, resolved.matchedBy);
-            }
-            continue;
-          }
+      if (decision.kind === "skip" && decision.reason === "source-better") {
+        logger.info(`Auto-Rename uebersprungen: Source "${sourceBaseName}" ist bereits aussagekraeftiger als computed Target "${decision.targetBaseName}"`);
+        if (pkg) {
+          const resolved = resolveRenameItem();
+          this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename uebersprungen: Source schon besser als computed Target", {
+            sourcePath,
+            sourceName,
+            sourceBaseName,
+            targetBaseName: decision.targetBaseName,
+            folders: folderCandidates.join(", ")
+          }, resolved.item, resolved.matchedBy);
+        }
+        continue;
+      }
+      if (decision.kind === "skip" && decision.reason === "token-loss") {
+        logger.warn(`Auto-Rename Safety: Skipping rename - target wuerde Episode-Token verlieren (source=${sourceBaseName}, target=${decision.targetBaseName})`);
+        if (pkg) {
+          const resolved = resolveRenameItem();
+          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token wuerde verloren gehen", {
+            sourcePath,
+            sourceName,
+            sourceEpisodeToken: decision.sourceEpisodeToken,
+            targetBaseName: decision.targetBaseName
+          }, resolved.item, resolved.matchedBy);
+        }
+        continue;
+      }
+      if (decision.kind === "skip" && decision.reason === "token-mismatch") {
+        logger.warn(`Auto-Rename Safety: Skipping rename - Episode-Token Mismatch (source=${decision.sourceEpisodeToken}, target=${decision.targetEpisodeToken})`);
+        if (pkg) {
+          const resolved = resolveRenameItem();
+          this.logRenameProcess(pkg, "WARN", "auto-rename", "Auto-Rename uebersprungen: Episode-Token Mismatch", {
+            sourcePath,
+            sourceName,
+            sourceEpisodeToken: decision.sourceEpisodeToken,
+            targetEpisodeToken: decision.targetEpisodeToken,
+            targetBaseName: decision.targetBaseName
+          }, resolved.item, resolved.matchedBy);
+        }
+        continue;
+      }
+      if (decision.kind === "rename" && decision.note === "token-inserted") {
+        logger.info(`Auto-Rename Safety: Episode-Token in Target eingefuegt -> ${decision.baseName}`);
+      } else if (decision.kind === "rename" && decision.note === "token-applyToken") {
+        logger.info(`Auto-Rename Safety: Episode-Token via applyToken -> ${decision.baseName}`);
+      } else if (decision.kind === "rename" && decision.note === "folder-override") {
+        const parentFolderName = path.basename(path.dirname(sourcePath));
+        logger.info(`Auto-Rename: source-Token ${decision.sourceEpisodeToken} ignoriert, Folder-Token ${decision.targetEpisodeToken} ist authoritativ (vermutlich obfuskierter Dateiname in ${parentFolderName})`);
+        if (pkg) {
+          const resolved = resolveRenameItem();
+          this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename: Folder-Token uebersteuert obfuskierten Datei-Token", {
+            sourcePath,
+            sourceName,
+            sourceEpisodeToken: decision.sourceEpisodeToken,
+            targetEpisodeToken: decision.targetEpisodeToken,
+            parentFolder: parentFolderName,
+            targetBaseName: decision.baseName
+          }, resolved.item, resolved.matchedBy);
         }
       }
       if (!targetBaseName) {
@@ -4415,7 +4460,7 @@ export class DownloadManager extends EventEmitter {
         // UNC handling AND the transient-error retry for free.
         try {
           await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename (Schreibweise)" });
-          renamedCount += 1;
+          renamed += 1;
           if (pkg) {
             const resolved = resolveRenameItem(targetPath);
             this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename (Casing korrigiert)", {
@@ -4737,8 +4782,77 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  private async buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>): Promise<string> {
+  /** Baut die folderCandidates fuer die Namensherleitung im MKV-Collect — identisch
+   *  zu autoRenameExtractedVideoFilesImpl (Walk vom Datei-Verzeichnis hoch innerhalb des
+   *  sourceRoot), aber zusaetzlich mit dem sourceRoot-Basename selbst (fuer Dateien direkt
+   *  im Staffel-/Paketordner, wo der Walk nichts liefert) und dem outputDir-Basename. */
+  private buildCollectFolderCandidates(sourcePath: string, sourceRoot: string, pkg: PackageEntry): string[] {
+    const folderCandidates: string[] = [];
+    let currentDir = path.dirname(sourcePath);
+    while (currentDir && isPathInsideDir(currentDir, sourceRoot)) {
+      folderCandidates.push(path.basename(currentDir));
+      const parent = path.dirname(currentDir);
+      if (!parent || parent === currentDir) {
+        break;
+      }
+      currentDir = parent;
+    }
+    const seen = new Set(folderCandidates.map((c) => c.toLowerCase()));
+    const rootBase = path.basename(sourceRoot || "");
+    if (rootBase && !seen.has(rootBase.toLowerCase())) {
+      folderCandidates.push(rootBase);
+      seen.add(rootBase.toLowerCase());
+    }
+    const outputBase = path.basename(pkg.outputDir || "");
+    if (outputBase && !seen.has(outputBase.toLowerCase())) {
+      folderCandidates.push(outputBase);
+    }
+    return folderCandidates;
+  }
+
+  /** Leitet den SAUBEREN Library-Dateinamen fuer eine zu sammelnde MKV ab — ueber die
+   *  IDENTISCHE Entscheidung wie Auto-Rename (decideAutoRenameBaseName). Liefert null,
+   *  wenn keine Verbesserung moeglich ist (raw-keep = Boden, nie schlechter als heute). */
+  private deriveCleanCollectFileName(sourcePath: string, sourceRoot: string, pkg: PackageEntry): string | null {
+    // Respektiere die Umbenennungs-Einstellung: ist Auto-Rename AUS, benennt der Collect
+    // auch nicht um (Konsistenz — sonst wuerde ein Nutzer, der Umbenennen bewusst aus hat,
+    // trotzdem umbenannte Library-Dateien bekommen). Auto-Rename selbst ist an derselben
+    // Einstellung gegated (autoRenameExtractedVideoFilesImpl: if (!autoRename4sf4sj) return 0).
+    if (!this.settings.autoRename4sf4sj) {
+      return null;
+    }
     const parsed = path.parse(path.basename(sourcePath));
+    const sourceExt = parsed.ext || ".mkv";
+    // Kein separater Quell-Guard noetig: decideAutoRenameBaseName liefert nur dann ein Rename,
+    // wenn ein folderCandidate einen echten Season-/Episode-Token traegt (Wurzel-Schutz dort) —
+    // generische Paketordner ("Mega-Direct-Pack") fuehren zu no-target → Roh-Name bleibt.
+    const folderCandidates = this.buildCollectFolderCandidates(sourcePath, sourceRoot, pkg);
+    const decision = decideAutoRenameBaseName(
+      folderCandidates,
+      path.basename(sourcePath),
+      parsed.name,
+      path.basename(path.dirname(sourcePath)),
+      path.basename(sourceRoot || "")
+    );
+    if (decision.kind !== "rename") {
+      return null;
+    }
+    const cleanBase = sanitizeFilename(decision.baseName);
+    if (!cleanBase) {
+      return null;
+    }
+    const cleanFileName = `${cleanBase}${sourceExt}`;
+    if (cleanFileName.toLowerCase() === path.basename(sourcePath).toLowerCase()) {
+      return null; // already clean — no-op
+    }
+    return cleanFileName;
+  }
+
+  private async buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>, desiredFileName?: string): Promise<string> {
+    // desiredFileName: der bereits abgeleitete SAUBERE Zielname (mit Endung). Wird er
+    // uebergeben, hat er Vorrang vor dem (evtl. rohen) Quell-Basename — so landet eine
+    // Datei, die Auto-Rename verpasst hat, trotzdem sauben benannt in der Library.
+    const parsed = path.parse(desiredFileName && desiredFileName.trim() ? desiredFileName : path.basename(sourcePath));
     const extension = parsed.ext || ".mkv";
     const baseName = sanitizeFilename(parsed.name || "video");
 
@@ -4878,7 +4992,7 @@ export class DownloadManager extends EventEmitter {
     // - Bonus-Dateinamen (Making-Of, Deleted-Scene, etc.)
     const sampleDirNames = new Set(["sample", "samples"]);
     const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
-    const mkvFiles: string[] = [];
+    const mkvFiles: { filePath: string; sourceRoot: string }[] = [];
     let sampleSkipped = 0;
     let bonusSkipped = 0;
     for (const { filePath, sourceRoot } of collected) {
@@ -4896,7 +5010,7 @@ export class DownloadManager extends EventEmitter {
         logger.info(`MKV-Sammelordner: Bonus-Datei uebersprungen: ${path.basename(filePath)} (Pfad: ${path.relative(sourceRoot, filePath)})`);
         continue;
       }
-      mkvFiles.push(filePath);
+      mkvFiles.push({ filePath, sourceRoot });
     }
     if (sampleSkipped > 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, ${sampleSkipped} Sample-MKV(s) übersprungen`);
@@ -4922,7 +5036,7 @@ export class DownloadManager extends EventEmitter {
     let sourceArtifactsChanged = false;
     let sourceCleanupRelevant = false;
 
-    for (const sourcePath of mkvFiles) {
+    for (const { filePath: sourcePath, sourceRoot } of mkvFiles) {
       if (shouldAbort?.()) {
         return;
       }
@@ -4968,8 +5082,27 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      // Check if identical file already exists in target (same name + same size) → skip instead of creating (2) copy
-      const idealTargetPath = path.join(targetDir, path.basename(sourcePath));
+      // SAUBEREN Library-Namen ableiten — gleiche Logik wie Auto-Rename (decideAutoRenameBaseName,
+      // Single Source of Truth). Hat Auto-Rename die Datei NIE erfasst (verpasster Scan oder die
+      // Datei lag in Downloader Unfertig, ausserhalb der extractDir), traegt sie noch ihren rohen
+      // Scene-Namen ("tvarchiv...s07e12-720.mkv", "4sf-...s04e01.mkv"). Genau diese landeten bisher
+      // roh in der Library. Den Namen raeumen wir HIER beim Sammeln auf. null => keine Verbesserung
+      // moeglich => Roh-Name behalten (raw-keep = Boden, nie schlechter als heute).
+      const derivedFileName = this.deriveCleanCollectFileName(sourcePath, sourceRoot, pkg);
+      const desiredFileName = derivedFileName || path.basename(sourcePath);
+      if (derivedFileName) {
+        const resolvedDerive = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), targetDir);
+        this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Name beim Sammeln aus Ordnerkontext abgeleitet (Auto-Rename hatte Datei nicht erfasst)", {
+          sourcePath,
+          rohName: path.basename(sourcePath),
+          sauberName: derivedFileName
+        }, resolvedDerive.item, resolvedDerive.matchedBy);
+      }
+
+      // Check if identical file already exists in target (same name + same size) → skip instead of creating (2) copy.
+      // WICHTIG: gegen den DERIVED (sauberen) Zielnamen pruefen, nicht den Roh-Namen — sonst findet
+      // der Dedup eine bereits sauber gesammelte Datei nicht und es entsteht eine "(2)"-Kopie.
+      const idealTargetPath = path.join(targetDir, desiredFileName);
       try {
         const existingStat = await fs.promises.stat(idealTargetPath);
         if (existingStat.size === sourceSize) {
@@ -4995,7 +5128,7 @@ export class DownloadManager extends EventEmitter {
         // File doesn't exist in target yet — proceed normally
       }
 
-      const targetPath = await this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets);
+      const targetPath = await this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets, desiredFileName);
       if (pathKey(sourcePath) === pathKey(targetPath)) {
         skipped += 1;
         continue;
