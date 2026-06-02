@@ -5689,7 +5689,15 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  public stop(): void {
+  public stop(options?: { parkForRestart?: boolean }): void {
+    // parkForRestart: used before an app-update install. Active downloads are
+    // aborted with the "shutdown" reason so their continuation re-queues them
+    // (status "queued") instead of marking them "cancelled"/"Gestoppt". A
+    // cancelled item is NOT picked up by autoResumeOnStart after the update
+    // relaunch, so the download would silently fail to resume — the user sees
+    // packages that were downloading "disappear" from the active list.
+    const parkForRestart = options?.parkForRestart === true;
+    const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
     const keepExtraction = this.settings.autoExtractWhenStopped;
     this.schedulerGeneration += 1;
     this.session.running = false;
@@ -5713,8 +5721,8 @@ export class DownloadManager extends EventEmitter {
       this.packagePostProcessActive = 0;
     }
     for (const active of this.activeTasks.values()) {
-      active.abortReason = "stop";
-      active.abortController.abort("stop");
+      active.abortReason = abortReason;
+      active.abortController.abort(abortReason);
     }
     // Reset all non-finished items to clean "Wartet" / "Paket gestoppt" state
     for (const item of Object.values(this.session.items)) {

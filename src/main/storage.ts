@@ -954,13 +954,25 @@ export function emptySession(): SessionState {
 
 export function loadSession(paths: StoragePaths): SessionState {
   ensureBaseDir(paths.baseDir);
-  if (!fs.existsSync(paths.sessionFile)) {
-    logger.info("Keine Session-Datei vorhanden, starte mit leerer Session");
-    return emptySession();
+  const backupFile = sessionBackupPath(paths.sessionFile);
+  const primaryExists = fs.existsSync(paths.sessionFile);
+  // A missing primary file is only a genuine "fresh start" when there is also
+  // nothing to recover from. If a backup or an interrupted-write temp file
+  // exists, fall through to the recovery chain below instead of returning an
+  // empty session — otherwise a momentarily-absent primary during an update
+  // restart would discard a perfectly good backup and wipe the whole queue.
+  if (!primaryExists) {
+    const hasRecoverable = fs.existsSync(backupFile)
+      || fs.existsSync(sessionTempPath(paths.sessionFile, "sync"))
+      || fs.existsSync(sessionTempPath(paths.sessionFile, "async"));
+    if (!hasRecoverable) {
+      logger.info("Keine Session-Datei vorhanden, starte mit leerer Session");
+      return emptySession();
+    }
+    logger.warn("Session-Primaerdatei fehlt, aber Backup/Temp vorhanden — Wiederherstellung wird versucht");
   }
 
-  const primary = readSessionFile(paths.sessionFile);
-  const backupFile = sessionBackupPath(paths.sessionFile);
+  const primary = primaryExists ? readSessionFile(paths.sessionFile) : null;
 
   // If primary loaded but is empty, check if backup has packages (safety net)
   if (primary) {
@@ -1044,7 +1056,7 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
 }
 
 let asyncSaveRunning = false;
-let asyncSaveQueued: { paths: StoragePaths; payload: string } | null = null;
+let asyncSaveQueued: { paths: StoragePaths; payload: string; generation: number } | null = null;
 let syncSaveGeneration = 0;
 
 async function writeSessionPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
@@ -1074,15 +1086,19 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   }
 }
 
-async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Promise<void> {
+async function saveSessionPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   if (asyncSaveRunning) {
-    asyncSaveQueued = { paths, payload };
+    // Keep the freshest payload, but preserve the generation captured when THIS
+    // payload was snapshotted. Re-reading syncSaveGeneration at re-invoke time
+    // would let a stale queued write slip past the guard and clobber a newer
+    // synchronous save (persistNowSync/prepareForShutdown) — which could drop
+    // packages that the sync save had just persisted.
+    asyncSaveQueued = { paths, payload, generation };
     return;
   }
   asyncSaveRunning = true;
-  const gen = syncSaveGeneration;
   try {
-    await writeSessionPayload(paths, payload, gen);
+    await writeSessionPayload(paths, payload, generation);
   } catch (error) {
     logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
   } finally {
@@ -1090,7 +1106,7 @@ async function saveSessionPayloadAsync(paths: StoragePaths, payload: string): Pr
     if (asyncSaveQueued) {
       const queued = asyncSaveQueued;
       asyncSaveQueued = null;
-      void saveSessionPayloadAsync(queued.paths, queued.payload);
+      void saveSessionPayloadAsync(queued.paths, queued.payload, queued.generation);
     }
   }
 }
@@ -1102,8 +1118,11 @@ export function cancelPendingAsyncSaves(): void {
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
+  // Capture the generation at snapshot time so the guard in writeSessionPayload
+  // can reliably discard this write if a synchronous save lands afterwards.
+  const generation = syncSaveGeneration;
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
-  await saveSessionPayloadAsync(paths, payload);
+  await saveSessionPayloadAsync(paths, payload, generation);
 }
 
 const MAX_HISTORY_ENTRIES = 500;

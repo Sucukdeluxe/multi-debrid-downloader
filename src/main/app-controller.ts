@@ -440,8 +440,15 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
     // Stop active downloads before installing. Extractions may continue briefly
     // until prepareForShutdown() is called during app quit.
+    // parkForRestart MUST stay true here: it keeps in-flight items as "queued"
+    // (not "cancelled") so the updated app auto-resumes them after the silent
+    // install relaunch. A plain stop() marks them "cancelled"/"Gestoppt", which
+    // autoResumeOnStart does NOT pick up — the downloads then silently fail to
+    // continue after the update (the reported "packages gone after update" bug).
+    // Regression coverage: tests/update-restart-resume.test.ts asserts this exact
+    // stop({parkForRestart:true}) + persistNowSync() sequence reloads as "queued".
     if (this.manager.isSessionRunning()) {
-      this.manager.stop();
+      this.manager.stop({ parkForRestart: true });
     }
     // Flush any pending async saves BEFORE the update process starts.
     // This ensures the queue is fully persisted to disk so it survives the restart.
