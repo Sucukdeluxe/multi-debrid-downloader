@@ -9429,6 +9429,138 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("collect CLEANS a raw scene file that auto-rename never processed (the 17-file library bug)", async () => {
+    // Echter Bug aus rename-session_2026-06-02: Auto-Rename verpasste einzelne Dateien
+    // (verpasster Scan / lag ausserhalb der extractDir), der Collect schob sie dann ROH in
+    // die Library ("tvarchiv...s07e12-720.mkv"). Fix: Collect leitet den sauberen Namen
+    // selbst ab (gleiche Logik wie Auto-Rename) — die Library-Datei heisst garantiert sauber,
+    // auch wenn KEIN Auto-Rename-Pass die Datei je angefasst hat (hier: Collect direkt
+    // aufgerufen, ohne vorherigen Auto-Rename-Lauf).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Herzflimmern.Die.Klinik.am.See.S07.German.720p.Webrip.x264-TVARCHiV";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    // Per-Episoden-Ordner (vom Release-Group sauber benannt) mit ROHER MKV darin.
+    const episodeFolder = "Herzflimmern.Die.Klinik.am.See.S07E12.German.720p.Webrip.x264-TVARCHiV";
+    const epDir = path.join(extractDir, episodeFolder);
+    fs.mkdirSync(epDir, { recursive: true });
+    const rawName = "tvarchiv.herzflimmern.die.klinik.am.see.s07e12-720.mkv";
+    const rawPath = path.join(epDir, rawName);
+    fs.writeFileSync(rawPath, Buffer.alloc(4096, 7));
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 60_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true, // Umbenennen AN — wie in der echten User-Config
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    // Collect DIREKT aufrufen, OHNE vorherigen Auto-Rename-Lauf — simuliert genau die
+    // verpasste Datei. deferFreshFiles=false (finaler Pass).
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    const cleanLibPath = path.join(mkvLibraryDir, `${episodeFolder}.mkv`);
+    const rawLibPath = path.join(mkvLibraryDir, rawName);
+    // Library-Datei heisst SAUBER, nicht roh; Quelle ist weg.
+    expect(fs.existsSync(cleanLibPath)).toBe(true);
+    expect(fs.existsSync(rawLibPath)).toBe(false);
+    expect(fs.existsSync(rawPath)).toBe(false);
+
+    void manager;
+  }, 20000);
+
+  it("collect cleans a raw file sitting OUTSIDE extractDir (Downloader-Unfertig case) AND its .srt follows the rename", async () => {
+    // Die 5 Fritzie-S04-Dateien lagen in "Downloader Unfertig" (= outputDir-Seite, NICHT
+    // extractDir) — Auto-Rename scannt nur extractDir, sah sie also nie. Collect muss sie
+    // trotzdem aus dem Staffel-Ordner heraus sauber benennen, und der Untertitel muss
+    // mit dem Video mitwandern (auf den GEAENDERTEN Namen).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Fritzie.-.Der.Himmel.muss.warten.S04.GERMAN.720p.WEB.AVC-4SF";
+    const outputDir = path.join(root, "downloads", packageName); // = "Unfertig"-Aequivalent
+    const extractDir = path.join(root, "extract", packageName); // bleibt leer/fehlt
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const rawName = "4sf-fritzie.himmel.muss.warten.web.7p-s04e01.mkv";
+    const rawSrt = "4sf-fritzie.himmel.muss.warten.web.7p-s04e01.de.srt";
+    fs.writeFileSync(path.join(outputDir, rawName), Buffer.alloc(4096, 4));
+    fs.writeFileSync(path.join(outputDir, rawSrt), Buffer.from("1\n00:00:01,000 --> 00:00:02,000\nhi\n"));
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 60_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    const cleanBase = "Fritzie.-.Der.Himmel.muss.warten.S04E01.GERMAN.720p.WEB.AVC-4SF";
+    expect(fs.existsSync(path.join(mkvLibraryDir, `${cleanBase}.mkv`))).toBe(true);
+    expect(fs.existsSync(path.join(mkvLibraryDir, rawName))).toBe(false);
+    // Untertitel folgt dem Video auf den sauberen Namen (Sprach-Suffix .de erhalten).
+    expect(fs.existsSync(path.join(mkvLibraryDir, `${cleanBase}.de.srt`))).toBe(true);
+
+    void manager;
+  }, 20000);
+
   it("deferred final pass renames fresh files before collecting them (no scene names in library)", async () => {
     // Folge-Fund zu 18eada9 (verifiziert via Advisor-Gate): 18eada9 schloss den
     // "frische Datei landet unbenannt"-Bug nur fuer den HYBRID-Pfad (deferFreshFiles=true
