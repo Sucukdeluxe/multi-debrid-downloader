@@ -112,6 +112,22 @@ describe("decideAutoRenameBaseName (shared naming decision — used by auto-rena
     );
     expect(decision.kind).toBe("skip");
   });
+
+  it("uses the CLEAN per-episode folder (scene group WITH underscore, e.g. -idTV_iNT) — not the obfuscated package folder", () => {
+    // User-Report v1.7.178: castle.s08e02....mkv im sauberen Ordner "Castle.S08E02...H264-idTV_iNT"
+    // (Paket: "scn2-cstl7") wurde zu "scn2-cstl7.S08E02" verschlimmbessert, weil hasSceneGroupSuffix
+    // die Unterstrich-Gruppe "-idTV_iNT" nicht erkannte und auf den Paketordner zurueckfiel.
+    const epFolder = "Castle.S08E02.GERMAN.DL.720p.WEB.H264-idTV_iNT";
+    const decision = decideAutoRenameBaseName(
+      [epFolder, "scn2-cstl7"],
+      "castle.s08e02.german.dl.720p.web.h264-idtv_int.mkv",
+      "castle.s08e02.german.dl.720p.web.h264-idtv_int",
+      epFolder,
+      "scn2-cstl7"
+    );
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe(epFolder);
+  });
 });
 
 describe("hasMeaningfulSeriesPrefix", () => {

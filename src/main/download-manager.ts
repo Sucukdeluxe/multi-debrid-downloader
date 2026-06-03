@@ -1029,7 +1029,14 @@ function hasSceneGroupSuffix(fileName: string): boolean {
 
   const fallbackMatch = text.match(SCENE_GROUP_SUFFIX_FALLBACK_RE);
   const suffix = String(fallbackMatch?.[1] || "").trim();
-  return isValidSceneGroupSuffix(suffix);
+  if (isValidSceneGroupSuffix(suffix)) {
+    return true;
+  }
+  // Auch Scene-Gruppen MIT Unterstrich erkennen (z.B. "-idTV_iNT", "-NZ_iNT", "-DUBBED_iNT").
+  // Sonst wird ein sauber benannter Episoden-Ordner wie "Castle.S08E02.GERMAN.DL.720p.WEB.H264-
+  // idTV_iNT" faelschlich NICHT als Scene-Ordner erkannt → die Namensherleitung faellt auf den
+  // obfuskierten Paket-Ordner ("scn2-cstl7") zurueck und verschlimmbessert den Namen.
+  return extractFlexibleSceneGroupSuffix(text) !== null;
 }
 
 /** Older scene releases used "1x01" instead of "S01E01". The episode group
