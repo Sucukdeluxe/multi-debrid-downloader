@@ -1422,7 +1422,7 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
  *  clean target base name to rename to, or a skip with the reason (the caller
  *  logs and falls back to KEEPING the current name — raw-keep is the floor). */
 export type AutoRenameNameDecision =
-  | { kind: "rename"; baseName: string; note?: "token-inserted" | "token-applyToken" | "folder-override"; sourceEpisodeToken?: string; targetEpisodeToken?: string }
+  | { kind: "rename"; baseName: string; note?: "token-inserted" | "token-applyToken" | "folder-override" | "folder-as-is"; sourceEpisodeToken?: string; targetEpisodeToken?: string }
   | { kind: "skip"; reason: "no-target" | "source-better" | "token-loss" | "token-mismatch"; targetBaseName?: string; sourceEpisodeToken?: string; targetEpisodeToken?: string };
 
 export function decideAutoRenameBaseName(
@@ -1510,6 +1510,27 @@ export function decideAutoRenameBaseName(
   }
 
   if (!targetBaseName) {
+    // Fallback "Junk-Quellname + sauberer Release-Ordner": hat die QUELLE keinen Episode-Token
+    // (z.B. obfuskiertes "bet_kig_01_hdt") und kann normal kein Name abgeleitet werden, aber EIN
+    // folderCandidate IST bereits ein VOLLSTAENDIGER Scene-Release-Ordner (Scene-Gruppe UND
+    // Aufloesung ODER Codec, KEIN reiner Season-Ordner), dann diesen Ordnernamen direkt verwenden.
+    // Deckt das "Folge 01"-Nummern-Format ab (Episode als "01" statt S01E01), z.B.
+    // "Kreuzfahrt.ins.Glueck.01.Hochzeitsreise.nach.Burma.2007.German.720p.HDTV.x264-BET".
+    // Greift NUR ohne Quell-Episode-Token → schliesst sich mit dem Fabrikations-Guard oben aus
+    // (Mega-Direct hat einen Quell-Token und kommt nie hierher).
+    if (!extractEpisodeToken(sourceBaseName)) {
+      const RESOLUTION_RE = /\b(?:480|540|576|720|1080|1440|2160|4320)[pi]\b/i;
+      const CODEC_RE = /\b(?:x264|x265|x266|h\.?264|h\.?265|h\.?266|hevc|avc|vvc|av1|xvid|divx)\b/i;
+      for (const folderName of folderCandidates) {
+        const f = sanitizeFilename(String(folderName || "").trim());
+        if (!f) {
+          continue;
+        }
+        if (hasSceneGroupSuffix(f) && (RESOLUTION_RE.test(f) || CODEC_RE.test(f)) && !SCENE_SEASON_ONLY_RE.test(f)) {
+          return { kind: "rename", baseName: f, note: "folder-as-is" };
+        }
+      }
+    }
     return { kind: "skip", reason: "no-target" };
   }
   return { kind: "rename", baseName: targetBaseName, note };
