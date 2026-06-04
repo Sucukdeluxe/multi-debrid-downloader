@@ -128,6 +128,41 @@ describe("decideAutoRenameBaseName (shared naming decision — used by auto-rena
     expect(decision.kind).toBe("rename");
     expect(decision.kind === "rename" && decision.baseName).toBe(epFolder);
   });
+
+  it("uses the complete per-episode folder when the SOURCE has no SxxExx token (bare 'Folge 01' format)", () => {
+    // User-Report: "Kreuzfahrt ins Glück" — Datei "bet_kig_01_hdt.mkv" (kein SxxExx-Token),
+    // Episoden-Ordner nummeriert mit "01" statt S01E01. Frueher "kein Zielname" -> roh in die
+    // Library. Jetzt: der vollstaendige Release-Ordnername wird direkt verwendet.
+    const folders = [
+      "Kreuzfahrt.ins.Glueck.01.Hochzeitsreise.nach.Burma.2007.German.720p.HDTV.x264-BET",
+      "kig.hdtv.7p-001",
+      "Kreuzfahrt ins Glück S01"
+    ];
+    const decision = decideAutoRenameBaseName(folders, "bet_kig_01_hdt.mkv", "bet_kig_01_hdt", folders[0], folders[2]);
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe(folders[0]);
+  });
+
+  it("complete-folder fallback fires on CODEC alone (no resolution token — DVDRip/XviD class)", () => {
+    const folders = [
+      "Kreuzfahrt.ins.Glueck.01.Hochzeitsreise.nach.Burma.2007.German.DVDRip.x264-BET",
+      "Kreuzfahrt ins Glück S01"
+    ];
+    const decision = decideAutoRenameBaseName(folders, "bet_kig_01.mkv", "bet_kig_01", folders[0], folders[1]);
+    expect(decision.kind).toBe("rename");
+    expect(decision.kind === "rename" && decision.baseName).toBe(folders[0]);
+  });
+
+  it("complete-folder fallback does NOT fire when the source HAS an episode token (generic pack stays no-target)", () => {
+    const decision = decideAutoRenameBaseName(
+      ["Mega-Direct-Pack"],
+      "Direct.Show.S01E01.German.1080p.WEB.x264-DIRECT.mkv",
+      "Direct.Show.S01E01.German.1080p.WEB.x264-DIRECT",
+      "Mega-Direct-Pack",
+      "Mega-Direct-Pack"
+    );
+    expect(decision.kind).toBe("skip");
+  });
 });
 
 describe("hasMeaningfulSeriesPrefix", () => {
