@@ -9,7 +9,8 @@ import {
   buildAutoRenameBaseNameFromFoldersWithOptions,
   hasMeaningfulSeriesPrefix,
   looksLikeObfuscatedSceneFileName,
-  decideAutoRenameBaseName
+  decideAutoRenameBaseName,
+  isBonusContent
 } from "../src/main/download-manager";
 
 describe("decideAutoRenameBaseName (shared naming decision — used by auto-rename AND mkv-collect)", () => {
@@ -1019,5 +1020,44 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     if (result !== null) {
       expect(typeof result).toBe("string");
     }
+  });
+});
+
+describe("isBonusContent (numbered episodes are never bonus)", () => {
+  const pkgDir = "/pkg/Show.S04.GERMAN.DL.720p.WEB.x264-GRP";
+
+  it("does NOT treat a numbered episode as bonus even when its TITLE is a bonus word", () => {
+    // Der gemeldete Bug: Revenge.2011.S04E19.Interview wurde als Bonus verworfen.
+    const name = "Revenge.2011.S04E19.Interview.GERMAN.DL.720p.WEB.x264-TSCC";
+    const fp = `${pkgDir}/${name}/${name}.mkv`;
+    expect(isBonusContent(fp, pkgDir, name)).toBe(false);
+  });
+
+  it("covers further bonus-word episode titles with a token", () => {
+    for (const title of ["Special", "Featurette", "Outtakes", "Bloopers", "Making.Of"]) {
+      const name = `Show.S04E07.${title}.GERMAN.720p.WEB.x264-GRP`;
+      expect(isBonusContent(`${pkgDir}/${name}.mkv`, pkgDir, name)).toBe(false);
+    }
+  });
+
+  it("STILL treats genuine extras WITHOUT an episode token as bonus", () => {
+    for (const name of [
+      "Show.Making.Of.GERMAN.720p.WEB.x264-GRP",
+      "Show.Behind.The.Scenes.GERMAN-GRP",
+      "Some.Interview.With.Cast"
+    ]) {
+      expect(isBonusContent(`${pkgDir}/${name}.mkv`, pkgDir, name)).toBe(true);
+    }
+  });
+
+  it("a token-bearing file inside an Extras subfolder is still kept (numbered episode wins)", () => {
+    const name = "Show.S04E19.Interview.GROUP";
+    const fp = `${pkgDir}/Extras/${name}/${name}.mkv`;
+    expect(isBonusContent(fp, pkgDir, name)).toBe(false);
+  });
+
+  it("a token-less file inside an Extras subfolder is bonus", () => {
+    const fp = `${pkgDir}/Extras/Making.Of.mkv`;
+    expect(isBonusContent(fp, pkgDir, "Making.Of")).toBe(true);
   });
 });

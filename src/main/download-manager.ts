@@ -180,6 +180,24 @@ function isInsideBonusDir(filePath: string, packageDir: string): boolean {
   return false;
 }
 
+/** True if a file is bonus/extras content (Making-Of, Featurette, Interview, …)
+ *  that must NOT be collected into the flat episode library.
+ *
+ *  CRITICAL GUARD: a file carrying a real SxxExx episode token is a NUMBERED
+ *  EPISODE, never extras — even when its TITLE (or per-episode folder name)
+ *  happens to contain a bonus keyword, e.g. "Revenge.2011.S04E19.Interview".
+ *  Without this guard, episodes titled Interview/Outtakes/Special/Featurette/…
+ *  (and entire series whose name is such a word) were silently dropped from the
+ *  library — extracted + correctly renamed but never moved, no error (rd-support
+ *  bundle 2026-06-04). Genuine extras lack an SxxExx token (or live in an
+ *  Extras/Bonus subdir) and are still excluded. */
+export function isBonusContent(filePath: string, packageDir: string, nameWithoutExt: string): boolean {
+  if (extractEpisodeToken(nameWithoutExt)) {
+    return false;
+  }
+  return isInsideBonusDir(filePath, packageDir) || BONUS_FILENAME_RE.test(nameWithoutExt);
+}
+
 function expectedMinBytes(totalBytes: number | null | undefined, strict: boolean): number {
   if (!totalBytes || totalBytes <= 0) {
     return 10240;
@@ -4291,7 +4309,7 @@ export class DownloadManager extends EventEmitter {
       // Skip bonus/extras content (Featurettes, Making-Of, Behind-The-Scenes, etc.)
       // These have generic descriptive names and would get renamed to misleading
       // episode names if matched against the package's SxxExx pattern.
-      if (isInsideBonusDir(sourcePath, extractDir) || BONUS_FILENAME_RE.test(sourceBaseName)) {
+      if (isBonusContent(sourcePath, extractDir, sourceBaseName)) {
         continue;
       }
       const folderCandidates: string[] = [];
@@ -5033,7 +5051,7 @@ export class DownloadManager extends EventEmitter {
         sampleSkipped += 1;
         continue;
       }
-      if (isInsideBonusDir(filePath, sourceRoot) || BONUS_FILENAME_RE.test(stem)) {
+      if (isBonusContent(filePath, sourceRoot, stem)) {
         bonusSkipped += 1;
         logger.info(`MKV-Sammelordner: Bonus-Datei uebersprungen: ${path.basename(filePath)} (Pfad: ${path.relative(sourceRoot, filePath)})`);
         continue;
