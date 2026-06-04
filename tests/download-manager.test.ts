@@ -9561,6 +9561,131 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("collect MOVES a numbered episode whose TITLE is a bonus keyword (Revenge S04E19 'Interview')", async () => {
+    // Echter Bug aus rd-support-bundle 2026-06-04: Revenge.2011.S04E19.Interview blieb roh
+    // in "Downloader Fertig" haengen — nie in die Library verschoben, KEIN Fehler. Ursache:
+    // der Episodentitel "Interview" (UND der Episoden-Ordnername) matcht BONUS_FILENAME_RE /
+    // isInsideBonusDir -> der Collect stufte die Folge als Bonus/Extras ein und skippte sie
+    // (nur logger.info, im Paket-Log unsichtbar). Eine Folge MIT gueltigem SxxExx-Token ist
+    // aber eine echte Episode, niemals Bonus. Betrifft Interview/Outtakes/Special/Featurette-
+    // Titel -> "selten, aber 4-5 Folgen pro grossem Download".
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Revenge.2011.S04.GERMAN.DL.720p.WEB.x264-TSCC";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    // Per-Episoden-Ordner UND Datei tragen beide das Bonus-Wort "Interview" — exakt der Fall.
+    const episodeFolder = "Revenge.2011.S04E19.Interview.GERMAN.DL.720p.WEB.x264-TSCC";
+    const epDir = path.join(extractDir, episodeFolder);
+    fs.mkdirSync(epDir, { recursive: true });
+    const epName = `${episodeFolder}.mkv`;
+    fs.writeFileSync(path.join(epDir, epName), Buffer.alloc(4096, 9));
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 60_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    // Die Folge MUSS in der Library liegen (nicht als Bonus verworfen) und die Quelle weg sein.
+    expect(fs.existsSync(path.join(mkvLibraryDir, epName))).toBe(true);
+    expect(fs.existsSync(path.join(epDir, epName))).toBe(false);
+
+    void manager;
+  }, 20000);
+
+  it("collect STILL skips genuine bonus/extras with NO episode token (Making.Of) — proves the filter isn't disabled", async () => {
+    // Guard zum Fix oben: eine echte Bonus-Datei OHNE SxxExx-Token (Making.Of) bleibt Bonus
+    // und darf NICHT in die Library wandern. Sonst haetten wir den Bonus-Filter nur kaputt
+    // gemacht statt praezisiert.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Some.Show.S01.GERMAN.720p.WEB.x264-GRP";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(extractDir, { recursive: true });
+    // Echte Episode (mit Token) + echtes Extra (ohne Token) im selben Paket.
+    const epName = "Some.Show.S01E01.GERMAN.720p.WEB.x264-GRP.mkv";
+    const bonusName = "Some.Show.Making.Of.GERMAN.720p.WEB.x264-GRP.mkv";
+    fs.writeFileSync(path.join(extractDir, epName), Buffer.alloc(4096, 1));
+    fs.writeFileSync(path.join(extractDir, bonusName), Buffer.alloc(4096, 2));
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 60_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    // Echte Episode wandert in die Library; das Making-Of bleibt liegen (Bonus).
+    expect(fs.existsSync(path.join(mkvLibraryDir, epName))).toBe(true);
+    expect(fs.existsSync(path.join(mkvLibraryDir, bonusName))).toBe(false);
+    expect(fs.existsSync(path.join(extractDir, bonusName))).toBe(true);
+
+    void manager;
+  }, 20000);
+
   it("deferred final pass renames fresh files before collecting them (no scene names in library)", async () => {
     // Folge-Fund zu 18eada9 (verifiziert via Advisor-Gate): 18eada9 schloss den
     // "frische Datei landet unbenannt"-Bug nur fuer den HYBRID-Pfad (deferFreshFiles=true
