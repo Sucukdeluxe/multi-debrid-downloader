@@ -1061,3 +1061,45 @@ describe("isBonusContent (numbered episodes are never bonus)", () => {
     expect(isBonusContent(fp, pkgDir, "Making.Of")).toBe(true);
   });
 });
+
+describe("complete episode folder WITHOUT group suffix (codec/resolution only)", () => {
+  const hash = "c284d9d9072eaf3ac314d05f951dd115";
+
+  it("uses the clean folder name when it has an episode token + codec but no -GROUP (safari S04E08a)", () => {
+    // Echter Bug (rename-session 2026-06-04): alte deutsche Doku ohne Gruppen-Suffix.
+    // Ordner endet auf ".XviD" (kein "-GROUP") -> buildAutoRenameBaseName lieferte null ->
+    // "kein Zielname" -> Datei landete roh als "safari-fm-s04e08a.avi" in der Library.
+    const folder = "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD";
+    const decision = decideAutoRenameBaseName([folder, hash], "safari-fm-s04e08a.avi", "safari-fm-s04e08a", hash, hash);
+    expect(decision).toEqual({ kind: "rename", baseName: folder });
+  });
+
+  it("keeps multi-part letters a/b distinct (Teil.1 vs Teil.2 do NOT collide)", () => {
+    const fa = "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD";
+    const fb = "Fluss-Monster.S04E08b.Am.Essequibo.Teil.2.German.DOKU.SATRiP.XviD";
+    const da = decideAutoRenameBaseName([fa, hash], "safari-fm-s04e08a.avi", "safari-fm-s04e08a", hash, hash);
+    const db = decideAutoRenameBaseName([fb, hash], "safari-fm-s04e08b.avi", "safari-fm-s04e08b", hash, hash);
+    expect(da).toEqual({ kind: "rename", baseName: fa });
+    expect(db).toEqual({ kind: "rename", baseName: fb });
+    // Verschiedene Zielnamen -> keine "(2)"-Kollision beim Sammeln.
+    expect((da as any).baseName).not.toBe((db as any).baseName);
+  });
+
+  it("the previously-working group-suffix folder still works (no regression)", () => {
+    const folder = "Fluss-Monster.S01E02.Auf.der.Suche.nach.dem.Killer-Wels.German.DOKU.SATRiP.XviD-SAFARi";
+    const decision = decideAutoRenameBaseName([folder, hash], "safari-fm-s01e02.avi", "safari-fm-s01e02", hash, hash);
+    expect(decision).toEqual({ kind: "rename", baseName: folder });
+  });
+
+  it("does NOT use a bare episode folder WITHOUT any codec/resolution marker (stays conservative)", () => {
+    // "Show.S01E01" allein (keine Qualitaets-/Codec-Info, kein -GROUP) ist mehrdeutig ->
+    // weiterhin kein Ableiten (kein Over-Firing auf generische Ordner).
+    const decision = decideAutoRenameBaseName(["Show.S01E01", hash], "abc-s01e01.avi", "abc-s01e01", hash, hash);
+    expect(decision.kind).toBe("skip");
+  });
+
+  it("does NOT fabricate a name from a token-LESS folder (Mega-Direct guard intact)", () => {
+    const decision = decideAutoRenameBaseName(["Mega-Direct-Pack", hash], "Direct.Show.S01E01.DIRECT.mkv", "Direct.Show.S01E01.DIRECT", hash, hash);
+    expect(decision.kind).toBe("skip");
+  });
+});
