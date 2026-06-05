@@ -946,6 +946,10 @@ const SCENE_COMPACT_EPISODE_CODE_RE = /(?:^|[._\-\s])(\d{3,4})([a-z])?(?=$|[._\-
 const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
+// Marker, dass ein Name eine vollstaendige Release-Benennung ist (Aufloesung ODER Codec).
+// Bewusst inkl. xvid/divx — alte deutsche Dokus/Serien sind oft XviD ohne Aufloesungs-Tag.
+const SCENE_RESOLUTION_MARKER_RE = /\b(?:480|540|576|720|1080|1440|2160|4320)[pi]\b/i;
+const SCENE_CODEC_MARKER_RE = /\b(?:x264|x265|x266|h\.?264|h\.?265|h\.?266|hevc|avc|vvc|av1|xvid|divx)\b/i;
 const SCENE_GROUP_SUFFIX_FALLBACK_RE = /-([A-Za-z0-9]{2,})$/;
 const SCENE_FLEXIBLE_GROUP_SUFFIX_RE = /-([A-Za-z0-9]+(?:_[A-Za-z0-9]+)*)$/;
 const SCENE_MIXED_GROUP_SUFFIX_RE = /-[^-]*[\/\\|\u2044\u2215][^-]*$/;
@@ -1306,7 +1310,16 @@ export function buildAutoRenameBaseName(folderName: string, sourceFileName: stri
 
   const isLegacy4sf4sjFolder = SCENE_RELEASE_FOLDER_RE.test(normalizedFolderName);
   const isSceneGroupFolder = hasSceneGroupSuffix(normalizedFolderName);
-  if (!isLegacy4sf4sjFolder && !isSceneGroupFolder) {
+  // Auch einen vollstaendigen Episoden-Ordnernamen OHNE Gruppen-Suffix akzeptieren: hat der
+  // Ordner einen echten SxxExx-Token UND einen Codec-/Aufloesungs-Marker, ist es eine saubere
+  // Release-Benennung (z.B. alte deutsche Dokus ohne -GROUP, Ordner endet auf ".XviD":
+  // "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD"). Ohne diese Klausel
+  // lieferte der Helper null → "kein Zielname" → die Folge blieb mit rohem Hoster-Namen
+  // ("safari-fm-s04e08a.avi") in der Library liegen. Part-Buchstaben (a/b) bleiben erhalten,
+  // weil der Ordnername unveraendert als Zielname dient (nur der RANGE-Zweig schreibt Token um).
+  const isCompleteEpisodeFolder = Boolean(extractEpisodeToken(normalizedFolderName))
+    && (SCENE_RESOLUTION_MARKER_RE.test(normalizedFolderName) || SCENE_CODEC_MARKER_RE.test(normalizedFolderName));
+  if (!isLegacy4sf4sjFolder && !isSceneGroupFolder && !isCompleteEpisodeFolder) {
     return null;
   }
 
@@ -1323,7 +1336,7 @@ export function buildAutoRenameBaseName(folderName: string, sourceFileName: stri
   // range with the source's specific episode token.  Without this, all
   // episodes in a range-named folder share the same target name, producing
   // (2)(3)(4) suffixes during MKV collection.
-  if (!isLegacy4sf4sjFolder && isSceneGroupFolder) {
+  if (!isLegacy4sf4sjFolder && (isSceneGroupFolder || isCompleteEpisodeFolder)) {
     const episodeRangeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}[-]e?\d{1,3}(?=[._\-\s]|$)/i;
     if (episodeRangeRe.test(normalizedFolderName)) {
       next = applyEpisodeTokenToFolderName(normalizedFolderName, episodeToken);
@@ -1537,14 +1550,12 @@ export function decideAutoRenameBaseName(
     // Greift NUR ohne Quell-Episode-Token → schliesst sich mit dem Fabrikations-Guard oben aus
     // (Mega-Direct hat einen Quell-Token und kommt nie hierher).
     if (!extractEpisodeToken(sourceBaseName)) {
-      const RESOLUTION_RE = /\b(?:480|540|576|720|1080|1440|2160|4320)[pi]\b/i;
-      const CODEC_RE = /\b(?:x264|x265|x266|h\.?264|h\.?265|h\.?266|hevc|avc|vvc|av1|xvid|divx)\b/i;
       for (const folderName of folderCandidates) {
         const f = sanitizeFilename(String(folderName || "").trim());
         if (!f) {
           continue;
         }
-        if (hasSceneGroupSuffix(f) && (RESOLUTION_RE.test(f) || CODEC_RE.test(f)) && !SCENE_SEASON_ONLY_RE.test(f)) {
+        if (hasSceneGroupSuffix(f) && (SCENE_RESOLUTION_MARKER_RE.test(f) || SCENE_CODEC_MARKER_RE.test(f)) && !SCENE_SEASON_ONLY_RE.test(f)) {
           return { kind: "rename", baseName: f, note: "folder-as-is" };
         }
       }

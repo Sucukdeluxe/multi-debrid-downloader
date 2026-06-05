@@ -9686,6 +9686,72 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("collect CLEANS a raw .avi whose folder is a complete episode name WITHOUT a -GROUP suffix (safari S04E08a)", async () => {
+    // Echter Bug (rename-session 2026-06-04): alte deutsche Doku ohne Gruppen-Suffix
+    // (Ordner endet ".XviD", kein "-GROUP"). buildAutoRenameBaseName lieferte null -> die
+    // Folge landete ROH als "safari-fm-s04e08a.avi" in der Library. Der Part-Buchstabe a/b
+    // muss erhalten bleiben (Teil 1 vs Teil 2 duerfen nicht kollidieren).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "c284d9d9072eaf3ac314d05f951dd115";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    const mk = (folder: string, raw: string) => {
+      const epDir = path.join(extractDir, folder);
+      fs.mkdirSync(epDir, { recursive: true });
+      fs.writeFileSync(path.join(epDir, raw), Buffer.alloc(4096, 8));
+    };
+    const folderA = "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD";
+    const folderB = "Fluss-Monster.S04E08b.Am.Essequibo.Teil.2.German.DOKU.SATRiP.XviD";
+    mk(folderA, "safari-fm-s04e08a.avi");
+    mk(folderB, "safari-fm-s04e08b.avi");
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 60_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    // Beide Folgen sauber benannt in der Library, Part a/b distinkt, KEINE rohen Namen.
+    expect(fs.existsSync(path.join(mkvLibraryDir, `${folderA}.avi`))).toBe(true);
+    expect(fs.existsSync(path.join(mkvLibraryDir, `${folderB}.avi`))).toBe(true);
+    expect(fs.existsSync(path.join(mkvLibraryDir, "safari-fm-s04e08a.avi"))).toBe(false);
+    expect(fs.existsSync(path.join(mkvLibraryDir, "safari-fm-s04e08b.avi"))).toBe(false);
+
+    void manager;
+  }, 20000);
+
   it("deferred final pass renames fresh files before collecting them (no scene names in library)", async () => {
     // Folge-Fund zu 18eada9 (verifiziert via Advisor-Gate): 18eada9 schloss den
     // "frische Datei landet unbenannt"-Bug nur fuer den HYBRID-Pfad (deferFreshFiles=true
