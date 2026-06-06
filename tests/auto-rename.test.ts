@@ -1103,3 +1103,51 @@ describe("complete episode folder WITHOUT group suffix (codec/resolution only)",
     expect(decision.kind).toBe("skip");
   });
 });
+
+describe("collect must not mangle an already-clean SxxExx name via an episode-title folder", () => {
+  const hash = "c284d9d9072eaf3ac314d05f951dd115";
+  // Echter Bug (rename-session 2026-06-05): Miniserie "Steven Spielbergs Taken". Auto-Rename
+  // benannte korrekt zu "...S01E01...-GTVG". Der per-Episode-Ordner traegt aber nur einen
+  // Episode-only-Token + Titel ("...E01.Hinter.dem.Himmel...-GTVG", KEIN S01). Der Collect leitete
+  // daraus neu ab und HAENGTE den Quell-Token verkrueppelt an: "...-GTVG.S01E01" → in der Library
+  // stand dann "E01.Titel...S01E01" statt sauber "S01E01".
+  const epFolder = "Steven.Spielbergs.Taken.E01.Hinter.dem.Himmel.German.720p.HDTV.x264-GTVG";
+  const pkgFolder = "Steven.Spielbergs.Taken.S01.German.720p.HDTV.x264-GTVG";
+  const cleanSource = "Steven.Spielbergs.Taken.S01E01.German.720p.HDTV.x264-GTVG";
+
+  it("keeps the clean source (skip) instead of appending the token to the episode-title folder", () => {
+    const decision = decideAutoRenameBaseName([epFolder, pkgFolder], cleanSource + ".mkv", cleanSource, epFolder, pkgFolder);
+    expect(decision.kind).toBe("skip");
+    // NICHT der verkrueppelte "...-GTVG.S01E01"-Name.
+    expect(JSON.stringify(decision)).not.toContain("GTVG.S01E01");
+  });
+
+  it("still cleans a JUNK/obfuscated source via an episode-title folder (append path intact, no skip)", () => {
+    // Obfuskierter Hoster-Name (obf=true) → meine Klausel greift NICHT (sie behaelt nur saubere
+    // Quellen). Mit Season-Ordner als Kontext (Root-Guard ok) wird der Token weiter angewandt:
+    // die Quelle wird NICHT roh behalten. Pruegt, dass der Fix nicht zu breit ist.
+    const epFolder = "Show.E05.Die.Sache.German.720p.HDTV.x264-GRP";
+    const seasonFolder = "Show.S01.German.720p.HDTV.x264-GRP";
+    const decision = decideAutoRenameBaseName([epFolder, seasonFolder], "scn-show7-S01E05.mkv", "scn-show7-S01E05", epFolder, seasonFolder);
+    expect(decision.kind).toBe("rename");
+    expect(extractEpisodeToken((decision as any).baseName)).toBe("S01E05");
+  });
+
+  it("does NOT affect a folder that already carries an SxxExx token (safari S04E08a stays a rename)", () => {
+    const folder = "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD";
+    const decision = decideAutoRenameBaseName([folder, hash], "safari-fm-s04e08a.avi", "safari-fm-s04e08a", hash, hash);
+    expect(decision).toEqual({ kind: "rename", baseName: folder });
+  });
+
+  it("keeps a clean SHORT-prefix series source (ER) instead of the crippled token append", () => {
+    // Adversarial-Befund: die Praefix-Laenge darf KEIN Kriterium sein. Kurze Serien (ER, V, 24, Yu)
+    // sind genauso autoritativ; mit dem alten `hasMeaningfulSeriesPrefix`-Konjunkt (>=3 Alpha vor S0x)
+    // waere ER durchgefallen -> selber verkrueppelter Name wie der gemeldete Bug.
+    const epFolder = "ER.E01.Tag.und.Nacht.German.720p.HDTV.x264-GROUP";
+    const seasonFolder = "ER.S01.German.720p.HDTV.x264-GROUP";
+    const cleanSource = "ER.S01E01.German.720p.HDTV.x264-GROUP";
+    const decision = decideAutoRenameBaseName([epFolder, seasonFolder], cleanSource + ".mkv", cleanSource, epFolder, seasonFolder);
+    expect(decision.kind).toBe("skip");
+    expect(JSON.stringify(decision)).not.toContain("GROUP.S01E01");
+  });
+});

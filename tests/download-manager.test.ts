@@ -9752,6 +9752,71 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
+  it("collect KEEPS the clean SxxExx name and does NOT mangle it via an episode-title folder (Taken S01E01)", async () => {
+    // Echter Bug (rename-session 2026-06-05): Auto-Rename hatte die Datei bereits korrekt zu
+    // "...S01E01...-GTVG.mkv" benannt. Der per-Episode-Ordner traegt nur "E01" + Titel (kein S01).
+    // Der Collect leitete daraus neu ab und haengte den Token verkrueppelt an
+    // ("...-GTVG.S01E01"). Erwartung: der saubere S01E01-Name bleibt unangetastet.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const packageName = "Steven.Spielbergs.Taken.S01.German.720p.HDTV.x264-GTVG";
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
+    const epFolder = "Steven.Spielbergs.Taken.E01.Hinter.dem.Himmel.German.720p.HDTV.x264-GTVG";
+    const cleanName = "Steven.Spielbergs.Taken.S01E01.German.720p.HDTV.x264-GTVG.mkv";
+    const epDir = path.join(extractDir, epFolder);
+    fs.mkdirSync(epDir, { recursive: true });
+    // Datei liegt bereits SAUBER benannt vor (so wie Auto-Rename sie hinterlassen hat).
+    fs.writeFileSync(path.join(epDir, cleanName), Buffer.alloc(4096, 5));
+
+    const session = emptySession();
+    const packageId = `${packageName}-pkg`;
+    const createdAt = Date.now() - 60_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const mkvLibraryDir = path.join(root, "mkv-library");
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir,
+        enableIntegrityCheck: false,
+        cleanupMode: "none"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
+
+    // Sauberer S01E01-Name bleibt; KEIN verkrueppelter "...E01.Titel...S01E01"-Name.
+    expect(fs.existsSync(path.join(mkvLibraryDir, cleanName))).toBe(true);
+    const mangled = `${epFolder}.S01E01.mkv`;
+    expect(fs.existsSync(path.join(mkvLibraryDir, mangled))).toBe(false);
+    // Nichts mit dem Episoden-Titel im Library-Ordner.
+    const inLib = fs.readdirSync(mkvLibraryDir);
+    expect(inLib.some((n) => /Hinter\.dem\.Himmel/i.test(n))).toBe(false);
+
+    void manager;
+  }, 20000);
+
   it("deferred final pass renames fresh files before collecting them (no scene names in library)", async () => {
     // Folge-Fund zu 18eada9 (verifiziert via Advisor-Gate): 18eada9 schloss den
     // "frische Datei landet unbenannt"-Bug nur fuer den HYBRID-Pfad (deferFreshFiles=true
