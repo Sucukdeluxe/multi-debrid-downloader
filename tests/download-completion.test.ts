@@ -26,8 +26,6 @@ describe("download-completion", () => {
     const contentLength = (n: number) => ({ expectedTotal: n, source: "content-length" as const, canFinishEarly: true });
     const providerMeta = (n: number) => ({ expectedTotal: n, source: "provider-metadata" as const, canFinishEarly: false });
 
-    // H3 regression: a stream-end download (no Content-Length, no provider size)
-    // that yielded 0 bytes is a FAILED download, not a valid completion.
     it("rejects a 0-byte stream-end download (H3)", () => {
       const result = validateDownloadedFileCompletion({ actualBytes: 0, plan: streamEnd });
       expect(result.ok).toBe(false);
@@ -57,7 +55,6 @@ describe("download-completion", () => {
 
     it("accepts provider-metadata download and flags size mismatch", () => {
       const result = validateDownloadedFileCompletion({ actualBytes: 1900, plan: providerMeta(2000), toleranceBytes: 0 });
-      // provider-metadata: shorter than expected -> underflow rejected
       expect(result.ok).toBe(false);
     });
   });

@@ -53,25 +53,16 @@ export interface DownloadStats {
   runtimeMeasuredAt: number;
 }
 
-/** Result of a login/premium validity check for a single multi-account
- *  credential (Mega-Debrid account or Debrid-Link API key). Persisted in
- *  settings so the badges survive an app restart, refreshed by the "Check all"
- *  button or whenever an account is used. */
 export interface DebridAccountStatus {
   accountId: string;
   provider: "megadebrid" | "debridlink";
   label: string;
   maskedLogin: string;
-  /** Login worked (credentials accepted by the provider). */
   valid: boolean;
-  /** Currently a paying/premium account. */
   isPremium: boolean;
-  /** Epoch ms when premium expires; null = unknown, 0 = no premium. */
   premiumUntilMs: number | null;
   email?: string;
-  /** Human-readable one-line summary for the badge tooltip. */
   message: string;
-  /** Epoch ms of the last check. */
   checkedAt: number;
 }
 
@@ -157,8 +148,6 @@ export interface AppSettings {
   megaDebridAccountDailyLimitBytes: Record<string, number>;
   megaDebridAccountDailyUsageBytes: Record<string, number>;
   megaDebridAccountTotalUsageBytes: Record<string, number>;
-  /** Last known login/premium status per multi-account credential (id to status).
-   *  Keyed by Mega-Debrid / Debrid-Link account ids; refreshed by the account check. */
   debridAccountStatuses: Record<string, DebridAccountStatus>;
   providerDailyUsageDay: string;
   scheduledStartEpochMs: number;
@@ -242,16 +231,12 @@ export interface ContainerImportResult {
   source: "dlc";
 }
 
-/** A single account/key rotation event surfaced to the UI so the user sees
- *  exactly which account was tried and why it failed (not just a generic
- *  "Link-Umwandlung erneut"). Mirrors what is written to account-rotation.log. */
 export interface RotationEvent {
   id: string;
   at: number;
   level: "INFO" | "WARN" | "ERROR";
   provider: string;
   accountLabel: string;
-  /** OK | FAILED | FATAL | SKIP_COOLDOWN | SKIP_DISABLED | SKIP_DAILY_LIMIT | TEST | ... */
   event: string;
   reason?: string;
   category?: string;
@@ -272,17 +257,9 @@ export interface UiSnapshot {
   clipboardActive: boolean;
   reconnectSeconds: number;
   packageSpeedBps: Record<string, number>;
-  /** When set to "delta", session.items contains ONLY items that changed since
-   *  the last emit, and removedItemIds lists items that were removed. The
-   *  renderer must merge these into its master state. When undefined or "full",
-   *  session.items is the complete set (initial sync or periodic resync). */
   payloadKind?: "full" | "delta";
-  /** Item IDs to remove from the renderer's master state when payloadKind="delta". */
   removedItemIds?: string[];
-  /** Package IDs to remove from the renderer's master state when payloadKind="delta". */
   removedPackageIds?: string[];
-  /** Most-recent account/key rotation events (newest first), for the live
-   *  rotation panel. Always sent on full snapshots. */
   rotationEvents?: RotationEvent[];
 }
 

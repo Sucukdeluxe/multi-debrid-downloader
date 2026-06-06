@@ -82,8 +82,6 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
     await sleep(ms);
     return;
   }
-  // Check before entering the Promise constructor to avoid a race where the timer
-  // resolves before the aborted check runs (especially when ms=0).
   if (signal.aborted) {
     throw new Error("aborted");
   }

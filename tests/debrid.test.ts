@@ -424,14 +424,10 @@ describe("debrid service", () => {
         });
       }
 
-      // Only count calls to /downloader/add (the unrestrict endpoint)
       if (url.includes("/downloader/add")) {
         unrestrictAuthHeaders.push(authHeader);
-        // Read the body to know which link is being unrestricted
         const bodyText = init?.body ? String(init.body) : "";
         const isRapidgator = /rapidgator/i.test(bodyText);
-        // Only key-one + rapidgator returns maxDataHost. All other (key, host)
-        // combinations succeed.
         if (authHeader === "Bearer dl-key-one" && isRapidgator) {
           return new Response(JSON.stringify({
             success: false,
@@ -454,19 +450,14 @@ describe("debrid service", () => {
 
     const service = new DebridService(settings);
 
-    // 1) First rapidgator: key-one hits maxDataHost → key-two succeeds.
     const r1 = await service.unrestrictLink("https://rapidgator.net/file/first");
     expect(r1.providerLabel).toContain("Key 2");
 
-    // 2) Second rapidgator request: key-one MUST be skipped (host cooldown
-    //    on (key1, rapidgator)), only key-two should be tried.
     unrestrictAuthHeaders.length = 0;
     const r2 = await service.unrestrictLink("https://rapidgator.net/file/second");
     expect(unrestrictAuthHeaders).toEqual(["Bearer dl-key-two"]);
     expect(r2.providerLabel).toContain("Key 2");
 
-    // 3) Different host: key-one must NOT be skipped — its host-cooldown is
-    //    only for rapidgator, not for uploaded.net.
     unrestrictAuthHeaders.length = 0;
     const r3 = await service.unrestrictLink("https://uploaded.net/file/third");
     expect(unrestrictAuthHeaders).toEqual(["Bearer dl-key-one"]);
@@ -523,10 +514,7 @@ describe("debrid service", () => {
     const result = await service.unrestrictLink("https://rapidgator.net/file/example");
     expect(result.providerLabel).toContain("Key 2");
 
-    // Key-one responded normally — just that the link was unavailable on the
-    // hoster side. Key-one is NOT broken and must not be flagged as "error".
     expect(getDebridLinkKeyRuntimeStateForTests(key1Id)).not.toBe("error");
-    // Key-two served the link successfully, so it's "ready".
     expect(getDebridLinkKeyRuntimeStateForTests(key2Id)).toBe("ready");
   });
 
@@ -694,7 +682,6 @@ describe("debrid service", () => {
 
     const service = new DebridService(settings);
     await expect(service.unrestrictLink("https://hoster.example/not-debrid.bin")).rejects.toThrow(/debrid_link_cooldown.*notDebrid/);
-    // notDebrid is a host-level issue — only Key 1 should be tried, Key 2 must NOT be burned
     expect(authHeaders).toEqual(["Bearer dl-key-one"]);
   });
 
@@ -1267,7 +1254,6 @@ describe("debrid service", () => {
       autoProviderFallback: true
     };
 
-    // API returns 404 for connectUser → API fails, falls back to web
     const fetchSpy = vi.fn(async () => new Response("not-found", { status: 404 }));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
@@ -1366,7 +1352,6 @@ describe("debrid service", () => {
       autoProviderFallback: false
     };
 
-    // API connect fails fast → falls through to web fallback
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
     const megaWeb = vi.fn((_link: string, signal?: AbortSignal): Promise<never> => new Promise((_, reject) => {
@@ -1394,9 +1379,6 @@ describe("debrid service", () => {
   });
 
   it("rotates to the next Mega-Debrid account when one hits its daily limit (error-based)", async () => {
-    // User-Anforderung: bei mehreren Mega-Debrid-Accounts (Tageslimit pro Premium-
-    // Account) MUSS die Rotation feuern, sobald ein Account den Limit-FEHLER liefert
-    // — der naechste Account wird probiert. (Fehler-basiert, NICHT timeout-basiert.)
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1413,17 +1395,14 @@ describe("debrid service", () => {
       autoProviderFallback: false
     };
 
-    // API-Connect schlaegt schnell fehl -> Web-Pfad (megaWeb) pro Account.
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
     let webCalls = 0;
     const megaWeb = vi.fn(async (_link: string, _signal?: AbortSignal) => {
       webCalls += 1;
-      // Account 1: liefert bei jedem seiner REQUEST_RETRIES-Versuche den Tageslimit-Fehler.
       if (webCalls <= 3) {
         throw new Error("Mega-Web: daily limit reached (Tageslimit erreicht)");
       }
-      // Account 2: hat noch Kontingent -> loest den Link auf.
       return {
         fileName: "rotated-to-acc2.rar",
         directUrl: "https://mega-web.example/rotated-to-acc2.rar",
@@ -1435,17 +1414,11 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const result = await service.unrestrictLink("https://rapidgator.net/file/limit-rotation-test");
 
-    // Beweis der Rotation: das Ergebnis stammt vom ZWEITEN Account, nicht vom ersten.
     expect(result.directUrl).toBe("https://mega-web.example/rotated-to-acc2.rar");
-    // acc1 wurde versucht (und fiel mit Limit-Fehler), dann acc2 erfolgreich.
     expect(webCalls).toBeGreaterThanOrEqual(4);
   }, 30000);
 
   it("skips a manually disabled Mega-Debrid account and uses the next one", async () => {
-    // User-Feature: einen Account temporaer deaktivieren (statt loeschen) -> die
-    // Rotation ueberspringt ihn und nutzt die anderen. Beweist den ID-Seam: die ID in
-    // megaDebridDisabledAccountIds MUSS exakt der ID entsprechen, die die Rotation via
-    // getMegaDebridAccountId(login) liest (sonst greift das Deaktivieren nicht).
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1454,7 +1427,7 @@ describe("debrid service", () => {
       megaLogin: "user1",
       megaPassword: "pass1",
       megaCredentials: "user1:pass1\nuser2:pass2",
-      megaDebridDisabledAccountIds: [getMegaDebridAccountId("user1")], // acc1 deaktiviert
+      megaDebridDisabledAccountIds: [getMegaDebridAccountId("user1")],
       megaDebridPreferApi: false,
       providerOrder: [] as const,
       providerPrimary: "megadebrid" as const,
@@ -1475,18 +1448,12 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const result = await service.unrestrictLink("https://rapidgator.net/file/disabled-acc-test");
 
-    // Der deaktivierte acc1 wird uebersprungen -> acc2 loest den Link auf.
     expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
     expect(result.directUrl).toBe("https://mega-web.example/from-acc2.rar");
-    // acc1 wurde gar nicht erst versucht -> megaWeb nur 1x (fuer acc2) aufgerufen.
     expect(megaWeb).toHaveBeenCalledTimes(1);
   }, 20000);
 
   it("fails fast on Mega-Debrid hoster quota ('Kein Server') and rotates to the next account", async () => {
-    // User-Report: Account 1 am Tageslimit liefert "Kein Server für diesen Hoster
-    // verfügbar". Frueher lief das durch die volle Retry-Maschine (re-Login + 3x) und
-    // fraß das geteilte Rotations-Budget -> der funktionierende Account 2 lief in den
-    // Timeout (aborted:debrid -> fatal). Jetzt: schnell scheitern (1 Versuch) + rotieren.
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1518,15 +1485,10 @@ describe("debrid service", () => {
 
     expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
     expect(result.directUrl).toBe("https://mega-web.example/acc2.rar");
-    // Fail-fast: acc1 darf NICHT 3x (REQUEST_RETRIES) probiert werden -> genau 1x acc1, dann acc2.
     expect(calls).toBe(2);
   }, 20000);
 
   it("passes each account's OWN credentials to the Mega web unrestrict during rotation", async () => {
-    // Echter Root-Cause (Support-Bundle): der Web-Pfad nutzte fuer JEDEN rotierten
-    // Account die Creds des ersten/Legacy-Accounts → "Account 2" lief in Wahrheit mit
-    // Account-1-Login → der zweite (funktionierende) Account wurde nie verwendet.
-    // Jetzt muss jeder Account-Versuch SEINE eigenen Creds an den Web-Unrestrict reichen.
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1548,55 +1510,40 @@ describe("debrid service", () => {
     const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
       accountsSeen.push(account?.login);
       if (account?.login === "user1") {
-        // Account 1 am Tageslimit.
         throw new Error("Mega-Web: Kein Server für diesen Hoster verfügbar. Bitte versuchen Sie es später noch einmal.");
       }
-      // Account 2 (eigene Creds) loest auf.
       return { fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 };
     });
 
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const result = await service.unrestrictLink("https://rapidgator.net/file/per-account-creds");
 
-    // Jeder Account wurde mit SEINEM eigenen Login angesprochen (nicht 2x user1).
     expect(accountsSeen).toContain("user1");
     expect(accountsSeen).toContain("user2");
-    // Und der funktionierende Account 2 loest auf.
     expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
     expect(result.directUrl).toBe("https://mega-web.example/ok.rar");
   }, 20000);
 
   it("escalates a Mega-Debrid account to 'until restart' after the empty-response streak threshold", () => {
-    // User-Entscheidung: ein tageslimitierter Account soll NICHT alle 20s neu getestet
-    // werden, sondern bis Programm-Neustart geparkt. Da Tageslimit und transienter
-    // Leer-Blip auf Message-Ebene identisch sind ("Antwort leer", nie "Kein Server" in
-    // echten Logs), zaehlt eine Streak: erst ab der Schwelle wird geparkt.
     const key = `${getMegaDebridAccountId("user1")}:web`;
     expect(MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART).toBe(3);
-    expect(recordMegaDebridEmptyResponseStreak(key)).toBe(1); // 1. Blip -> NICHT parken
-    expect(recordMegaDebridEmptyResponseStreak(key)).toBe(2); // 2. -> NICHT parken
-    expect(recordMegaDebridEmptyResponseStreak(key)).toBe(3); // 3. -> Schwelle erreicht -> parken
-    // Ein Erfolg/anderer Fehlertyp setzt die Streak zurueck (Account wieder frisch).
+    expect(recordMegaDebridEmptyResponseStreak(key)).toBe(1);
+    expect(recordMegaDebridEmptyResponseStreak(key)).toBe(2);
+    expect(recordMegaDebridEmptyResponseStreak(key)).toBe(3);
     clearMegaDebridEmptyResponseStreak(key);
     expect(recordMegaDebridEmptyResponseStreak(key)).toBe(1);
   });
 
   it("keeps an 'until restart' park active forever (never expires until process restart)", () => {
-    // Anders als ein zeitbasierter Cooldown darf die Bis-Neustart-Sperre NIE ablaufen
-    // (nur ein Neustart loescht die In-Memory-Map). Sonst wuerde der limitierte Account
-    // doch wieder getestet werden.
     const key = `${getMegaDebridAccountId("user1")}:api`;
     primeMegaDebridUntilRestartForTests(key);
     const now = getMegaDebridAccountCooldownState(key);
     expect(now?.untilRestart).toBe(true);
-    // Selbst 100 Tage in der Zukunft ist die Sperre noch aktiv.
     const farFuture = Date.now() + 100 * 24 * 60 * 60 * 1000;
     expect(getMegaDebridAccountCooldownState(key, farFuture)?.untilRestart).toBe(true);
   });
 
   it("skips a Mega-Debrid account parked until restart and rotates to the next, without re-testing it", async () => {
-    // Beweis der Skip-Logik: ein bis Neustart geparkter Account wird NICHT mehr per
-    // Netzwerk getestet (kein megaWeb-Call fuer ihn), die Rotation nutzt den naechsten.
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1614,8 +1561,6 @@ describe("debrid service", () => {
     };
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
-    // user1 ist bereits bis Neustart geparkt (Tageslimit). Beide Mode-Keys parken, damit
-    // der Test unabhaengig vom intern gewaehlten mode ("api"/"web") ist.
     const user1 = getMegaDebridAccountId("user1");
     primeMegaDebridUntilRestartForTests(`${user1}:api`);
     primeMegaDebridUntilRestartForTests(`${user1}:web`);
@@ -1629,17 +1574,12 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const result = await service.unrestrictLink("https://rapidgator.net/file/parked-skip-test");
 
-    // user1 wurde NICHT angefasst (geparkt), nur user2 wurde getestet und loest auf.
     expect(loginsSeen).not.toContain("user1");
     expect(loginsSeen).toContain("user2");
     expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
   }, 20000);
 
   it("fails terminally (no retry timer) when ALL Mega-Debrid accounts are parked until restart", async () => {
-    // Sind alle Accounts am Tageslimit (bis Neustart gesperrt), gibt es keinen
-    // sinnvollen endlichen Retry-Zeitpunkt: die Rotation muss klar und endgueltig
-    // scheitern statt einen absurden (MAX_SAFE_INTEGER) Retry-Timer zu werfen — und
-    // KEINEN Account erneut per Netzwerk pollen.
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1667,16 +1607,10 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
 
     await expect(service.unrestrictLink("https://rapidgator.net/file/all-parked-test")).rejects.toThrow(/bis Neustart gesperrt/i);
-    // Kein Account wurde erneut getestet.
     expect(megaWeb).not.toHaveBeenCalled();
   }, 20000);
 
   it("drives a real empty response through the full rotation into an until-restart park (wiring test)", async () => {
-    // Lesson "Wiring-Lock vs. Mechanism-Test": die Helfer-Unit-Tests beweisen nur, dass der
-    // Streak-Zaehler funktioniert — NICHT, dass der Produktionspfad ihn fuettert. Dieser Test
-    // faehrt eine ECHTE leere Antwort durch unrestrictWithAccounts -> classifyAccountFailure
-    // (limitSignal) -> catch -> recordStreak -> Park. Kaeme limitSignal nicht an, wuerde der
-    // catch-else die Streak loeschen und KEIN until-restart setzen -> Assertion faellt.
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -1684,7 +1618,7 @@ describe("debrid service", () => {
       allDebridToken: "",
       megaLogin: "user1",
       megaPassword: "pass1",
-      megaCredentials: "user1:pass1", // genau EIN Account
+      megaCredentials: "user1:pass1",
       megaDebridPreferApi: false,
       providerOrder: [] as const,
       providerPrimary: "megadebrid" as const,
@@ -1694,21 +1628,16 @@ describe("debrid service", () => {
     };
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
-    // Provider "megadebrid" + preferApi:false -> resolveMegaDebridProvider -> "megadebrid-web"
-    // -> mode "web" -> Key-Suffix ":web" (das ist genau der Web-Pfad aus dem User-Screenshot).
     const key = `${getMegaDebridAccountId("user1")}:web`;
-    // Streak schon EINS unter der Schwelle (2 vorherige leere Antworten) — noch NICHT geparkt.
     recordMegaDebridEmptyResponseStreak(key);
     recordMegaDebridEmptyResponseStreak(key);
     expect(getMegaDebridAccountCooldownState(key)?.untilRestart ?? false).toBe(false);
 
-    // megaWeb liefert null -> der echte Web-Pfad macht daraus "Mega-Web Antwort leer".
     const megaWeb = vi.fn(async () => null);
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     await service.unrestrictLink("https://rapidgator.net/file/wiring").catch(() => undefined);
 
-    // Der echte Fehlversuch tippte die Streak auf die Schwelle -> Park bis Neustart.
-    expect(megaWeb).toHaveBeenCalled(); // Account wurde wirklich getestet (nicht vorab geparkt)
+    expect(megaWeb).toHaveBeenCalled();
     expect(getMegaDebridAccountCooldownState(key)?.untilRestart).toBe(true);
   }, 20000);
 
@@ -2082,11 +2011,9 @@ describe("normalizeResolvedFilename", () => {
   });
 
   it("strips HTML tags and collapses whitespace", () => {
-    // Tags are replaced by spaces, then multiple spaces collapsed
     const result = normalizeResolvedFilename("<b>Show.S01E01</b>.part01.rar");
     expect(result).toBe("Show.S01E01 .part01.rar");
 
-    // Entity decoding happens before tag removal, so &lt;...&gt; becomes <...> then gets stripped
     const entityTagResult = normalizeResolvedFilename("File&lt;Tag&gt;.part1.rar");
     expect(entityTagResult).toBe("File .part1.rar");
   });
@@ -2109,7 +2036,6 @@ describe("normalizeResolvedFilename", () => {
   });
 
   it("handles combined transforms", () => {
-    // "Download file" prefix stripped, &amp; decoded to &, "- Rapidgator" suffix stripped
     expect(normalizeResolvedFilename("Download file Show.S01E01.part01.rar - Rapidgator"))
       .toBe("Show.S01E01.part01.rar");
   });

@@ -865,7 +865,6 @@ describe("extractor", () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-sig-"));
       tempDirs.push(root);
       const filePath = path.join(root, "test.rar");
-      // RAR5 signature: 52 61 72 21 1A 07
       fs.writeFileSync(filePath, Buffer.from("526172211a0700", "hex"));
       const sig = await detectArchiveSignature(filePath);
       expect(sig).toBe("rar");
@@ -942,7 +941,6 @@ describe("extractor", () => {
       const candidates = await findArchiveCandidates(packageDir);
       const names = candidates.map((c) => path.basename(c));
       expect(names).toContain("movie.001");
-      // .002 should NOT be in candidates (only .001 is the entry point)
       expect(names).not.toContain("movie.002");
     });
 
@@ -957,7 +955,6 @@ describe("extractor", () => {
 
       const candidates = await findArchiveCandidates(packageDir);
       const names = candidates.map((c) => path.basename(c));
-      // .zip.001 should appear once from zipSplit detection, not duplicated by genericSplit
       expect(names.filter((n) => n === "movie.zip.001")).toHaveLength(1);
     });
 
@@ -1100,7 +1097,6 @@ describe("extractor", () => {
       const targetDir = path.join(root, "out");
       fs.mkdirSync(packageDir, { recursive: true });
 
-      // Create 3 zip archives
       for (const name of ["ep01.zip", "ep02.zip", "ep03.zip"]) {
         const zip = new AdmZip();
         zip.addFile(`${name}.txt`, Buffer.from(name));
@@ -1127,7 +1123,6 @@ describe("extractor", () => {
 
       expect(result.extracted).toBe(3);
       expect(result.failed).toBe(0);
-      // First archive should be ep01 (natural order, extracted serially for discovery)
       expect(seenOrder[0]).toBe("ep01.zip");
     });
 
@@ -1144,7 +1139,6 @@ describe("extractor", () => {
         zip.writeZip(path.join(packageDir, name));
       }
 
-      // No passwordList → only empty string → length=1 → no discovery phase
       const result = await extractPackageArchives({
         packageDir,
         targetDir,

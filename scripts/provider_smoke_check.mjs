@@ -66,8 +66,6 @@ async function callRealDebrid(link) {
   };
 }
 
-// megaCookie is intentionally cached at module scope so that multiple
-// callMegaDebrid() invocations reuse the same session cookie.
 async function callMegaDebrid(link) {
   if (!megaCookie) {
     const loginRes = await fetch("https://www.mega-debrid.eu/index.php?form=login", {

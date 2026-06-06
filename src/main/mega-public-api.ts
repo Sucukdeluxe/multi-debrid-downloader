@@ -1,19 +1,3 @@
-// Mega.nz Public API: Filename + Size aus Public-Link ohne Mega-Debrid-Account.
-//
-// Erlaubt Pre-Resolve von Filenames sobald Links in die Queue kommen — ohne
-// Mega-Debrid-Quota anzufassen. Funktioniert fuer jeden public mega.nz Link
-// (mit Decryption-Key im URL-Fragment).
-//
-// Protokoll: https://g.api.mega.co.nz/cs
-//   Request:  POST [{"a":"g","g":1,"p":"<file-id>"}]
-//   Response: [{"s": <size>, "at": <base64url encrypted attributes>, ...}]
-//   Attribute-Decryption: AES-128-CBC, key = file-key[0..16], IV = 16x \0
-//   Plaintext startet mit "MEGA" gefolgt von JSON: {"n": "filename.mkv", ...}
-//
-// Datei-Key im URL-Fragment ist 32 Bytes (base64url-encoded). Bytes 0-15
-// sind der AES-Schluessel, 16-23 der CTR-Nonce, 24-31 die Meta-MAC. Fuer
-// Attribut-Decryption brauchen wir nur den AES-Teil.
-
 import crypto from "node:crypto";
 
 const MEGA_API_BASE = "https://g.api.mega.co.nz/cs";
@@ -53,7 +37,6 @@ export function parseMegaUrl(url: string): ParsedMegaLink | null {
   if (!m) return null;
   const id = m[1];
   const rawKey = base64UrlDecode(m[2]);
-  // Files: 32 Bytes (256 bit). Folders: 16 Bytes — wir behandeln nur Files.
   if (!rawKey || rawKey.length !== 32) return null;
   return { id, rawKey };
 }
@@ -123,8 +106,6 @@ export async function resolveMegaFilename(
     return null;
   }
 
-  // Mega gibt entweder ein Array mit File-Infos oder eine numerische Error-ID
-  // zurueck (z.B. -9 ENOENT, -11 EACCESS, -14 EKEY, -16 EBLOCKED, -25 EOVERQUOTA).
   if (typeof payload === "number") return null;
   if (!Array.isArray(payload) || payload.length === 0) return null;
 

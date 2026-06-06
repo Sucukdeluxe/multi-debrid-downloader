@@ -12,12 +12,6 @@ import {
   saveSessionAsync
 } from "../src/main/storage";
 
-// Regression tests for queue loss across an app-update restart.
-// Both scenarios were observed empirically to drop packages before the fix:
-//   - a queued stale async save clobbering a newer synchronous save
-//     (persistNowSync / prepareForShutdown), and
-//   - loadSession ignoring a good .bak when the primary file is momentarily absent.
-
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -66,7 +60,6 @@ function makeItem(id: string, packageId: string): DownloadItem {
   };
 }
 
-/** Build a session whose package set is exactly `ids`. */
 function sessionWith(ids: string[]): SessionState {
   const s = emptySession();
   for (const id of ids) {
@@ -91,8 +84,6 @@ describe("session restart loss", () => {
 
     saveSession(paths, sessionWith(["A", "B"]));
 
-    // An async save goes in-flight, a second async save (stale snapshot) gets
-    // queued, then a synchronous save persists the live state with package C.
     const inflight = saveSessionAsync(paths, sessionWith(["A", "B"]));
     const queued = saveSessionAsync(paths, sessionWith(["A", "B"]));
     saveSession(paths, sessionWith(["A", "B", "C"]));

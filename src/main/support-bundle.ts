@@ -52,7 +52,6 @@ function addDirectoryIfExists(zip: AdmZip, dirPath: string, zipRoot: string): vo
   }
 }
 
-/** Wie addDirectoryIfExists, aber nur Dateien die in den letzten maxAgeMs ms geaendert wurden. */
 function addRecentDirectoryFiles(zip: AdmZip, dirPath: string, zipRoot: string, maxAgeMs: number): number {
   if (!fs.existsSync(dirPath)) {
     return 0;
@@ -68,7 +67,7 @@ function addRecentDirectoryFiles(zip: AdmZip, dirPath: string, zipRoot: string, 
         zip.addLocalFile(fullPath, zipRoot, entry.name);
         added += 1;
       }
-    } catch { /* ignorieren */ }
+    } catch {  }
   }
   return added;
 }
@@ -187,16 +186,11 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string, op
   addFileIfExists(zip, getTraceLogPath(), "logs/trace.log");
   addFileIfExists(zip, getTraceLogPath() ? `${getTraceLogPath()}.old` : null, "logs/trace.log.old");
 
-  // Granulare Per-Item/-Package/-Session-Logs nur der letzten 8h.
-  // Vorher wurden alle logs-Unterordner rekursiv gepackt → tausende Item-Logs
-  // → 200+ MB, unhandlich zum Verschicken. Mit 8h-Fenster bleibt das Bundle
-  // klein genug und enthaelt alles fuer aktuelle Fehler + Rename-Probleme.
   const SUPPORT_BUNDLE_LOG_WINDOW_MS = 8 * 60 * 60 * 1000;
   addDirectoryIfExists(zip, path.join(baseDir, "session-logs"), "logs/session-logs");
   addRecentDirectoryFiles(zip, path.join(baseDir, "package-logs"), "logs/package-logs", SUPPORT_BUNDLE_LOG_WINDOW_MS);
   addRecentDirectoryFiles(zip, path.join(baseDir, "item-logs"), "logs/item-logs", SUPPORT_BUNDLE_LOG_WINDOW_MS);
 
-  // Live-Logs der aktiven Queue (aktuelle Session) immer vollstaendig mitsichern.
   for (const packageId of packageIds) {
     addFileIfExists(zip, manager.getPackageLogPath(packageId) || getPackageLogPath(packageId), `logs/live/package-${packageId}.txt`);
   }

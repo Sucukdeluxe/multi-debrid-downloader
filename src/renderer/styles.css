@@ -70,8 +70,6 @@ body,
   gap: 8px;
 }
 
-/* ── Menu Bar ───────────────────────────────────────────────── */
-
 .menu-bar {
   display: flex;
   align-items: center;
@@ -277,8 +275,6 @@ body,
   font-size: 12px;
   white-space: nowrap;
 }
-
-
 
 .control-strip {
   display: flex;
@@ -660,7 +656,7 @@ body,
 
 .pkg-column-header {
   display: grid;
-  /* grid-template-columns set via inline style from columnOrder */
+
   gap: 8px;
   padding: 4px 10px;
   background: color-mix(in srgb, var(--card) 58%, transparent);
@@ -699,7 +695,7 @@ body,
 
 .pkg-columns {
   display: grid;
-  /* grid-template-columns set via inline style from columnOrder */
+
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -1491,7 +1487,6 @@ body,
   margin: -2px 0 10px;
 }
 
-
 .key-stats-popup {
   width: min(1360px, calc(100vw - 20px));
   max-width: min(1360px, calc(100vw - 20px));
@@ -2185,7 +2180,6 @@ body,
   color: #0a0f1a;
 }
 
-
 .pkg-toggle {
   display: inline-flex;
   align-items: center;
@@ -2278,7 +2272,6 @@ body,
   background: linear-gradient(90deg, #22c55e, #4ade80);
 }
 
-/* History Tab */
 .history-view {
   display: flex;
   flex-direction: column;
@@ -2379,7 +2372,7 @@ td {
 
 .item-row {
   display: grid;
-  /* grid-template-columns set via inline style from columnOrder */
+
   gap: 8px;
   align-items: center;
   margin: 0 -10px;
@@ -3139,8 +3132,6 @@ td {
   }
 }
 
-
-/* ── Account validity + premium badges (account check) ───────────────── */
 .account-board-header-actions { display: flex; gap: 8px; align-items: center; }
 .account-validity-badge {
   display: inline-block;
@@ -3158,7 +3149,6 @@ td {
 .account-validity-badge.invalid { color: #fff; background: #d9534f; border-color: #c0392b; }
 .account-validity-badge.unknown { color: var(--muted, #a59c8e); background: transparent; border-color: var(--line, #4a4032); }
 
-/* ── Live account-rotation panel ─────────────────────────────────────── */
 .rotation-panel { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
 .rotation-empty { color: var(--muted, #a59c8e); font-size: 12px; }
 .rotation-event {

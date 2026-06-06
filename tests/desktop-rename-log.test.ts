@@ -24,7 +24,6 @@ afterEach(() => {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch {
-      // ignore
     }
   }
   createdTmpDirs.length = 0;
@@ -50,8 +49,6 @@ describe("desktop-rename-log", () => {
   });
 
   it("self-heals: recreates the whole Downloader-Log FOLDER and file if it is deleted mid-session", () => {
-    // Genau die User-Anforderung: Ordner zur Laufzeit geloescht -> beim naechsten
-    // Rename automatisch wieder da, selbst wenn das Programm offen ist.
     const desktop = tmpDesktop();
     initDesktopRenameLog(desktop);
     const logPath = getDesktopRenameLogPath() as string;
@@ -60,7 +57,6 @@ describe("desktop-rename-log", () => {
     fs.rmSync(path.join(desktop, "Downloader-Log"), { recursive: true, force: true });
     expect(fs.existsSync(logPath)).toBe(false);
 
-    // Naechster Vorgang muss Ordner UND Datei (mit Header) selbstheilend neu anlegen.
     logDesktopRename("INFO", "ZeileB");
     expect(fs.existsSync(path.join(desktop, "Downloader-Log"))).toBe(true);
     expect(fs.existsSync(logPath)).toBe(true);
@@ -80,7 +76,7 @@ describe("desktop-rename-log", () => {
     const dir = tmpDesktop();
     const source = path.join(dir, "scn-xyz.part1.rar");
     const target = path.join(dir, "Movie.2024.German.1080p.part1.rar");
-    fs.writeFileSync(target, "data"); // Post-Rename-Zustand: Ziel da, Quelle weg.
+    fs.writeFileSync(target, "data");
 
     const v = verifyRename(source, target);
     expect(v.ok).toBe(true);
@@ -102,7 +98,6 @@ describe("desktop-rename-log", () => {
   });
 
   it("verifyRename: FAILS (half-done move) when the source still exists next to the target", () => {
-    // EXDEV-Copy gelang, aber rm(source) schlug fehl -> Ziel da, Quelle auch noch.
     const dir = tmpDesktop();
     const source = path.join(dir, "src.rar");
     const target = path.join(dir, "dst.rar");

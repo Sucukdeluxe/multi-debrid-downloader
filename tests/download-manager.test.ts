@@ -2453,8 +2453,6 @@ describe("download manager", () => {
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
-      // Content-Length matches actual bytes sent, so completion validation passes
-      // (HTTP-level truth takes priority over provider-metadata filesize).
       expect(item?.status).toBe("completed");
       expect(item?.downloadedBytes).toBeGreaterThanOrEqual(actual.length);
     } finally {
@@ -3292,7 +3290,6 @@ describe("download manager", () => {
       expect(item?.status).toBe("completed");
       expect(item?.targetPath).toBe(existingTargetPath);
       expect(sawResumeRange).toBe(true);
-      // Allow ALLOCATION_UNIT_SIZE (4096) tolerance for write-flush timing on Windows
       const fileSize = fs.statSync(existingTargetPath).size;
       expect(fileSize).toBeGreaterThanOrEqual(binary.length - 4096);
       expect(fileSize).toBeLessThanOrEqual(binary.length);
@@ -3578,9 +3575,6 @@ describe("download manager", () => {
       const item = manager.getSnapshot().session.items[itemId];
       expect(item?.status).toBe("completed");
       expect(item?.provider).toBe("debridlink");
-      // downloadedBytes may reflect stat.size which can be within ALLOCATION_UNIT_SIZE
-      // tolerance of the expected total, or the original partial size if the settle
-      // recovery finalized the item from disk before retry completed.
       expect(item?.downloadedBytes).toBeGreaterThanOrEqual(partialSize);
       expect(item?.downloadedBytes).toBeLessThanOrEqual(binary.length);
       expect(unrestrictCalls).toBeGreaterThanOrEqual(1);
@@ -4401,7 +4395,6 @@ describe("download manager", () => {
 
     for (const [index, archiveName] of archiveNames.entries()) {
       const targetPath = path.join(outputDir, archiveName);
-      // Write garbage content (no valid archive signature) — simulates corrupt download
       fs.writeFileSync(targetPath, Buffer.alloc(archiveSize, 0xAA));
       session.items[itemIds[index]!] = {
         id: itemIds[index]!,
@@ -4450,7 +4443,6 @@ describe("download manager", () => {
       "hybrid"
     );
 
-    // Invalid archive signature = genuine corruption → force re-download
     expect(changed).toBe(2);
     for (const itemId of itemIds) {
       const item = session.items[itemId]!;
@@ -4494,7 +4486,6 @@ describe("download manager", () => {
 
     for (const [index, archiveName] of archiveNames.entries()) {
       const targetPath = path.join(outputDir, archiveName);
-      // Write file with valid RAR5 signature — simulates wrong password, not corruption
       const content = Buffer.alloc(archiveSize, 0);
       Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]).copy(content);
       fs.writeFileSync(targetPath, content);
@@ -4545,7 +4536,6 @@ describe("download manager", () => {
       "hybrid"
     );
 
-    // Valid RAR signature = file is structurally intact → wrong password, don't re-download
     expect(changed).toBe(0);
     for (const itemId of itemIds) {
       const item = session.items[itemId]!;
@@ -6129,9 +6119,6 @@ describe("download manager", () => {
 
       const item = Object.values(manager.getSnapshot().session.items)[0];
       expect(item?.status).toBe("completed");
-      // On Windows with pre-allocation, the tiny error-page detection is masked
-      // (stat reports pre-allocated size, not actual written bytes), so the first
-      // download may be accepted without a retry.
       if (process.platform !== "win32") {
         expect(directCalls).toBeGreaterThan(1);
       }
@@ -6145,7 +6132,6 @@ describe("download manager", () => {
   it("accepts small .sfv metadata files without rejecting them as suspicious", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
-    // SFV content is just CRC32 checksums — legitimately tiny
     const sfvContent = Buffer.from("archive.part1.rar 1A2B3C4D\narchive.part2.rar 5E6F7A8B\n", "utf8");
 
     const server = http.createServer((req, res) => {
@@ -9359,12 +9345,6 @@ describe("download manager", () => {
   }, 20000);
 
   it("hybrid collect defers fresh files instead of moving them unrenamed; final pass collects them", async () => {
-    // Regression: User-Report — bei Hybrid-Extraktion blieben 1-2 Dateien pro
-    // Staffel unbenannt (mit Original-Scene-Namen in der Library). Ursache: eine
-    // frisch extrahierte Datei wird vom Auto-Rename absichtlich deferred (noch nicht
-    // stabil), aber der Collect moved sie vorher mit Original-Namen. Fix: der
-    // Hybrid-Collect (deferFreshFiles=true) ueberspringt frische Dateien; der finale
-    // Deferred-Pass (deferFreshFiles=false) sammelt sie nach Stabilisierung ein.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -9375,7 +9355,7 @@ describe("download manager", () => {
 
     const mkvName = "grp-freshshow.s01e07-720p.mkv";
     const mkvPath = path.join(extractDir, mkvName);
-    fs.writeFileSync(mkvPath, Buffer.alloc(4096, 7)); // mtime = jetzt → "frisch"
+    fs.writeFileSync(mkvPath, Buffer.alloc(4096, 7));
 
     const session = emptySession();
     const packageId = `${packageName}-pkg`;
@@ -9410,18 +9390,14 @@ describe("download manager", () => {
       session,
       createStoragePaths(path.join(root, "state"))
     );
-    // In Tests ist fileStabilizeMinAgeMs=0 (Frische-Erkennung aus) — fuer diesen
-    // Test aktivieren, damit die gerade erstellte Datei als "frisch" gilt.
     (manager as any).fileStabilizeMinAgeMs = 30_000;
 
     const libPath = path.join(mkvLibraryDir, mkvName);
 
-    // Hybrid-Collect (deferFreshFiles=true): frische Datei darf NICHT gemoved werden.
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, true);
     expect(fs.existsSync(libPath)).toBe(false);
     expect(fs.existsSync(mkvPath)).toBe(true);
 
-    // Finaler Deferred-Pass (deferFreshFiles=false): sammelt die Datei trotzdem ein.
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
     expect(fs.existsSync(libPath)).toBe(true);
     expect(fs.existsSync(mkvPath)).toBe(false);
@@ -9430,19 +9406,12 @@ describe("download manager", () => {
   }, 20000);
 
   it("collect CLEANS a raw scene file that auto-rename never processed (the 17-file library bug)", async () => {
-    // Echter Bug aus rename-session_2026-06-02: Auto-Rename verpasste einzelne Dateien
-    // (verpasster Scan / lag ausserhalb der extractDir), der Collect schob sie dann ROH in
-    // die Library ("tvarchiv...s07e12-720.mkv"). Fix: Collect leitet den sauberen Namen
-    // selbst ab (gleiche Logik wie Auto-Rename) — die Library-Datei heisst garantiert sauber,
-    // auch wenn KEIN Auto-Rename-Pass die Datei je angefasst hat (hier: Collect direkt
-    // aufgerufen, ohne vorherigen Auto-Rename-Lauf).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
     const packageName = "Herzflimmern.Die.Klinik.am.See.S07.German.720p.Webrip.x264-TVARCHiV";
     const outputDir = path.join(root, "downloads", packageName);
     const extractDir = path.join(root, "extract", packageName);
-    // Per-Episoden-Ordner (vom Release-Group sauber benannt) mit ROHER MKV darin.
     const episodeFolder = "Herzflimmern.Die.Klinik.am.See.S07E12.German.720p.Webrip.x264-TVARCHiV";
     const epDir = path.join(extractDir, episodeFolder);
     fs.mkdirSync(epDir, { recursive: true });
@@ -9474,7 +9443,7 @@ describe("download manager", () => {
         outputDir: path.join(root, "downloads"),
         extractDir: path.join(root, "extract"),
         autoExtract: true,
-        autoRename4sf4sj: true, // Umbenennen AN — wie in der echten User-Config
+        autoRename4sf4sj: true,
         collectMkvToLibrary: true,
         mkvLibraryDir,
         enableIntegrityCheck: false,
@@ -9484,13 +9453,10 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    // Collect DIREKT aufrufen, OHNE vorherigen Auto-Rename-Lauf — simuliert genau die
-    // verpasste Datei. deferFreshFiles=false (finaler Pass).
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
     const cleanLibPath = path.join(mkvLibraryDir, `${episodeFolder}.mkv`);
     const rawLibPath = path.join(mkvLibraryDir, rawName);
-    // Library-Datei heisst SAUBER, nicht roh; Quelle ist weg.
     expect(fs.existsSync(cleanLibPath)).toBe(true);
     expect(fs.existsSync(rawLibPath)).toBe(false);
     expect(fs.existsSync(rawPath)).toBe(false);
@@ -9499,16 +9465,12 @@ describe("download manager", () => {
   }, 20000);
 
   it("collect cleans a raw file sitting OUTSIDE extractDir (Downloader-Unfertig case) AND its .srt follows the rename", async () => {
-    // Die 5 Fritzie-S04-Dateien lagen in "Downloader Unfertig" (= outputDir-Seite, NICHT
-    // extractDir) — Auto-Rename scannt nur extractDir, sah sie also nie. Collect muss sie
-    // trotzdem aus dem Staffel-Ordner heraus sauber benennen, und der Untertitel muss
-    // mit dem Video mitwandern (auf den GEAENDERTEN Namen).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
     const packageName = "Fritzie.-.Der.Himmel.muss.warten.S04.GERMAN.720p.WEB.AVC-4SF";
-    const outputDir = path.join(root, "downloads", packageName); // = "Unfertig"-Aequivalent
-    const extractDir = path.join(root, "extract", packageName); // bleibt leer/fehlt
+    const outputDir = path.join(root, "downloads", packageName);
+    const extractDir = path.join(root, "extract", packageName);
     fs.mkdirSync(outputDir, { recursive: true });
 
     const rawName = "4sf-fritzie.himmel.muss.warten.web.7p-s04e01.mkv";
@@ -9555,27 +9517,18 @@ describe("download manager", () => {
     const cleanBase = "Fritzie.-.Der.Himmel.muss.warten.S04E01.GERMAN.720p.WEB.AVC-4SF";
     expect(fs.existsSync(path.join(mkvLibraryDir, `${cleanBase}.mkv`))).toBe(true);
     expect(fs.existsSync(path.join(mkvLibraryDir, rawName))).toBe(false);
-    // Untertitel folgt dem Video auf den sauberen Namen (Sprach-Suffix .de erhalten).
     expect(fs.existsSync(path.join(mkvLibraryDir, `${cleanBase}.de.srt`))).toBe(true);
 
     void manager;
   }, 20000);
 
   it("collect MOVES a numbered episode whose TITLE is a bonus keyword (Revenge S04E19 'Interview')", async () => {
-    // Echter Bug aus rd-support-bundle 2026-06-04: Revenge.2011.S04E19.Interview blieb roh
-    // in "Downloader Fertig" haengen — nie in die Library verschoben, KEIN Fehler. Ursache:
-    // der Episodentitel "Interview" (UND der Episoden-Ordnername) matcht BONUS_FILENAME_RE /
-    // isInsideBonusDir -> der Collect stufte die Folge als Bonus/Extras ein und skippte sie
-    // (nur logger.info, im Paket-Log unsichtbar). Eine Folge MIT gueltigem SxxExx-Token ist
-    // aber eine echte Episode, niemals Bonus. Betrifft Interview/Outtakes/Special/Featurette-
-    // Titel -> "selten, aber 4-5 Folgen pro grossem Download".
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
     const packageName = "Revenge.2011.S04.GERMAN.DL.720p.WEB.x264-TSCC";
     const outputDir = path.join(root, "downloads", packageName);
     const extractDir = path.join(root, "extract", packageName);
-    // Per-Episoden-Ordner UND Datei tragen beide das Bonus-Wort "Interview" — exakt der Fall.
     const episodeFolder = "Revenge.2011.S04E19.Interview.GERMAN.DL.720p.WEB.x264-TSCC";
     const epDir = path.join(extractDir, episodeFolder);
     fs.mkdirSync(epDir, { recursive: true });
@@ -9618,7 +9571,6 @@ describe("download manager", () => {
 
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
-    // Die Folge MUSS in der Library liegen (nicht als Bonus verworfen) und die Quelle weg sein.
     expect(fs.existsSync(path.join(mkvLibraryDir, epName))).toBe(true);
     expect(fs.existsSync(path.join(epDir, epName))).toBe(false);
 
@@ -9626,9 +9578,6 @@ describe("download manager", () => {
   }, 20000);
 
   it("collect STILL skips genuine bonus/extras with NO episode token (Making.Of) — proves the filter isn't disabled", async () => {
-    // Guard zum Fix oben: eine echte Bonus-Datei OHNE SxxExx-Token (Making.Of) bleibt Bonus
-    // und darf NICHT in die Library wandern. Sonst haetten wir den Bonus-Filter nur kaputt
-    // gemacht statt praezisiert.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -9636,7 +9585,6 @@ describe("download manager", () => {
     const outputDir = path.join(root, "downloads", packageName);
     const extractDir = path.join(root, "extract", packageName);
     fs.mkdirSync(extractDir, { recursive: true });
-    // Echte Episode (mit Token) + echtes Extra (ohne Token) im selben Paket.
     const epName = "Some.Show.S01E01.GERMAN.720p.WEB.x264-GRP.mkv";
     const bonusName = "Some.Show.Making.Of.GERMAN.720p.WEB.x264-GRP.mkv";
     fs.writeFileSync(path.join(extractDir, epName), Buffer.alloc(4096, 1));
@@ -9678,7 +9626,6 @@ describe("download manager", () => {
 
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
-    // Echte Episode wandert in die Library; das Making-Of bleibt liegen (Bonus).
     expect(fs.existsSync(path.join(mkvLibraryDir, epName))).toBe(true);
     expect(fs.existsSync(path.join(mkvLibraryDir, bonusName))).toBe(false);
     expect(fs.existsSync(path.join(extractDir, bonusName))).toBe(true);
@@ -9687,10 +9634,6 @@ describe("download manager", () => {
   }, 20000);
 
   it("collect CLEANS a raw .avi whose folder is a complete episode name WITHOUT a -GROUP suffix (safari S04E08a)", async () => {
-    // Echter Bug (rename-session 2026-06-04): alte deutsche Doku ohne Gruppen-Suffix
-    // (Ordner endet ".XviD", kein "-GROUP"). buildAutoRenameBaseName lieferte null -> die
-    // Folge landete ROH als "safari-fm-s04e08a.avi" in der Library. Der Part-Buchstabe a/b
-    // muss erhalten bleiben (Teil 1 vs Teil 2 duerfen nicht kollidieren).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -9743,7 +9686,6 @@ describe("download manager", () => {
 
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
-    // Beide Folgen sauber benannt in der Library, Part a/b distinkt, KEINE rohen Namen.
     expect(fs.existsSync(path.join(mkvLibraryDir, `${folderA}.avi`))).toBe(true);
     expect(fs.existsSync(path.join(mkvLibraryDir, `${folderB}.avi`))).toBe(true);
     expect(fs.existsSync(path.join(mkvLibraryDir, "safari-fm-s04e08a.avi"))).toBe(false);
@@ -9753,10 +9695,6 @@ describe("download manager", () => {
   }, 20000);
 
   it("collect KEEPS the clean SxxExx name and does NOT mangle it via an episode-title folder (Taken S01E01)", async () => {
-    // Echter Bug (rename-session 2026-06-05): Auto-Rename hatte die Datei bereits korrekt zu
-    // "...S01E01...-GTVG.mkv" benannt. Der per-Episode-Ordner traegt nur "E01" + Titel (kein S01).
-    // Der Collect leitete daraus neu ab und haengte den Token verkrueppelt an
-    // ("...-GTVG.S01E01"). Erwartung: der saubere S01E01-Name bleibt unangetastet.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -9767,7 +9705,6 @@ describe("download manager", () => {
     const cleanName = "Steven.Spielbergs.Taken.S01E01.German.720p.HDTV.x264-GTVG.mkv";
     const epDir = path.join(extractDir, epFolder);
     fs.mkdirSync(epDir, { recursive: true });
-    // Datei liegt bereits SAUBER benannt vor (so wie Auto-Rename sie hinterlassen hat).
     fs.writeFileSync(path.join(epDir, cleanName), Buffer.alloc(4096, 5));
 
     const session = emptySession();
@@ -9806,11 +9743,9 @@ describe("download manager", () => {
 
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
-    // Sauberer S01E01-Name bleibt; KEIN verkrueppelter "...E01.Titel...S01E01"-Name.
     expect(fs.existsSync(path.join(mkvLibraryDir, cleanName))).toBe(true);
     const mangled = `${epFolder}.S01E01.mkv`;
     expect(fs.existsSync(path.join(mkvLibraryDir, mangled))).toBe(false);
-    // Nichts mit dem Episoden-Titel im Library-Ordner.
     const inLib = fs.readdirSync(mkvLibraryDir);
     expect(inLib.some((n) => /Hinter\.dem\.Himmel/i.test(n))).toBe(false);
 
@@ -9818,30 +9753,18 @@ describe("download manager", () => {
   }, 20000);
 
   it("deferred final pass renames fresh files before collecting them (no scene names in library)", async () => {
-    // Folge-Fund zu 18eada9 (verifiziert via Advisor-Gate): 18eada9 schloss den
-    // "frische Datei landet unbenannt"-Bug nur fuer den HYBRID-Pfad (deferFreshFiles=true
-    // + Mehrfach-Pässe). Der finale Deferred-Pass (runDeferredPostExtraction) macht
-    // Rename (treatFilesAsStable? nein) -> Collect (deferFreshFiles=false). Ist eine
-    // Datei beim Deferred-Rename noch "frisch" (< fileStabilizeMinAgeMs) — z.B. eine
-    // gerade per Nested-Extraction (12045) geschriebene Datei — ueberspringt der
-    // Frische-Gate sie, und der Collect moved sie mit Original-Scene-Namen in die
-    // Library. Im Deferred-FINAL-Pass laeuft aber KEIN concurrent Extractor mehr
-    // (Extraktion abgeschlossen/awaited), der Frische-Gate ist dort ein False
-    // Positive. Fix: der Final-Pass-Rename behandelt alle Dateien als stabil
-    // (treatFilesAsStable=true) → benennt um, bevor der Collect sie sammelt.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
     const packageName = "Test.Show.S02.GERMAN.WS.720p.HDTV.x264-aWake";
     const outputDir = path.join(root, "downloads", packageName);
     const extractDir = path.join(root, "extract", packageName);
-    // Episoden-Ordner liefert den kanonischen Zielnamen (enthaelt SxxExx).
     const epFolder = path.join(extractDir, "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake");
     fs.mkdirSync(epFolder, { recursive: true });
 
     const sceneName = "awa-testshow02e05hd.mkv";
     const scenePath = path.join(epFolder, sceneName);
-    fs.writeFileSync(scenePath, Buffer.alloc(4096, 5)); // mtime = jetzt → "frisch"
+    fs.writeFileSync(scenePath, Buffer.alloc(4096, 5));
 
     const session = emptySession();
     const packageId = `${packageName}-pkg`;
@@ -9876,22 +9799,15 @@ describe("download manager", () => {
       session,
       createStoragePaths(path.join(root, "state"))
     );
-    // Produktion: fileStabilizeMinAgeMs=2000. Hier 30s, damit die gerade erstellte
-    // Datei garantiert als "frisch" gilt — wie eine eben extrahierte Datei, die der
-    // Deferred-Pass sofort danach verarbeitet.
     (manager as any).fileStabilizeMinAgeMs = 30_000;
 
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const renamedLibPath = path.join(mkvLibraryDir, `${expectedBase}.mkv`);
     const sceneLibPath = path.join(mkvLibraryDir, sceneName);
 
-    // Deferred-FINAL-Pass-Sequenz, exakt wie runDeferredPostExtraction:
-    //  1) Rename — treatFilesAsStable=true (Extraktion abgeschlossen, kein Frische-Skip)
-    //  2) Collect — deferFreshFiles=false
     await (manager as any).autoRenameExtractedVideoFiles(extractDir, session.packages[packageId], undefined, true);
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
-    // Die Datei landet UMBENANNT in der Library — nicht mit dem Scene-Namen.
     expect(fs.existsSync(renamedLibPath)).toBe(true);
     expect(fs.existsSync(sceneLibPath)).toBe(false);
 
@@ -9899,11 +9815,6 @@ describe("download manager", () => {
   }, 20000);
 
   it("deferred post-extraction wiring renames fresh files end-to-end (treatFilesAsStable reaches the rename)", async () => {
-    // Wiring-Lock zum vorherigen Test: stellt sicher, dass runDeferredPostExtraction
-    // den Rename TATSAECHLICH mit treatFilesAsStable=true aufruft. Wuerde jemand das
-    // `true` an der Call-Site (autoRenameExtractedVideoFiles(..., true)) entfernen,
-    // faellt dieser Test (frische Datei landet wieder unbenannt) — der reine
-    // Mechanism-Test wuerde das NICHT bemerken (er ruft den Rename selbst mit true).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -9915,7 +9826,7 @@ describe("download manager", () => {
     fs.mkdirSync(outputDir, { recursive: true });
 
     const sceneName = "awa-testshow02e05hd.mkv";
-    fs.writeFileSync(path.join(epFolder, sceneName), Buffer.alloc(4096, 5)); // mtime = jetzt → "frisch"
+    fs.writeFileSync(path.join(epFolder, sceneName), Buffer.alloc(4096, 5));
 
     const session = emptySession();
     const packageId = `${packageName}-pkg`;
@@ -9953,9 +9864,6 @@ describe("download manager", () => {
     (manager as any).fileStabilizeMinAgeMs = 30_000;
 
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
-    // Treibt den ECHTEN Produktionspfad: runDeferredPostExtraction → Rename
-    // (Call-Site mit treatFilesAsStable=true) → Collect (deferFreshFiles=false).
-    // success=1 (Collect-Gate), alreadyMarkedExtracted=true (Rename-Gate), failed=0.
     await (manager as any).runDeferredPostExtraction(packageId, session.packages[packageId], 1, 0, true, 1);
 
     expect(fs.existsSync(path.join(mkvLibraryDir, `${expectedBase}.mkv`))).toBe(true);
@@ -9973,7 +9881,6 @@ describe("download manager", () => {
     const extractDir = path.join(root, "extract", packageName);
     fs.mkdirSync(outputDir, { recursive: true });
 
-    // Direct .mkv download (no archive) — wie es Mega-Debrid bei mega.nz liefert.
     const directMkvName = "Direct.Show.S01E01.German.1080p.WEB.x264-DIRECT.mkv";
     const directMkvPath = path.join(outputDir, directMkvName);
     fs.writeFileSync(directMkvPath, Buffer.alloc(2048, 1));
@@ -10039,20 +9946,13 @@ describe("download manager", () => {
     await waitFor(() => fs.existsSync(libraryPath), 12000);
 
     expect(fs.existsSync(libraryPath)).toBe(true);
-    // Filename darf NICHT umbenannt werden (Mega-Files sind oft schon korrekt benannt).
     expect(fs.readFileSync(libraryPath).length).toBe(directMkvSize);
-    // Quelle ist weg (verschoben).
     expect(fs.existsSync(directMkvPath)).toBe(false);
 
     void manager;
   }, 20000);
 
   it("does NOT delete pending RAR archive sets in outputDir when collecting MKVs from extractDir", async () => {
-    // Regression v1.7.156: bei einem Multi-Archive-Set-Paket (z.B. S01 + S02 RARs
-    // im selben outputDir) wurde nach dem Extrahieren von S01 die MKV-Collection
-    // getriggert. Diese loeschte als "Restdateien" ALLE Nicht-Video-Files im
-    // outputDir — also auch die noch nicht entpackten S02-RAR-Parts. Folge:
-    // S02 ging verloren ("missing_file" beim spaeteren Extract).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -10062,7 +9962,6 @@ describe("download manager", () => {
     fs.mkdirSync(outputDir, { recursive: true });
     fs.mkdirSync(extractDir, { recursive: true });
 
-    // outputDir: S02-RAR-Set noch NICHT entpackt (pending). Muss erhalten bleiben.
     const s02Parts = [
       "Ugly.Americans.S02.COMPLETE.German.part1.rar",
       "Ugly.Americans.S02.COMPLETE.German.part2.rar",
@@ -10071,10 +9970,8 @@ describe("download manager", () => {
     for (const part of s02Parts) {
       fs.writeFileSync(path.join(outputDir, part), Buffer.alloc(1024, 7));
     }
-    // Auch eine harmlose Nicht-Video-Restdatei im outputDir (z.B. .nfo).
     fs.writeFileSync(path.join(outputDir, "info.nfo"), Buffer.from("nfo"));
 
-    // extractDir: S01 wurde bereits entpackt → MKVs liegen hier.
     const s01Mkvs = [
       "Ugly.Americans.S01E01.German.mkv",
       "Ugly.Americans.S01E02.German.mkv"
@@ -10118,14 +10015,11 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    // Direkt aufrufen (umgeht die volle Download/Extract-Pipeline).
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId]);
 
-    // S01-MKVs sind in der Library angekommen.
     for (const mkv of s01Mkvs) {
       expect(fs.existsSync(path.join(mkvLibraryDir, mkv))).toBe(true);
     }
-    // KRITISCH: S02-RAR-Parts im outputDir wurden NICHT geloescht.
     for (const part of s02Parts) {
       expect(fs.existsSync(path.join(outputDir, part))).toBe(true);
     }
@@ -10142,7 +10036,6 @@ describe("download manager", () => {
     const extractDir = path.join(root, "extract", packageName);
     fs.mkdirSync(outputDir, { recursive: true });
 
-    // Build archive containing one real episode + several bonus files in an Extras subdirectory
     const zip = new AdmZip();
     zip.addFile("Breaking.Bad.S04E01.GERMAN.5.1.DL.BluRay.720p.x264-TSCC.mkv", Buffer.from("episode-data"));
     zip.addFile("Breaking.Bad.S04Extras.720p.BluRay.x264-TSCC/Schrotflinte.mkv", Buffer.from("bonus-1"));
@@ -10209,22 +10102,18 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    // Wait until the real episode landed in the library
     const flattenedEpisode = path.join(mkvLibraryDir, "Breaking.Bad.S04E01.GERMAN.5.1.DL.BluRay.720p.x264-TSCC.mkv");
     await waitFor(() => fs.existsSync(flattenedEpisode), 12000);
 
-    // Bonus files MUST NOT be in the flat library
     expect(fs.existsSync(path.join(mkvLibraryDir, "Schrotflinte.mkv"))).toBe(false);
     expect(fs.existsSync(path.join(mkvLibraryDir, "Die.Autoexplosion.mkv"))).toBe(false);
     expect(fs.existsSync(path.join(mkvLibraryDir, "White.House.mkv"))).toBe(false);
 
-    // Bonus files MUST still exist in the extract dir Extras subfolder
     const extrasDir = path.join(extractDir, "Breaking.Bad.S04Extras.720p.BluRay.x264-TSCC");
     expect(fs.existsSync(path.join(extrasDir, "Schrotflinte.mkv"))).toBe(true);
     expect(fs.existsSync(path.join(extrasDir, "Die.Autoexplosion.mkv"))).toBe(true);
     expect(fs.existsSync(path.join(extrasDir, "White.House.mkv"))).toBe(true);
 
-    // The real episode must be in the library and removed from extract
     expect(fs.existsSync(flattenedEpisode)).toBe(true);
   }, 20000);
 
@@ -10237,7 +10126,6 @@ describe("download manager", () => {
     const extractDir = path.join(root, "extract", packageName);
     fs.mkdirSync(outputDir, { recursive: true });
 
-    // Mix of dot-separated bonus subdirs - must all be detected as bonus
     const zip = new AdmZip();
     zip.addFile("Breaking.Bad.S05E01.GERMAN.DL.720p.BluRay.x264-TSCC.mkv", Buffer.from("real-episode"));
     zip.addFile("Breaking.Bad.S05.Making.Of/SomeBonusClip.mkv", Buffer.from("bonus-1"));
@@ -10308,13 +10196,11 @@ describe("download manager", () => {
     const flattenedEpisode = path.join(mkvLibraryDir, "Breaking.Bad.S05E01.GERMAN.DL.720p.BluRay.x264-TSCC.mkv");
     await waitFor(() => fs.existsSync(flattenedEpisode), 12000);
 
-    // None of the bonus files should have landed in the flat library
     expect(fs.existsSync(path.join(mkvLibraryDir, "SomeBonusClip.mkv"))).toBe(false);
     expect(fs.existsSync(path.join(mkvLibraryDir, "AnotherClip.mkv"))).toBe(false);
     expect(fs.existsSync(path.join(mkvLibraryDir, "DeletedClip.mkv"))).toBe(false);
     expect(fs.existsSync(path.join(mkvLibraryDir, "GagClip.mkv"))).toBe(false);
 
-    // All bonus files must still exist in their respective subfolders
     expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Making.Of", "SomeBonusClip.mkv"))).toBe(true);
     expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Behind.The.Scenes", "AnotherClip.mkv"))).toBe(true);
     expect(fs.existsSync(path.join(extractDir, "Breaking.Bad.S05.Deleted.Scenes", "DeletedClip.mkv"))).toBe(true);
@@ -10998,7 +10884,6 @@ describe("download manager", () => {
     tempDirs.push(root);
     const binary = Buffer.alloc(256 * 1024, 7);
 
-    // Slow server: delivers data in chunks with delay
     const server = http.createServer((req, res) => {
       if ((req.url || "") !== "/slow-dl") {
         res.statusCode = 404;
@@ -11008,7 +10893,6 @@ describe("download manager", () => {
       res.statusCode = 200;
       res.setHeader("Accept-Ranges", "bytes");
       res.setHeader("Content-Length", String(binary.length));
-      // Send first half, then delay
       res.write(binary.subarray(0, Math.floor(binary.length / 4)));
       const timer = setTimeout(() => {
         if (!res.writableEnded && !res.destroyed) {
@@ -11065,23 +10949,19 @@ describe("download manager", () => {
 
       manager.addPackages([{ name: "hang-test", links: ["https://dummy/hang-test"] }]);
 
-      // Step 1: Start and wait for download to begin
       await manager.start();
       await waitFor(() => {
         const items = Object.values(manager.getSnapshot().session.items);
         return items.some((item) => item.status === "downloading");
       }, 12000);
 
-      // Step 2: Stop — do NOT wait for running=false
       manager.stop();
 
-      // Step 3: Immediately disable the active provider
       manager.setSettings({
         ...settings,
         disabledProviders: ["realdebrid"]
       });
 
-      // Step 4: Start again immediately — must resolve (not hang)
       const startPromise = manager.start();
       const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 8000));
       const result = await Promise.race([startPromise.then(() => "ok" as const), timeout]);
@@ -11112,9 +10992,6 @@ describe("download manager", () => {
       createStoragePaths(stateDir)
     );
 
-    // 60 packages with 25 links each = 1500 items. This was freezing the UI
-    // for 1-2 min on slower filesystems because every item triggered
-    // ensurePackageLog + ensureItemLog + multiple sync appendFileSync calls.
     const packages = Array.from({ length: 60 }, (_, pkgIdx) => ({
       name: `bulk-pkg-${pkgIdx}`,
       links: Array.from({ length: 25 }, (_, linkIdx) => `https://dummy/bulk-${pkgIdx}-${linkIdx}.rar`)
@@ -11127,25 +11004,14 @@ describe("download manager", () => {
     expect(result.addedPackages).toBe(60);
     expect(result.addedLinks).toBe(1500);
 
-    // Hard cap: on any reasonable CI box this should complete well under 5 s.
-    // Before the fix, the same workload produced thousands of sync-FS writes
-    // and took 60-120 s even on fast local disks.
     expect(elapsedMs).toBeLessThan(5000);
 
-    // No per-item log files should have been created — they're only
-    // initialized lazily when an item gets a real lifecycle event later.
-    // Item log files are named item_<id>.txt.
     const itemLogsDir = path.join(stateDir, "item-logs");
     const itemLogFiles = fs.existsSync(itemLogsDir)
       ? fs.readdirSync(itemLogsDir).filter((f) => f.startsWith("item_") && f.endsWith(".txt"))
       : [];
     expect(itemLogFiles.length).toBe(0);
 
-    // One package log per package. Package log file names are package_<id>.txt.
-    // The "Links registriert" entry is appended async (batched flush every
-    // ~250ms), so we don't assert content here — just that each package has
-    // been initialized with the startup block (ensurePackageLog wrote the
-    // "Paket-Log Start" header synchronously).
     const packageLogsDir = path.join(stateDir, "package-logs");
     const pkgLogFiles = fs.readdirSync(packageLogsDir).filter((f) => f.startsWith("package_") && f.endsWith(".txt"));
     expect(pkgLogFiles.length).toBe(60);
@@ -11160,8 +11026,6 @@ describe("download manager", () => {
     initItemLogs(stateDir);
     initRenameLog(stateDir);
 
-    // Build extract tree with 3 episode-folders, each containing 1 obfuscated MKV
-    // mirroring the scene release pattern from the production log.
     const extractDir = path.join(root, "extracted");
     const episodes = [
       { folder: "Test.Show.S02E01.Pilot.GERMAN.WS.720p.HDTV.x264-aWake", file: "awa-testshow02e01hd.mkv" },
@@ -11204,24 +11068,15 @@ describe("download manager", () => {
       downloadCompletedAt: 0
     };
 
-    // Fire two scans simultaneously for the SAME package — without
-    // serialization, both would race on the same fileset.
     const [n1, n2] = await Promise.all([
       (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg),
       (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg)
     ]);
 
-    // First scan should rename all 3 files. Second scan, having waited for
-    // the first via the in-flight promise, should find them already
-    // renamed (== 0 fresh renames). What matters is that BOTH calls
-    // resolved cleanly (no thrown ENOENT) and the disk state is correct.
     expect(typeof n1).toBe("number");
     expect(typeof n2).toBe("number");
     expect(n1 + n2).toBe(3);
 
-    // All three episodes should now have the folder-derived name (the
-    // obfuscated source name was overridden via the v1.7.148 logic AND
-    // the rename actually succeeded for ALL of them, not just some).
     for (const ep of episodes) {
       const dir = path.join(extractDir, ep.folder);
       const files = fs.readdirSync(dir);
@@ -11243,9 +11098,6 @@ describe("download manager", () => {
       createStoragePaths(stateDir)
     );
 
-    // Both rename and mkvMove route through the SAME chain, so any pair of
-    // invocations for the same package must run strictly sequentially —
-    // even when they come from different call sites (hybrid + deferred).
     const pkgId = "crosspipe-pkg-1";
     let concurrent = 0;
     let maxConcurrent = 0;
@@ -11268,9 +11120,7 @@ describe("download manager", () => {
     expect(r2).toBe("done-20");
     expect(r3).toBe("done-30");
     expect(r4).toBe("done-10");
-    // Crucial: never more than 1 operation in flight at a time.
     expect(maxConcurrent).toBe(1);
-    // Chain slot cleared after the last op completed.
     expect((manager as any).packageFileOpChain.has(pkgId)).toBe(false);
   });
 
@@ -11311,7 +11161,6 @@ describe("download manager", () => {
 
     const renamed = await (manager as any).autoRenameExtractedVideoFiles(sharedDir, pkg);
     expect(renamed).toBe(0);
-    // File must remain untouched — no rename performed.
     expect(fs.existsSync(path.join(sharedDir, "EpisodeFolder", "obfus.mkv"))).toBe(true);
   });
 
@@ -11353,13 +11202,8 @@ describe("download manager", () => {
     await (manager as any).collectMkvFilesToLibrary("movecomp-pkg", pkg);
 
     const libFiles = fs.readdirSync(libDir);
-    // Video AND subtitle moved to library.
     expect(libFiles).toContain("Show.S01E01.GERMAN.x264-GROUP.mkv");
     expect(libFiles).toContain("Show.S01E01.GERMAN.x264-GROUP.srt");
-    // .nfo MUST NOT end up in the library — that's the user-visible bug
-    // we are fixing. (It gets cleaned up with other residual files in
-    // cleanupNonMkvResidualFiles after the move; we don't care whether it
-    // survives in the extract dir, only that the library stays clean.)
     expect(libFiles).not.toContain("Show.S01E01.GERMAN.x264-GROUP.nfo");
   });
 
@@ -11392,10 +11236,8 @@ describe("download manager", () => {
     expect(renamed).toBe(1);
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const files = fs.readdirSync(epFolder);
-    // Video renamed.
     expect(files).toContain(`${expectedBase}.mkv`);
     expect(files).not.toContain("awa-testshow02e05hd.mkv");
-    // Companions renamed alongside.
     expect(files).toContain(`${expectedBase}.srt`);
     expect(files).toContain(`${expectedBase}.de.srt`);
     expect(files).toContain(`${expectedBase}.nfo`);
@@ -11431,7 +11273,6 @@ describe("download manager", () => {
     expect(renamed).toBe(2);
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const files = fs.readdirSync(epFolder).sort();
-    // First file got the canonical name; second got a numeric suffix.
     expect(files).toContain(`${expectedBase}.mkv`);
     expect(files).toContain(`${expectedBase}.2.mkv`);
     expect(files).not.toContain("awa-testshow02e05hd.mkv");

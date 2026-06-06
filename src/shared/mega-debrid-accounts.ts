@@ -39,11 +39,6 @@ export function getMegaDebridAccountLabel(index: number): string {
   return `Account ${index + 1}`;
 }
 
-/**
- * Parse newline-separated "login:password" pairs.
- * Falls back to treating the entire string as a single login if no colon
- * is found (backward compat with old megaLogin field).
- */
 export function parseMegaDebridAccounts(raw: string, legacyPassword = ""): MegaDebridAccountEntry[] {
   const seen = new Set<string>();
   const lines = String(raw || "")
@@ -60,7 +55,6 @@ export function parseMegaDebridAccounts(raw: string, legacyPassword = ""): MegaD
       login = line.slice(0, colonIdx).trim();
       password = line.slice(colonIdx + 1).trim();
     } else {
-      // Legacy format: just a login, use the provided fallback password
       login = line;
       password = legacyPassword;
     }

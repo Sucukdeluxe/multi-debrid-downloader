@@ -39,7 +39,6 @@ export function cleanupCancelledPackageArtifacts(packageDir: string): number {
           fs.rmSync(full, { force: true });
           removed += 1;
         } catch {
-          // ignore
         }
       }
     }
@@ -84,7 +83,6 @@ export async function cleanupCancelledPackageArtifactsAsync(
           await fs.promises.rm(full, { force: true });
           removed += 1;
         } catch {
-          // ignore
         }
       }
 
@@ -150,7 +148,6 @@ export async function removeDownloadLinkArtifacts(
           await fs.promises.rm(full, { force: true });
           removed += 1;
         } catch {
-          // ignore
         }
       }
     }
@@ -240,7 +237,6 @@ export async function removeSampleArtifacts(
           await fs.promises.rm(full, { force: true });
           removedFiles += 1;
         } catch {
-          // ignore
         }
       }
     }
@@ -263,7 +259,6 @@ export async function removeSampleArtifacts(
       removedFiles += filesInDir;
       removedDirs += 1;
     } catch {
-      // ignore
     }
   }
 

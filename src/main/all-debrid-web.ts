@@ -243,12 +243,10 @@ export class AllDebridWebFallback {
           storages: ["cookies", "indexdb", "localstorage", "serviceworkers", "cachestorage"]
         });
       } catch {
-        // ignore
       }
       try {
         await currentSession.clearCache();
       } catch {
-        // ignore
       }
     }
   }

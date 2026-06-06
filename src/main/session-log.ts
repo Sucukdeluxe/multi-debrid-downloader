@@ -30,7 +30,6 @@ function flushPending(): void {
   try {
     fs.appendFileSync(sessionLogPath, chunk, "utf8");
   } catch {
-    // ignore write errors
   }
 }
 
@@ -67,11 +66,9 @@ async function cleanupOldSessionLogs(dir: string, maxAgeDays: number): Promise<v
           await fs.promises.unlink(filePath);
         }
       } catch {
-        // ignore - file may be locked
       }
     }
   } catch {
-    // ignore - dir may not exist
   }
 }
 
@@ -109,19 +106,16 @@ export function shutdownSessionLog(): void {
     return;
   }
 
-  // Flush any pending lines
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
   flushPending();
 
-  // Write closing line
   const isoTimestamp = logTimestamp();
   try {
     fs.appendFileSync(sessionLogPath, `=== Session beendet: ${isoTimestamp} ===\n`, "utf8");
   } catch {
-    // ignore
   }
 
   setLogListener(null);

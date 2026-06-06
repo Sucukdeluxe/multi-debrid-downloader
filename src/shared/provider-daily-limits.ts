@@ -250,8 +250,6 @@ export function addDebridLinkApiKeyTotalUsageBytes(
   };
 }
 
-// ── Mega-Debrid per-account limits ──
-
 export function isMegaDebridAccountDisabled(settings: ProviderDailySettings, accountId: string): boolean {
   return Array.isArray(settings.megaDebridDisabledAccountIds) && settings.megaDebridDisabledAccountIds.includes(accountId);
 }

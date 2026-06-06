@@ -46,11 +46,9 @@ function rotateIfNeeded(filePath: string): void {
     try {
       fs.rmSync(backup, { force: true });
     } catch {
-      // ignore
     }
     fs.renameSync(filePath, backup);
   } catch {
-    // ignore
   }
 }
 
@@ -63,7 +61,6 @@ function cleanupOldBackup(filePath: string): void {
       fs.rmSync(backup, { force: true });
     }
   } catch {
-    // ignore
   }
 }
 
@@ -100,7 +97,6 @@ export function logRenameEvent(level: RenameLogLevel, message: string, fields?: 
       "utf8"
     );
   } catch {
-    // ignore write errors
   }
 }
 
@@ -118,7 +114,6 @@ export function shutdownRenameLog(): void {
   try {
     fs.appendFileSync(renameLogPath, `=== Rename-Log Ende: ${logTimestamp()} ===\n`, "utf8");
   } catch {
-    // ignore
   }
   renameLogPath = null;
 }

@@ -116,7 +116,6 @@ function getPort(baseDir: string): number {
       return n;
     }
   } catch {
-    // ignore
   }
   return DEFAULT_PORT;
 }
@@ -135,7 +134,6 @@ function getHost(baseDir: string): string {
       return raw;
     }
   } catch {
-    // ignore
   }
   return DEFAULT_HOST;
 }

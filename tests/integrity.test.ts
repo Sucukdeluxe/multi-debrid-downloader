@@ -34,25 +34,20 @@ describe("integrity", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-int-"));
     tempDirs.push(dir);
 
-    // Create a .md5 manifest that exceeds the 5MB limit
     const largeContent = "d41d8cd98f00b204e9800998ecf8427e  sample.bin\n".repeat(200000);
     const manifestPath = path.join(dir, "hashes.md5");
     fs.writeFileSync(manifestPath, largeContent, "utf8");
 
-    // Verify the file is actually > 5MB
     const stat = fs.statSync(manifestPath);
     expect(stat.size).toBeGreaterThan(5 * 1024 * 1024);
 
-    // readHashManifest should skip the oversized file
     const manifest = readHashManifest(dir);
     expect(manifest.size).toBe(0);
   });
 
   it("does not parse SHA256 (64-char hex) as valid hash", () => {
-    // SHA256 is 64 chars - parseHashLine only supports 32 (MD5) and 40 (SHA1)
     const sha256Line = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  emptyfile.bin";
     const result = parseHashLine(sha256Line);
-    // 64-char hex should not match the MD5 (32) or SHA1 (40) pattern
     expect(result).toBeNull();
   });
 

@@ -16,13 +16,6 @@ const DEBRID_URL = "https://www.mega-debrid.eu/index.php?form=debrid";
 const DEBRID_AJAX_URL = "https://www.mega-debrid.eu/index.php?ajax=debrid&json";
 const DEBRID_REFERER = "https://www.mega-debrid.eu/index.php?page=debrideur&lang=de";
 
-/**
- * Mega-Debrid-Antwort "Kein Server für diesen Hoster verfügbar". Kommt zurück, wenn
- * das Tageslimit DIESES Accounts für den Hoster erschöpft ist (oder der Hoster kurz
- * nicht bedient wird). KEIN Session-/Leer-Fall — der Account soll schnell scheitern,
- * damit die Multi-Account-Rotation sofort zum nächsten (nicht limitierten) Account
- * wechselt, statt re-Login + Retry-Sturm das geteilte Unrestrict-Budget zu fressen.
- */
 export const MEGA_DEBRID_NO_SERVER_RE = /kein server f(?:ü|u)r diesen hoster|no server (?:is )?available for this host|aucun serveur disponible/i;
 
 function normalizeLink(link: string): string {
@@ -228,11 +221,6 @@ export class MegaWebFallback {
 
   private getCredentials: () => MegaCredentials;
 
-  // Per-Login Session-Cache: login(lowercase) → { cookie, setAt }. Multi-Account-
-  // Rotation: jeder Account nutzt SEINE eigene Session. Frueher gab es nur EINE
-  // geteilte Cookie-Session → der Web-Unrestrict lief fuer JEDEN rotierten Account mit
-  // den Creds des ersten/Legacy-Accounts (settings.megaLogin); der naechste Account
-  // wurde nie wirklich verwendet (Rotation war wirkungslos).
   private sessions = new Map<string, { cookie: string; setAt: number }>();
 
   public constructor(getCredentials: () => MegaCredentials) {
@@ -247,7 +235,6 @@ export class MegaWebFallback {
     const overallSignal = withTimeoutSignal(signal, 180000);
     return this.runExclusive(async () => {
       throwIfAborted(overallSignal);
-      // Per-Account-Creds aus der Rotation bevorzugen; sonst Legacy-Default.
       const creds = (account && account.login.trim() && account.password.trim())
         ? account
         : this.getCredentials();
@@ -259,7 +246,6 @@ export class MegaWebFallback {
 
       let generated = await this.generate(link, cookie, overallSignal);
       if (!generated) {
-        // Session evtl. abgelaufen → fuer DIESEN Login neu einloggen + einmal erneut.
         this.sessions.delete(key);
         cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal);
         generated = await this.generate(link, cookie, overallSignal);
@@ -276,8 +262,6 @@ export class MegaWebFallback {
     }, overallSignal);
   }
 
-  /** Liefert ein gueltiges Session-Cookie fuer den gegebenen Login (aus Cache oder
-   *  via frischem Login). Cache-TTL 20 min. */
   private async ensureSession(key: string, login: string, password: string, signal?: AbortSignal): Promise<string> {
     const existing = this.sessions.get(key);
     if (existing && existing.cookie && Date.now() - existing.setAt <= 20 * 60 * 1000) {
@@ -368,17 +352,12 @@ export class MegaWebFallback {
 
     const html = await page.text();
 
-    // Check for permanent hoster errors before looking for debrid codes
     const pageErrors = parsePageErrors(html);
     const permanentError = isPermanentHosterError(pageErrors);
     if (permanentError) {
       throw new Error(`Mega-Web: Link permanent ungültig (${permanentError})`);
     }
 
-    // Tageslimit dieses Accounts: die DEBRID-Seite enthaelt dann KEINEN processDebrid-
-    // Code (parseCodes leer → wir wuerden gleich null/"Antwort leer" liefern). Steht die
-    // "Kein Server für diesen Hoster"-Meldung als Page-Error im HTML, surface sie hier,
-    // damit die Rotation den Account als tageslimitiert erkennt statt als Leer-Blip.
     const noServerError = pageErrors.find((err) => MEGA_DEBRID_NO_SERVER_RE.test(err));
     if (noServerError) {
       throw new Error(`Mega-Web: ${noServerError}`);
@@ -426,11 +405,6 @@ export class MegaWebFallback {
           continue;
         }
         const serverMsg = (parsed.text || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-        // "Kein Server für diesen Hoster verfügbar" = Account-Tageslimit erschöpft.
-        // Surface die Meldung statt null zurückzugeben — sonst re-loggt unrestrict()
-        // ein + pollt erneut (Retry-Sturm), was bei einem limitierten Account zwecklos
-        // ist und das geteilte Rotations-Budget verbrennt. So scheitert der Account
-        // schnell und die Rotation nutzt den nächsten Account.
         if (serverMsg && MEGA_DEBRID_NO_SERVER_RE.test(serverMsg)) {
           throw new Error(`Mega-Web: ${serverMsg}`);
         }

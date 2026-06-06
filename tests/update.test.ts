@@ -614,7 +614,6 @@ describe("parseVersionParts", () => {
   });
 
   it("handles version with pre-release suffix", () => {
-    // Non-numeric suffixes are stripped per part
     expect(parseVersionParts("1.2.3-beta")).toEqual([1, 2, 3]);
     expect(parseVersionParts("1.2.3rc1")).toEqual([1, 2, 3]);
   });

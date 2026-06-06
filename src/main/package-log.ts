@@ -93,7 +93,6 @@ function flushPending(): void {
     try {
       fs.appendFileSync(logPath, chunk, "utf8");
     } catch {
-      // ignore write errors
     }
   }
 }
@@ -123,11 +122,9 @@ async function cleanupOldPackageLogs(dir: string): Promise<void> {
           await fs.promises.unlink(filePath);
         }
       } catch {
-        // ignore locked/missing files
       }
     }
   } catch {
-    // ignore missing dir
   }
 }
 
@@ -224,7 +221,6 @@ export function shutdownPackageLogs(): void {
     try {
       fs.appendFileSync(logPath, `=== Paket-Log Ende: ${logTimestamp()} ===\n`, "utf8");
     } catch {
-      // ignore
     }
   }
   pendingLinesByPackage.clear();

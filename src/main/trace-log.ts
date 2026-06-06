@@ -64,7 +64,6 @@ function flushPending(): void {
   try {
     fs.appendFileSync(traceLogPath, chunk, "utf8");
   } catch {
-    // ignore
   }
 }
 
@@ -78,11 +77,9 @@ function rotateIfNeeded(filePath: string): void {
     try {
       fs.rmSync(backup, { force: true });
     } catch {
-      // ignore
     }
     fs.renameSync(filePath, backup);
   } catch {
-    // ignore
   }
 }
 
@@ -95,7 +92,6 @@ function cleanupOldBackup(filePath: string): void {
       fs.rmSync(backup, { force: true });
     }
   } catch {
-    // ignore
   }
 }
 
@@ -163,7 +159,6 @@ function persistTraceConfig(): void {
   try {
     fs.writeFileSync(traceConfigPath, `${JSON.stringify(traceConfig, null, 2)}\n`, "utf8");
   } catch {
-    // ignore
   }
 }
 
@@ -310,7 +305,6 @@ export function shutdownTraceLog(): void {
   try {
     fs.appendFileSync(traceLogPath, `=== Trace-Log Ende: ${logTimestamp()} ===\n`, "utf8");
   } catch {
-    // ignore
   }
   traceLogPath = null;
   traceConfigPath = null;

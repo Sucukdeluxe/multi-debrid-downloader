@@ -20,7 +20,6 @@ describe("backup-crypto", () => {
     const plaintext = JSON.stringify({ settings: { token: secret } });
     const encrypted = encryptBackup(plaintext);
 
-    // The encrypted buffer should NOT contain the secret in plaintext
     expect(encrypted.toString("utf8")).not.toContain(secret);
     expect(encrypted.toString("latin1")).not.toContain(secret);
   });
@@ -34,9 +33,7 @@ describe("backup-crypto", () => {
     const plaintext = "same input data";
     const a = encryptBackup(plaintext);
     const b = encryptBackup(plaintext);
-    // IVs are different, so full buffers must differ
     expect(a.equals(b)).toBe(false);
-    // But both decrypt to the same plaintext
     expect(decryptBackup(a)).toBe(plaintext);
     expect(decryptBackup(b)).toBe(plaintext);
   });
@@ -49,7 +46,6 @@ describe("backup-crypto", () => {
 
   it("throws on corrupted ciphertext", () => {
     const encrypted = encryptBackup("test data");
-    // Flip a byte in the ciphertext area
     const corrupted = Buffer.from(encrypted);
     corrupted[corrupted.length - 1] ^= 0xff;
     expect(() => decryptBackup(corrupted)).toThrow();

@@ -73,7 +73,6 @@ describe("bestdebrid-web", () => {
       try {
         fs.rmSync(filePath, { force: true });
       } catch {
-        // ignore temp cleanup failures
       }
     }
   });

@@ -78,7 +78,6 @@ async function waitForReady(url: string): Promise<void> {
         return;
       }
     } catch {
-      // retry
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -314,7 +313,6 @@ afterEach(() => {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch {
-      // ignore cleanup failures
     }
   }
 });

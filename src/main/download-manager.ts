@@ -34,8 +34,6 @@ import {
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS, DISK_BUSY_STATUS_THRESHOLD_MS } from "./constants";
 import { parseCollectorInput } from "./link-parser";
 
-// Reference counter for NODE_TLS_REJECT_UNAUTHORIZED to avoid race conditions
-// when multiple parallel downloads need TLS verification disabled (e.g. DDownload).
 let tlsSkipRefCount = 0;
 function acquireTlsSkip(): void {
   tlsSkipRefCount += 1;
@@ -135,12 +133,8 @@ const PREALLOC_RESUME_MISMATCH_THRESHOLD_BYTES = 1024 * 1024;
 
 const LARGE_BINARY_FILE_RE = /\.(?:part\d+\.rar|rar|r\d{2,3}|zip(?:\.\d+)?|7z(?:\.\d+)?|tar|gz|bz2|xz|iso|mkv|mp4|avi|mov|wmv|m4v|ts|m2ts|webm|mp3|flac|aac|wav)$/i;
 
-/** Files that are legitimately tiny (< 5 KB) and should NOT be rejected as suspicious. */
 const KNOWN_SMALL_FILE_RE = /\.(?:sfv|nfo|nzb|md5|sha1|sha256|crc|txt|url|lnk|srr)$/i;
 
-/** Folder name patterns indicating bonus/extras content that should NOT be moved
- *  to the flat MKV library or auto-renamed. Matches after normalizing separators
- *  (so "Making.Of", "making-of", "making of", "makingof" all match "makingof"). */
 const BONUS_DIR_NORMALIZED_PATTERNS = [
   "extras", "extra", "bonus", "featurettes", "featurette",
   "specials", "specialfeatures",
@@ -149,17 +143,12 @@ const BONUS_DIR_NORMALIZED_PATTERNS = [
   "alternateending", "gagreel"
 ];
 
-/** Filename token patterns for bonus content (e.g. "making-of-e02.mkv"). */
 const BONUS_FILENAME_RE = /(?:^|[._\-\s])(?:making[._\-\s]?of|behind[._\-\s]?the[._\-\s]?scenes|deleted[._\-\s]?scene|alternate[._\-\s]?ending|gag[._\-\s]?reel|featurette|outtakes?|bloopers?|interview|extended[._\-\s]?scene|exclusive[._\-\s]?scene|inside[._\-\s]?e\d+|making[._\-\s]?of[._\-\s]?e\d+)(?:[._\-\s]|$)/i;
 
-/** Normalize a folder/file segment for bonus-pattern matching: lowercase and
- *  strip common separators so "Making.Of" → "makingof". */
 function normalizeBonusSegment(segment: string): string {
   return String(segment || "").toLowerCase().replace(/[._\-\s]+/g, "");
 }
 
-/** Detect if a file path lies inside a bonus/extras subdirectory of the package.
- *  Walks up the path from filePath until packageDir and checks each segment. */
 function isInsideBonusDir(filePath: string, packageDir: string): boolean {
   if (!filePath || !packageDir) return false;
   let current = path.dirname(filePath);
@@ -180,17 +169,6 @@ function isInsideBonusDir(filePath: string, packageDir: string): boolean {
   return false;
 }
 
-/** True if a file is bonus/extras content (Making-Of, Featurette, Interview, …)
- *  that must NOT be collected into the flat episode library.
- *
- *  CRITICAL GUARD: a file carrying a real SxxExx episode token is a NUMBERED
- *  EPISODE, never extras — even when its TITLE (or per-episode folder name)
- *  happens to contain a bonus keyword, e.g. "Revenge.2011.S04E19.Interview".
- *  Without this guard, episodes titled Interview/Outtakes/Special/Featurette/…
- *  (and entire series whose name is such a word) were silently dropped from the
- *  library — extracted + correctly renamed but never moved, no error (rd-support
- *  bundle 2026-06-04). Genuine extras lack an SxxExx token (or live in an
- *  Extras/Bonus subdir) and are still excluded. */
 export function isBonusContent(filePath: string, packageDir: string, nameWithoutExt: string): boolean {
   if (extractEpisodeToken(nameWithoutExt)) {
     return false;
@@ -385,20 +363,9 @@ function generateHistoryId(): string {
   return `hist-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Stable empty object reference reused for snapshots when no package speeds
- *  are active. Avoids allocating a fresh `{}` per snapshot which breaks
- *  React.memo()/useMemo dependency comparisons in the renderer. */
 const EMPTY_PACKAGE_SPEED_BPS: Readonly<Record<string, number>> = Object.freeze({});
 
 function cloneSession(session: SessionState): SessionState {
-  // Shallow clone only — items/packages are emitted to the renderer via IPC,
-  // which runs structuredClone() on the payload in the same event-loop tick
-  // (so the renderer always gets an isolated deep copy). All in-process
-  // consumers of getSnapshot() (app-controller, debug-server, link export)
-  // read the snapshot synchronously without mutating it. Doing a per-item
-  // shallow clone here was a redundant ~5000 object allocations per emit
-  // for a 5000-item queue. Cloning only the outer Records keeps consumers
-  // safe from later additions/removals while avoiding per-item allocation.
   return {
     ...session,
     packageOrder: [...session.packageOrder],
@@ -510,8 +477,6 @@ function shouldRejectSuspiciousSmallDownload(
   const binaryLike = isLargeBinaryLikePath(filePath || fileName);
   const name = path.basename(String(filePath || fileName || ""));
 
-  // Known small files (e.g. .sfv, .nfo) are legitimately tiny — never reject them
-  // as long as they received the expected number of bytes (or we have no expectation).
   if (KNOWN_SMALL_FILE_RE.test(name) && (expected <= 0 || size >= expected)) {
     return false;
   }
@@ -849,7 +814,6 @@ function isIgnorableEmptyDirFileName(fileName: string): boolean {
   return EMPTY_DIR_IGNORED_FILE_NAMES.has(normalized) || EMPTY_DIR_IGNORED_FILE_RE.test(normalized);
 }
 
-/** Kopfzeile fuer eine Rename-Verifikation im Desktop-Log (passend zum Level). */
 function verifyHeadline(v: RenameVerification): string {
   if (v.ok) {
     return "Rename verifiziert";
@@ -881,14 +845,9 @@ const SCENE_RELEASE_FOLDER_RE = /-(?:4sf|4sj)$/i;
 const SCENE_GROUP_SUFFIX_RE = /-(?=[A-Za-z0-9]{2,}$)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]+$/;
 const SCENE_EPISODE_RE = /(?:^|[._\-\s])s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
 const SCENE_EPISODE_JOINED_RE = /s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?(?!\d)/i;
-// Scene typo: "S05S01" instead of "S05E01" — second S should be E
 const SCENE_EPISODE_TYPO_SS_RE = /(?:^|[._\-\s])s(\d{1,2})s(\d{1,3})(?!\d)/i;
 const SCENE_SEASON_ONLY_RE = /(^|[._\-\s])s\d{1,2}(?=[._\-\s]|$)/i;
 
-/** True iff the name has at least 3 alphabetic characters BEFORE the first
- *  SxxExx / Sxx token. Used to distinguish folders/files with a real series
- *  name ("Desperate.Housewives.S01...") from generic season labels
- *  ("S01 Complete", "Season 1"). */
 export function hasMeaningfulSeriesPrefix(name: string): boolean {
   const text = String(name || "");
   const seasonMatch = text.match(/(?:^|[._\-\s])s\d{1,2}/i);
@@ -900,18 +859,6 @@ export function hasMeaningfulSeriesPrefix(name: string): boolean {
   return alphaChars >= 3;
 }
 
-/** Heuristic: returns true if the file name LOOKS LIKE an obfuscated /
- *  scrambled hoster name (e.g. "awa-diethundermans02e16hd.mkv") rather than
- *  a clean scene release ("the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f.mkv").
- *
- *  Used as a guard before we override a source-derived episode token with
- *  a folder-derived one. A clean scene file's embedded SxxExx is
- *  authoritative — overriding it would mislabel the episode. Only files
- *  that lack the usual scene markers (quality, language, codec, source/
- *  format) are treated as obfuscated and let the folder win.
- *
- *  Threshold: < 2 scene markers AND no proper dot-separated scene
- *  structure → considered obfuscated. */
 export function looksLikeObfuscatedSceneFileName(name: string): boolean {
   const text = String(name || "").toLowerCase();
   if (!text) {
@@ -923,18 +870,11 @@ export function looksLikeObfuscatedSceneFileName(name: string): boolean {
   if (/(?:^|[._\-\s])(?:bluray|brrip|bdrip|webrip|web-?dl|web|hdtv|dvdrip|amazonhd|amzn|nflx|nf|hulu|dsnp)(?:[._\-\s]|$)/.test(text)) markers += 1;
   if (/(?:^|[._\-\s])(?:x264|x265|h264|h265|hevc|xvid|divx|avc)(?:[._\-\s]|$)/.test(text)) markers += 1;
   if (/(?:^|[._\-\s])(?:ac3|aac|dd5\.?1|dd51|dts|eac3|atmos|truehd|flac)(?:[._\-\s]|$)/.test(text)) markers += 1;
-  // 2+ scene markers → definitely a clean scene file, not obfuscated
   if (markers >= 2) {
     return false;
   }
-  // No markers AND looks like glued/short hoster code → obfuscated
-  // Check for typical hoster pattern: short prefix + glued lowercase + episode digits
-  // e.g. "awa-diethundermans02e16hd", "scn-dthund7-S02E06"
   const dotCount = (text.match(/\./g) || []).length;
-  // A clean scene file usually has 6+ dot-separated tokens (excluding extension)
-  // An obfuscated file usually has 0-2 dots (mostly using - or no separators).
   if (dotCount >= 5) {
-    // Many dots usually means scene-style structure even with few markers
     return false;
   }
   return true;
@@ -946,8 +886,6 @@ const SCENE_COMPACT_EPISODE_CODE_RE = /(?:^|[._\-\s])(\d{3,4})([a-z])?(?=$|[._\-
 const SCENE_RP_TOKEN_RE = /(?:^|[._\-\s])rp(?:[._\-\s]|$)/i;
 const SCENE_REPACK_TOKEN_RE = /(?:^|[._\-\s])repack(?:[._\-\s]|$)/i;
 const SCENE_QUALITY_TOKEN_RE = /([._\-\s])((?:4320|2160|1440|1080|720|576|540|480|360)p)(?=[._\-\s]|$)/i;
-// Marker, dass ein Name eine vollstaendige Release-Benennung ist (Aufloesung ODER Codec).
-// Bewusst inkl. xvid/divx — alte deutsche Dokus/Serien sind oft XviD ohne Aufloesungs-Tag.
 const SCENE_RESOLUTION_MARKER_RE = /\b(?:480|540|576|720|1080|1440|2160|4320)[pi]\b/i;
 const SCENE_CODEC_MARKER_RE = /\b(?:x264|x265|x266|h\.?264|h\.?265|h\.?266|hevc|avc|vvc|av1|xvid|divx)\b/i;
 const SCENE_GROUP_SUFFIX_FALLBACK_RE = /-([A-Za-z0-9]{2,})$/;
@@ -1054,16 +992,9 @@ function hasSceneGroupSuffix(fileName: string): boolean {
   if (isValidSceneGroupSuffix(suffix)) {
     return true;
   }
-  // Auch Scene-Gruppen MIT Unterstrich erkennen (z.B. "-idTV_iNT", "-NZ_iNT", "-DUBBED_iNT").
-  // Sonst wird ein sauber benannter Episoden-Ordner wie "Castle.S08E02.GERMAN.DL.720p.WEB.H264-
-  // idTV_iNT" faelschlich NICHT als Scene-Ordner erkannt → die Namensherleitung faellt auf den
-  // obfuskierten Paket-Ordner ("scn2-cstl7") zurueck und verschlimmbessert den Namen.
   return extractFlexibleSceneGroupSuffix(text) !== null;
 }
 
-/** Older scene releases used "1x01" instead of "S01E01". The episode group
- *  is capped at 2 digits so the regex does NOT falsely match codec tokens
- *  like "x264" / "x265" / "x266" or aspect ratios like "1920x1080". */
 const SCENE_EPISODE_X_RE = /(?:^|[._\-\s])(\d{1,2})x(\d{1,2})(?:x(\d{1,2}))?(?![\dx])/i;
 
 export function extractEpisodeToken(fileName: string): string | null {
@@ -1247,9 +1178,6 @@ export function applyEpisodeTokenToFolderName(folderName: string, episodeToken: 
     return episodeToken;
   }
 
-  // Match single episodes (S01E03), multi-episodes (S01E01E02), and
-  // episode ranges (S01E01-E08, S01E01-08) so the range is fully replaced
-  // with the source's specific episode token.
   const episodeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}(?:e\d{1,3})?(?:[-]e?\d{1,3})?(?=[._\-\s]|$)/i;
   if (episodeRe.test(trimmed)) {
     return trimmed.replace(episodeRe, `$1${episodeToken}`);
@@ -1310,13 +1238,6 @@ export function buildAutoRenameBaseName(folderName: string, sourceFileName: stri
 
   const isLegacy4sf4sjFolder = SCENE_RELEASE_FOLDER_RE.test(normalizedFolderName);
   const isSceneGroupFolder = hasSceneGroupSuffix(normalizedFolderName);
-  // Auch einen vollstaendigen Episoden-Ordnernamen OHNE Gruppen-Suffix akzeptieren: hat der
-  // Ordner einen echten SxxExx-Token UND einen Codec-/Aufloesungs-Marker, ist es eine saubere
-  // Release-Benennung (z.B. alte deutsche Dokus ohne -GROUP, Ordner endet auf ".XviD":
-  // "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD"). Ohne diese Klausel
-  // lieferte der Helper null → "kein Zielname" → die Folge blieb mit rohem Hoster-Namen
-  // ("safari-fm-s04e08a.avi") in der Library liegen. Part-Buchstaben (a/b) bleiben erhalten,
-  // weil der Ordnername unveraendert als Zielname dient (nur der RANGE-Zweig schreibt Token um).
   const isCompleteEpisodeFolder = Boolean(extractEpisodeToken(normalizedFolderName))
     && (SCENE_RESOLUTION_MARKER_RE.test(normalizedFolderName) || SCENE_CODEC_MARKER_RE.test(normalizedFolderName));
   if (!isLegacy4sf4sjFolder && !isSceneGroupFolder && !isCompleteEpisodeFolder) {
@@ -1332,10 +1253,6 @@ export function buildAutoRenameBaseName(folderName: string, sourceFileName: stri
     ? applyEpisodeTokenToFolderName(normalizedFolderName, episodeToken)
     : normalizedFolderName;
 
-  // If the folder contains an episode RANGE (e.g. S01E01-E08), replace the
-  // range with the source's specific episode token.  Without this, all
-  // episodes in a range-named folder share the same target name, producing
-  // (2)(3)(4) suffixes during MKV collection.
   if (!isLegacy4sf4sjFolder && (isSceneGroupFolder || isCompleteEpisodeFolder)) {
     const episodeRangeRe = /(^|[._\-\s])s\d{1,2}e\d{1,3}[-]e?\d{1,3}(?=[._\-\s]|$)/i;
     if (episodeRangeRe.test(normalizedFolderName)) {
@@ -1422,10 +1339,6 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
     return sanitizeFilename(target);
   }
 
-  // Last-resort fallback: if no scene-group-suffix folder was found but a folder
-  // has a season token and the source has an episode token, inject the episode anyway.
-  // This handles user-renamed packages like "Mystery Road S02" where the folder has
-  // no scene group suffix but still contains enough info for a useful rename.
   if (resolvedEpisode && forceEpisodeForSeasonFolder) {
     for (const folderName of ordered) {
       if (!SCENE_SEASON_ONLY_RE.test(folderName) || extractEpisodeToken(folderName)) {
@@ -1445,13 +1358,6 @@ export function buildAutoRenameBaseNameFromFoldersWithOptions(
   return null;
 }
 
-/** Final auto-rename naming DECISION for one video file. Factored out of
- *  autoRenameExtractedVideoFilesImpl so the MKV-collect stage can reuse the
- *  IDENTICAL derivation + guards — single source of truth, so the two can never
- *  drift (that drift is exactly why files auto-rename missed landed raw in the
- *  library). Pure: no fs, no logging, no chainPackageFileOp. Returns either the
- *  clean target base name to rename to, or a skip with the reason (the caller
- *  logs and falls back to KEEPING the current name — raw-keep is the floor). */
 export type AutoRenameNameDecision =
   | { kind: "rename"; baseName: string; note?: "token-inserted" | "token-applyToken" | "folder-override" | "folder-as-is"; sourceEpisodeToken?: string; targetEpisodeToken?: string }
   | { kind: "skip"; reason: "no-target" | "source-better" | "token-loss" | "token-mismatch"; targetBaseName?: string; sourceEpisodeToken?: string; targetEpisodeToken?: string };
@@ -1467,12 +1373,6 @@ export function decideAutoRenameBaseName(
     forceEpisodeForSeasonFolder: true
   });
 
-  // Wurzel-Schutz gegen Namens-Fabrikation: produziert der Helper einen Namen, OBWOHL KEIN
-  // folderCandidate einen Season-/Episode-Token traegt (z.B. ein generischer Paketname wie
-  // "Mega-Direct-Pack", den hasSceneGroupSuffix faelschlich als Scene-Gruppe wertet), stammt
-  // die Episode rein aus dem QUELLnamen und wird an einen token-losen Ordner angehaengt
-  // ("Mega-Direct-Pack.S01E01"). Ein Ordner ohne Season/Episode kann eine Episode nicht
-  // autoritativ benennen → kein Rename. Schuetzt Auto-Rename UND den MKV-Collect an der Wurzel.
   if (targetBaseName) {
     const anyFolderHasSeasonOrEpisode = folderCandidates.some(
       (folderName) => Boolean(extractSeasonToken(folderName)) || Boolean(extractEpisodeToken(folderName))
@@ -1482,9 +1382,6 @@ export function decideAutoRenameBaseName(
     }
   }
 
-  // Guard A — degenerate folder layout: when the computed target would DISCARD a
-  // well-formed source (source has SxxExx + a real series prefix, target lost the
-  // prefix and is much shorter), keep the source. Renaming would destroy info.
   if (targetBaseName && sourceBaseName.length > 0) {
     const sourceHasEpisode = Boolean(extractEpisodeToken(sourceBaseName));
     const targetHasEpisode = Boolean(extractEpisodeToken(targetBaseName));
@@ -1496,22 +1393,11 @@ export function decideAutoRenameBaseName(
     }
   }
 
-  // Guard B — never strip or mislabel a valid SxxExx token from the source.
   let note: "token-inserted" | "token-applyToken" | "folder-override" | undefined;
   const sourceEpisodeToken = extractEpisodeToken(sourceBaseName);
   if (targetBaseName && sourceEpisodeToken) {
     const targetEpisodeToken = extractEpisodeToken(targetBaseName);
     if (!targetEpisodeToken) {
-      // Die QUELLE traegt einen sauberen SxxExx-Token, der Ziel-Ordner aber nur einen
-      // Episoden-Titel mit Episode-only-Token (Ordner "Show.E01.Titel...-GRP", Quelle bereits
-      // "Show.S01E01...-GRP" — z.B. Miniserien, die der Auto-Rename schon korrekt benannt hat).
-      // Den Quell-Token an den Ordnernamen anzuhaengen erzeugt einen verkrueppelten Namen
-      // ("...-GRP.S01E01" — Token HINTER der Gruppe). In DIESEM Zweig traegt die Quelle den
-      // EINZIGEN SxxExx-Token (der Ordner hat keinen) → ist die Quelle ein sauberer, NICHT
-      // obfuskierter Scene-Name, ist sie autoritativ → behalten, den Ordner NICHT verwenden.
-      // (Die Laenge des Serien-Praefixes ist KEIN Kriterium: kurze Serien wie "ER"/"V"/"24"
-      // sind genauso autoritativ; nur Obfuskierung soll den Ordner gewinnen lassen.) Greift
-      // v.a. im Collect, der sonst den fertigen Auto-Rename-Namen wieder zerstoeren wuerde.
       if (!looksLikeObfuscatedSceneFileName(sourceName)) {
         return { kind: "skip", reason: "source-better", targetBaseName };
       }
@@ -1532,11 +1418,6 @@ export function decideAutoRenameBaseName(
         }
       }
     } else if (targetEpisodeToken !== sourceEpisodeToken) {
-      // Target has a DIFFERENT episode token than source. Trust the folder ONLY when
-      // the source filename looks obfuscated (anti-piracy scramble) AND the immediate
-      // parent folder carries the same explicit token as the computed target. A clean
-      // scene source must NEVER be overridden (a one-off folder mismatch means the
-      // FOLDER is wrong, not the file).
       const parentEpisodeToken = extractEpisodeToken(parentFolderName);
       const sourceLooksObfuscated = looksLikeObfuscatedSceneFileName(sourceName);
       const folderIsAuthoritative = Boolean(
@@ -1554,14 +1435,6 @@ export function decideAutoRenameBaseName(
   }
 
   if (!targetBaseName) {
-    // Fallback "Junk-Quellname + sauberer Release-Ordner": hat die QUELLE keinen Episode-Token
-    // (z.B. obfuskiertes "bet_kig_01_hdt") und kann normal kein Name abgeleitet werden, aber EIN
-    // folderCandidate IST bereits ein VOLLSTAENDIGER Scene-Release-Ordner (Scene-Gruppe UND
-    // Aufloesung ODER Codec, KEIN reiner Season-Ordner), dann diesen Ordnernamen direkt verwenden.
-    // Deckt das "Folge 01"-Nummern-Format ab (Episode als "01" statt S01E01), z.B.
-    // "Kreuzfahrt.ins.Glueck.01.Hochzeitsreise.nach.Burma.2007.German.720p.HDTV.x264-BET".
-    // Greift NUR ohne Quell-Episode-Token → schliesst sich mit dem Fabrikations-Guard oben aus
-    // (Mega-Direct hat einen Quell-Token und kommt nie hierher).
     if (!extractEpisodeToken(sourceBaseName)) {
       for (const folderName of folderCandidates) {
         const f = sanitizeFilename(String(folderName || "").trim());
@@ -1578,7 +1451,6 @@ export function decideAutoRenameBaseName(
   return { kind: "rename", baseName: targetBaseName, note };
 }
 
-// Hoisted regex patterns — avoid recompiling on every resolveArchiveItemsFromList() call.
 const ARCHIVE_MULTIPART_RAR_RE = /^(.*)\.part0*1\.rar$/;
 const ARCHIVE_RAR_RE = /^(.*)\.rar$/;
 const ARCHIVE_ZIP_SPLIT_RE = /^(.*)\.zip\.001$/;
@@ -1592,13 +1464,9 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
     stripDuplicateSuffixBeforeExtension(path.basename(String(value || "")));
   const entryLower = normalizeArchiveMatchName(archiveName).toLowerCase();
 
-  // Helper: get item basename (try targetPath first, then fileName)
   const itemBaseName = (item: DownloadItem): string =>
     normalizeArchiveMatchName(item.targetPath || item.fileName || "");
 
-  // Try pattern-based matching first (for multipart archives).
-  // Note: the constructed RegExps below depend on the input filename so they
-  // cannot be hoisted — but the *test* regexes above are now reused.
   let pattern: RegExp | null = null;
   const multipartMatch = entryLower.match(ARCHIVE_MULTIPART_RAR_RE);
   if (multipartMatch) {
@@ -1634,18 +1502,14 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
     }
   }
 
-  // Attempt 1: Pattern match (handles multipart archives)
   if (pattern) {
     const matched = items.filter((item) => pattern!.test(itemBaseName(item)));
     if (matched.length > 0) return matched;
   }
 
-  // Attempt 2: Exact filename match (case-insensitive)
   const exactMatch = items.filter((item) => itemBaseName(item).toLowerCase() === entryLower);
   if (exactMatch.length > 0) return exactMatch;
 
-  // Attempt 3: Stem-based fuzzy match — strip archive extensions and compare stems.
-  // Handles cases where debrid services modify filenames slightly.
   const archiveStem = entryLower
     .replace(/\.part\d+\.rar$/i, "")
     .replace(/\.r\d{2,3}$/i, "")
@@ -1661,8 +1525,6 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
     if (stemMatch.length > 0) return stemMatch;
   }
 
-  // Attempt 4: If only one item in the list and one archive — return it as a best-effort match.
-  // This handles single-file packages where the filename may have been modified.
   if (items.length === 1) {
     const singleName = itemBaseName(items[0]).toLowerCase();
     if (/\.(rar|zip|7z|\d{3})$/i.test(singleName)) {
@@ -1785,8 +1647,6 @@ export class DownloadManager extends EventEmitter {
 
   public skipShutdownPersist = false;
 
-  /** Block ALL persistence (persistSoon + shutdown). Set after importBackup to prevent
-   *  the old in-memory session from overwriting the restored backup on disk. */
   public blockAllPersistence = false;
 
   private debridService: DebridService;
@@ -1818,8 +1678,6 @@ export class DownloadManager extends EventEmitter {
 
   private statsCacheAt = 0;
 
-  /** Cache for cloneSettings() results in getSnapshot() — invalidated after 400ms
-   *  or by explicit invalidateSettingsSnapshotCache() calls. */
   private settingsSnapshotCache: AppSettings | null = null;
   private settingsSnapshotCacheAt = 0;
   private invalidateSettingsSnapshotCache(): void {
@@ -1827,15 +1685,10 @@ export class DownloadManager extends EventEmitter {
     this.settingsSnapshotCacheAt = 0;
   }
 
-  /** State-diffing tracking: hashes of items/packages as last sent to the
-   *  renderer. Allows getSnapshotForEmit() to return only changed entries
-   *  plus a list of removed IDs, drastically cutting IPC payload size for
-   *  large queues (5000+ items) where most items are idle between emits. */
   private lastEmittedItemHashes = new Map<string, string>();
   private lastEmittedPackageHashes = new Map<string, string>();
   private firstEmitDone = false;
   private lastFullEmitAt = 0;
-  /** Force a full resync every 30 seconds to recover from any potential drift. */
   private static readonly FULL_RESYNC_INTERVAL_MS = 30000;
 
   private lastPersistAt = 0;
@@ -1858,27 +1711,16 @@ export class DownloadManager extends EventEmitter {
 
   private packageDeferredPostProcessAbortControllers = new Map<string, AbortController>();
 
-  // Hybrid post-extract (Rename + MKV-Collect) läuft als detached Promise sobald
-  // ein Archiv-Set fertig ist. Separat von der Deferred-Pipe getrackt, damit
-  // runDeferredPostExtraction's replace-Logik die laufende Hybrid-Arbeit nicht
-  // killt — und damit globaler Abort (Stop/Shutdown) + Run-Abschluss sie sehen.
-  // Set pro Package, da mehrere Archive-Sets dicht hintereinander fertig werden
-  // können. (H1/H2/M1)
   private packageHybridPostProcessControllers = new Map<string, Set<AbortController>>();
 
   private packagePostProcessVersions = new Map<string, number>();
 
   private hybridExtractRequeue = new Set<string>();
 
-  // Tracks archive paths already attempted per package until the package/archive state changes
-  // or the user explicitly retries extraction.
   private hybridExtractedPaths = new Map<string, Set<string>>();
 
-  // Tracks failed hybrid archives together with a lightweight state marker so unchanged
-  // archives are not retried on every subsequent post-processing wake-up.
   private hybridFailedArchives = new Map<string, Map<string, HybridFailedArchiveState>>();
 
-  /** Archives already auto-recovered via forced re-download (loop protection). */
   private autoRecoveredForRedownload = new Set<string>();
 
   private reservedTargetPaths = new Map<string, string>();
@@ -1887,24 +1729,8 @@ export class DownloadManager extends EventEmitter {
 
   private itemContributedBytes = new Map<string, number>();
 
-  /** Per-package serialization for ALL post-process file operations that
-   *  touch files inside the package's extractDir — currently autoRename and
-   *  collectMkvFilesToLibrary. Previously only autoRename was serialized
-   *  (autoRenameInFlight), but the hybrid-extract pipe (fire-and-forget) and
-   *  the deferred-post-process pipe (top-level awaited) could interleave so
-   *  that pipe A's mkvMove ran while pipe B's rename was still scanning the
-   *  same dir → ENOENT and files moved to the library under their old
-   *  obfuscated names. By chaining both rename AND mkvMove onto the same
-   *  per-package promise we guarantee that at most one file-mutating
-   *  operation runs per package at any time, regardless of which pipe
-   *  triggered it. */
   private packageFileOpChain = new Map<string, Promise<unknown>>();
 
-  /** Minimum age (ms) a video file must reach before auto-rename will touch
-   *  it. Guards against renaming files mid-write during hybrid extract.
-   *  Disabled (0) under Vitest so tests that create files immediately before
-   *  triggering a rename don't have to sleep. Tests can also override via
-   *  setFileStabilizeMinAgeMsForTests. */
   private fileStabilizeMinAgeMs = process.env.VITEST ? 0 : 2000;
 
   public setFileStabilizeMinAgeMsForTests(ms: number): void {
@@ -1961,9 +1787,6 @@ export class DownloadManager extends EventEmitter {
     this.appSessionStartedAt = startedAt;
     this.runtimePersistedTotalMs = Math.max(0, Number(settings.totalRuntimeAllTimeMs || 0));
     this.runtimePersistedAt = startedAt;
-    // loadSession already returns a fresh, standalone object graph — no need to
-    // deep-clone again.  This avoids duplicating the entire session in memory at
-    // startup which can spike peak heap on low-RAM servers.
     this.session = session;
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
@@ -1994,20 +1817,13 @@ export class DownloadManager extends EventEmitter {
     this.recoverPostProcessingOnStartup();
     this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
-    // Push a fresh snapshot to the UI whenever a rotation event is recorded so
-    // the live rotation panel updates immediately. The listener is module-global,
-    // so guard against firing on a torn-down manager after shutdown.
     setRotationEventListener(() => {
       if (this.rotationListenerActive === false) {
         return;
       }
       try {
-        // Forced emit: rotation happens during the idle link-resolve phase (no
-        // downloads running), where the normal emit cadence can be starved. The
-        // forced path has a 120ms floor — the right cadence for a live log panel.
         this.emitState(true);
       } catch {
-        // never let a UI push break the rotation flow
       }
     });
   }
@@ -2237,7 +2053,6 @@ export class DownloadManager extends EventEmitter {
       ...(matchedBy ? { matchedBy } : {}),
       ...fields
     });
-    // Spiegeln ins Desktop-Rename-Log (luekenlose Sitzungs-Uebersicht beim User).
     logDesktopRename(level, `[${stage}] ${message}`, {
       paket: pkg.name,
       ...(item ? { datei: item.fileName } : {}),
@@ -2278,9 +2093,6 @@ export class DownloadManager extends EventEmitter {
     this.debridService.setSettings(next);
     this.allDebridHostInfoCache.clear();
 
-    // When the provider order or hoster routing changes, clear the cached provider on
-    // all non-active, non-terminal items so the new settings are respected on the next
-    // download attempt.
     const prevOrder = JSON.stringify(previous.providerOrder ?? []);
     const nextOrder = JSON.stringify(next.providerOrder ?? []);
     const prevRouting = JSON.stringify(previous.hosterRouting ?? {});
@@ -2288,9 +2100,6 @@ export class DownloadManager extends EventEmitter {
     if (prevOrder !== nextOrder || prevRouting !== nextRouting) {
       const activeItemIds = new Set([...this.activeTasks.values()].map((t) => t.itemId));
       for (const item of Object.values(this.session.items)) {
-        // Clear for all non-active items except truly finished ones (completed/failed).
-        // "cancelled" items with fullStatus="Gestoppt" are stopped downloads that will
-        // restart on the next start() call, so they must also get their provider cleared.
         if (!activeItemIds.has(item.id) && item.status !== "completed" && item.status !== "failed") {
           item.provider = null;
         }
@@ -2302,22 +2111,11 @@ export class DownloadManager extends EventEmitter {
     if (previousArchivePasswords !== nextArchivePasswords) {
       this.hybridExtractedPaths.clear();
       this.hybridFailedArchives.clear();
-      // Bug-Fix: ein neu hinzugefügtes Passwort griff bei "Jetzt entpacken" erst
-      // nach App-Neustart. Der gesamte Settings-/Extract-Pfad propagiert die Liste
-      // korrekt pro Request — aber der langlebige JVM-Daemon + der In-Memory
-      // Learned-Password-Cache überleben einen Settings-Save (nur ein App-Neustart
-      // setzt sie zurück). Wir replizieren den Neustart-Effekt am Extractor-
-      // Subsystem: Learned-Cache leeren + idle Daemon herunterfahren, damit die
-      // nächste Extraktion frisch mit der neuen Passwortliste startet.
       const pwCount = nextArchivePasswords.split("\n").filter(Boolean).length;
       const reset = resetExtractorCachesForPasswordChange();
       logger.info(`Archiv-Passwortliste geaendert (${pwCount} Eintraege): Extractor-Caches zurueckgesetzt (learned=${reset.learnedCleared}, daemonRestart=${reset.daemonRestarted})`);
     }
 
-    // When account credentials change, clear the provider-failure circuit-breaker
-    // for affected providers. Otherwise a freshly added account would inherit
-    // the cooldown that the previous (now removed) account had triggered, and
-    // the user would be confused why "their new account doesn't work right away".
     const credChanges: Array<{ prev: string; next: string; providers: string[] }> = [
       { prev: previous.token || "", next: next.token || "", providers: ["realdebrid"] },
       { prev: previous.allDebridToken || "", next: next.allDebridToken || "", providers: ["alldebrid"] },
@@ -2331,8 +2129,6 @@ export class DownloadManager extends EventEmitter {
     for (const change of credChanges) {
       if (change.prev === change.next) continue;
       for (const provider of change.providers) {
-        // Provider failure keys are sometimes "provider" alone, sometimes "provider:hoster".
-        // Clear all entries that start with the provider name.
         for (const key of [...this.providerFailures.keys()]) {
           if (key === provider || key.startsWith(`${provider}:`)) {
             this.providerFailures.delete(key);
@@ -2369,7 +2165,6 @@ export class DownloadManager extends EventEmitter {
     return this.session.running;
   }
 
-  /** Abort all running post-processing tasks (extractions). */
   public abortAllPostProcessing(): void {
     this.abortPostProcessing("external");
     for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
@@ -2377,7 +2172,6 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessActive = 0;
   }
 
-  /** Trigger pending extractions without starting the session (for autoExtractWhenStopped). */
   public triggerIdleExtractions(): void {
     if (this.session.running || !this.settings.autoExtract || !this.settings.autoExtractWhenStopped) {
       return;
@@ -2388,22 +2182,14 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
   }
 
-  /** Compact hash of the visible/mutable item fields. Two items with identical
-   *  hashes are considered "no visible change" and can be excluded from delta
-   *  emits. Field selection covers everything ItemRow/PackageCard render. */
   private buildItemHash(item: DownloadItem): string {
     return `${item.updatedAt}|${item.status}|${item.progressPercent}|${item.speedBps}|${item.downloadedBytes}|${item.totalBytes}|${item.retries}|${item.fullStatus || ""}|${item.fileName}|${item.providerLabel || ""}|${item.provider || ""}|${item.onlineStatus || ""}|${item.lastError || ""}`;
   }
 
-  /** Compact hash of the visible/mutable package fields. */
   private buildPackageHash(pkg: PackageEntry): string {
     return `${pkg.updatedAt}|${pkg.status}|${pkg.name}|${pkg.enabled ? 1 : 0}|${pkg.cancelled ? 1 : 0}|${pkg.priority || ""}|${pkg.itemIds.length}|${pkg.postProcessLabel || ""}`;
   }
 
-  /** Returns a snapshot suitable for IPC emit. On the first emit (or every
-   *  30s for safety, or when explicitly forced), returns a "full" payload
-   *  containing all items/packages. Otherwise returns a "delta" with only
-   *  items/packages that changed since the last emit, plus removed IDs. */
   public getSnapshotForEmit(forceFull = false): UiSnapshot {
     const base = this.getSnapshot();
     const now = nowMs();
@@ -2411,7 +2197,6 @@ export class DownloadManager extends EventEmitter {
       || (now - this.lastFullEmitAt) > DownloadManager.FULL_RESYNC_INTERVAL_MS;
 
     if (needsFullResync) {
-      // Refresh tracking state to current snapshot
       this.lastEmittedItemHashes.clear();
       this.lastEmittedPackageHashes.clear();
       for (const id in base.session.items) {
@@ -2425,7 +2210,6 @@ export class DownloadManager extends EventEmitter {
       return { ...base, payloadKind: "full" };
     }
 
-    // Build deltas: include only items/packages whose hash changed since last emit
     const changedItems: Record<string, DownloadItem> = {};
     const removedItemIds: string[] = [];
     const seenItemIds = new Set<string>();
@@ -2441,7 +2225,6 @@ export class DownloadManager extends EventEmitter {
         itemChangeCount += 1;
       }
     }
-    // Detect removed items
     for (const id of this.lastEmittedItemHashes.keys()) {
       if (!seenItemIds.has(id)) {
         removedItemIds.push(id);
@@ -2524,15 +2307,6 @@ export class DownloadManager extends EventEmitter {
     const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
 
     const snapshotSession = cloneSession(this.session);
-    // Cache the cloneSettings result for ~400ms. Settings are mutated in-place
-    // (so a reference check wouldn't detect changes) but most snapshot ticks
-    // happen close together (e.g. 700ms emit interval) where settings haven't
-    // changed at all. Cloning 85+ fields + 6 nested usage Maps + bandwidth
-    // schedules every ~700ms is wasteful when we can serve from cache for
-    // most of those ticks. The 400ms TTL ensures user-driven settings changes
-    // become visible within one render cycle of normal snapshot timing.
-    // Manual invalidation via invalidateSettingsSnapshotCache() is called by
-    // any code path that needs immediate visibility (replaceSettings, etc.).
     let snapshotSettings: AppSettings;
     if (this.settingsSnapshotCache && now - this.settingsSnapshotCacheAt < 400) {
       snapshotSettings = this.settingsSnapshotCache;
@@ -2561,8 +2335,6 @@ export class DownloadManager extends EventEmitter {
       packageSpeedBps: !this.session.running || paused
         ? EMPTY_PACKAGE_SPEED_BPS
         : (() => {
-          // Direct loop avoids the [...Map].map().Object.fromEntries() allocation
-          // chain (3 allocations per entry → 1).
           const out: Record<string, number> = {};
           for (const [pid, bytes] of this.speedBytesPerPackage) {
             out[pid] = Math.floor(bytes / SPEED_WINDOW_SECONDS);
@@ -2643,11 +2415,6 @@ export class DownloadManager extends EventEmitter {
   }
 
   private resetSessionTotalsIfQueueEmpty(force = false): void {
-    // Cheap O(1) check via cached counters covers the common case.
-    // The Object.keys() cross-check below was redundant — itemCount and
-    // packageOrder are kept in sync with session.items / session.packages
-    // by every mutation site, so the second check just allocated two
-    // arrays per call without ever changing the outcome.
     if (this.itemCount > 0 || this.session.packageOrder.length > 0) {
       return;
     }
@@ -2719,7 +2486,6 @@ export class DownloadManager extends EventEmitter {
     }
     this.packageDeferredPostProcessAbortControllers.delete(packageId);
 
-    // Auch laufende Hybrid-Post-Extract-Promises (Rename/MKV-Collect) abbrechen. (H2)
     const hybridSet = this.packageHybridPostProcessControllers.get(packageId);
     if (hybridSet) {
       for (const controller of hybridSet) {
@@ -2854,7 +2620,6 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
       }
     }
-    // removePackageFromSession already deletes the item and decrements itemCount
     if (!removedByPackageCleanup) {
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
@@ -3087,10 +2852,6 @@ export class DownloadManager extends EventEmitter {
         linkCount: links.length
       });
 
-      // Collect per-link summary for ONE batched package-log entry after the
-      // loop, instead of ~10 sync FS calls per link. A DLC with many packages
-      // was freezing the UI for 1-2 minutes because logPackageForItem called
-      // ensurePackageLog + ensureItemLog + appendFileSync×multiple per link.
       const registeredLinkSummary: string[] = [];
       for (let linkIdx = 0; linkIdx < links.length; linkIdx += 1) {
         const link = links[linkIdx];
@@ -3135,12 +2896,6 @@ export class DownloadManager extends EventEmitter {
         addedLinks += 1;
       }
 
-      // One batched log entry per package instead of one per link.
-      // Item-logs are left uninitialized here — they'll be lazily created
-      // the first time the item actually gets a real lifecycle event
-      // (download start, error, etc.). For very large packages (>50 links)
-      // we only log the first 20 + a "... +N more" suffix so the single log
-      // line doesn't grow into hundreds of KB.
       if (registeredLinkSummary.length > 0) {
         const PREVIEW = 20;
         const linksField = registeredLinkSummary.length <= 50
@@ -3269,8 +3024,6 @@ export class DownloadManager extends EventEmitter {
       this.persistSoon();
       this.emitState(true);
 
-      // Fix async race: processItem catch with "package_toggle" overwrites fullStatus
-      // after we already set it to "Wartet". Re-fix on next microtask.
       const pkgItemIds = [...pkg.itemIds];
       queueMicrotask(() => {
         for (const iid of pkgItemIds) {
@@ -3293,13 +3046,11 @@ export class DownloadManager extends EventEmitter {
         try {
           await fs.promises.rm(pkg.extractDir, { recursive: true, force: true });
         } catch {
-          // ignore
         }
       }
       try {
         await fs.promises.rm(pkg.outputDir, { recursive: true, force: true });
       } catch {
-        // ignore
       }
 
       for (const itemId of pkg.itemIds) {
@@ -3439,14 +3190,12 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
     }
 
-    // Check links one by one (sequentially) so the user sees dots change progressively
     const checkedUrls = new Map<string, Awaited<ReturnType<typeof checkRapidgatorOnline>>>();
 
     for (const { itemId, url } of itemsToCheck) {
       const item = this.session.items[itemId];
       if (!item) continue;
 
-      // Reuse result if same URL was already checked
       if (checkedUrls.has(url)) {
         const cached = checkedUrls.get(url);
         if (cached !== undefined) {
@@ -3511,7 +3260,6 @@ export class DownloadManager extends EventEmitter {
       if (this.runItemIds.has(item.id)) {
         this.recordRunOutcome(item.id, "failed");
       }
-      // Refresh package status since item was set to failed
       const pkg = this.session.packages[item.packageId];
       if (pkg) this.refreshPackageStatus(pkg);
     } else {
@@ -3528,7 +3276,7 @@ export class DownloadManager extends EventEmitter {
     const uncheckedIds: string[] = [];
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "queued") continue;
-      if (item.onlineStatus) continue; // already checked
+      if (item.onlineStatus) continue;
       try {
         const host = new URL(item.url).hostname.toLowerCase();
         if (host !== "rapidgator.net" && !host.endsWith(".rapidgator.net") && host !== "rg.to" && !host.endsWith(".rg.to")) continue;
@@ -3639,7 +3387,6 @@ export class DownloadManager extends EventEmitter {
               await fs.promises.rm(targetPath, { force: true });
               removed += 1;
             } catch {
-              // ignore
             }
           }
 
@@ -3739,7 +3486,6 @@ export class DownloadManager extends EventEmitter {
           try {
             await fs.promises.rm(path.join(dirPath, entry.name), { force: true });
           } catch {
-            // ignore and keep directory untouched
           }
         }
 
@@ -3749,7 +3495,6 @@ export class DownloadManager extends EventEmitter {
           removed += 1;
         }
       } catch {
-        // ignore
       }
     }
     return removed;
@@ -3789,11 +3534,6 @@ export class DownloadManager extends EventEmitter {
 
       for (const entry of entries) {
         const fullPath = path.join(current, entry.name);
-        // NEVER follow symlinks / junctions / reparse points. Following them
-        // can leak the scan into unrelated directories — including the shared
-        // mkv library — and cause cross-package renames (the v1.7.107 bug).
-        // Dirent.isDirectory() returns true for symlinks pointing to dirs,
-        // so we MUST also exclude symbolic links explicitly.
         if (entry.isSymbolicLink()) {
           continue;
         }
@@ -3828,9 +3568,6 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  /** Verify+Log fuer SYNCHRONE Rename-Sites (startup-Dedup, Suffix-Fix, Deobfuskation),
-   *  die nicht ueber renamePathWithExdevFallback laufen. Nach erfolgreichem renameSync
-   *  aufrufen — verifiziert das On-Disk-Ergebnis und protokolliert es ins Desktop-Log. */
   private logVerifiedRenameSync(label: string, sourcePath: string, targetPath: string, extraFields?: Record<string, unknown>): void {
     const v = verifyRename(sourcePath, targetPath);
     logDesktopRename(v.level, `${label}: ${verifyHeadline(v)}`, {
@@ -3845,11 +3582,6 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  /** Verifizierter Wrapper um jeden Media-Rename/-Move: protokolliert den Vorgang
-   *  ins Desktop-Rename-Log UND verifiziert danach, dass die Datei wirklich unter
-   *  dem Zielnamen auf der Platte liegt (Quelle weg, korrekte Schreibweise). Nur weil
-   *  fs.rename "ok" meldet, ist der Rename noch nicht bewiesen. Verifikations-Fehler
-   *  werden NUR geloggt (kein throw) — reine Beobachtbarkeit, keine Verhaltensaenderung. */
   private async renamePathWithExdevFallback(sourcePath: string, targetPath: string, ctx?: { label?: string; fields?: Record<string, unknown> }): Promise<void> {
     const label = ctx?.label || "rename";
     try {
@@ -3880,9 +3612,6 @@ export class DownloadManager extends EventEmitter {
   private async renamePathWithExdevFallbackRaw(sourcePath: string, targetPath: string): Promise<void> {
     const sourceFsPath = toWindowsLongPathIfNeeded(sourcePath);
     const targetFsPath = toWindowsLongPathIfNeeded(targetPath);
-    // Transient lock codes — antivirus scan, Windows Search Indexer, OneDrive
-    // sync, an open video player. These typically clear within a second or
-    // two, so a tiny retry loop converts a hard failure into a quiet wait.
     const TRANSIENT_RENAME_ERROR_CODES = new Set(["EBUSY", "EACCES", "EPERM", "EEXIST"]);
     const RENAME_RETRY_DELAYS_MS = [200, 500, 1000];
     let lastError: unknown = null;
@@ -3899,7 +3628,6 @@ export class DownloadManager extends EventEmitter {
           ? String((error as NodeJS.ErrnoException).code || "")
           : "";
         if (code === "EXDEV") {
-          // Cross-volume — fall through to copy+rm fallback below.
           break;
         }
         if (TRANSIENT_RENAME_ERROR_CODES.has(code) && attempt < RENAME_RETRY_DELAYS_MS.length) {
@@ -3912,7 +3640,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // EXDEV (cross-volume) fallback: copy + remove source.
     const lastCode = lastError && typeof lastError === "object" && "code" in lastError
       ? String((lastError as NodeJS.ErrnoException).code || "")
       : "";
@@ -3923,10 +3650,6 @@ export class DownloadManager extends EventEmitter {
     await fs.promises.rm(sourceFsPath, { force: true });
   }
 
-  /** When a video file is renamed, rename matching subtitle / metadata
-   *  companions in the same folder so they keep their pairing. Without this,
-   *  a media player can no longer auto-load subs after the rename because
-   *  the player matches by base filename. */
   private async renameCompanionFiles(
     sourceVideoPath: string,
     targetVideoPath: string,
@@ -3955,18 +3678,12 @@ export class DownloadManager extends EventEmitter {
       if (!COMPANION_EXTENSIONS.has(entryExt)) {
         continue;
       }
-      // Match by basename prefix (handles language tags like "movie.de.srt"):
-      //   "awa-show02e16hd.srt"     -> base "awa-show02e16hd"
-      //   "awa-show02e16hd.de.srt"  -> base "awa-show02e16hd.de"
-      // We accept any companion whose basename starts with the source video's
-      // basename + "." OR equals the source basename (no language tag).
       const entryBase = path.basename(entryName, path.extname(entryName));
       const isExactMatch = entryBase === sourceVideoBase;
       const isPrefixMatch = entryBase.startsWith(`${sourceVideoBase}.`);
       if (!isExactMatch && !isPrefixMatch) {
         continue;
       }
-      // Preserve any suffix after the video basename (e.g. language tag ".de").
       const suffixAfterBase = isExactMatch ? "" : entryBase.slice(sourceVideoBase.length);
       const newCompanionName = `${targetVideoBase}${suffixAfterBase}${entryExt}`;
       const sourceCompanionPath = path.join(sourceDir, entryName);
@@ -3989,10 +3706,6 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  /** Move matching SUBTITLE companions alongside a video collected into the
-   *  library. Note: .nfo / metadata files are intentionally NOT moved — the
-   *  library should contain video + subs only. .nfo stays in the extract
-   *  dir and is removed by normal cleanup. */
   private async moveCompanionFiles(
     sourceVideoPath: string,
     targetVideoPath: string,
@@ -4080,19 +3793,6 @@ export class DownloadManager extends EventEmitter {
       return null;
     }
 
-    // Note: total-path length is intentionally NOT checked here. We used to
-    // cap it at 247 chars (v1.7.151) on the assumption that paths beyond
-    // Windows MAX_PATH (260) would fail or be unusable downstream. That
-    // turned out to be ACTIVELY HARMFUL: renamePathWithExdevFallback wraps
-    // every rename via toWindowsLongPathIfNeeded (\\?\ prefix), and the
-    // file ends up in the library dir after mkv-move where the parent path
-    // is short. Imposing a 247-char cap on the EXTRACT-dir intermediate
-    // path threw away perfectly-good scene-release names like
-    // "Dr.House.S04E02.Der.Stoff.aus.dem.die.Heldin.ist.GERMAN.5.1.DL.AC3.720p.BDRiP.x264-TvR.mkv"
-    // and replaced them with ugly "Dr.House.S04E02.mkv" via fallback.
-    // We rely on the long-path prefix for the rename and on the 255-char
-    // NTFS file-name limit above for the actual constraint.
-
     return candidatePath;
   }
 
@@ -4166,18 +3866,11 @@ export class DownloadManager extends EventEmitter {
     return next;
   }
 
-  /** Serialize a file-mutating post-process operation per package. Both
-   *  autoRename and collectMkvFilesToLibrary touch files in extractDir;
-   *  running them concurrently (across the hybrid-extract and deferred-
-   *  post-process pipes) corrupts state. This helper chains every call
-   *  onto the previous one so at most one such op runs per package. */
   private chainPackageFileOp<T>(pkgId: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.packageFileOpChain.get(pkgId);
     const result = (previous ?? Promise.resolve()).catch(() => undefined).then(fn);
     this.packageFileOpChain.set(pkgId, result);
     return result.finally(() => {
-      // Only clear the slot if no newer chained call replaced us — keeps
-      // the chain intact when several callers queue up at once.
       if (this.packageFileOpChain.get(pkgId) === result) {
         this.packageFileOpChain.delete(pkgId);
       }
@@ -4202,26 +3895,12 @@ export class DownloadManager extends EventEmitter {
     extractDir: string,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
-    // Im finalen Deferred-Pass ist die Extraktion abgeschlossen (awaited) — es gibt
-    // keinen concurrent Extractor-Write mehr. Der Frische-Gate (unten) ist dort ein
-    // False Positive: er wuerde eine eben extrahierte (noch "frische") Datei vom
-    // Rename ausschliessen, woraufhin der nachgelagerte Collect (deferFreshFiles=false)
-    // sie mit Original-Scene-Namen in die Library moved. treatFilesAsStable=true
-    // umgeht den Gate, sodass der Final-Pass garantiert ALLE Dateien umbenennt.
     treatFilesAsStable = false
   ): Promise<number> {
     if (!this.settings.autoRename4sf4sj) {
       return 0;
     }
 
-    // SAFETY: refuse to scan if extractDir is identical to or contains
-    // the shared MKV library. Otherwise the scan would treat already-
-    // collected library files as "extracted videos" and rename them based
-    // on whatever folder candidates happen to surface — corrupting files
-    // from OTHER packages. This is the v1.7.107 bug vector and must never
-    // come back. extractDir INSIDE mkvLibraryDir is also rejected: it
-    // would put extracted files directly into the library tree where
-    // subsequent scans would rename them out of their package context.
     const mkvLibraryDir = String(this.settings.mkvLibraryDir || "").trim();
     if (mkvLibraryDir) {
       const sameOrLibraryInside = isPathInsideDir(mkvLibraryDir, extractDir);
@@ -4252,10 +3931,6 @@ export class DownloadManager extends EventEmitter {
     }
     let renamed = 0;
 
-    // Collect additional folder candidates from package metadata (outputDir only).
-    // Item filenames are intentionally excluded: they contain episode tokens from
-    // OTHER files in the package, which pollute resolveEpisodeTokenForAutoRename
-    // and cause all files to receive the same wrong episode number.
     const packageExtraCandidates: string[] = [];
     if (pkg) {
       const outputBase = path.basename(pkg.outputDir || "");
@@ -4266,14 +3941,7 @@ export class DownloadManager extends EventEmitter {
 
     const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
     const sampleDirNames = new Set(["sample", "samples"]);
-    // Short suffix pattern: scene groups often use "-s.mkv" for samples (e.g. itn-continuum.s01e10.720p-s.mkv)
     const sampleSuffixRe = /[._\-]s$/i;
-    // Files that were still being written to by the extractor in the last
-    // few seconds must not be renamed — hybrid-extract produces MKVs
-    // progressively and a concurrent rename scan can catch a file mid-write.
-    // We skip such "fresh" files and let the next scan pick them up once
-    // they've stabilized (hybrid-extract fires a new rename scan after every
-    // archive completes, so nothing gets missed).
     const FILE_STABILIZE_MIN_AGE_MS = this.fileStabilizeMinAgeMs;
     for (const sourcePath of videoFiles) {
       if (shouldAbort?.()) {
@@ -4284,39 +3952,19 @@ export class DownloadManager extends EventEmitter {
       const sourceBaseName = path.basename(sourceName, sourceExt);
       const parentDirName = path.basename(path.dirname(sourcePath)).toLowerCase();
 
-      // Skip files that are still being written. stat() may fail if the file
-      // disappeared (another pipe's mkvMove) — treat as "skip this scan".
       let sourceStat: fs.Stats | null = null;
       try {
         sourceStat = await fs.promises.stat(sourcePath);
       } catch {
         continue;
       }
-      // now PER FILE erfassen (nicht einmal am Scan-Start): bei Hybrid-Extraktion
-      // werden weitere Dateien WÄHREND dieses Scans geschrieben. Ein am Scan-Start
-      // erfasstes now waere fuer solche Dateien aelter als ihre mtime → negatives
-      // ageMs → der Clock-Skew-Zweig unten wuerde sie faelschlich als "stabil"
-      // werten und einen Rename mitten im Extractor-Write ausloesen (EBUSY →
-      // deferred → der Collect moved die Datei mit Original-Namen, statt umbenannt).
       const now = Date.now();
       const ageMs = now - sourceStat.mtimeMs;
-      // Negative age = mtime in the future (clock skew, NTP correction,
-      // VM resume after suspension). Treat as "definitely stable" so the
-      // file doesn't get stuck waiting for the wall clock to catch up.
       if (!treatFilesAsStable && ageMs >= 0 && ageMs < FILE_STABILIZE_MIN_AGE_MS) {
         logger.info(`Auto-Rename: ${sourceName} uebersprungen — Datei noch frisch (${Math.floor(ageMs)}ms), wird beim naechsten Scan behandelt`);
         continue;
       }
 
-      // Skip sample files — renaming them strips the "-sample" suffix,
-      // making them indistinguishable from the main MKV and causing (2)
-      // duplicates during MKV collection.
-      // BUT: a series with "Sample" in the title (e.g. "Sample.Squad.S01E01")
-      // would match sampleTokenRe as a false positive. Real samples are
-      // small (typically <150 MB); the actual episode is always larger.
-      // Use the file size as a sanity check — only treat as sample if the
-      // file is small. Folder-based detection (sampleDirNames) doesn't need
-      // the size guard because sample subfolders are unambiguous.
       const SAMPLE_MAX_BYTES = 150 * 1024 * 1024;
       const looksLikeSampleByName = sampleTokenRe.test(sourceBaseName) || sampleSuffixRe.test(sourceBaseName);
       const insideSampleDir = sampleDirNames.has(parentDirName);
@@ -4327,12 +3975,8 @@ export class DownloadManager extends EventEmitter {
         if (sourceStat.size <= SAMPLE_MAX_BYTES) {
           continue;
         }
-        // Large file with "sample" in the name — series-title false positive.
         logger.info(`Auto-Rename: ${sourceName} matcht Sample-Pattern, aber Groesse ${Math.round(sourceStat.size / (1024 * 1024))} MB > Schwelle — wird als echter Inhalt behandelt`);
       }
-      // Skip bonus/extras content (Featurettes, Making-Of, Behind-The-Scenes, etc.)
-      // These have generic descriptive names and would get renamed to misleading
-      // episode names if matched against the package's SxxExx pattern.
       if (isBonusContent(sourcePath, extractDir, sourceBaseName)) {
         continue;
       }
@@ -4346,7 +3990,6 @@ export class DownloadManager extends EventEmitter {
         }
         currentDir = parent;
       }
-      // Append package-level candidates that aren't already present
       const seen = new Set(folderCandidates.map(c => c.toLowerCase()));
       for (const extra of packageExtraCandidates) {
         if (!seen.has(extra.toLowerCase())) {
@@ -4354,10 +3997,6 @@ export class DownloadManager extends EventEmitter {
           folderCandidates.push(extra);
         }
       }
-      // Naming-Entscheidung ueber die GEMEINSAME Funktion (decideAutoRenameBaseName) —
-      // exakt dieselbe, die der MKV-Collect nutzt. Single source of truth: ein Guard-Fix
-      // gilt damit immer fuer BEIDE Pfade. Frueher lag die Logik nur hier inline, der
-      // Collect hatte keine → von Auto-Rename verpasste Dateien landeten roh in der Library.
       const decision = decideAutoRenameBaseName(
         folderCandidates,
         sourceName,
@@ -4365,9 +4004,6 @@ export class DownloadManager extends EventEmitter {
         path.basename(path.dirname(sourcePath)),
         path.basename(extractDir)
       );
-      // Skip-Branches behalten den BERECHNETEN Zielnamen fuer die Log-Attribution
-      // (resolveRenameItem speist ihn in inferItemForMediaLog) — wie im Original; no-target
-      // bleibt null, damit der `if (!targetBaseName)`-Zweig weiter greift.
       let targetBaseName: string | null = decision.kind === "rename" ? decision.baseName : (decision.targetBaseName ?? null);
       const resolveRenameItem = (...extra: Array<string | null | undefined>): { item: DownloadItem | null; matchedBy: string | null } => {
         if (!pkg) {
@@ -4512,7 +4148,6 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       if (targetPath === sourcePath) {
-        // Exact match (including casing) — truly nothing to do.
         if (pkg) {
           const resolved = resolveRenameItem(targetPath);
           this.logRenameProcess(pkg, "INFO", "auto-rename", "Auto-Rename übersprungen: Name bereits passend", {
@@ -4525,9 +4160,6 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       if (pathKey(targetPath) === pathKey(sourcePath) && targetPath !== sourcePath) {
-        // Same file on case-insensitive FS but different casing — rename in-place.
-        // Route through renamePathWithExdevFallback so we get the long-path /
-        // UNC handling AND the transient-error retry for free.
         try {
           await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename (Schreibweise)" });
           renamed += 1;
@@ -4547,23 +4179,12 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       if (await this.existsAsync(targetPath)) {
-        // A previous successful rename (this scan or an earlier one) already
-        // produced the target. Try numbered variants: "<base>.2.mkv",
-        // "<base>.3.mkv", ... — caps at 99 to bound the loop. This handles
-        // legit multi-MKV-per-folder cases (alternate audio, A/B parts in the
-        // same folder) without dropping the second file silently.
         const targetDir = path.dirname(targetPath);
         const targetExt = path.extname(targetPath);
         const targetBase = path.basename(targetPath, targetExt);
         let resolvedTarget: string | null = null;
         for (let suffixN = 2; suffixN <= 99; suffixN += 1) {
           const candidate = path.join(targetDir, `${targetBase}.${suffixN}${targetExt}`);
-          // Defensive: never pick the source file as our resolved target.
-          // If sourceName is already e.g. "<base>.2.mkv", existsAsync would
-          // see it as "existing" and the loop would otherwise pick "<base>.3"
-          // — but if pathKey matches (case-insensitive), bail to next idx
-          // so we don't accidentally rename source-onto-itself with a
-          // surprising suffix.
           if (pathKey(candidate) === pathKey(sourcePath)) {
             continue;
           }
@@ -4619,8 +4240,6 @@ export class DownloadManager extends EventEmitter {
         }
         logger.info(`Auto-Rename: ${sourceName} -> ${path.basename(targetPath)}`);
         renamed += 1;
-        // Rename matching companion files (subtitles, .nfo, .idx/.sub) so they
-        // stay paired with the renamed video for media-player auto-loading.
         await this.renameCompanionFiles(sourcePath, targetPath, pkg);
       } catch (error) {
         if (this.isPathLengthRenameError(error)) {
@@ -4654,7 +4273,6 @@ export class DownloadManager extends EventEmitter {
               fallbackRenamed = true;
               break;
             } catch {
-              // try next fallback candidate
             }
           }
           if (fallbackRenamed) {
@@ -4735,7 +4353,6 @@ export class DownloadManager extends EventEmitter {
           await fs.promises.rm(toWindowsLongPathIfNeeded(fullPath), { force: true });
           removed += 1;
         } catch {
-          // ignore and keep file
         }
       }
     }
@@ -4810,7 +4427,6 @@ export class DownloadManager extends EventEmitter {
         await fs.promises.rm(toWindowsLongPathIfNeeded(targetPath), { force: true });
         removed += 1;
       } catch {
-        // ignore
       }
     }
 
@@ -4833,9 +4449,6 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  /** M1: True wenn IRGENDWO noch Deferred- oder Hybrid-Post-Processing läuft.
-   *  Verhindert dass der Scheduler/finishRun den Run als beendet meldet und
-   *  State zurücksetzt, während im Hintergrund noch Dateien verschoben werden. */
   private hasAnyDeferredPostProcessPending(): boolean {
     for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
       if (!controller.signal.aborted) {
@@ -4852,10 +4465,6 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  /** Baut die folderCandidates fuer die Namensherleitung im MKV-Collect — identisch
-   *  zu autoRenameExtractedVideoFilesImpl (Walk vom Datei-Verzeichnis hoch innerhalb des
-   *  sourceRoot), aber zusaetzlich mit dem sourceRoot-Basename selbst (fuer Dateien direkt
-   *  im Staffel-/Paketordner, wo der Walk nichts liefert) und dem outputDir-Basename. */
   private buildCollectFolderCandidates(sourcePath: string, sourceRoot: string, pkg: PackageEntry): string[] {
     const folderCandidates: string[] = [];
     let currentDir = path.dirname(sourcePath);
@@ -4880,22 +4489,12 @@ export class DownloadManager extends EventEmitter {
     return folderCandidates;
   }
 
-  /** Leitet den SAUBEREN Library-Dateinamen fuer eine zu sammelnde MKV ab — ueber die
-   *  IDENTISCHE Entscheidung wie Auto-Rename (decideAutoRenameBaseName). Liefert null,
-   *  wenn keine Verbesserung moeglich ist (raw-keep = Boden, nie schlechter als heute). */
   private deriveCleanCollectFileName(sourcePath: string, sourceRoot: string, pkg: PackageEntry): string | null {
-    // Respektiere die Umbenennungs-Einstellung: ist Auto-Rename AUS, benennt der Collect
-    // auch nicht um (Konsistenz — sonst wuerde ein Nutzer, der Umbenennen bewusst aus hat,
-    // trotzdem umbenannte Library-Dateien bekommen). Auto-Rename selbst ist an derselben
-    // Einstellung gegated (autoRenameExtractedVideoFilesImpl: if (!autoRename4sf4sj) return 0).
     if (!this.settings.autoRename4sf4sj) {
       return null;
     }
     const parsed = path.parse(path.basename(sourcePath));
     const sourceExt = parsed.ext || ".mkv";
-    // Kein separater Quell-Guard noetig: decideAutoRenameBaseName liefert nur dann ein Rename,
-    // wenn ein folderCandidate einen echten Season-/Episode-Token traegt (Wurzel-Schutz dort) —
-    // generische Paketordner ("Mega-Direct-Pack") fuehren zu no-target → Roh-Name bleibt.
     const folderCandidates = this.buildCollectFolderCandidates(sourcePath, sourceRoot, pkg);
     const decision = decideAutoRenameBaseName(
       folderCandidates,
@@ -4913,15 +4512,12 @@ export class DownloadManager extends EventEmitter {
     }
     const cleanFileName = `${cleanBase}${sourceExt}`;
     if (cleanFileName.toLowerCase() === path.basename(sourcePath).toLowerCase()) {
-      return null; // already clean — no-op
+      return null;
     }
     return cleanFileName;
   }
 
   private async buildUniqueFlattenTargetPath(targetDir: string, sourcePath: string, reserved: Set<string>, desiredFileName?: string): Promise<string> {
-    // desiredFileName: der bereits abgeleitete SAUBERE Zielname (mit Endung). Wird er
-    // uebergeben, hat er Vorrang vor dem (evtl. rohen) Quell-Basename — so landet eine
-    // Datei, die Auto-Rename verpasst hat, trotzdem sauben benannt in der Library.
     const parsed = path.parse(desiredFileName && desiredFileName.trim() ? desiredFileName : path.basename(sourcePath));
     const extension = parsed.ext || ".mkv";
     const baseName = sanitizeFilename(parsed.name || "video");
@@ -4944,7 +4540,6 @@ export class DownloadManager extends EventEmitter {
       }
       index += 1;
     }
-    // Fallback: use timestamp-based name to guarantee termination
     const fallbackName = `${baseName} (${Date.now()})${extension}`;
     const fallbackPath = path.join(targetDir, fallbackName);
     reserved.add(pathKey(fallbackPath));
@@ -4961,11 +4556,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // SOURCE DIRECTORIES:
-    // - Wenn autoExtract aktiv: extractDir ist primäre Quelle (entpackte Videos).
-    // - IMMER zusätzlich outputDir: Provider wie Mega-Debrid liefern direkte
-    //   .mkv (kein Archiv), die sonst im outputDir liegen bleiben und nie in
-    //   der Library landen würden.
     const sourceDirCandidates: string[] = [];
     if (this.settings.autoExtract && pkg.extractDir) {
       sourceDirCandidates.push(pkg.extractDir);
@@ -4973,7 +4563,6 @@ export class DownloadManager extends EventEmitter {
     if (pkg.outputDir) {
       sourceDirCandidates.push(pkg.outputDir);
     }
-    // Dedupe nach resolved Pfad (extractDir kann == outputDir sein).
     const sourceDirSeen = new Set<string>();
     const sourceDirsAll: string[] = [];
     for (const dir of sourceDirCandidates) {
@@ -4990,11 +4579,6 @@ export class DownloadManager extends EventEmitter {
     }
     const targetDir = path.resolve(targetDirRaw);
 
-    // SAFETY: never move files WITHIN the library tree, and never treat the
-    // library itself as a source. sourceDir == targetDir would scan the
-    // library, match files collected from OTHER packages via the same rename
-    // heuristics, and move them around — a cross-package corruption vector.
-    // Pro Source-Dir prüfen — einer kann safe sein, der andere nicht.
     const sourceDirs: string[] = [];
     for (const dir of sourceDirsAll) {
       if (isPathInsideDir(dir, targetDir) || isPathInsideDir(targetDir, dir)) {
@@ -5015,16 +4599,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // CLEANUP-DIR: NUR dieser Ordner darf nach dem Move destruktiv aufgeraeumt
-    // werden (Restdateien loeschen + leere Ordner entfernen).
-    // - autoExtract=true  -> extractDir (entpackter Inhalt, fertig verarbeitet)
-    // - autoExtract=false -> outputDir (kein Extract, das ist der finale Inhalt)
-    //
-    // WICHTIG: Bei autoExtract=true wird der outputDir NICHT hier aufgeraeumt!
-    // Dort liegen die RAR-Archive, die von der separaten Archive-Cleanup-Pipeline
-    // (mit Extraktions-Guards) verwaltet werden. Ein blindes Loeschen aller
-    // Nicht-Video-Dateien im outputDir wuerde noch nicht entpackte Archive-Sets
-    // anderer Staffeln/Items zerstoeren (Regression v1.7.154, gefixt v1.7.156).
     const cleanupDirCandidate = this.settings.autoExtract ? pkg.extractDir : pkg.outputDir;
     const cleanupDir = (cleanupDirCandidate && sourceDirs.some(
       (d) => path.resolve(d).toLowerCase() === path.resolve(cleanupDirCandidate).toLowerCase()
@@ -5037,9 +4611,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Sammle aus ALLEN safe source dirs. Dedupe nach basename (lowercase) —
-    // extractDir wird zuerst gescannt und gewinnt bei Kollision (entpackte
-    // Datei hat Vorrang vor evtl. noch liegengebliebenem Quell-File).
     const seenBasenames = new Set<string>();
     const collected: { filePath: string; sourceRoot: string }[] = [];
     for (const dir of sourceDirs) {
@@ -5056,10 +4627,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Filter: Sample- und Bonus-Dateien ausschließen
-    // - Sample-Ordner / "sample" im Dateinamen
-    // - Bonus-Subordner (Extras, Bonus, Featurettes, etc.)
-    // - Bonus-Dateinamen (Making-Of, Deleted-Scene, etc.)
     const sampleDirNames = new Set(["sample", "samples"]);
     const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
     const mkvFiles: { filePath: string; sourceRoot: string }[] = [];
@@ -5115,7 +4682,6 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      // Skip 0-byte files from failed/partial extractions
       let sourceSize = 0;
       let sourceMtimeMs = 0;
       try {
@@ -5126,12 +4692,6 @@ export class DownloadManager extends EventEmitter {
         skipped += 1;
         continue;
       }
-      // Frische-Skip (nur Hybrid-Pfad: deferFreshFiles=true): eine gerade extrahierte
-      // Datei wird vom Auto-Rename absichtlich deferred (noch nicht stabil / EBUSY).
-      // Wuerde der Collect sie JETZT moven, landet sie mit Original-Namen in der
-      // Library statt umbenannt (genau der gemeldete "1-2 pro Staffel nicht
-      // umbenannt"-Bug). Wir defern sie ebenfalls → eine spaetere Hybrid-Runde oder
-      // der finale Deferred-Pass (deferFreshFiles=false) benennt sie um + sammelt sie.
       if (deferFreshFiles && this.fileStabilizeMinAgeMs > 0) {
         const ageMs = Date.now() - sourceMtimeMs;
         if (ageMs >= 0 && ageMs < this.fileStabilizeMinAgeMs) {
@@ -5152,12 +4712,6 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      // SAUBEREN Library-Namen ableiten — gleiche Logik wie Auto-Rename (decideAutoRenameBaseName,
-      // Single Source of Truth). Hat Auto-Rename die Datei NIE erfasst (verpasster Scan oder die
-      // Datei lag in Downloader Unfertig, ausserhalb der extractDir), traegt sie noch ihren rohen
-      // Scene-Namen ("tvarchiv...s07e12-720.mkv", "4sf-...s04e01.mkv"). Genau diese landeten bisher
-      // roh in der Library. Den Namen raeumen wir HIER beim Sammeln auf. null => keine Verbesserung
-      // moeglich => Roh-Name behalten (raw-keep = Boden, nie schlechter als heute).
       const derivedFileName = this.deriveCleanCollectFileName(sourcePath, sourceRoot, pkg);
       const desiredFileName = derivedFileName || path.basename(sourcePath);
       if (derivedFileName) {
@@ -5169,9 +4723,6 @@ export class DownloadManager extends EventEmitter {
         }, resolvedDerive.item, resolvedDerive.matchedBy);
       }
 
-      // Check if identical file already exists in target (same name + same size) → skip instead of creating (2) copy.
-      // WICHTIG: gegen den DERIVED (sauberen) Zielnamen pruefen, nicht den Roh-Namen — sonst findet
-      // der Dedup eine bereits sauber gesammelte Datei nicht und es entsteht eine "(2)"-Kopie.
       const idealTargetPath = path.join(targetDir, desiredFileName);
       try {
         const existingStat = await fs.promises.stat(idealTargetPath);
@@ -5183,19 +4734,16 @@ export class DownloadManager extends EventEmitter {
             targetPath: idealTargetPath,
             sourceSize
           }, resolved.item, resolved.matchedBy);
-          // Remove the duplicate source file to avoid future re-processing
           try {
             await fs.promises.unlink(sourcePath);
             sourceArtifactsChanged = true;
           } catch {
-            /* ignore */
           }
           sourceCleanupRelevant = true;
           skipped += 1;
           continue;
         }
       } catch {
-        // File doesn't exist in target yet — proceed normally
       }
 
       const targetPath = await this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets, desiredFileName);
@@ -5220,8 +4768,6 @@ export class DownloadManager extends EventEmitter {
           targetPath,
           sourceSize
         }, resolved.item, resolved.matchedBy);
-        // Move matching companion files (subtitles, .nfo) alongside the video
-        // so the media player can still find them next to the file.
         await this.moveCompanionFiles(sourcePath, targetPath, pkg);
       } catch (error) {
         failed += 1;
@@ -5242,8 +4788,6 @@ export class DownloadManager extends EventEmitter {
     }
 
     if ((sourceArtifactsChanged || sourceCleanupRelevant) && cleanupDir && await this.existsAsync(cleanupDir)) {
-      // NUR cleanupDir aufraeumen — niemals den outputDir bei autoExtract=true,
-      // sonst werden noch nicht entpackte Archive-Sets geloescht (s.o.).
       const removedResidual = await this.cleanupNonMkvResidualFiles(cleanupDir, targetDir);
       if (removedResidual > 0) {
         logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, dir=${cleanupDir}, entfernt=${removedResidual}`);
@@ -5283,7 +4827,6 @@ export class DownloadManager extends EventEmitter {
       if (!item) {
         continue;
       }
-      // Only overwrite outcome for non-completed items to preserve correct summary stats
       if (item.status !== "completed") {
         this.recordRunOutcome(itemId, "cancelled");
       }
@@ -5318,7 +4861,6 @@ export class DownloadManager extends EventEmitter {
 
     const itemIds = [...pkg.itemIds];
 
-    // 1. Abort active downloads for items in THIS package only
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item) continue;
@@ -5329,14 +4871,12 @@ export class DownloadManager extends EventEmitter {
         active.abortController.abort("reset");
       }
 
-      // Delete partial download file
       const targetPath = String(item.targetPath || "").trim();
       if (targetPath) {
-        try { fs.rmSync(targetPath, { force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(targetPath, { force: true }); } catch {  }
         this.releaseTargetPath(itemId);
       }
 
-      // Reset item state
       this.dropItemContribution(itemId);
       this.runOutcomes.delete(itemId);
       this.runItemIds.delete(itemId);
@@ -5359,24 +4899,20 @@ export class DownloadManager extends EventEmitter {
       item.updatedAt = nowMs();
     }
 
-    // 2. Abort post-processing (extraction) if active for THIS package
     this.abortPackagePostProcessing(packageId, "reset");
     this.runCompletedPackages.delete(packageId);
 
-    // 3. Clean up extraction progress manifest (.rd_extract_progress.json)
     if (pkg.outputDir) {
       clearExtractResumeState(pkg.outputDir, packageId).catch(() => {});
       clearExtractResumeState(pkg.outputDir).catch(() => {});
     }
 
-    // 4. Reset package state
     pkg.status = "queued";
     pkg.cancelled = false;
     pkg.enabled = true;
     pkg.updatedAt = nowMs();
     this.historyRecordedPackages.delete(packageId);
 
-    // 5. Re-add to runItemIds/runPackageIds if session is running so outcomes are tracked
     if (this.session.running) {
       for (const itemId of itemIds) {
         this.runItemIds.add(itemId);
@@ -5408,7 +4944,7 @@ export class DownloadManager extends EventEmitter {
 
       const targetPath = String(item.targetPath || "").trim();
       if (targetPath) {
-        try { fs.rmSync(targetPath, { force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(targetPath, { force: true }); } catch {  }
         this.releaseTargetPath(itemId);
       }
 
@@ -5432,7 +4968,6 @@ export class DownloadManager extends EventEmitter {
       item.onlineStatus = undefined;
       item.updatedAt = nowMs();
 
-      // Re-add to runItemIds if session is running so outcome is tracked in summary
       if (this.session.running) {
         this.runItemIds.add(itemId);
       } else {
@@ -5440,9 +4975,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // Reset parent package status if it was completed/failed (now has queued items again)
     for (const pkgId of affectedPackageIds) {
-      // Abort active post-processing for this package
       this.abortPackagePostProcessing(pkgId, "reset");
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
@@ -5453,7 +4986,6 @@ export class DownloadManager extends EventEmitter {
         pkg.cancelled = false;
         pkg.updatedAt = nowMs();
       }
-      // Re-add package to runPackageIds so scheduler picks up the reset items
       if (this.session.running) {
         this.runPackageIds.add(pkgId);
       }
@@ -5474,13 +5006,11 @@ export class DownloadManager extends EventEmitter {
     pkg.priority = priority;
     pkg.updatedAt = nowMs();
 
-    // Move high-priority packages to the top of packageOrder
     if (priority === "high") {
       const order = this.session.packageOrder;
       const idx = order.indexOf(packageId);
       if (idx > 0) {
         order.splice(idx, 1);
-        // Insert after last existing high-priority package
         let insertAt = 0;
         for (let i = 0; i < order.length; i++) {
           const p = this.session.packages[order[i]];
@@ -5516,7 +5046,6 @@ export class DownloadManager extends EventEmitter {
       const pkg = this.session.packages[pkgId];
       if (pkg) this.refreshPackageStatus(pkg);
     }
-    // Trigger extraction if all items are now in a terminal state and some completed (no failures)
     if (this.settings.autoExtract) {
       for (const pkgId of affectedPackageIds) {
         const pkg = this.session.packages[pkgId];
@@ -5543,7 +5072,6 @@ export class DownloadManager extends EventEmitter {
   public async startPackages(packageIds: string[]): Promise<void> {
     const targetSet = new Set(packageIds);
 
-    // Enable specified packages if disabled (only non-cancelled)
     for (const pkgId of targetSet) {
       const pkg = this.session.packages[pkgId];
       if (pkg && !pkg.cancelled && !pkg.enabled) {
@@ -5551,7 +5079,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // Recover stopped items in specified packages
     for (const item of Object.values(this.session.items)) {
       if (!targetSet.has(item.packageId)) continue;
       if (item.status === "cancelled" && item.fullStatus === "Gestoppt") {
@@ -5566,9 +5093,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // If already running, the scheduler will pick up newly enabled items
     if (this.session.running) {
-      // Add new items to runItemIds so the scheduler processes them
       for (const item of Object.values(this.session.items)) {
         if (!targetSet.has(item.packageId)) continue;
         if (item.status === "queued" || item.status === "reconnect_wait") {
@@ -5581,7 +5106,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Not running: start with only items from specified packages
     this.triggerPendingExtractions();
     const runItems = Object.values(this.session.items)
       .filter((item) => {
@@ -5641,14 +5165,12 @@ export class DownloadManager extends EventEmitter {
   public async startItems(itemIds: string[]): Promise<void> {
     const targetSet = new Set(itemIds);
 
-    // Collect affected package IDs
     const affectedPackageIds = new Set<string>();
     for (const itemId of targetSet) {
       const item = this.session.items[itemId];
       if (item) affectedPackageIds.add(item.packageId);
     }
 
-    // Enable affected packages if disabled (only non-cancelled)
     for (const pkgId of affectedPackageIds) {
       const pkg = this.session.packages[pkgId];
       if (pkg && !pkg.cancelled && !pkg.enabled) {
@@ -5656,7 +5178,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // Recover stopped items
     for (const itemId of targetSet) {
       const item = this.session.items[itemId];
       if (!item) continue;
@@ -5672,7 +5193,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // If already running, add items to scheduler
     if (this.session.running) {
       for (const itemId of targetSet) {
         const item = this.session.items[itemId];
@@ -5689,7 +5209,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Not running: start with only specified items
     this.triggerPendingExtractions();
     const runItems = [...targetSet]
       .map((id) => this.session.items[id])
@@ -5751,18 +5270,12 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
-    // Bump scheduler generation so any old scheduler from a previous run exits
-    // instead of continuing with stale state.
     this.schedulerGeneration += 1;
 
-    // Set running early to prevent concurrent start() calls from passing the guard
-    // while we await recoverRetryableItems below.
     this.session.running = true;
 
     const recoveredItems = await this.recoverRetryableItems("start");
 
-    // Yield once more to let any pending abort handlers from the previous stop()
-    // complete — they check this.session.running and skip status overwrite if true.
     await sleep(0);
 
     let recoveredStoppedItems = 0;
@@ -5861,8 +5374,6 @@ export class DownloadManager extends EventEmitter {
 
     this.session.running = true;
     this.session.paused = false;
-    // Keep cumulative session bytes across stop/resume so the session total stays accurate.
-    // Only runStartedAt resets (for ETA/speed calculations relative to current run).
     this.session.runStartedAt = nowMs();
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
@@ -5893,12 +5404,6 @@ export class DownloadManager extends EventEmitter {
   }
 
   public stop(options?: { parkForRestart?: boolean }): void {
-    // parkForRestart: used before an app-update install. Active downloads are
-    // aborted with the "shutdown" reason so their continuation re-queues them
-    // (status "queued") instead of marking them "cancelled"/"Gestoppt". A
-    // cancelled item is NOT picked up by autoResumeOnStart after the update
-    // relaunch, so the download would silently fail to resume — the user sees
-    // packages that were downloading "disappear" from the active list.
     const parkForRestart = options?.parkForRestart === true;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
     const keepExtraction = this.settings.autoExtractWhenStopped;
@@ -5927,7 +5432,6 @@ export class DownloadManager extends EventEmitter {
       active.abortReason = abortReason;
       active.abortController.abort(abortReason);
     }
-    // Reset all non-finished items to clean "Wartet" / "Paket gestoppt" state
     for (const item of Object.values(this.session.items)) {
       if (!isFinishedStatus(item.status)) {
         item.status = "queued";
@@ -5939,7 +5443,6 @@ export class DownloadManager extends EventEmitter {
     }
     for (const pkg of Object.values(this.session.packages)) {
       if (keepExtraction && (pkg.status === "extracting" || pkg.status === "integrity_check")) {
-        // Keep extraction-related statuses when autoExtractWhenStopped
         continue;
       }
       if (pkg.status === "downloading" || pkg.status === "validating"
@@ -5999,9 +5502,6 @@ export class DownloadManager extends EventEmitter {
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "completed") continue;
       const fullSt = item.fullStatus || "";
-      // Only relabel items with active extraction status (e.g. "Entpacken 45%", "Passwort prüfen")
-      // Skip items that were merely waiting ("Entpacken - Ausstehend", "Entpacken - Warten auf Parts")
-      // as they were never actively extracting and "abgebrochen" would be misleading.
       if (/^Entpacken\b/i.test(fullSt) && !/Ausstehend/i.test(fullSt) && !/Warten/i.test(fullSt) && !isExtractedLabel(fullSt)) {
         item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
         item.updatedAt = nowMs();
@@ -6026,11 +5526,6 @@ export class DownloadManager extends EventEmitter {
     this.pacedStartReservationByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
-    // Persist synchronously on shutdown to guarantee data is written before process exits.
-    // Only skip if a backup was just imported (skipShutdownPersist) — the restored session
-    // on disk must not be overwritten.  blockAllPersistence is intentionally NOT checked
-    // here: it guards async/periodic saves during runtime, but shutdown must always persist
-    // to prevent queue loss across restarts/updates.
     if (!this.skipShutdownPersist) {
       const pkgCount = Object.keys(this.session.packages).length;
       const itemCount = Object.keys(this.session.items).length;
@@ -6053,21 +5548,16 @@ export class DownloadManager extends EventEmitter {
     this.session.paused = !this.session.paused;
 
     if (!wasPaused && this.session.paused) {
-      // Do NOT abort extraction on pause — extraction works on already-downloaded
-      // files and should continue while downloads are paused.
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
       this.speedBytesPerPackage.clear();
       this.speedEventsHead = 0;
     }
 
-    // When unpausing: clear all retry delays so stuck queued items restart immediately,
-    // and abort long-stuck validating/downloading tasks so they get retried fresh.
     if (wasPaused && !this.session.paused) {
       this.retryAfterByItem.clear();
       this.providerStartReservations.clear();
       this.pacedStartReservationByItem.clear();
-      // Reset provider circuit breaker so items don't sit in cooldown after unpause
       this.providerFailures.clear();
 
       const now = nowMs();
@@ -6088,7 +5578,6 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      // Retry failed extractions after unpause
       this.triggerPendingExtractions();
     }
 
@@ -6121,13 +5610,11 @@ export class DownloadManager extends EventEmitter {
         item.fullStatus = "Wartet";
         item.lastError = "";
         item.speedBps = 0;
-        item.provider = null;  // Re-evaluate provider order on restart
+        item.provider = null;
         item.updatedAt = nowMs();
         continue;
       }
       if (item.status === "extracting" || item.status === "integrity_check") {
-        // These items have already been fully downloaded — mark as completed
-        // so recoverPostProcessingOnStartup() can re-trigger extraction.
         item.status = "completed";
         item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         item.speedBps = 0;
@@ -6147,7 +5634,6 @@ export class DownloadManager extends EventEmitter {
         item.speedBps = 0;
         item.updatedAt = nowMs();
       }
-      // Clear stale transient status texts from previous session
       if (item.status === "queued") {
         const statusText = (item.fullStatus || "").trim();
         if (statusText !== "Wartet"
@@ -6157,15 +5643,12 @@ export class DownloadManager extends EventEmitter {
           item.fullStatus = "Wartet";
         }
       }
-      // Reset stale "checking" status from interrupted checks
       if (item.onlineStatus === "checking") {
         item.onlineStatus = undefined;
       }
       if (item.status === "completed") {
         const statusText = (item.fullStatus || "").trim();
-        // Preserve extraction-related statuses (Ausstehend, Warten auf Parts, etc.)
         if (/^Entpacken\b/i.test(statusText) || isExtractErrorLabel(statusText) || isExtractedLabel(statusText) || /^Fertig\b/i.test(statusText)) {
-          // keep as-is
         } else {
           item.fullStatus = this.settings.autoExtract
             ? "Entpacken - Ausstehend"
@@ -6238,7 +5721,6 @@ export class DownloadManager extends EventEmitter {
           return false;
         }
         if (item.status === "completed") {
-          // With autoExtract: keep items that haven't been extracted yet
           if (this.settings.autoExtract && !isExtractedLabel(item.fullStatus || "")) {
             return true;
           }
@@ -6363,8 +5845,6 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  /** Synchronous persist — guarantees state is on disk before returning.
-   *  Used before update installs to prevent queue loss. */
   public persistNowSync(): void {
     this.clearPersistTimer();
     const pkgCount = Object.keys(this.session.packages).length;
@@ -6389,7 +5869,6 @@ export class DownloadManager extends EventEmitter {
         this.emit("state", this.getSnapshotForEmit());
         return;
       }
-      // Too soon — replace any pending timer with a shorter forced-emit timer
       if (this.stateEmitTimer) {
         clearTimeout(this.stateEmitTimer);
         this.stateEmitTimer = null;
@@ -6477,8 +5956,6 @@ export class DownloadManager extends EventEmitter {
 
   private dropItemContribution(itemId: string): void {
     this.itemContributedBytes.delete(itemId);
-    // Session totals are cumulative for the current app run and must not shrink
-    // just because an item/package is removed from the queue after completion.
     this.invalidateStatsCache();
   }
 
@@ -6535,10 +6012,6 @@ export class DownloadManager extends EventEmitter {
     this.claimedTargetPathByItem.delete(itemId);
   }
 
-  /** Restore reservedTargetPaths from persisted session on startup so claimTargetPath
-   *  knows which files belong to which items. Without this, after restart all paths are
-   *  unclaimed and a new download with the same filename would create a "(1)" copy
-   *  instead of reusing its own partial file — or worse, overwrite another item's file. */
   private restoreTargetPathReservations(): void {
     let restored = 0;
     let droppedUnsafe = 0;
@@ -6568,7 +6041,6 @@ export class DownloadManager extends EventEmitter {
       logger.warn(`restoreTargetPathReservations: ${droppedUnsafe} unsichere targetPath-Eintraege verworfen`);
     }
     this.reconcileDuplicateSuffixSessionItems();
-    // Fix legacy (N) suffix files: rename back to original if original path is free
     this.fixDuplicateSuffixFiles();
   }
 
@@ -6636,7 +6108,6 @@ export class DownloadManager extends EventEmitter {
           try {
             fs.rmSync(duplicateTargetPath, { force: true });
           } catch {
-            // ignore, stale duplicate can remain on disk if Windows still holds a handle
           }
         } else if (duplicateExists && canonicalExists && !primaryWins && primaryItem.status !== "completed") {
           try {
@@ -6676,7 +6147,6 @@ export class DownloadManager extends EventEmitter {
               primaryItem.progressPercent = 100;
             }
           } catch {
-            // ignore stat failures; persisted metadata remains as-is
           }
         }
 
@@ -6710,9 +6180,6 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  /** Re-validate "completed" items on startup: if the file on disk is significantly
-   *  smaller than expected, the item was incorrectly marked completed (e.g. by the
-   *  old 50% recovery threshold). Reset to "queued" so it gets re-downloaded. */
   private revalidateCompletedItems(): void {
     let fixed = 0;
     const touchedPackageIds = new Set<string>();
@@ -6768,7 +6235,6 @@ export class DownloadManager extends EventEmitter {
           touchedPackageIds.add(item.packageId);
         }
       } catch {
-        // file doesn't exist — reset to queued so it gets re-downloaded
         if (archiveLike && this.shouldPreserveMissingCompletedArchiveForStartupRecovery(item)) {
           logger.info(`revalidateCompleted: ${item.fileName} Quelle fehlt, belasse fuer Startup-Recovery`);
           continue;
@@ -6924,7 +6390,6 @@ export class DownloadManager extends EventEmitter {
     if (!archiveKey) {
       this.hybridExtractedPaths.delete(packageId);
       this.hybridFailedArchives.delete(packageId);
-      // Also clear re-download loop protection for this package
       for (const key of this.autoRecoveredForRedownload) {
         if (key.startsWith(`${packageId}::`)) this.autoRecoveredForRedownload.delete(key);
       }
@@ -6984,10 +6449,6 @@ export class DownloadManager extends EventEmitter {
     failure: ExtractArchiveFailureInfo,
     scope: "hybrid" | "full"
   ): number {
-    // Allow auto-recovery for both crc_error and wrong_password when suggestRedownload is set.
-    // Encrypted RAR5 archives with corrupt content produce "Checksum error in the encrypted
-    // file" which is indistinguishable from a wrong-password error.  When the JVM extractor
-    // also failed (suggestRedownload=true), re-downloading is warranted for both categories.
     if (!failure.suggestRedownload || (failure.category !== "crc_error" && failure.category !== "wrong_password")) {
       return 0;
     }
@@ -7005,12 +6466,6 @@ export class DownloadManager extends EventEmitter {
       .filter(({ state }) => state.reason !== "ok");
 
     if (corruptArchiveItems.length === 0) {
-      // All files have the expected size on disk.  This can mean either:
-      //   (a) content is corrupt despite correct size (network corruption), or
-      //   (b) archive is valid but password is wrong (e.g. header-encrypted RAR).
-      // Check the RAR magic bytes of the first part to distinguish:
-      //   valid signature → password issue → don't waste traffic re-downloading.
-      //   invalid signature → genuine corruption → force re-download.
       const firstPart = inspectedArchiveItems.find(({ state }) => state.diskPath);
       let hasValidSignature = false;
       if (firstPart?.state.diskPath) {
@@ -7019,8 +6474,6 @@ export class DownloadManager extends EventEmitter {
           try {
             const header = Buffer.alloc(8);
             fs.readSync(fd, header, 0, 8, 0);
-            // RAR4: 52 61 72 21 1a 07 00, RAR5: 52 61 72 21 1a 07 01 00
-            // 7z:   37 7a bc af 27 1c, ZIP: 50 4b 03 04
             hasValidSignature =
               (header[0] === 0x52 && header[1] === 0x61 && header[2] === 0x72 && header[3] === 0x21 && header[4] === 0x1a && header[5] === 0x07) ||
               (header[0] === 0x37 && header[1] === 0x7a && header[2] === 0xbc && header[3] === 0xaf) ||
@@ -7028,7 +6481,7 @@ export class DownloadManager extends EventEmitter {
           } finally {
             fs.closeSync(fd);
           }
-        } catch { /* can't read → treat as corrupt */ }
+        } catch {  }
       }
 
       if (hasValidSignature) {
@@ -7056,7 +6509,6 @@ export class DownloadManager extends EventEmitter {
         try {
           fs.rmSync(claimedTargetPath, { force: true });
         } catch {
-          // ignore; claim is still released so a fresh path can be chosen if needed
         }
       }
       this.releaseTargetPath(item.id);
@@ -7152,14 +6604,6 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  /**
-   * Detect and fix obfuscated archive filenames after download.
-   * Some hosters mutate filenames (e.g. `.part06.rar` → `.part06.mov`) and
-   * inject typos into the stem to prevent automated extraction.
-   * This method reads magic bytes of non-archive files and renames them back
-   * to their correct archive extension, using correctly-named siblings as a
-   * reference for the base filename.
-   */
   private async deobfuscateArchiveFiles(
     pkg: PackageEntry,
     completedItems: DownloadItem[],
@@ -7169,7 +6613,6 @@ export class DownloadManager extends EventEmitter {
       ".rar", ".zip", ".7z", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz",
       ".tar", ".001", ".002", ".003", ".004", ".005", ".006", ".007", ".008", ".009",
     ]);
-    // Also treat .r00-.r99 as known archive extensions
     const isArchiveExt = (ext: string): boolean => {
       const lower = ext.toLowerCase();
       if (KNOWN_ARCHIVE_EXTS.has(lower)) return true;
@@ -7178,7 +6621,6 @@ export class DownloadManager extends EventEmitter {
       return false;
     };
 
-    // Map items by their target path (lowercased for case-insensitive lookup)
     const itemByPath = new Map<string, DownloadItem>();
     for (const item of completedItems) {
       if (item.targetPath) {
@@ -7186,7 +6628,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // Collect reference RAR files (correctly named) and suspect files
     const referenceRars: string[] = [];
     const suspectFiles: Array<{ item: DownloadItem; filePath: string }> = [];
 
@@ -7194,7 +6635,6 @@ export class DownloadManager extends EventEmitter {
       if (!item.targetPath || !item.fileName) continue;
       if (signal?.aborted) return 0;
       const ext = path.extname(item.fileName).toLowerCase();
-      // Check for double extension like .part01.rar
       const doubleExt = item.fileName.match(/(\.\w+\.\w+)$/)?.[1]?.toLowerCase() || "";
       if (isArchiveExt(ext) || isArchiveExt(doubleExt)) {
         if (ext === ".rar") {
@@ -7202,14 +6642,11 @@ export class DownloadManager extends EventEmitter {
         }
         continue;
       }
-      // Non-archive extension — suspect
       suspectFiles.push({ item, filePath: item.targetPath });
     }
 
     if (suspectFiles.length === 0) return 0;
 
-    // Extract base pattern from reference RAR files
-    // e.g. "tvs-star_crossed-dd51-ded-dl-7p-nfhd-x264-104" from "tvs-star_crossed-...part01.rar"
     let referenceBase = "";
     const partBaseRe = /^(.+?)\.part\d{1,3}\.rar$/i;
     for (const rarPath of referenceRars) {
@@ -7236,17 +6673,14 @@ export class DownloadManager extends EventEmitter {
         const oldName = path.basename(filePath);
         let newName: string;
 
-        // Try to extract part number from the obfuscated filename
         const partMatch = oldName.match(/[._-](?:[a-z]*?)part(\d{1,3})\b/i)
           || oldName.match(/[._-]r?part(\d{1,3})\b/i);
         const partNum = partMatch?.[1];
 
         if (referenceBase && partNum) {
-          // Reconstruct correct filename from reference base + part number
           const paddedPart = partNum.padStart(2, "0");
           newName = `${referenceBase}.part${paddedPart}${correctExt}`;
         } else {
-          // No reference available — just fix the extension
           const stem = oldName.replace(/\.[^.]+$/, "");
           newName = `${stem}${correctExt}`;
         }
@@ -7254,7 +6688,6 @@ export class DownloadManager extends EventEmitter {
         if (newName === oldName) continue;
 
         const newPath = path.join(path.dirname(filePath), newName);
-        // Don't overwrite existing files
         const targetExists = await fs.promises.stat(newPath).then(() => true, () => false);
         if (targetExists) {
           logger.warn(`Deobfuskation: Ziel existiert bereits, ueberspringe: ${newPath}`);
@@ -7265,7 +6698,6 @@ export class DownloadManager extends EventEmitter {
         this.logVerifiedRenameSync("deobfuskation", filePath, newPath, { paket: pkg.name, signatur: sig });
         item.fileName = newName;
         item.targetPath = newPath;
-        // Update the path lookup
         this.releaseTargetPath(item.id);
         this.claimTargetPath(item.id, newPath);
         fixedCount += 1;
@@ -7412,8 +6844,6 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  /** Detect items whose targetPath has a " (N)" suffix from a previous bug and rename
-   *  them back to the original filename if the original path is not claimed by another item. */
   private fixDuplicateSuffixFiles(): void {
     const SUFFIX_RE = /^(.+) \(\d+\)(\.[^.]+)$/;
     let fixed = 0;
@@ -7421,18 +6851,16 @@ export class DownloadManager extends EventEmitter {
       const tp = String(item.targetPath || "").trim();
       if (!tp) continue;
       const parsed = path.parse(tp);
-      const fullName = parsed.name + parsed.ext; // e.g. "file.part3 (1).rar"
+      const fullName = parsed.name + parsed.ext;
       const match = SUFFIX_RE.exec(fullName);
       if (!match) continue;
-      const originalName = match[1] + match[2]; // "file.part3.rar"
+      const originalName = match[1] + match[2];
       const originalPath = path.join(parsed.dir, originalName);
       const originalKey = pathKey(originalPath);
       const originalOwner = this.reservedTargetPaths.get(originalKey);
-      // Only rename if original path is not claimed by another item and doesn't exist on disk
       if (originalOwner && originalOwner !== item.id) continue;
       if (!originalOwner && fs.existsSync(originalPath)) continue;
       if (!fs.existsSync(tp)) {
-        // File with (N) doesn't exist either — just fix the path reference
         this.reservedTargetPaths.delete(pathKey(tp));
         this.reservedTargetPaths.set(originalKey, item.id);
         this.claimedTargetPathByItem.set(item.id, originalPath);
@@ -7502,9 +6930,6 @@ export class DownloadManager extends EventEmitter {
         }
         const ft = (item.fullStatus || "").trim();
         if (/^Entpacken/i.test(ft)) {
-          // Only mark items with active extraction progress as "abgebrochen".
-          // Items that were just pending ("Ausstehend", "Warten auf Parts") weren't
-          // actively being extracted, so keep their label as-is.
           if (ft !== "Entpacken - Ausstehend" && ft !== "Entpacken - Warten auf Parts") {
             item.fullStatus = "Entpacken abgebrochen (wird fortgesetzt)";
             item.updatedAt = nowMs();
@@ -7513,11 +6938,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    // H1: Globaler Stop/Shutdown/clearAll/external muss AUCH das Deferred-Post-
-    // Processing (MKV-Move, Cleanup, Rename) und die Hybrid-Promises abbrechen,
-    // sonst rasen FS-Operationen gegen den Shutdown-Save und schreiben halbe
-    // Verschiebungen / löschen halbe Archive. Per-Package wird das von
-    // abortPackagePostProcessing erledigt — hier der globale Sweep.
     for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
       if (!controller.signal.aborted) {
         controller.abort(reason);
@@ -7533,8 +6953,6 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async acquirePostProcessSlot(packageId: string): Promise<void> {
-    // Honor the user-facing "Parallele Entpackungen" setting for package-level
-    // post-processing so multiple episodes/packages can extract concurrently.
     const maxConcurrent = Math.max(1, Math.min(8, this.settings.maxParallelExtract || 1));
     if (this.packagePostProcessActive < maxConcurrent) {
       this.packagePostProcessActive += 1;
@@ -7543,24 +6961,18 @@ export class DownloadManager extends EventEmitter {
     await new Promise<void>((resolve) => {
       this.packagePostProcessWaiters.push({ packageId, resolve });
     });
-    // Guard: stop() may have reset the counter to 0 while we were waiting.
-    // Only increment if below max to avoid phantom slot usage.
     if (this.packagePostProcessActive < maxConcurrent) {
       this.packagePostProcessActive += 1;
     }
   }
 
   private releasePostProcessSlot(): void {
-    // Guard: stop() resets active to 0, but old tasks (aborted waiters) still
-    // call release in their finally blocks.  Without this guard, the counter
-    // goes negative, letting multiple packages through on the next session.
     if (this.packagePostProcessActive <= 0) {
       this.packagePostProcessActive = 0;
       return;
     }
     this.packagePostProcessActive -= 1;
     if (this.packagePostProcessWaiters.length === 0) return;
-    // Pick the waiter whose package appears earliest in packageOrder
     const order = this.session.packageOrder;
     let bestIdx = 0;
     let bestOrder = order.indexOf(this.packagePostProcessWaiters[0].packageId);
@@ -7625,12 +7037,6 @@ export class DownloadManager extends EventEmitter {
           }
           this.persistSoon();
           this.emitState();
-          // If this round was very fast (no extraction work, just a
-          // findReadyArchiveSets scan), consume pending requeues and
-          // exit the loop.  The next download completion will trigger a
-          // fresh post-processing task.  This prevents dozens of no-op
-          // rounds when many small archive parts complete in rapid
-          // succession (e.g. 15-20 × 101 MB parts per episode).
           if (roundMs < 2000 && this.hybridExtractRequeue.has(packageId)) {
             if (this.shouldCollapseQuickPostProcessRequeue(packageId)) {
               this.hybridExtractRequeue.delete(packageId);
@@ -7643,9 +7049,6 @@ export class DownloadManager extends EventEmitter {
         this.packagePostProcessAbortControllers.delete(packageId);
         this.persistSoon();
         this.emitState();
-        // Fallback: if an item completed between the while-check and task
-        // deletion, the requeue flag is still set — spawn a new task so it
-        // is not lost.  The new task will acquire the slot normally.
         if (this.hybridExtractRequeue.delete(packageId)) {
           void this.runPackagePostProcessing(packageId).catch((err) =>
             logger.warn(`runPackagePostProcessing Fehler (hybridRequeue): ${compactErrorText(err)}`)
@@ -7710,9 +7113,6 @@ export class DownloadManager extends EventEmitter {
         );
       }
 
-      // Hybrid extraction recovery: not all items done, but some completed
-      // with pending extraction status → re-label and trigger post-processing
-      // so extraction picks up where it left off.
       if (!allDone && this.settings.autoExtract && this.settings.hybridExtract && success > 0 && failed === 0) {
         const needsExtraction = items.some((item) => item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus));
         if (needsExtraction) {
@@ -7727,8 +7127,6 @@ export class DownloadManager extends EventEmitter {
             }
           }
           changed = true;
-          // Don't trigger extraction here — it will be triggered when the
-          // session starts via triggerPendingExtractions or item completions.
         }
       }
 
@@ -7817,7 +7215,6 @@ export class DownloadManager extends EventEmitter {
         );
       }
 
-      // Full extraction: all items done, no failures
       if (allDone && failed === 0 && success > 0) {
         const needsExtraction = items.some((item) =>
           item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)
@@ -7837,7 +7234,6 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      // Hybrid extraction: not all items done, but some completed and no failures
       if (!allDone && this.settings.hybridExtract && success > 0 && failed === 0) {
         const needsExtraction = items.some((item) =>
           item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)
@@ -7971,7 +7367,6 @@ export class DownloadManager extends EventEmitter {
         removedItemCount: itemIds.length
       });
     }
-    // Only create history here for deletions — completions are handled by recordPackageHistory
     if (pkg && this.onHistoryEntryCallback && reason === "deleted" && !this.historyRecordedPackages.has(packageId)) {
       const allItems = itemIds.map(id => this.session.items[id]).filter(Boolean) as DownloadItem[];
       const completedItems = allItems.filter(item => item.status === "completed");
@@ -8009,27 +7404,17 @@ export class DownloadManager extends EventEmitter {
     }
     delete this.session.packages[packageId];
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
-    // Keep runPackageIds intact — ghost entries (deleted packages) are harmless:
-    // findNextQueuedItem() won't find items for them, so the scheduler naturally
-    // terminates via finishRun() which clears runPackageIds. Pruning them here
-    // would make runPackageIds empty, disabling the "size > 0" filter guard and
-    // causing "Start Selected" to continue with ALL packages after cleanup.
     this.runCompletedPackages.delete(packageId);
     this.resetSessionTotalsIfQueueEmpty();
   }
-
-  // ── Provider Circuit Breaker ──────────────────────────────────────────
 
   private recordProviderFailure(provider: string): void {
     const key = String(provider || "").trim() || "unknown";
     const now = nowMs();
     const entry = this.providerFailures.get(key) || { count: 0, lastFailAt: 0, cooldownUntil: 0 };
-    // Decay: if last failure was >120s ago, reset count (transient burst is over)
     if (entry.lastFailAt > 0 && now - entry.lastFailAt > 120000) {
       entry.count = 0;
     }
-    // Debounce: simultaneous failures (within 2s) count as one failure
-    // This prevents 8 parallel downloads failing at once from immediately hitting the threshold
     if (entry.lastFailAt > 0 && now - entry.lastFailAt < 2000) {
       entry.lastFailAt = now;
       this.providerFailures.set(key, entry);
@@ -8037,17 +7422,15 @@ export class DownloadManager extends EventEmitter {
     }
     entry.count += 1;
     entry.lastFailAt = now;
-    // Escalating cooldown: 20 failures→30s, 35→60s, 50→120s, 80+→300s
     if (entry.count >= 20) {
       const tier = entry.count >= 80 ? 3 : entry.count >= 50 ? 2 : entry.count >= 35 ? 1 : 0;
       const cooldownMs = [30000, 60000, 120000, 300000][tier];
       entry.cooldownUntil = now + cooldownMs;
       logger.warn(`Provider Circuit-Breaker: ${key} ${entry.count} konsekutive Fehler, Cooldown ${cooldownMs / 1000}s`);
-      // Invalidate mega-debrid session on cooldown to force fresh login
       if ((key === "megadebrid" || key === "megadebrid-api" || key === "megadebrid-web") && this.invalidateMegaSessionFn) {
         try {
           this.invalidateMegaSessionFn();
-        } catch { /* ignore */ }
+        } catch {  }
       }
     }
     this.providerFailures.set(key, entry);
@@ -8077,7 +7460,6 @@ export class DownloadManager extends EventEmitter {
     }
     const remaining = entry.cooldownUntil - nowMs();
     if (remaining <= 0) {
-      // Cooldown expired — reset count so a single new failure doesn't re-trigger
       entry.count = 0;
       entry.cooldownUntil = 0;
       return 0;
@@ -8118,8 +7500,6 @@ export class DownloadManager extends EventEmitter {
       this.settings.debridLinkApiKeyDailyUsageBytes = nextKeyUsage.debridLinkApiKeyDailyUsageBytes;
       this.settings.debridLinkApiKeyTotalUsageBytes = nextKeyTotalUsage.debridLinkApiKeyTotalUsageBytes;
     }
-    // Bug-Fix: Mega-Debrid Per-Account-Verbrauch wurde nie erfasst (nur Debrid-Link),
-    // sodass die "Heute"/"Insgesamt"-Statistik pro Mega-Account immer 0 anzeigte.
     if ((effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") && providerAccountId) {
       const nextAcctUsage = addMegaDebridAccountDailyUsageBytes(this.settings, providerAccountId, byteDelta);
       const nextAcctTotalUsage = addMegaDebridAccountTotalUsageBytes(this.settings, providerAccountId, byteDelta);
@@ -8182,7 +7562,6 @@ export class DownloadManager extends EventEmitter {
     ].filter(Boolean) as DebridProvider[];
   }
 
-  /** Returns the first configured provider from the order that is NOT in cooldown. */
   private findFallbackProviderNotInCooldown(item: DownloadItem): DebridProvider | null {
     const hosterKey = extractHosterKey(item.url);
     for (const provider of this.getProviderOrder()) {
@@ -8506,7 +7885,6 @@ export class DownloadManager extends EventEmitter {
 
   private resetStaleRetryState(): void {
     const now = nowMs();
-    // Reset retry counters for items queued >10 min without progress
     for (const [itemId, retryState] of this.retryStateByItem) {
       const item = this.session.items[itemId];
       if (!item || item.status !== "queued") {
@@ -8529,15 +7907,12 @@ export class DownloadManager extends EventEmitter {
         logger.info(`Soft-Reset: Retry-Counter zurückgesetzt für ${item.fileName || itemId} (${Math.floor(staleMs / 60000)} min stale)`);
       }
     }
-    // Reset provider failures older than 15 min
     for (const [provider, entry] of this.providerFailures) {
       if (now - entry.lastFailAt > 900000) {
         this.providerFailures.delete(provider);
         logger.info(`Soft-Reset: Provider-Failures zurückgesetzt für ${provider}`);
       }
     }
-    // Prune AllDebrid host info cache entries older than 5 min (TTL is 60s,
-    // so 5 min is well past usable - just unbounded growth otherwise).
     let allDebridPruned = 0;
     for (const [host, entry] of this.allDebridHostInfoCache) {
       if (now - entry.cachedAt > 5 * 60 * 1000) {
@@ -8545,16 +7920,12 @@ export class DownloadManager extends EventEmitter {
         allDebridPruned += 1;
       }
     }
-    // Prune expired Debrid-Link / Mega-Debrid runtime state (module-level Maps
-    // that would otherwise grow over 24/7 operation).
     const dlPruned = pruneExpiredDebridLinkRuntimeState(now);
     const mdPruned = pruneExpiredMegaDebridRuntimeState(now);
     if (allDebridPruned > 0 || dlPruned > 0 || mdPruned > 0) {
       logger.info(`Soft-Reset: pruned ${allDebridPruned} AllDebrid host entries, ${dlPruned} Debrid-Link entries, ${mdPruned} Mega-Debrid entries`);
     }
   }
-
-  // ── Scheduler ──────────────────────────────────────────────────────────
 
   private async ensureScheduler(): Promise<void> {
     if (this.scheduleRunning) {
@@ -8570,7 +7941,6 @@ export class DownloadManager extends EventEmitter {
           this.lastSchedulerHeartbeatAt = now;
           logger.info(`Scheduler Heartbeat: active=${this.activeTasks.size}, queued=${this.countQueuedItems()}, reconnect=${this.reconnectActive()}, paused=${this.session.paused}, postProcess=${this.packagePostProcessTasks.size}`);
         }
-        // Periodic soft-reset every 10 min: clear stale retry counters & provider failures
         if (now - this.lastStaleResetAt >= 600000) {
           this.lastStaleResetAt = now;
           this.resetStaleRetryState();
@@ -8604,7 +7974,6 @@ export class DownloadManager extends EventEmitter {
 
         this.runGlobalStallWatchdog(now);
 
-        // Single-pass queue presence check (saves one full O(n) iteration per tick)
         const queuePresence = this.activeTasks.size === 0 ? this.getQueuePresence(now) : { hasImmediate: true, hasDelayed: false };
         const downloadsComplete = this.activeTasks.size === 0 && !queuePresence.hasImmediate && !queuePresence.hasDelayed;
         const postProcessComplete = this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending();
@@ -8628,8 +7997,6 @@ export class DownloadManager extends EventEmitter {
       return false;
     }
     const now = nowMs();
-    // Safety: if reconnectUntil is unreasonably far in the future (clock regression),
-    // clamp it to reconnectWaitSeconds * 2 from now
     const maxWaitMs = this.settings.reconnectWaitSeconds * 2 * 1000;
     if (this.session.reconnectUntil - now > maxWaitMs) {
       this.session.reconnectUntil = now + maxWaitMs;
@@ -8649,7 +8016,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Per-item validating watchdog: abort items stuck longer than the unrestrict timeout + buffer
     const VALIDATING_STUCK_MS = getUnrestrictTimeoutMs() + 15000;
     for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
@@ -8677,15 +8043,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Only items that are actually DOWNLOADING (have an open HTTP body that
-    // should be making progress) count toward the global stall watchdog.
-    // Items in "validating" are still in the unrestrict phase — they're handled
-    // by the per-item validating watchdog above (VALIDATING_STUCK_MS) which
-    // gives the multi-account/multi-key rotation enough time. Without this
-    // exclusion the global watchdog would abort the unrestrict mid-rotation
-    // (e.g. account 3 of 3 still being tested) just because no bytes had been
-    // downloaded recently — which is correct, since unrestrict doesn't
-    // produce download bytes.
     let stalledCount = 0;
     let diskBlockedCount = 0;
     for (const active of this.activeTasks.values()) {
@@ -8728,8 +8085,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // Only increment when not already inside an active reconnect window to avoid
-    // inflating the backoff counter when multiple parallel downloads hit 429/503.
     if (this.session.reconnectUntil <= nowMs()) {
       this.consecutiveReconnects += 1;
     }
@@ -8739,7 +8094,6 @@ export class DownloadManager extends EventEmitter {
     const cappedWaitMs = Math.min(waitMs, maxWaitMs);
     const until = nowMs() + cappedWaitMs;
     this.session.reconnectUntil = Math.max(this.session.reconnectUntil, until);
-    // Safety cap: never let reconnectUntil exceed reconnectWaitSeconds * 2 from now
     const absoluteMax = nowMs() + maxWaitMs;
     if (this.session.reconnectUntil > absoluteMax) {
       this.session.reconnectUntil = absoluteMax;
@@ -8760,8 +8114,6 @@ export class DownloadManager extends EventEmitter {
     let changed = false;
     const waitSeconds = Math.max(0, Math.ceil((this.session.reconnectUntil - nowMs()) / 1000));
     const waitText = `Reconnect-Wait (${waitSeconds}s)`;
-    // Iterate without allocating an Object.keys() array (called every 900ms
-    // during reconnect; with 5000+ items that's a 5000-string allocation per tick).
     const updateItem = (itemId: string): void => {
       const item = this.session.items[itemId];
       if (!item) return;
@@ -8777,7 +8129,6 @@ export class DownloadManager extends EventEmitter {
     if (this.runItemIds.size > 0) {
       for (const itemId of this.runItemIds) updateItem(itemId);
     } else {
-      // for-in iterates own enumerable string keys without allocating an array
       for (const itemId in this.session.items) updateItem(itemId);
     }
     if (changed) {
@@ -8788,11 +8139,6 @@ export class DownloadManager extends EventEmitter {
 
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
     const now = nowMs();
-    // Single-pass priority selection: instead of iterating all packages 3 times
-    // (once per priority tier), iterate once and remember the best
-    // normal/low candidate found. "high" priority returns immediately. This
-    // saves up to 2x O(n) passes per scheduler tick on large queues where
-    // most packages have the default "normal" priority.
     let normalCandidate: { packageId: string; itemId: string } | null = null;
     let lowCandidate: { packageId: string; itemId: string } | null = null;
 
@@ -8801,12 +8147,7 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) continue;
       if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
       const pkgPrio = pkg.priority || "normal";
-      // Once we've found a normal candidate we don't need to scan low-priority
-      // packages anymore — they would lose anyway.
       if (normalCandidate && pkgPrio === "low") continue;
-      // If we already have a normal candidate and this package is also normal,
-      // keep scanning anyway (we still need to check if it has a startable
-      // item — but the first one wins, this is just for correctness).
       if (normalCandidate && pkgPrio === "normal") continue;
 
       for (const itemId of pkg.itemIds) {
@@ -8821,14 +8162,14 @@ export class DownloadManager extends EventEmitter {
         const candidate = { packageId, itemId };
         if (pkgPrio === "high") {
           if (retryAfter > 0) this.retryAfterByItem.delete(itemId);
-          return candidate; // highest priority — return immediately
+          return candidate;
         }
         if (pkgPrio === "normal") {
           normalCandidate = candidate;
         } else if (!lowCandidate) {
           lowCandidate = candidate;
         }
-        break; // stop scanning items in this package
+        break;
       }
     }
 
@@ -8840,9 +8181,6 @@ export class DownloadManager extends EventEmitter {
     return chosen;
   }
 
-  /** Single-pass alternative to hasQueuedItems + hasDelayedQueuedItems.
-   *  Returns both flags so the scheduler termination check needs only ONE
-   *  iteration over packages/items per tick instead of two separate scans. */
   private getQueuePresence(now = nowMs()): { hasImmediate: boolean; hasDelayed: boolean } {
     let hasImmediate = false;
     let hasDelayed = false;
@@ -8922,8 +8260,6 @@ export class DownloadManager extends EventEmitter {
       freshRetryUsed: Boolean(active.freshRetryUsed),
       resumeHardResetUsed: Boolean(active.resumeHardResetUsed)
     });
-    // Caller returns immediately after this; startItem().finally releases the active slot,
-    // so the retry backoff never blocks a worker.
     this.retryAfterByItem.set(item.id, nowMs() + waitMs);
   }
 
@@ -8940,7 +8276,6 @@ export class DownloadManager extends EventEmitter {
       try {
         fs.rmSync(claimedTargetPath, { force: true });
       } catch {
-        // ignore
       }
     }
     this.releaseTargetPath(item.id);
@@ -8991,7 +8326,6 @@ export class DownloadManager extends EventEmitter {
     item.status = "validating";
     item.fullStatus = "Link wird umgewandelt";
     item.speedBps = 0;
-    // Reset stale progress so UI doesn't show old % while re-validating
     if (item.downloadedBytes === 0) {
       item.progressPercent = 0;
     }
@@ -9072,7 +8406,6 @@ export class DownloadManager extends EventEmitter {
           url: item.url,
           retryLimit: retryDisplayLimit
         });
-        // Wait while paused — don't check cooldown or unrestrict while paused
         while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
           item.status = "paused";
           item.fullStatus = "Pausiert";
@@ -9083,12 +8416,9 @@ export class DownloadManager extends EventEmitter {
         if (active.abortController.signal.aborted) {
           throw new Error(`aborted:${active.abortReason}`);
         }
-        // Check provider cooldown before attempting unrestrict
         const cooldownProvider = this.getProviderFailureKeyForItem(item);
         const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
         if (cooldownMs > 0) {
-          // If autoProviderFallback is enabled and another provider is ready, switch to it
-          // instead of waiting out the full cooldown.
           if (this.settings.autoProviderFallback) {
             const fallback = this.findFallbackProviderNotInCooldown(item);
             if (fallback) {
@@ -9099,7 +8429,6 @@ export class DownloadManager extends EventEmitter {
                 fallback
               });
               item.provider = null;
-              // Continue — debrid.ts will attempt providers in order and reach the fallback
             } else {
               this.logPackageForItem(item, "WARN", "Provider-Cooldown blockiert Unrestrict", {
                 provider: cooldownProvider,
@@ -9135,11 +8464,9 @@ export class DownloadManager extends EventEmitter {
           unrestricted = await this.debridService.unrestrictLink(item.url, unrestrictedSignal);
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
-            // Record failure for all providers since we don't know which one timed out
             this.recordProviderFailure(cooldownProvider);
             throw new Error(`Unrestrict Timeout nach ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s`);
           }
-          // Record failure for the provider that errored
           const errText = compactErrorText(unrestrictError);
           if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
             this.recordProviderFailure(cooldownProvider);
@@ -9155,7 +8482,6 @@ export class DownloadManager extends EventEmitter {
         if (active.abortController.signal.aborted) {
           throw new Error(`aborted:${active.abortReason}`);
         }
-        // Unrestrict succeeded - reset provider failure counter
         this.recordProviderSuccess(this.getProviderFailureKeyForItem(item, unrestricted.provider));
         item.provider = unrestricted.provider;
         item.providerLabel = unrestricted.providerLabel;
@@ -9247,7 +8573,6 @@ export class DownloadManager extends EventEmitter {
               try {
                 fs.rmSync(item.targetPath, { force: true });
               } catch {
-                // ignore
               }
               if (item.attempts < maxAttempts) {
                 item.status = "integrity_check";
@@ -9274,7 +8599,6 @@ export class DownloadManager extends EventEmitter {
               const stat = await fs.promises.stat(finalTargetPath);
               fileSizeOnDisk = stat.size;
             } catch {
-              // file does not exist
             }
           }
           const tooSmall = shouldRejectSuspiciousSmallDownload(
@@ -9287,7 +8611,6 @@ export class DownloadManager extends EventEmitter {
             try {
               fs.rmSync(finalTargetPath, { force: true });
             } catch {
-              // ignore
             }
             this.releaseTargetPath(item.id);
             this.dropItemContribution(item.id);
@@ -9354,7 +8677,6 @@ export class DownloadManager extends EventEmitter {
             try {
               fs.rmSync(claimedTargetPath, { force: true });
             } catch {
-              // ignore
             }
           }
           item.downloadedBytes = 0;
@@ -9366,8 +8688,6 @@ export class DownloadManager extends EventEmitter {
           this.logPackageForItem(item, "WARN", "Download gestoppt", {
             reason
           });
-          // If a new start() has already re-queued this item, don't overwrite
-          // its status with "cancelled"/"Gestoppt" — the new run owns it now.
           if (!this.session.running) {
             item.status = "cancelled";
             item.fullStatus = "Gestoppt";
@@ -9396,7 +8716,6 @@ export class DownloadManager extends EventEmitter {
           item.status = "queued";
           item.speedBps = 0;
           item.fullStatus = "Wartet auf Reconnect";
-          // Persist retry counters so shelve logic survives reconnect interruption
           this.retryStateByItem.set(item.id, {
             freshRetryUsed: Boolean(active.freshRetryUsed),
             resumeHardResetUsed: Boolean(active.resumeHardResetUsed),
@@ -9405,7 +8724,6 @@ export class DownloadManager extends EventEmitter {
             unrestrictRetries: Number(active.unrestrictRetries || 0)
           });
         } else if (reason === "reset") {
-          // Item was reset externally by resetItems/resetPackage — state already set, do nothing
           this.retryStateByItem.delete(item.id);
         } else if (reason === "package_toggle") {
           this.logPackageForItem(item, "WARN", "Download wegen Paket-Toggle pausiert", {
@@ -9431,7 +8749,6 @@ export class DownloadManager extends EventEmitter {
           const wasValidating = item.status === "validating";
           active.stallRetries += 1;
           logger.warn(`Stall erkannt: item=${item.fileName || item.id}, phase=${wasValidating ? "validating" : "downloading"}, retry=${active.stallRetries}/${retryDisplayLimit}, bytes=${item.downloadedBytes}, error=${stallErrorText || "none"}, provider=${item.provider || "?"}`);
-          // Shelve check: too many consecutive failures → pause with fresh provider (like manual reset)
           const totalFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
           if (totalFailures >= 15) {
             item.retries += 1;
@@ -9439,11 +8756,11 @@ export class DownloadManager extends EventEmitter {
             active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
             const oldProvider = item.provider;
-            item.provider = null; // fresh provider selection after shelve (like manual reset)
+            item.provider = null;
             if (oldProvider) {
-              this.providerFailures.delete(oldProvider); // clear circuit breaker for old provider
+              this.providerFailures.delete(oldProvider);
             }
-            const shelveDurationMs = 90000; // 90s instead of 5 min — manual restart works immediately, so no need for long pause
+            const shelveDurationMs = 90000;
             logger.warn(`Item shelved: ${item.fileName || item.id}, totalFailures=${totalFailures}, oldProvider=${oldProvider || "?"}, provider+circuit-breaker reset, pause=${shelveDurationMs}ms`);
             this.queueRetry(item, active, shelveDurationMs, `Viele Fehler (${totalFailures}x), Pause ${Math.ceil(shelveDurationMs / 1000)}s`);
             item.lastError = stallErrorText;
@@ -9453,17 +8770,13 @@ export class DownloadManager extends EventEmitter {
           }
           if (active.stallRetries <= maxStallRetries) {
             item.retries += 1;
-            // Before deleting and retrying, check if the file is actually
-            // complete on disk.  Some servers delay closing the connection
-            // after all data has been sent, which triggers the stall timeout
-            // even though the download finished successfully.
             if (item.downloadedBytes > 0) {
               const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
               if (this.tryFinalizeItemFromDisk(pkg, item, "Stall-Recovery", stallErrorText)) {
                 return;
               }
               if (targetFile) {
-                try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
+                try { fs.rmSync(targetFile, { force: true }); } catch {  }
               }
               this.releaseTargetPath(item.id);
               item.downloadedBytes = 0;
@@ -9472,7 +8785,6 @@ export class DownloadManager extends EventEmitter {
               this.dropItemContribution(item.id);
             }
             let stallDelayMs = retryDelayWithJitter(active.stallRetries, 200);
-            // Respect provider cooldown
             const providerCooldownKey = this.getProviderFailureKeyForItem(item);
             const providerCooldown = this.getProviderCooldownRemaining(providerCooldownKey);
             if (providerCooldown > stallDelayMs) {
@@ -9527,7 +8839,6 @@ export class DownloadManager extends EventEmitter {
                 try {
                   fs.rmSync(resetTargetPath, { force: true });
                 } catch {
-                  // ignore
                 }
               }
               this.releaseTargetPath(item.id);
@@ -9592,7 +8903,6 @@ export class DownloadManager extends EventEmitter {
               try {
                 fs.rmSync(claimedTargetPath, { force: true });
               } catch {
-                // ignore
               }
             }
             this.releaseTargetPath(item.id);
@@ -9607,8 +8917,6 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
-          // Permanent link errors (dead link, file removed, hoster unavailable) → fail immediately
-          // Check BEFORE shelve to avoid 5-min pause on dead links
           if (isPermanentLinkError(errorText)) {
             logger.error(`Link permanent ungültig: item=${item.fileName || item.id}, error=${errorText}, link=${item.url.slice(0, 80)}`);
             item.status = "failed";
@@ -9623,7 +8931,6 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
-          // Shelve check for non-stall errors (after permanent link error check)
           const totalNonStallFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
           if (totalNonStallFailures >= 15) {
             item.retries += 1;
@@ -9631,9 +8938,9 @@ export class DownloadManager extends EventEmitter {
             active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
             const oldProvider = item.provider;
-            item.provider = null; // fresh provider selection after shelve (like manual reset)
+            item.provider = null;
             if (oldProvider) {
-              this.providerFailures.delete(oldProvider); // clear circuit breaker for old provider
+              this.providerFailures.delete(oldProvider);
             }
             const shelveDurationMs = 90000;
             logger.warn(`Item shelved (error path): ${item.fileName || item.id}, totalFailures=${totalNonStallFailures}, error=${errorText}, oldProvider=${oldProvider || "?"}, provider+circuit-breaker reset, pause=${shelveDurationMs}ms`);
@@ -9644,19 +8951,16 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
-          // hosterNotAvailable: hoster issue, not provider issue — reset provider
-          // and retry quickly with fresh provider selection (like manual reset)
           if (isHosterUnavailableError(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
-            item.provider = null; // fresh provider selection on next attempt
-            // Cap backoff at 30s — hoster issues often resolve quickly
+            item.provider = null;
             const hosterDelayMs = Math.min(30000, Math.floor(5000 * Math.pow(1.5, Math.min(active.unrestrictRetries - 1, 5))));
             logger.warn(`Hoster nicht verfügbar: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${hosterDelayMs}ms, link=${item.url.slice(0, 80)}`);
             if (item.downloadedBytes > 0) {
               const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
               if (targetFile) {
-                try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
+                try { fs.rmSync(targetFile, { force: true }); } catch {  }
               }
               this.releaseTargetPath(item.id);
               item.downloadedBytes = 0;
@@ -9690,9 +8994,6 @@ export class DownloadManager extends EventEmitter {
             if (debridLinkCooldown) {
               active.unrestrictRetries += 1;
               item.retries += 1;
-              // Do NOT call recordProviderFailure/applyProviderBusyBackoff here —
-              // Debrid-Link key cooldowns are managed in debrid.ts per-key.
-              // Adding a provider-wide cooldown on top causes double-blocking.
               logger.warn(
                 `Debrid-Link-Cooldown: item=${item.fileName || item.id}, ` +
                 `retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${debridLinkCooldown.delayMs}ms, ` +
@@ -9713,12 +9014,6 @@ export class DownloadManager extends EventEmitter {
             active.unrestrictRetries += 1;
             item.retries += 1;
             const failureProvider = this.getProviderFailureKeyForItem(item);
-            // Debrid-Link manages its own per-key cooldowns in debrid.ts. The
-            // provider-wide circuit breaker would double-block all Debrid-Link
-            // keys when only one key (or a transient transport hiccup) failed.
-            // Skip recordProviderFailure / applyProviderBusyBackoff entirely
-            // for any Debrid-Link-flavoured error message, not just the
-            // debrid_link_cooldown sentinel that's caught above.
             const isDebridLinkError = /debrid-link|debrid_link/i.test(errorText) || failureProvider === "debridlink";
             if (!isDebridLinkError) {
               this.recordProviderFailure(failureProvider);
@@ -9729,19 +9024,16 @@ export class DownloadManager extends EventEmitter {
                 this.applyProviderBusyBackoff(failureProvider, busyCooldownMs);
               }
             }
-            // Escalating backoff: 5s, 7.5s, 11s, 17s, 25s, 38s, ... up to 120s
             let unrestrictDelayMs = Math.min(120000, Math.floor(5000 * Math.pow(1.5, active.unrestrictRetries - 1)));
-            // Respect provider cooldown
             const providerCooldown = this.getProviderCooldownRemaining(failureProvider);
             if (providerCooldown > unrestrictDelayMs) {
               unrestrictDelayMs = providerCooldown + 1000;
             }
             logger.warn(`Unrestrict-Fehler: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${unrestrictDelayMs}ms, error=${errorText}, link=${item.url.slice(0, 80)}`);
-            // Reset partial download so next attempt starts fresh
             if (item.downloadedBytes > 0) {
               const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
               if (targetFile) {
-                try { fs.rmSync(targetFile, { force: true }); } catch { /* ignore */ }
+                try { fs.rmSync(targetFile, { force: true }); } catch {  }
               }
               this.releaseTargetPath(item.id);
               item.downloadedBytes = 0;
@@ -9782,7 +9074,6 @@ export class DownloadManager extends EventEmitter {
         }
         item.speedBps = 0;
         item.updatedAt = nowMs();
-        // Refresh package status so it reflects "failed" when all items are done
         const failPkg = this.session.packages[item.packageId];
         if (failPkg) this.refreshPackageStatus(failPkg);
         this.persistSoon();
@@ -9823,7 +9114,6 @@ export class DownloadManager extends EventEmitter {
         const stat = await fs.promises.stat(effectiveTargetPath);
         existingBytes = stat.size;
       } catch {
-        // file does not exist
       }
       if (existingBytes > 0 && resumeRewindBytesNextAttempt > 0) {
         const previousBytes = existingBytes;
@@ -9854,12 +9144,6 @@ export class DownloadManager extends EventEmitter {
       }
       const persistedBytes = Math.max(0, Math.floor(Number(item.downloadedBytes) || 0));
       const preallocMismatchThreshold = resolvePreallocResumeMismatchThreshold(item.fileName || effectiveTargetPath || "");
-      // Guard against pre-allocated sparse files from a crashed session:
-      // if file size exceeds persisted downloadedBytes beyond the allowed
-      // mismatch threshold, the file was likely pre-allocated but only
-      // partially written before a hard crash.
-      // This must also run for persistedBytes=0, otherwise startup-resume can
-      // send Range=full-size and incorrectly accept HTTP 416 as "complete".
       if (existingBytes > 0 && existingBytes > persistedBytes + preallocMismatchThreshold) {
         try {
           const previousBytes = existingBytes;
@@ -9876,7 +9160,6 @@ export class DownloadManager extends EventEmitter {
               await fs.promises.rm(effectiveTargetPath, { force: true });
               existingBytes = 0;
             } catch {
-              // ignore
             }
           }
         }
@@ -9985,7 +9268,6 @@ export class DownloadManager extends EventEmitter {
           try {
             await fs.promises.rm(effectiveTargetPath, { force: true });
           } catch {
-            // ignore
           }
           this.dropItemContribution(active.itemId);
           item.downloadedBytes = 0;
@@ -10080,7 +9362,6 @@ export class DownloadManager extends EventEmitter {
           try {
             await response.body?.cancel();
           } catch {
-            // ignore
           }
           throw new Error(`range_ignored_on_resume:${existingBytes}/${contentLength || 0}`);
         }
@@ -10105,7 +9386,6 @@ export class DownloadManager extends EventEmitter {
             try {
               await response.body?.cancel();
             } catch {
-              // ignore
             }
             throw new Error(`range_mismatch_on_resume:${existingBytes}/invalid`);
           }
@@ -10140,7 +9420,6 @@ export class DownloadManager extends EventEmitter {
             try {
               await response.body?.cancel();
             } catch {
-              // ignore
             }
             throw new Error(`range_mismatch_on_resume:${existingBytes}/${parsedContentRange.start}`);
           }
@@ -10177,7 +9456,6 @@ export class DownloadManager extends EventEmitter {
         } else if (totalFromRange) {
           item.totalBytes = totalFromRange;
         } else if (contentLength > 0) {
-          // Only add existingBytes for 206 responses; for 200 the Content-Length is the full file
           item.totalBytes = response.status === 206 ? existingBytes + contentLength : contentLength;
         }
         const completionPlan = planDownloadCompletion({
@@ -10201,7 +9479,6 @@ export class DownloadManager extends EventEmitter {
           writeMode
         });
         if (writeMode === "w") {
-          // Starting fresh: subtract any previously counted bytes for this item to avoid double-counting on retry
           const previouslyContributed = this.itemContributedBytes.get(active.itemId) || 0;
           if (previouslyContributed > 0) {
             this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - previouslyContributed);
@@ -10215,7 +9492,6 @@ export class DownloadManager extends EventEmitter {
 
         await fs.promises.mkdir(path.dirname(effectiveTargetPath), { recursive: true });
 
-        // Sparse file pre-allocation (Windows only, new files with known size)
         if (writeMode === "w" && item.totalBytes && item.totalBytes > 0 && process.platform === "win32") {
           try {
             const fd = await fs.promises.open(effectiveTargetPath, "w");
@@ -10225,7 +9501,7 @@ export class DownloadManager extends EventEmitter {
             } finally {
               await fd.close();
             }
-          } catch { /* best-effort */ }
+          } catch {  }
         }
 
         const stream = fs.createWriteStream(effectiveTargetPath, {
@@ -10250,7 +9526,7 @@ export class DownloadManager extends EventEmitter {
         const stallTimeoutMs = getDownloadStallTimeoutMs();
         const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));
         let lastDiskBusyEmitAt = 0;
-        let diskBusySince = 0;  // timestamp when writableLength first became > 0
+        let diskBusySince = 0;
         const diskBusyStatusVisible = (nowTick: number): boolean => {
           const blockedSince = active.blockedOnDiskSince || 0;
           if (blockedSince > 0 && nowTick - blockedSince >= DISK_BUSY_STATUS_THRESHOLD_MS) {
@@ -10290,10 +9566,6 @@ export class DownloadManager extends EventEmitter {
             }
             settled = true;
             cleanup();
-            // Do NOT abort the controller here – drain timeout means disk is slow,
-            // not network stall.  Rejecting without abort lets the inner retry loop
-            // handle it (resume download) instead of escalating to processItem's
-            // stall handler which would re-unrestrict and record provider failures.
             reject(new Error("write_drain_timeout"));
           }, drainTimeoutMs);
 
@@ -10339,7 +9611,6 @@ export class DownloadManager extends EventEmitter {
           active.abortController.signal.addEventListener("abort", onAbort, { once: true });
         });
 
-        // Write-buffer with 4KB NTFS alignment (JDownloader-style)
         const writeBuf = Buffer.allocUnsafe(WRITE_BUFFER_SIZE);
         let writeBufPos = 0;
         let lastFlushAt = nowMs();
@@ -10486,7 +9757,6 @@ export class DownloadManager extends EventEmitter {
                 throw new Error(`aborted:${active.abortReason}`);
               }
 
-              // Buffer incoming data for aligned writes
               let srcOffset = 0;
               while (srcOffset < buffer.length) {
                 const space = WRITE_BUFFER_SIZE - writeBufPos;
@@ -10498,16 +9768,10 @@ export class DownloadManager extends EventEmitter {
                   await alignedFlush(false);
                 }
               }
-              // Time-based flush
               if (writeBufPos > 0 && nowMs() - lastFlushAt >= WRITE_FLUSH_TIMEOUT_MS) {
                 await alignedFlush(false);
               }
 
-              // Proactive disk-busy detection: if the stream's internal buffer
-              // hasn't drained for DISK_BUSY_THRESHOLD_MS, the OS write calls are
-              // lagging — typically because the physical disk can't keep up.  Show
-              // "Warte auf Festplatte" immediately instead of waiting for full
-              // backpressure (stream.write returning false).
               if (stream.writableLength > 0) {
                 if (diskBusySince === 0) diskBusySince = nowMs();
                 const busyMs = nowMs() - diskBusySince;
@@ -10540,14 +9804,6 @@ export class DownloadManager extends EventEmitter {
               this.recordSpeed(buffer.length, item.packageId);
               throughputWindowBytes += buffer.length;
 
-              // All expected bytes received — break immediately instead of waiting
-              // for the server to close the connection.  Some servers/CDNs delay
-              // the FIN packet, which would trigger the stall timeout even though
-              // the file is already complete.  This especially affects small
-              // multi-part archives (e.g. 15-20 × 101 MB) on fast connections.
-              // Use totalBytes (from unrestrict or Content-Length header) as
-              // primary check, fall back to raw contentLength for providers
-              // that don't report fileSize (e.g. Mega-Debrid Web).
               if (completionPlan.canFinishEarly && completionPlan.expectedTotal && written >= completionPlan.expectedTotal) {
                 break;
               }
@@ -10573,7 +9829,6 @@ export class DownloadManager extends EventEmitter {
               item.status = "downloading";
               item.downloadedBytes = written;
               item.progressPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
-              // Keep "Warte auf Festplatte" label if disk is busy; otherwise show normal status
               const diskBusy = diskBusyStatusVisible(nowMs());
               if (diskBusy) {
                 item.speedBps = 0;
@@ -10609,12 +9864,9 @@ export class DownloadManager extends EventEmitter {
           } finally {
             clearInterval(idleTimer);
             try {
-              // Cancel pending reads before releasing the lock so the
-              // underlying TCP connection is torn down promptly.
               await reader.cancel().catch(() => {});
               reader.releaseLock();
             } catch {
-              // ignore
             }
           }
         } catch (error) {
@@ -10625,7 +9877,6 @@ export class DownloadManager extends EventEmitter {
           });
           throw error;
         } finally {
-          // Flush remaining buffered data before closing stream
           try {
             await alignedFlush(true);
           } catch (flushError) {
@@ -10656,7 +9907,6 @@ export class DownloadManager extends EventEmitter {
               stream.end();
             });
           } catch (streamCloseError) {
-            // Ensure stream is destroyed before re-throwing to avoid file-handle leaks on Windows
             if (!stream.destroyed) {
               stream.destroy();
             }
@@ -10665,14 +9915,9 @@ export class DownloadManager extends EventEmitter {
             }
             logger.warn(`Stream-Abschlussfehler unterdrückt: ${compactErrorText(streamCloseError)}`);
           }
-          // Ensure stream is fully destroyed before potential retry opens new handle
           if (!stream.destroyed) {
             stream.destroy();
           }
-          // fsync for pre-allocated files: force OS to flush all pending writes to
-          // disk so extraction processes opening the file immediately after download
-          // see the complete data (prevents "Checksum error" on Windows when file
-          // handles haven't been fully released yet).
           if (!bodyError && preAllocated) {
             try {
               const syncFd = await fs.promises.open(effectiveTargetPath, "r");
@@ -10681,10 +9926,8 @@ export class DownloadManager extends EventEmitter {
               } finally {
                 await syncFd.close();
               }
-            } catch { /* best-effort; extraction retry will catch any remaining issues */ }
+            } catch {  }
           }
-          // If the body read succeeded but the final flush or stream close failed,
-          // propagate the error so the download is retried instead of marked complete.
           if (bodyError) {
             throw bodyError;
           }
@@ -10701,12 +9944,8 @@ export class DownloadManager extends EventEmitter {
             written = finalizedStat.size;
           }
         } catch {
-          // ignore stat race; validation below will handle empty/missing files
         }
 
-        // Detect tiny error-response files (e.g. hoster returning "Forbidden" with HTTP 200).
-        // No legitimate file-hoster download is < 512 bytes, EXCEPT known small metadata
-        // files like .sfv (checksum verification), .nfo (release info), etc.
         if (written > 0 && written < 512) {
           const knownSmallFile = KNOWN_SMALL_FILE_RE.test(item.fileName || effectiveTargetPath);
           if (knownSmallFile && ((!item.totalBytes || item.totalBytes <= 0) || written >= item.totalBytes)) {
@@ -10716,7 +9955,7 @@ export class DownloadManager extends EventEmitter {
             try {
               snippet = await fs.promises.readFile(effectiveTargetPath, "utf8");
               snippet = snippet.slice(0, 200).replace(/[\r\n]+/g, " ").trim();
-            } catch { /* ignore */ }
+            } catch {  }
             const exactTinyBinary = Boolean(
               item.totalBytes
               && item.totalBytes > 0
@@ -10730,7 +9969,7 @@ export class DownloadManager extends EventEmitter {
               logger.warn(`Tiny download erkannt (${written} B): "${snippet}"`);
               try {
                 await fs.promises.rm(effectiveTargetPath, { force: true });
-              } catch { /* ignore */ }
+              } catch {  }
               this.releaseTargetPath(active.itemId);
               this.dropItemContribution(active.itemId);
               item.downloadedBytes = 0;
@@ -10750,7 +9989,7 @@ export class DownloadManager extends EventEmitter {
           if (preAllocated) {
             try {
               await fs.promises.truncate(effectiveTargetPath, written);
-            } catch { /* best-effort */ }
+            } catch {  }
           }
           logger.warn(`Download-Underflow: erwartet=${completionValidation.totalBytes}, erhalten=${written}, shortfall=${shortfall} fuer ${item.fileName}`);
           item.downloadedBytes = written;
@@ -10774,11 +10013,10 @@ export class DownloadManager extends EventEmitter {
           });
         }
 
-        // Truncate pre-allocated files to actual bytes written to prevent zero-padded tail
         if (preAllocated && item.totalBytes && written < item.totalBytes) {
           try {
             await fs.promises.truncate(effectiveTargetPath, written);
-          } catch { /* best-effort */ }
+          } catch {  }
           logger.warn(`Pre-alloc underflow: erwartet=${item.totalBytes}, erhalten=${written} für ${item.fileName}`);
         }
 
@@ -10799,12 +10037,8 @@ export class DownloadManager extends EventEmitter {
         });
         return { resumable };
       } catch (error) {
-        // Truncate pre-allocated sparse file to actual written bytes so that
-        // stat.size on the next retry reflects real data, not the pre-allocated size.
-        // Without this, the retry reads stat.size = totalBytes and either sends an
-        // impossible Range header (→ 416 → false complete) or appends to a zero-padded file.
         if (preAllocated && item.totalBytes && written < item.totalBytes) {
-          try { await fs.promises.truncate(effectiveTargetPath, written); } catch { /* best-effort */ }
+          try { await fs.promises.truncate(effectiveTargetPath, written); } catch {  }
         }
         if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
           throw error;
@@ -10874,8 +10108,6 @@ export class DownloadManager extends EventEmitter {
         if (!item || this.activeTasks.has(itemId)) {
           continue;
         }
-        // Only check failed or completed items — skip queued/cancelled to avoid
-        // expensive fs.stat calls on hundreds of items (caused 5-10s freeze on start).
         const canFinalizeFromDisk = item.status === "failed"
           || item.status === "completed"
           || item.status === "queued"
@@ -10957,7 +10189,6 @@ export class DownloadManager extends EventEmitter {
       try {
         fs.rmSync(targetPath, { force: true });
       } catch {
-        // ignore
       }
       this.releaseTargetPath(item.id);
       item.downloadedBytes = 0;
@@ -10992,7 +10223,6 @@ export class DownloadManager extends EventEmitter {
         const stat = await fs.promises.stat(targetPath);
         return stat.size <= 0;
       } catch {
-        // file does not exist
       }
     }
 
@@ -11069,7 +10299,6 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         if (entry.startHour === entry.endHour) {
-          // "All day" schedule — use as fallback, don't block more specific schedules
           if (allDayLimit === null) {
             allDayLimit = entry.speedLimitKbps;
           }
@@ -11220,9 +10449,6 @@ export class DownloadManager extends EventEmitter {
         if (item.targetPath) {
           pendingPaths.add(pathKey(item.targetPath));
         }
-        // Items that haven't started yet have no targetPath but may have a fileName.
-        // Include their projected path so the archive-readiness check doesn't
-        // prematurely trigger extraction while parts are still queued.
         if (item.fileName && pkg.outputDir) {
           pendingPaths.add(pathKey(path.join(pkg.outputDir, item.fileName)));
         }
@@ -11266,11 +10492,6 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      // Safe disk-fallback: only allow extraction when every tracked archive item
-      // already exists on disk at full size and the persisted byte counters
-      // also indicate a finished download. This recovers stale status after a
-      // crash without letting unrelated .rev files or freshly re-queued items
-      // look "ready".
       const archiveItems = resolveArchiveItemsFromList(path.basename(candidate), packageItems);
       if (archiveItems.length === 0) {
         continue;
@@ -11326,7 +10547,6 @@ export class DownloadManager extends EventEmitter {
       const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`^${escaped}\\.7z(\\.\\d+)?$`, "i").test(fileName);
     }
-    // Generic .NNN splits (e.g., movie.001, movie.002)
     if (/\.001$/i.test(entryPointName) && !/\.(zip|7z)\.001$/i.test(entryPointName)) {
       const stem = entryPointName.replace(/\.001$/i, "").toLowerCase();
       const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -11336,7 +10556,6 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<number> {
-    // Fix obfuscated archive filenames before archive discovery.
     const completedForDeobfuscation = items.filter((item) => item.status === "completed");
     await this.deobfuscateArchiveFiles(pkg, completedForDeobfuscation, signal);
     if (signal?.aborted) return 0;
@@ -11350,8 +10569,6 @@ export class DownloadManager extends EventEmitter {
 
     const completedItems = items.filter((item) => item.status === "completed");
 
-    // Skip archives already attempted in the current package/archive state to prevent
-    // infinite re-extraction of disk-fallback archives or repeated unchanged failures.
     const alreadyTried = this.hybridExtractedPaths.get(packageId);
     if (alreadyTried) {
       for (const key of [...readyArchives]) {
@@ -11394,21 +10611,19 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
     const hybridExtractStartMs = nowMs();
 
-    // Build set of file names belonging to ready archives (for matching items)
     const hybridFileNames = new Set<string>();
     let dirFiles: string[] | undefined;
     try {
       dirFiles = (await fs.promises.readdir(pkg.outputDir, { withFileTypes: true }))
         .filter((entry) => entry.isFile())
         .map((entry) => entry.name);
-    } catch { /* ignore */ }
+    } catch {  }
     const archiveStems = new Set<string>();
     for (const archiveKey of readyArchives) {
       const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
       for (const part of parts) {
         const partName = path.basename(part).toLowerCase();
         hybridFileNames.add(partName);
-        // Collect archive base stems (strip all archive extensions) to find companion files
         const stem = partName
           .replace(/\.part\d+\.rar$/i, "")
           .replace(/\.(rar|r\d{2,3}|zip|z\d{2,3}|7z|tar|gz|bz2|xz|tgz|tbz2|txz|rev)$/i, "")
@@ -11418,8 +10633,6 @@ export class DownloadManager extends EventEmitter {
       }
       hybridFileNames.add(path.basename(archiveKey).toLowerCase());
     }
-    // Include companion metadata files (.sfv, .nfo, etc.) that belong to the same archive set.
-    // These files share the same basename stem as the archive parts.
     if (dirFiles && archiveStems.size > 0) {
       for (const fileName of dirFiles) {
         const lower = fileName.toLowerCase();
@@ -11441,15 +10654,11 @@ export class DownloadManager extends EventEmitter {
     };
     const hybridItems = completedItems.filter(isHybridItem);
 
-    // If all items belonging to ready archives are already extracted from
-    // a previous hybrid round, there is nothing new to extract.
     if (hybridItems.length > 0 && hybridItems.every((item) => isExtractedLabel(item.fullStatus))) {
       logger.info(`Hybrid-Extract: pkg=${pkg.name}, alle ${hybridItems.length} Items bereits entpackt, überspringe`);
       return 0;
     }
 
-    // Filter out archives whose items are ALL already extracted so we don't
-    // re-extract them.  Build per-archive item map first.
     for (const archiveKey of [...readyArchives]) {
       const archiveParts = collectArchiveCleanupTargets(archiveKey, dirFiles);
       const archivePartNames = new Set<string>();
@@ -11471,9 +10680,6 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
 
-    // Resolve archive items dynamically from ALL package items (not just
-    // the stale completedItems snapshot) so items that complete during
-    // extraction are included and get the correct "Done" label.
     const resolveArchiveItems = (archiveName: string): DownloadItem[] =>
       resolveArchiveItemsFromList(archiveName, items);
 
@@ -11484,7 +10690,6 @@ export class DownloadManager extends EventEmitter {
       readyArchiveMarkers.set(archiveKey, this.buildHybridArchiveRetryMarker(pkg, items, archiveKey));
     }
 
-    // Track archives for parallel hybrid extraction progress
     const autoRecoveredArchives = new Set<string>();
     const failedArchiveErrors = new Map<string, string>();
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
@@ -11492,9 +10697,6 @@ export class DownloadManager extends EventEmitter {
     let hybridLastEmitAt = 0;
     let hybridLastProgressCurrent: number | null = null;
 
-    // Mark items based on whether their archive is actually ready for extraction.
-    // Only items whose archive is in readyArchives get "Ausstehend"; others keep
-    // their current label to avoid flicker between hybrid runs.
     const allDownloaded = completedItems.length >= items.length;
     let labelsChanged = false;
     for (const entry of completedItems) {
@@ -11572,7 +10774,6 @@ export class DownloadManager extends EventEmitter {
           hybridLastProgressCurrent = currentCount;
 
           if (progress.archiveName) {
-            // Resolve items for this archive if not yet tracked
             if (!hybridResolvedItems.has(progress.archiveName)) {
               const resolved = resolveArchiveItems(progress.archiveName);
               hybridResolvedItems.set(progress.archiveName, resolved);
@@ -11598,8 +10799,6 @@ export class DownloadManager extends EventEmitter {
             }
             const archItems = hybridResolvedItems.get(progress.archiveName) || [];
 
-            // Only mark as finished on explicit archive-done signal (or real current increment),
-            // never on raw 100% archivePercent, because password retries can report 100% mid-run.
             if (archiveFinished) {
               const doneAt = nowMs();
               const startedAt = hybridStartTimes.get(progress.archiveName) || doneAt;
@@ -11617,14 +10816,12 @@ export class DownloadManager extends EventEmitter {
               }
               hybridResolvedItems.delete(progress.archiveName);
               hybridStartTimes.delete(progress.archiveName);
-              // Show transitional label while next archive initializes
               const done = currentCount;
               if (done < progress.total) {
                 pkg.postProcessLabel = `Entpacken (${done}/${progress.total}) - Nächstes Archiv...`;
                 this.emitState();
               }
             } else {
-              // Update this archive's items with per-archive progress
               const archiveLabel = ` · ${progress.archiveName}`;
               const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
                 ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
@@ -11651,7 +10848,6 @@ export class DownloadManager extends EventEmitter {
             }
           }
 
-          // Update package-level label with overall extraction progress
           const activeArchive = !archiveFinished && Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
           const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
           if (progress.passwordFound) {
@@ -11669,8 +10865,6 @@ export class DownloadManager extends EventEmitter {
             pkg.postProcessLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})`;
           }
 
-          // Throttled emit — also promote "Warten auf Parts" items that
-          // completed downloading in the meantime to "Ausstehend".
           const now = nowMs();
           if (now - hybridLastEmitAt >= EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
             hybridLastEmitAt = now;
@@ -11690,9 +10884,6 @@ export class DownloadManager extends EventEmitter {
         extracted: result.extracted,
         failed: result.failed
       });
-      // Mark all attempted archives as tried so they are not retried in subsequent
-      // requeue rounds of the same post-processing session (prevents infinite loop
-      // when disk-fallback archives have no corresponding session items).
       {
         let tried = this.hybridExtractedPaths.get(packageId);
         if (!tried) { tried = new Set(); this.hybridExtractedPaths.set(packageId, tried); }
@@ -11718,17 +10909,6 @@ export class DownloadManager extends EventEmitter {
         }
       }
       if (result.extracted > 0) {
-        // Fire-and-forget: rename then collect MKVs in background so the
-        // slot is not blocked and the next archive set can start immediately.
-        // Both operations route through chainPackageFileOp so they cannot
-        // race with the deferred-post-process pipe's rename / mkvMove for
-        // the same package — without that, hybrid mkvMove could move a
-        // file while deferred rename was still scanning it (ENOENT).
-        //
-        // Der Controller wird SYNCHRON (vor dem void-Promise) registriert, damit
-        // es kein Zeitfenster gibt in dem packagePostProcessTasks leer UND die
-        // Hybrid-Arbeit ungetrackt ist. shouldAbort stoppt Rename + MKV-Collect
-        // bei Stop/Shutdown/Cancel/Reset oder wenn das Package ersetzt wurde. (H2)
         const hybridController = new AbortController();
         let hybridSet = this.packageHybridPostProcessControllers.get(packageId);
         if (!hybridSet) {
@@ -11738,14 +10918,6 @@ export class DownloadManager extends EventEmitter {
         hybridSet.add(hybridController);
         const hybridShouldAbort = (): boolean => hybridController.signal.aborted || this.session.packages[packageId] !== pkg;
         void (async () => {
-          // Atomare Kopplung von Rename + Collect in EINER chainPackageFileOp-Kette,
-          // damit zwischen ihnen keine andere (ueberlappende) Hybrid-Runde ihren
-          // Collect einschieben kann (das war der Rename-Race: ein Collect moved
-          // eine Datei bevor der zugehoerige Rename lief). Wichtig: die IMPL-Variante
-          // des Renames verwenden — die Public-Variante ruft selbst chainPackageFileOp
-          // auf, was hier zu verschachteltem Chaining (Deadlock) fuehren wuerde.
-          // deferFreshFiles=true: Dateien die der Rename als "noch frisch" auslaesst
-          // werden vom Collect ebenfalls deferred (statt mit Original-Namen gemoved).
           try {
             await this.chainPackageFileOp(pkg.id, async () => {
               await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, pkg, hybridShouldAbort);
@@ -11768,11 +10940,6 @@ export class DownloadManager extends EventEmitter {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, werden erst nach echter Aenderung oder manuellem Retry erneut versucht`);
       }
 
-      // Mark hybrid items with final status — only items whose archives were
-      // actually in the extraction set (hybridItems), NOT all completedItems.
-      // Using completedItems here would falsely mark items whose archives
-      // weren't ready yet (e.g. part2 of an episode where part1 is still
-      // downloading) as "Done".
       const updatedAt = nowMs();
       for (const entry of hybridItems) {
         if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) {
@@ -11785,12 +10952,8 @@ export class DownloadManager extends EventEmitter {
           } else if (result.extracted > 0) {
             entry.fullStatus = formatExtractDone(nowMs() - hybridExtractStartMs);
           } else if (KNOWN_SMALL_FILE_RE.test(entry.fileName || "")) {
-            // Companion metadata files (.sfv, .nfo, .md5) are not archives themselves.
-            // If no archives were extracted (already done in a prior round) and no
-            // failures occurred, mark companions as extracted so they don't stay stuck.
             entry.fullStatus = "Entpackt (Metadaten)";
           }
-          // extracted === 0 && failed === 0 for archive items: keep current status
           entry.updatedAt = updatedAt;
         }
       }
@@ -11833,8 +10996,6 @@ export class DownloadManager extends EventEmitter {
     }
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
 
-    // Recover items whose file exists on disk but status was never set to "completed".
-    // Only recover items in idle states (queued/paused), never active ones (downloading/validating).
     const recoveryStart = nowMs();
     for (const item of items) {
       if (isFinishedStatus(item.status)) {
@@ -11862,9 +11023,6 @@ export class DownloadManager extends EventEmitter {
       }
       try {
         const stat = await fs.promises.stat(item.targetPath);
-        // Require file to be essentially complete — within one allocation unit of the
-        // expected size.  The old 50% threshold incorrectly recovered partial downloads
-        // (e.g. 627 MB of 1001 MB) and triggered hybrid extraction on incomplete archives.
         const minSize = expectedMinBytes(item.totalBytes, isLargeBinaryLikePath(item.fileName || item.targetPath));
         const persistedBytes = Math.max(0, Math.floor(Number(item.downloadedBytes) || 0));
         const preallocMismatchThreshold = resolvePreallocResumeMismatchThreshold(item.fileName || item.targetPath || "");
@@ -11873,7 +11031,6 @@ export class DownloadManager extends EventEmitter {
           && stat.size >= minSize
           && stat.size > persistedBytes + preallocMismatchThreshold;
         if (stat.size >= minSize) {
-          // Re-check: another task may have started this item during the await
           const latestItem = this.session.items[item.id];
           if (!latestItem || this.activeTasks.has(item.id) || latestItem.status === "downloading"
             || latestItem.status === "validating" || latestItem.status === "integrity_check") {
@@ -11891,7 +11048,6 @@ export class DownloadManager extends EventEmitter {
                 fs.rmSync(item.targetPath, { force: true });
               }
             } catch {
-              // best-effort
             }
             item.status = "queued";
             item.attempts = 0;
@@ -11904,8 +11060,6 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             continue;
           }
-          // Guard against pre-allocated sparse files from a hard crash: file has
-          // the full expected size but downloadedBytes is significantly behind.
           if (item.downloadedBytes > 0 && item.totalBytes && item.totalBytes > 0
             && stat.size >= minSize
             && item.downloadedBytes < item.totalBytes * 0.95) {
@@ -11921,11 +11075,10 @@ export class DownloadManager extends EventEmitter {
           item.updatedAt = nowMs();
           this.recordRunOutcome(item.id, "completed");
         } else if (stat.size > 0) {
-          // File exists but is clearly incomplete — delete and re-queue for download.
           logger.warn(`Item-Recovery: ${item.fileName} unvollstaendig (${humanSize(stat.size)}, erwartet mind. ${humanSize(minSize)}), loesche und re-queue`);
           try {
             fs.rmSync(item.targetPath, { force: true });
-          } catch { /* ignore */ }
+          } catch {  }
           this.releaseTargetPath(item.id);
           this.dropItemContribution(item.id);
           item.targetPath = "";
@@ -11938,7 +11091,6 @@ export class DownloadManager extends EventEmitter {
           item.updatedAt = nowMs();
         }
       } catch {
-        // file doesn't exist, nothing to recover
       }
     }
 
@@ -11976,18 +11128,14 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
         return;
       }
-      // Immediately clean up extracted items if "Sofort" policy is active
       if (this.settings.completedCleanupPolicy === "immediate") {
         for (const itemId of [...pkg.itemIds]) {
           this.applyCompletedCleanupPolicy(packageId, itemId);
         }
       }
       if (!this.session.packages[packageId]) {
-        return;  // Package was fully cleaned up
+        return;
       }
-      // Self-requeue if we extracted something — more archive sets may have
-      // become ready while we were extracting (items that completed before
-      // this task started set the requeue flag once, which was already consumed).
       if (hybridExtracted > 0) {
         this.hybridExtractRequeue.add(packageId);
       }
@@ -12014,7 +11162,6 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "extracting";
       this.emitState();
 
-      // Fix obfuscated archive filenames before extraction attempts.
       await this.deobfuscateArchiveFiles(pkg, completedItems, signal);
       if (signal?.aborted) return;
 
@@ -12062,7 +11209,6 @@ export class DownloadManager extends EventEmitter {
         }
       }, extractTimeoutMs);
       try {
-        // Track archives for parallel extraction progress
         const autoRecoveredArchives = new Set<string>();
         const fullFailedArchiveErrors = new Map<string, string>();
         const fullResolvedItems = new Map<string, DownloadItem[]>();
@@ -12110,8 +11256,6 @@ export class DownloadManager extends EventEmitter {
           onlyArchives: fullArchiveSet,
           skipPostCleanup: true,
           maxParallel: this.settings.maxParallelExtract || 2,
-          // All downloads finished — use NORMAL OS priority so extraction runs at
-          // full speed (matching manual 7-Zip/WinRAR speed).
           extractCpuPriority: "high",
           onLog: (level, message) => this.logExtractionForItems(pkg, completedItems, "Extractor", level, message),
           onArchiveFailure: (failure) => {
@@ -12149,7 +11293,6 @@ export class DownloadManager extends EventEmitter {
             fullLastProgressCurrent = currentCount;
 
             if (progress.archiveName) {
-              // Resolve items for this archive if not yet tracked
               if (!fullResolvedItems.has(progress.archiveName)) {
                 const resolved = resolveArchiveItems(progress.archiveName);
                 fullResolvedItems.set(progress.archiveName, resolved);
@@ -12170,8 +11313,6 @@ export class DownloadManager extends EventEmitter {
               }
               const archiveItems = fullResolvedItems.get(progress.archiveName) || [];
 
-              // Only finalize on explicit archive completion (or real current increment),
-              // not on plain 100% archivePercent.
               if (archiveFinished) {
                 const doneAt = nowMs();
                 const startedAt = fullStartTimes.get(progress.archiveName) || doneAt;
@@ -12185,13 +11326,11 @@ export class DownloadManager extends EventEmitter {
                 }
                 fullResolvedItems.delete(progress.archiveName);
                 fullStartTimes.delete(progress.archiveName);
-                // Show transitional label while next archive initializes
                 const done = currentCount;
                 if (done < progress.total) {
                   emitExtractStatus(`Entpacken (${done}/${progress.total}) - Nächstes Archiv...`, true);
                 }
               } else {
-                // Update this archive's items with per-archive progress
                 const archiveTag = progress.archiveName ? ` · ${progress.archiveName}` : "";
                 const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
                   ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
@@ -12218,7 +11357,6 @@ export class DownloadManager extends EventEmitter {
               }
             }
 
-            // Emit overall status (throttled)
             const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
             const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
               ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
@@ -12247,9 +11385,6 @@ export class DownloadManager extends EventEmitter {
         });
         extractedCount = result.extracted;
         const autoRecoveredPending = completedItems.some((item) => item.status === "queued");
-
-        // Auto-rename wird in runDeferredPostExtraction ausgeführt (im Hintergrund),
-        // damit der Slot sofort freigegeben wird.
 
         if (autoRecoveredPending) {
           pkg.postProcessLabel = undefined;
@@ -12298,7 +11433,6 @@ export class DownloadManager extends EventEmitter {
 
           const finalAt = nowMs();
           for (const entry of completedItems) {
-            // Preserve per-archive duration labels (e.g. "Entpackt - Done (5.3s)")
             if (!isExtractedLabel(entry.fullStatus)) {
               entry.fullStatus = finalStatusText;
               entry.updatedAt = finalAt;
@@ -12361,11 +11495,8 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "completed";
     }
 
-    // Emit state immediately after status change so UI reflects completion
-    // before potentially slow rename/MKV-collection steps.
     this.emitState();
 
-    // Record history entry when package completes (regardless of cleanup policy)
     if (pkg.status === "completed" || (pkg.status === "failed" && success > 0)) {
       this.recordPackageHistory(packageId, pkg, items);
     }
@@ -12388,16 +11519,9 @@ export class DownloadManager extends EventEmitter {
       alreadyMarkedExtracted
     });
 
-    // Deferred post-extraction: Rename, MKV-Sammlung, Cleanup laufen im Hintergrund,
-    // damit der Post-Process-Slot sofort freigegeben wird und das nächste Pack
-    // ohne 10–15 Sekunden Pause entpacken kann.
     void this.runDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount);
   }
 
-  /**
-   * Runs slow post-extraction work (rename, MKV collection, cleanup) in the background
-   * so the post-process slot is released immediately and the next pack can start unpacking.
-   */
   private async runDeferredPostExtraction(
     packageId: string,
     pkg: PackageEntry,
@@ -12422,7 +11546,6 @@ export class DownloadManager extends EventEmitter {
 
     try {
       throwIfAborted();
-      // ── Nested extraction: extract archives found inside the extracted output ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.autoExtract) {
         const nestedBlacklist = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
         const nestedCandidates = (await findArchiveCandidates(pkg.extractDir))
@@ -12460,7 +11583,6 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      // ── Auto-Rename ──
       if (extractedCount > 0 || alreadyMarkedExtracted) {
         pkg.postProcessLabel = "Renaming...";
         this.emitState();
@@ -12468,17 +11590,9 @@ export class DownloadManager extends EventEmitter {
           extractDir: pkg.extractDir
         });
         throwIfAborted();
-        // treatFilesAsStable=true: Final-Pass — die Extraktion (inkl. Nested oben) ist
-        // abgeschlossen/awaited, es gibt keinen concurrent Extractor-Write mehr. Ohne
-        // diesen Gate-Bypass wuerde eine eben extrahierte, noch frische (< 2s) Datei vom
-        // Rename uebersprungen und vom nachfolgenden Collect (deferFreshFiles=false) mit
-        // Original-Scene-Namen in die Library gemoved (1-2 unbenannte Dateien pro Staffel).
         await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort, true);
       }
 
-      // ── Archive cleanup (source archives in outputDir) ──
-      // Also run when hybrid extraction already handled everything (extractedCount=0
-      // but alreadyMarkedExtracted=true) so archives are still cleaned up.
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none") {
         pkg.postProcessLabel = "Aufräumen...";
         this.emitState();
@@ -12499,7 +11613,6 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      // ── Hybrid archive cleanup (wenn bereits als extracted markiert) ──
       if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none" && !hasBlockingExtractError) {
         throwIfAborted();
         const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir, shouldAbort);
@@ -12508,7 +11621,6 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      // ── Link/Sample artifact removal ──
       if (extractedCount > 0 || alreadyMarkedExtracted) {
         throwIfAborted();
         if (this.settings.removeLinkFilesAfterExtract) {
@@ -12525,15 +11637,12 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      // ── Resume state cleanup ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
         throwIfAborted();
         await clearExtractResumeState(pkg.outputDir, packageId);
-        // Backward compatibility: older versions used .rd_extract_progress.json without package suffix.
         await clearExtractResumeState(pkg.outputDir);
       }
 
-      // ── Empty directory tree removal ──
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode === "delete") {
         throwIfAborted();
         if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
@@ -12544,13 +11653,10 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      // ── MKV collection ──
       if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
         throwIfAborted();
         pkg.postProcessLabel = "Verschiebe Videos...";
         this.emitState();
-        // Route through chainPackageFileOp so this serializes against any
-        // hybrid-pipe rename or mkvMove still pending for the same package.
         await this.chainPackageFileOp(pkg.id, () => this.collectMkvFilesToLibrary(packageId, pkg, shouldAbort));
       }
 
@@ -12618,7 +11724,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    // With autoExtract: only remove once all completed items are extracted (failed/cancelled don't need extraction)
     if (this.settings.autoExtract) {
       const allExtracted = pkg.itemIds.every((itemId) => {
         const item = this.session.items[itemId];
@@ -12687,7 +11792,6 @@ export class DownloadManager extends EventEmitter {
         return item != null && item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed";
       });
       if (!hasOpen) {
-        // With autoExtract: only remove once completed items are extracted (failed/cancelled don't need extraction)
         if (this.settings.autoExtract) {
           const allExtracted = pkg.itemIds.every((id) => {
             const item = this.session.items[id];
@@ -12729,11 +11833,6 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
     this.runItemIds.clear();
     this.runOutcomes.clear();
-    // Keep runPackageIds and runCompletedPackages alive when post-processing tasks
-    // are still running (autoExtractWhenStopped) so handlePackagePostProcessing()
-    // can still update runCompletedPackages.  They are cleared by the next start().
-    // M1: auch laufende Deferred/Hybrid-Arbeit berücksichtigen, sonst werden die
-    // Run-Maps geleert während noch MKVs verschoben werden.
     if (this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending()) {
       this.runPackageIds.clear();
       this.runCompletedPackages.clear();
@@ -12754,7 +11853,7 @@ export class DownloadManager extends EventEmitter {
     this.nonResumableActive = 0;
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
-    this.lastSettingsPersistAt = 0; // force settings save on run finish
+    this.lastSettingsPersistAt = 0;
     this.persistNow();
     this.emitState();
   }

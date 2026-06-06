@@ -74,7 +74,6 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     const targetDir = path.join(root, "out");
     fs.mkdirSync(packageDir, { recursive: true });
 
-    // Create a ZIP with some content to trigger progress
     const zipPath = path.join(packageDir, "progress-test.zip");
     const zip = new AdmZip();
     zip.addFile("file1.txt", Buffer.from("Hello World ".repeat(100)));
@@ -108,20 +107,16 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     expect(result.extracted).toBe(1);
     expect(result.failed).toBe(0);
 
-    // Should have at least preparing, extracting, and done phases
     const phases = new Set(progressUpdates.map((u) => u.phase));
     expect(phases.has("preparing")).toBe(true);
     expect(phases.has("extracting")).toBe(true);
 
-    // Extracting phase should include the archive name
     const extracting = progressUpdates.filter((u) => u.phase === "extracting" && u.archiveName === "progress-test.zip");
     expect(extracting.length).toBeGreaterThan(0);
 
-    // Should end at 100%
     const lastExtracting = extracting[extracting.length - 1];
     expect(lastExtracting.archivePercent).toBe(100);
 
-    // Files should exist
     expect(fs.existsSync(path.join(targetDir, "file1.txt"))).toBe(true);
     expect(fs.existsSync(path.join(targetDir, "file2.txt"))).toBe(true);
   });
@@ -135,7 +130,6 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     const targetDir = path.join(root, "out");
     fs.mkdirSync(packageDir, { recursive: true });
 
-    // Create two separate ZIP archives
     const zip1 = new AdmZip();
     zip1.addFile("episode01.txt", Buffer.from("ep1 content"));
     zip1.writeZip(path.join(packageDir, "archive1.zip"));
@@ -162,10 +156,8 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
 
     expect(result.extracted).toBe(2);
     expect(result.failed).toBe(0);
-    // Both archive names should have appeared in progress
     expect(archiveNames.has("archive1.zip")).toBe(true);
     expect(archiveNames.has("archive2.zip")).toBe(true);
-    // Both files extracted
     expect(fs.existsSync(path.join(targetDir, "episode01.txt"))).toBe(true);
     expect(fs.existsSync(path.join(targetDir, "episode02.txt"))).toBe(true);
   });

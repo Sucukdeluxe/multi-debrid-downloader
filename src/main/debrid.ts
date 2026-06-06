@@ -24,20 +24,13 @@ const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
-/** Truly key-wide quota errors: the whole key is exhausted regardless of host. */
 const DEBRID_LINK_KEY_QUOTA_ERRORS = new Set(["maxLink", "maxData"]);
-/** Per-(key, host) quota errors: only this host is exhausted for this key — the
- *  key remains usable for other hosters. */
 const DEBRID_LINK_HOST_QUOTA_ERRORS = new Set(["maxLinkHost", "maxDataHost"]);
-/** Backward-compat union — includes BOTH key-wide and per-host quota codes.
- *  Use this only for "is it a quota error of any kind?" checks; for behavior
- *  branches use the more specific sets above. */
 const DEBRID_LINK_QUOTA_ERRORS = new Set([...DEBRID_LINK_KEY_QUOTA_ERRORS, ...DEBRID_LINK_HOST_QUOTA_ERRORS]);
 const DEBRID_LINK_INVALID_TOKEN_ERRORS = new Set(["badToken", "hidedToken", "expired_token"]);
 const DEBRID_LINK_RATE_LIMIT_ERRORS = new Set(["floodDetected"]);
 const DEBRID_LINK_RETRYABLE_ERRORS = new Set(["internalError", "server_error"]);
 const DEBRID_LINK_PROVIDER_WIDE_ERRORS = new Set(["notDebrid"]);
-/** Errors where the key can't handle this link — skip to next key immediately, no retries */
 const DEBRID_LINK_SKIP_KEY_ERRORS = new Set([
   "disabledServerHost",
   "notFreeHost",
@@ -48,7 +41,6 @@ const DEBRID_LINK_SKIP_KEY_ERRORS = new Set([
   "fileNotAvailable"
 ]);
 const DEBRID_LINK_FATAL_LINK_ERRORS = new Set(["badArguments", "badFileUrl", "badFilePassword", "fileNotFound", "hostNotValid"]);
-/** Per-key cooldown cache: keyId → expiry timestamp. Parallel items skip keys that recently failed. */
 const debridLinkKeyCooldowns = new Map<string, number>();
 type DebridLinkCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary" | "skip";
 type DebridLinkCooldownDetail = { message: string; category: DebridLinkCooldownCategory };
@@ -60,7 +52,7 @@ type DebridLinkRuntimeStatus = {
 };
 const debridLinkKeyCooldownDetails = new Map<string, DebridLinkCooldownDetail>();
 const debridLinkKeyRuntimeStatuses = new Map<string, DebridLinkRuntimeStatus>();
-const DEBRID_LINK_KEY_COOLDOWN_MS = 120_000; // 2 min cooldown per failed key
+const DEBRID_LINK_KEY_COOLDOWN_MS = 120_000;
 const DEBRID_LINK_INVALID_KEY_COOLDOWN_MS = 60 * 60 * 1000;
 const DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 
@@ -72,9 +64,6 @@ export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyHostCooldownDetails.clear();
 }
 
-/** Drop all Debrid-Link cooldown/runtime entries for key IDs that are no
- *  longer in the active key set. Called when settings change so removed
- *  keys don't keep blocking the system if they're re-added later. */
 export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): void {
   for (const keyId of debridLinkKeyCooldowns.keys()) {
     if (!activeKeyIds.has(keyId)) {
@@ -87,9 +76,6 @@ export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): v
       debridLinkKeyRuntimeStatuses.delete(keyId);
     }
   }
-  // Per-(key, host) cooldown keys have format `${keyId}|${hoster}` — drop any
-  // whose keyId is no longer in the active set so removed keys don't keep
-  // memory state around if they're re-added later.
   for (const stateKey of debridLinkKeyHostCooldowns.keys()) {
     const sepIdx = stateKey.indexOf("|");
     const keyId = sepIdx >= 0 ? stateKey.slice(0, sepIdx) : stateKey;
@@ -100,12 +86,9 @@ export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): v
   }
 }
 
-/** Periodic cleanup of expired Debrid-Link cooldown/runtime entries.
- *  Without this, module-level Maps grow unbounded over 24/7 operation.
- *  Removes entries whose cooldown expired more than 1 hour ago. */
 export function pruneExpiredDebridLinkRuntimeState(now = Date.now()): number {
   let removed = 0;
-  const grace = 60 * 60 * 1000; // keep 1h grace for debugging
+  const grace = 60 * 60 * 1000;
   for (const [keyId, until] of debridLinkKeyCooldowns) {
     if (until + grace < now) {
       debridLinkKeyCooldowns.delete(keyId);
@@ -178,13 +161,6 @@ function setDebridLinkKeyCooldownState(
     clearDebridLinkKeyCooldownState(keyId);
     return;
   }
-  // Cooldown set: max-wins. When 8 parallel items hit floodDetected on the
-  // same key, each computes its own retry-after and calls setDebridLinkKey
-  // CooldownState. Without max-wins, the LAST setter could shorten the
-  // cooldown (e.g. one item got a 1h Retry-After header, another got the
-  // default 2 min — without max-wins the 2 min would overwrite the 1h).
-  // Quota and rate_limit categories take priority over generic temporary
-  // cooldowns regardless of duration to preserve the more-specific signal.
   const newUntil = Date.now() + Math.max(1000, Math.floor(cooldownMs));
   const existingUntil = Number(debridLinkKeyCooldowns.get(keyId) || 0);
   const existingDetail = debridLinkKeyCooldownDetails.get(keyId);
@@ -192,7 +168,6 @@ function setDebridLinkKeyCooldownState(
   const existingIsStrongCategory = existingDetail
     ? (existingDetail.category === "rate_limit" || existingDetail.category === "quota" || existingDetail.category === "invalid")
     : false;
-  // Keep existing if it's still active and either lasts longer or has a stronger category
   if (existingUntil > Date.now()) {
     if (existingUntil >= newUntil && (!newIsStrongCategory || existingIsStrongCategory)) {
       return;
@@ -227,9 +202,6 @@ function getDebridLinkKeyCooldownState(
   };
 }
 
-/** Per-(key, host) cooldown cache. When a key hits maxLinkHost / maxDataHost
- *  for a specific host, only that combination should be blocked — the key
- *  itself stays usable for other hosters. Map key format: `${keyId}|${hoster}`. */
 const debridLinkKeyHostCooldowns = new Map<string, number>();
 const debridLinkKeyHostCooldownDetails = new Map<string, DebridLinkCooldownDetail>();
 
@@ -251,8 +223,6 @@ function setDebridLinkKeyHostCooldownState(
   category: DebridLinkCooldownCategory
 ): void {
   if (!hoster) {
-    // Fall back to key-wide cooldown when we can't determine the hoster — better
-    // a slightly broader block than letting the key thrash on the same failure.
     setDebridLinkKeyCooldownState(keyId, cooldownMs, message, category);
     return;
   }
@@ -261,10 +231,6 @@ function setDebridLinkKeyHostCooldownState(
     return;
   }
   const stateKey = makeDebridLinkKeyHostCooldownKey(keyId, hoster);
-  // Same max-wins semantics as setDebridLinkKeyCooldownState — parallel items
-  // hitting maxDataHost on the same (key, host) shouldn't shorten an existing
-  // longer cooldown. Strong categories (quota / rate_limit / invalid) win over
-  // generic temporary regardless of duration.
   const newUntil = Date.now() + Math.max(1000, Math.floor(cooldownMs));
   const existingUntil = Number(debridLinkKeyHostCooldowns.get(stateKey) || 0);
   const existingDetail = debridLinkKeyHostCooldownDetails.get(stateKey);
@@ -282,8 +248,6 @@ function setDebridLinkKeyHostCooldownState(
   }
   debridLinkKeyHostCooldowns.set(stateKey, newUntil);
   debridLinkKeyHostCooldownDetails.set(stateKey, { message, category });
-  // Intentionally NOT updating setDebridLinkKeyRuntimeStatus here — the key
-  // is still healthy for other hosters, only this (key, host) is blocked.
 }
 
 function getDebridLinkKeyHostCooldownState(
@@ -313,37 +277,21 @@ function getDebridLinkKeyHostCooldownState(
   };
 }
 
-/** Per-account cooldown cache for Mega-Debrid: accountId → expiry timestamp.
- *  untilRestart: ein Tageslimit-Account wird fuer den REST der Laufzeit uebersprungen
- *  (nicht alle 20s/2min neu getestet) und kommt erst nach einem Neustart zurueck — die
- *  Map liegt nur im RAM, ein Neustart loescht sie also automatisch. */
 type MegaDebridCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary" | "skip";
 type MegaDebridCooldownDetail = { until: number; message: string; category: MegaDebridCooldownCategory; untilRestart?: boolean };
 const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
-const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000; // 2 min cooldown per failed account
+const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000;
 const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
 
-/** Zaehlt aufeinanderfolgende "Antwort leer"-Fehlversuche je Account-Key. Ein
- *  tageslimitierter Mega-Debrid-Account liefert im Web-Pfad KEINE unterscheidbare
- *  Meldung ("Kein Server" taucht in echten Logs nie auf — immer nur "Antwort leer"),
- *  ist aber daran erkennbar, dass er PERSISTENT leer antwortet. Nach
- *  MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART aufeinanderfolgenden Leer-Antworten wird der
- *  Account bis Neustart geparkt; ein einzelner transienter Blip (Streak < Schwelle)
- *  behaelt den kurzen 20s-Cooldown. Ein Erfolg oder ein anderer Fehlertyp setzt den
- *  Zaehler zurueck. */
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
 
-/** Verbucht eine "Antwort leer"-Antwort fuer den Account-Key und liefert die neue
- *  Streak-Laenge. Ab MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART parkt der Aufrufer den
- *  Account bis Neustart. Exportiert fuer deterministische Tests. */
 export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
   const streak = (megaDebridEmptyResponseStreaks.get(accountId) || 0) + 1;
   megaDebridEmptyResponseStreaks.set(accountId, streak);
   return streak;
 }
 
-/** Setzt die "Antwort leer"-Streak zurueck (bei Erfolg oder einem anderen Fehlertyp). */
 export function clearMegaDebridEmptyResponseStreak(accountId: string): void {
   megaDebridEmptyResponseStreaks.delete(accountId);
 }
@@ -353,7 +301,6 @@ export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridEmptyResponseStreaks.clear();
 }
 
-/** Periodic cleanup of expired Mega-Debrid cooldown entries. */
 export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
   let removed = 0;
   const grace = 60 * 60 * 1000;
@@ -370,7 +317,6 @@ export function primeMegaDebridRuntimeCooldownForTests(accountId: string, cooldo
   setMegaDebridAccountCooldownState(accountId, cooldownMs, message, "temporary");
 }
 
-/** Parkt einen Account-Key bis Neustart (Tageslimit). Exportiert fuer Tests. */
 export function primeMegaDebridUntilRestartForTests(accountId: string, message = "Tageslimit (Test) — bis Neustart gesperrt"): void {
   setMegaDebridAccountCooldownState(accountId, 0, message, "quota", true);
 }
@@ -387,9 +333,6 @@ function setMegaDebridAccountCooldownState(
   untilRestart = false
 ): void {
   if (untilRestart) {
-    // Bis-Neustart-Sperre: never expires in-process (Number.MAX_SAFE_INTEGER liegt
-    // ausserhalb des gueltigen Date-Bereichs → Anzeige wird via untilRestart-Flag
-    // gesondert behandelt, nicht ueber new Date(until)).
     megaDebridAccountCooldowns.set(accountId, {
       until: Number.MAX_SAFE_INTEGER,
       message,
@@ -500,21 +443,17 @@ export function getAvailableDebridLinkApiKeys(settings: AppSettings, epochMs = D
   );
 }
 
-/** Returns Mega-Debrid accounts that are not disabled and not daily-limited. */
 export function getAvailableMegaDebridAccounts(settings: AppSettings, epochMs = Date.now()): MegaDebridAccountEntry[] {
   return getMegaDebridAccountList(settings).filter(
     (entry) => !isMegaDebridAccountDisabled(settings, entry.id) && !isMegaDebridAccountDailyLimitReached(settings, entry.id, epochMs)
   );
 }
 
-/** Resolves the full list of Mega-Debrid accounts from settings (multi-account or legacy single). */
 function getMegaDebridAccountList(settings: AppSettings): MegaDebridAccountEntry[] {
-  // Multi-account format: newline-separated "login:password" pairs in megaCredentials
   const multiAccounts = parseMegaDebridAccounts(settings.megaCredentials || "");
   if (multiAccounts.length > 0) {
     return multiAccounts;
   }
-  // Backward compat: single legacy megaLogin/megaPassword
   if (settings.megaLogin?.trim() && settings.megaPassword?.trim()) {
     return parseMegaDebridAccounts(settings.megaLogin.trim(), settings.megaPassword.trim());
   }
@@ -575,7 +514,6 @@ function parseRetryAfterMs(value: string | null): number {
     return 0;
   }
 
-  // Cap at 1 hour — floodDetected can mandate "retry after 1 hour"
   const maxRetryMs = 60 * 60 * 1000;
   const asSeconds = Number(text);
   if (Number.isFinite(asSeconds) && asSeconds >= 0) {
@@ -1416,8 +1354,6 @@ export function extractRapidgatorFilenameFromHtml(html: string): string {
 
   for (const pattern of patterns) {
     const match = html.match(pattern);
-    // Some patterns have multiple capture groups for attribute-order independence;
-    // pick the first non-empty group.
     const raw = match?.[1] || match?.[2] || "";
     const normalized = normalizeResolvedFilename(raw);
     if (normalized) {
@@ -1499,12 +1435,10 @@ async function readResponseTextLimited(response: Response, maxBytes: number, sig
     try {
       await reader.cancel();
     } catch {
-      // ignore
     }
     try {
       reader.releaseLock();
     } catch {
-      // ignore
     }
   }
 
@@ -1536,7 +1470,7 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
         signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
       });
       if (!response.ok) {
-        try { await response.body?.cancel(); } catch { /* drain socket */ }
+        try { await response.body?.cancel(); } catch {  }
         if (shouldRetryStatus(response.status) && attempt < REQUEST_RETRIES + 2) {
           await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
           continue;
@@ -1552,11 +1486,11 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
         && !contentType.includes("text/plain")
         && !contentType.includes("text/xml")
         && !contentType.includes("application/xml")) {
-        try { await response.body?.cancel(); } catch { /* drain socket */ }
+        try { await response.body?.cancel(); } catch {  }
         return "";
       }
       if (!contentType && Number.isFinite(contentLength) && contentLength > RAPIDGATOR_SCAN_MAX_BYTES) {
-        try { await response.body?.cancel(); } catch { /* drain socket */ }
+        try { await response.body?.cancel(); } catch {  }
         return "";
       }
 
@@ -1613,7 +1547,6 @@ export async function checkRapidgatorOnline(
     "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
   };
 
-  // Fast path: HEAD request (no body download, much faster)
   for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
     try {
       if (signal?.aborted) throw new Error("aborted:debrid");
@@ -1634,30 +1567,26 @@ export async function checkRapidgatorOnline(
         if (!finalUrl.includes(fileId)) {
           return { online: false, fileName: "", fileSize: null };
         }
-        // HEAD 200 + URL still contains file ID → online
         const fileName = filenameFromRapidgatorUrlPath(link);
         return { online: true, fileName, fileSize: null };
       }
 
-      // Non-OK, non-404: retry or give up
       if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
         await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
         continue;
       }
 
-      // HEAD inconclusive — fall through to GET
       break;
     } catch (error) {
       const errorText = compactErrorText(error);
       if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
       if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
-        break; // fall through to GET
+        break;
       }
       await sleepWithSignal(retryDelay(attempt), signal);
     }
   }
 
-  // Slow path: GET request (downloads HTML, more thorough)
   for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
     try {
       if (signal?.aborted) throw new Error("aborted:debrid");
@@ -1670,12 +1599,12 @@ export async function checkRapidgatorOnline(
       });
 
       if (response.status === 404) {
-        try { await response.body?.cancel(); } catch { /* drain socket */ }
+        try { await response.body?.cancel(); } catch {  }
         return { online: false, fileName: "", fileSize: null };
       }
 
       if (!response.ok) {
-        try { await response.body?.cancel(); } catch { /* drain socket */ }
+        try { await response.body?.cancel(); } catch {  }
         if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
           await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
           continue;
@@ -1685,7 +1614,7 @@ export async function checkRapidgatorOnline(
 
       const finalUrl = response.url || link;
       if (!finalUrl.includes(fileId)) {
-        try { await response.body?.cancel(); } catch { /* drain socket */ }
+        try { await response.body?.cancel(); } catch {  }
         return { online: false, fileName: "", fileSize: null };
       }
 
@@ -1739,14 +1668,10 @@ class MegaDebridClient {
 
   private allowApiFallback: boolean;
 
-  /** Per-account API token cache: login (lowercase) → { token, timestamp } */
   private static cachedApiTokens = new Map<string, { token: string; at: number }>();
 
-  /** Per-account pending connect deduplication: login (lowercase) → promise */
   private static pendingConnects = new Map<string, Promise<string | null>>();
 
-  /** Clear cached tokens for accounts whose login is no longer in the given set.
-   *  Called when settings change so removed accounts don't keep stale tokens. */
   public static pruneCachedTokensNotIn(activeLogins: Iterable<string>): void {
     const keep = new Set<string>();
     for (const login of activeLogins) {
@@ -1764,8 +1689,6 @@ class MegaDebridClient {
     }
   }
 
-  /** Force-clear the API token for a specific login (e.g. when its password
-   *  changes — same login, but cached token is now invalid for new password). */
   public static clearCachedApiToken(login: string): void {
     const key = String(login || "").toLowerCase();
     MegaDebridClient.cachedApiTokens.delete(key);
@@ -1786,13 +1709,11 @@ class MegaDebridClient {
 
   private async connectApi(signal?: AbortSignal): Promise<string | null> {
     const key = this.cacheKey;
-    // Return cached token if fresh (max 20 min)
     const cached = MegaDebridClient.cachedApiTokens.get(key);
     if (cached && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
       return cached.token;
     }
 
-    // Deduplicate parallel connectUser calls — only one in-flight request per account
     const pending = MegaDebridClient.pendingConnects.get(key);
     if (pending) {
       return pending;
@@ -1855,7 +1776,6 @@ class MegaDebridClient {
     });
     const text = await response.text();
     if (!response.ok) {
-      // Token might be invalid, clear cache
       if (response.status === 401 || response.status === 403) {
         this.clearTokenCache();
       }
@@ -1863,7 +1783,6 @@ class MegaDebridClient {
     }
     const payload = parseJsonSafe(text);
     if (!payload || payload.response_code !== "ok") {
-      // Token expired — clear cache for next attempt
       if (payload && String(payload.response_code || "").includes("token")) {
         this.clearTokenCache();
       }
@@ -1915,10 +1834,6 @@ class MegaDebridClient {
       if (!lastError) {
         lastError = "Mega-Web Antwort leer";
       }
-      // Don't retry permanent hoster errors (dead link, file removed, etc.) — and
-      // don't hammer a "Kein Server für diesen Hoster" (account hoster quota) message:
-      // immediate retries are futile (the limit persists) and waste the shared
-      // rotation budget, so break and let the rotation move to the next account.
       if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError) || MEGA_DEBRID_NO_SERVER_RE.test(lastError)) {
         break;
       }
@@ -1954,12 +1869,6 @@ class MegaDebridClient {
     return this.unrestrictViaWeb(link, signal);
   }
 
-  /**
-   * Multi-account rotation for Mega-Debrid, following the same pattern as Debrid-Link multi-key rotation.
-   * Iterates through all configured accounts, skipping disabled/daily-limited/cooldown accounts.
-   * On success: clears cooldown, returns result with sourceAccountId/sourceAccountLabel.
-   * On failure: classifies error, sets cooldown, tries next account.
-   */
   public static async unrestrictWithAccounts(
     settings: AppSettings,
     mode: "api" | "web",
@@ -1986,11 +1895,8 @@ class MegaDebridClient {
     const providerName = `Mega-Debrid ${mode === "api" ? "API" : "Web"}`;
     const linkShort = String(link || "").slice(0, 80);
 
-    // Always start from first account — use first available, skip disabled/limited/cooldown.
     for (let idx = 0; idx < accounts.length; idx += 1) {
       const account = accounts[idx];
-      // Always show account number — even with 1 account — so user can tell at a
-      // glance which account is in play. Format: "(Account 2/3, fa**david@...)"
       const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
       const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
 
@@ -2004,7 +1910,6 @@ class MegaDebridClient {
         logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DAILY_LIMIT", { reason: "local daily limit reached" });
         continue;
       }
-      // Cooldown key includes mode so API failures don't block Web attempts
       const cooldownKey = `${account.id}:${mode}`;
       const accountCooldownState = getMegaDebridAccountCooldownState(cooldownKey);
       if (accountCooldownState) {
@@ -2021,9 +1926,6 @@ class MegaDebridClient {
           until: untilStr
         });
         cooldownFailures.push(`Mega-Debrid${accountLabel}: ${accountCooldownState.message}`);
-        // Eine Bis-Neustart-Sperre traegt NICHT zu earliestCooldownUntil bei: es gibt
-        // keinen sinnvollen endlichen Retry-Zeitpunkt (der Account kommt erst nach
-        // Neustart zurueck). Sonst wuerde MAX_SAFE_INTEGER einen absurden Retry-Timer setzen.
         if (accountCooldownState.untilRestart) {
           parkedUntilRestartSeen = true;
         } else if (!earliestCooldownUntil || accountCooldownState.until < earliestCooldownUntil) {
@@ -2032,9 +1934,6 @@ class MegaDebridClient {
         continue;
       }
 
-      // CLEAR per-account TEST log line BEFORE the network call, so the user
-      // can always see exactly which account is currently being tested for
-      // link generation — even if the call hangs or times out.
       logger.info(`Mega-Debrid${accountLabel}: TESTE Account fuer Link-Generierung...`);
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
       const testStartedAt = Date.now();
@@ -2063,11 +1962,6 @@ class MegaDebridClient {
         const elapsedMs = Date.now() - testStartedAt;
         failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
 
-        // "Antwort leer"-Streak fuehren: ein tageslimitierter Account antwortet
-        // PERSISTENT leer (siehe Kommentar an megaDebridEmptyResponseStreaks). Erreicht
-        // der Account die Schwelle, wird er bis Neustart geparkt — statt alle 20s neu
-        // getestet zu werden. failure.untilRestart deckt zusaetzlich den Fall ab, dass
-        // generate() die "Kein Server"-Meldung doch mal direkt liefert.
         let parkUntilRestart = false;
         let parkMessage = failure.message;
         if (failure.limitSignal) {
@@ -2101,7 +1995,6 @@ class MegaDebridClient {
           : failure.cooldownMs > 0
             ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
             : "";
-        // Find the next account that will be tried (for clearer log)
         let nextLabel = "ENDE";
         for (let nextIdx = idx + 1; nextIdx < accounts.length; nextIdx += 1) {
           const nextAcc = accounts[nextIdx];
@@ -2128,9 +2021,6 @@ class MegaDebridClient {
         throw new Error(`mega_debrid_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
       }
       if (parkedUntilRestartSeen) {
-        // Alle (verbliebenen) Accounts haben ihr Tageslimit erreicht und sind bis
-        // Neustart gesperrt. KEIN mega_debrid_cooldown:<ms> — es gibt keinen sinnvollen
-        // Retry-Zeitpunkt; ein endlicher Timer wuerde nur erneut leer pollen.
         throw new Error(`Mega-Debrid: Alle Accounts am Tageslimit (bis Neustart gesperrt)${cooldownFailures.length > 0 ? ` | ${cooldownFailures.join(" | ")}` : ""}`);
       }
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar");
@@ -2138,21 +2028,15 @@ class MegaDebridClient {
     throw new Error(failures.join(" | ") || "Mega-Debrid: Kein aktiver Account verfuegbar");
   }
 
-  /**
-   * Classify error from a single Mega-Debrid account attempt.
-   * Returns whether the error is fatal (stop all accounts) and how long to cool down.
-   */
   private static classifyAccountFailure(
     error: unknown
   ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory; limitSignal?: boolean } {
     const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
 
-    // Abort — don't retry other accounts
     if (/aborted/i.test(errorText) && !/timeout/i.test(errorText)) {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "temporary" };
     }
 
-    // Auth/login failures — long cooldown, try next account
     if (/login|password|auth|credentials|unauthorized|forbidden/i.test(errorText) || /connectUser/i.test(errorText)) {
       return {
         fatal: false,
@@ -2162,12 +2046,10 @@ class MegaDebridClient {
       };
     }
 
-    // Permanent hoster errors — fatal, don't try other accounts
     if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(errorText)) {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "skip" };
     }
 
-    // Quota/limit errors — cooldown, try next account
     if (/quota|limit|exceeded|bandwidth/i.test(errorText)) {
       return {
         fatal: false,
@@ -2177,11 +2059,6 @@ class MegaDebridClient {
       };
     }
 
-    // "Kein Server für diesen Hoster verfügbar" = Account-Tageslimit erschöpft (oder der
-    // Hoster ist kurz nicht bedient — laut Kommentar an MEGA_DEBRID_NO_SERVER_RE moeglich).
-    // Wie "Antwort leer" ein Limit-Signal: feedet die Streak (limitSignal). Erst nach
-    // mehreren Treffern wird der Account bis Neustart geparkt — ein einzelner (evtl.
-    // transienter) Treffer erzwingt KEINEN Neustart, behaelt aber den 2-Min-Cooldown.
     if (MEGA_DEBRID_NO_SERVER_RE.test(errorText)) {
       return {
         fatal: false,
@@ -2192,7 +2069,6 @@ class MegaDebridClient {
       };
     }
 
-    // Rate limit
     if (/rate.?limit|too.?many|429/i.test(errorText)) {
       return {
         fatal: false,
@@ -2202,12 +2078,6 @@ class MegaDebridClient {
       };
     }
 
-    // Mega-Web "Antwort leer" / empty body — kann zweierlei sein: (a) ein transienter
-    // Blip (erholt sich in Sekunden → kurzer 20s-Cooldown reicht) ODER (b) ein
-    // tageslimitierter Account, der PERSISTENT leer antwortet. Da beide Faelle auf
-    // Message-Ebene identisch aussehen (in echten Logs taucht "Kein Server" nie auf,
-    // immer nur "Antwort leer"), markieren wir emptyResponse=true; der Aufrufer zaehlt
-    // die Streak und parkt den Account erst nach mehreren Leer-Antworten bis Neustart.
     if (/antwort\s+leer|empty\s+response|leere\s+antwort/i.test(errorText)) {
       return {
         fatal: false,
@@ -2218,8 +2088,6 @@ class MegaDebridClient {
       };
     }
 
-    // Temporary/transport errors — short cooldown, try next account.
-    // Plain network blips deserve a much shorter cooldown than 2 min.
     if (isRetryableErrorText(errorText) || /timeout|network|fetch|socket/i.test(errorText)) {
       return {
         fatal: false,
@@ -2229,7 +2097,6 @@ class MegaDebridClient {
       };
     }
 
-    // Unknown errors — short cooldown, try next account (non-fatal)
     return {
       fatal: false,
       cooldownMs: 30_000,
@@ -2660,8 +2527,6 @@ export async function fetchDebridLinkHostLimits(apiKeysRaw: string, host = "rapi
   return results;
 }
 
-// ── Debrid-Link Client ──
-
 class DebridLinkClient {
   private apiKeys: ReturnType<typeof parseDebridLinkApiKeys>;
 
@@ -2689,12 +2554,8 @@ class DebridLinkClient {
     const linkShort = String(link || "").slice(0, 80);
     const linkHoster = extractHosterFromUrl(link);
 
-    // Always start from first key — use first available, skip disabled/limited/cooldown.
-    // This ensures all parallel items use the same key until it's actually exhausted.
     for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
       const apiKey = this.apiKeys[keyIdx];
-      // Always show key number — even with 1 key — so user can tell at a
-      // glance which key is in play. Format: "(Key 2/3, abc***xyz)"
       const keyLabel = ` (${apiKey.label}/${totalKeys}, ${apiKey.masked})`;
       const rotationLabel = `${apiKey.label}/${totalKeys} (${apiKey.masked})`;
       if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
@@ -2722,9 +2583,6 @@ class DebridLinkClient {
         }
         continue;
       }
-      // Per-(key, host) cooldown — set when a previous attempt for THIS host
-      // returned maxLinkHost / maxDataHost. The key itself is healthy for other
-      // hosters, so we only skip it for this specific link.
       const hostCooldownState = linkHoster ? getDebridLinkKeyHostCooldownState(apiKey.id, linkHoster) : null;
       if (hostCooldownState) {
         const untilStr = new Date(hostCooldownState.until).toLocaleTimeString();
@@ -2742,9 +2600,6 @@ class DebridLinkClient {
         continue;
       }
 
-      // CLEAR per-key TEST log line BEFORE the network call, so the user
-      // can always see exactly which key is currently being tested for
-      // link generation — even if the call hangs or times out.
       logger.info(`Debrid-Link${keyLabel}: TESTE Key fuer Link-Generierung...`);
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
       const testStartedAt = Date.now();
@@ -2778,10 +2633,6 @@ class DebridLinkClient {
         failures.push(`Debrid-Link${keyLabel}: ${failure.message}`);
         if (failure.cooldownMs > 0) {
           if (failure.hostOnly) {
-            // Per-(key, host) quota — block only this combination, not the
-            // whole key. The key remains "ready" for other hosters. If the
-            // hoster couldn't be parsed from the URL, the helper falls back
-            // to a key-wide cooldown (better safe than thrashing).
             setDebridLinkKeyHostCooldownState(
               apiKey.id,
               failure.hoster || "",
@@ -2797,10 +2648,6 @@ class DebridLinkClient {
           if (failure.category === "invalid") {
             setDebridLinkKeyRuntimeStatus(apiKey.id, "invalid", failure.message);
           } else if (failure.category !== "skip") {
-            // "skip" means the LINK or HOST is unavailable (fileNotAvailable,
-            // disabledServerHost, notFreeHost, freeServerOverload, ...), NOT
-            // that the key is broken. The key responded normally — leave its
-            // runtime status alone so the UI doesn't flag it as errored.
             setDebridLinkKeyRuntimeStatus(apiKey.id, "error", failure.message);
           }
         }
@@ -2814,8 +2661,6 @@ class DebridLinkClient {
           throw new Error(`Debrid-Link${keyLabel}: ${failure.message}`);
         }
         if (failure.providerWide) {
-          // Host-level issue (e.g. notDebrid) — rotating to other keys is pointless.
-          // Break immediately and apply a longer cooldown (5 min) to avoid burning all keys.
           const providerWideCooldownMs = 5 * 60 * 1000;
           logger.warn(`Debrid-Link${keyLabel}: ${failure.message} (provider-wide, ueberspringe verbleibende Keys, Cooldown ${providerWideCooldownMs / 1000}s)`);
           logAccountRotation("ERROR", providerName, rotationLabel, "PROVIDER_WIDE", {
@@ -2827,11 +2672,9 @@ class DebridLinkClient {
           });
           throw new Error(`debrid_link_cooldown:${providerWideCooldownMs}:Debrid-Link${keyLabel}: ${failure.message}`);
         }
-        // Track consecutive transport failures (timeout/network) to detect cascades.
         const isTransport = isRetryableErrorText(failure.message) && !(error instanceof DebridLinkApiError);
         consecutiveTransportFailures = isTransport ? consecutiveTransportFailures + 1 : 0;
         if (consecutiveTransportFailures >= 2) {
-          // 2+ keys timed out in a row — likely a server/network issue, not key-specific.
           const cascadeCooldownMs = 3 * 60 * 1000;
           logger.warn(`Debrid-Link: ${consecutiveTransportFailures} Transport-Fehler in Folge, ueberspringe verbleibende Keys, Cooldown ${cascadeCooldownMs / 1000}s`);
           logAccountRotation("ERROR", providerName, rotationLabel, "TRANSPORT_CASCADE", {
@@ -2842,7 +2685,6 @@ class DebridLinkClient {
           });
           throw new Error(`debrid_link_cooldown:${cascadeCooldownMs}:Debrid-Link: Transport-Kaskade (${consecutiveTransportFailures}x)`);
         }
-        // Find the next key that will be tried (for clearer log)
         let nextLabel = "ENDE";
         for (let nextIdx = keyIdx + 1; nextIdx < this.apiKeys.length; nextIdx += 1) {
           const nextKey = this.apiKeys[nextIdx];
@@ -2968,8 +2810,6 @@ class DebridLinkClient {
       return chosen;
     }
 
-    // Poll up to 5 times with 2s delay — Debrid-Link sometimes needs a few
-    // seconds to generate the download URL after /downloader/add.
     const maxPolls = 5;
     for (let poll = 0; poll < maxPolls; poll++) {
       if (signal?.aborted) {
@@ -2987,7 +2827,6 @@ class DebridLinkClient {
         }
       }
     }
-    // Return last fetched entry (caller will detect missing URL and throw)
     return (await this.fetchDownloaderEntry(apiKey, id, signal)) || chosen;
   }
 
@@ -3045,9 +2884,6 @@ class DebridLinkClient {
         };
       }
       if (DEBRID_LINK_HOST_QUOTA_ERRORS.has(code)) {
-        // Per-(key, host) quota — only this host is exhausted for this key.
-        // The key remains usable for other hosters, so we mark the failure
-        // hostOnly and let the rotation loop apply a per-(key, host) cooldown.
         const cooldownMs = await this.fetchQuotaCooldownMs(apiKey, signal);
         const hosterRaw = extractHosterFromUrl(link);
         const hosterLabel = hosterRaw || "host";
@@ -3061,7 +2897,6 @@ class DebridLinkClient {
         };
       }
       if (DEBRID_LINK_KEY_QUOTA_ERRORS.has(code)) {
-        // Key-wide quota — whole key is exhausted, blocks all hosters.
         const cooldownMs = await this.fetchQuotaCooldownMs(apiKey, signal);
         return {
           fatal: false,
@@ -3071,7 +2906,6 @@ class DebridLinkClient {
         };
       }
       if (DEBRID_LINK_PROVIDER_WIDE_ERRORS.has(code)) {
-        // notDebrid = host-level issue — affects ALL keys equally, do NOT rotate.
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
@@ -3110,8 +2944,6 @@ class DebridLinkClient {
       };
     }
 
-    // Treat missing/expired download URLs as temporary — the server may need
-    // more time or another key might succeed immediately.
     if (/keine gueltige download-url/i.test(errorText)) {
       return {
         fatal: false,
@@ -3122,11 +2954,6 @@ class DebridLinkClient {
     }
 
     if (isRetryableErrorText(errorText) || /debrid-link.*(json|html)/i.test(errorText)) {
-      // Distinguish a single transient transport error (timeout, network blip,
-      // ECONNRESET) from a real API/server problem. Single timeouts shouldn't
-      // park a key for 2 full minutes — that just delays parallel work for
-      // no reason. Use a short 15s cooldown for transport, full 2min only
-      // for things that look like server-side faults (5xx HTML pages, etc).
       const isTransport = /timeout|network|fetch failed|aborted|econnreset|enotfound|etimedout|socket/i.test(errorText)
         && !(error instanceof DebridLinkApiError);
       return {
@@ -3136,9 +2963,6 @@ class DebridLinkClient {
       };
     }
 
-    // HTTP 200 with success:false but no recognizable error code: don't kill
-    // the item permanently. Treat as a temporary blip — same key can be tried
-    // again after a short cooldown, or another key picked up.
     if (errorText && /success.*false|kein.*json|empty.*response/i.test(errorText)) {
       return {
         fatal: false,
@@ -3155,8 +2979,6 @@ class DebridLinkClient {
     };
   }
 }
-
-// ── LinkSnappy Client ──
 
 class LinkSnappyClient {
   private username: string;
@@ -3249,7 +3071,6 @@ class LinkSnappyClient {
         if (!directUrl) {
           throw new Error("LinkSnappy: Keine Download-URL in Antwort");
         }
-        // LinkSnappy liefert http:// URLs – auf https:// upgraden (deren Server unterstützt beides)
         if (directUrl.startsWith("http://")) {
           directUrl = directUrl.replace("http://", "https://");
         }
@@ -3299,8 +3120,6 @@ function parseFileSizeString(s: string): number {
   const multipliers: Record<string, number> = { "": 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
   return Math.floor(num * (multipliers[unit] || 1));
 }
-
-// ── 1Fichier Client ──
 
 class OneFichierClient {
   private apiKey: string;
@@ -3375,7 +3194,6 @@ class DdownloadClient {
   }
 
   private async webLogin(signal?: AbortSignal): Promise<void> {
-    // Step 1: GET login page to extract form token
     const loginPageRes = await fetch(`${DDOWNLOAD_WEB_BASE}/login.html`, {
       headers: { "User-Agent": DDOWNLOAD_WEB_UA },
       redirect: "manual",
@@ -3385,7 +3203,6 @@ class DdownloadClient {
     const tokenMatch = loginPageHtml.match(/name="token" value="([^"]+)"/);
     const pageCookies = (loginPageRes.headers.getSetCookie?.() || []).map((c: string) => c.split(";")[0]).join("; ");
 
-    // Step 2: POST login
     const body = new URLSearchParams({
       op: "login",
       token: tokenMatch?.[1] || "",
@@ -3406,8 +3223,7 @@ class DdownloadClient {
       signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
     });
 
-    // Drain body
-    try { await loginRes.text(); } catch { /* ignore */ }
+    try { await loginRes.text(); } catch {  }
 
     const setCookies = loginRes.headers.getSetCookie?.() || [];
     const xfss = setCookies.find((c: string) => c.startsWith("xfss="));
@@ -3430,12 +3246,10 @@ class DdownloadClient {
       try {
         if (signal?.aborted) throw new Error("aborted:debrid");
 
-        // Login if no session yet
         if (!this.cookies) {
           await this.webLogin(signal);
         }
 
-        // Step 1: GET file page to extract form fields
         const filePageRes = await fetch(`${DDOWNLOAD_WEB_BASE}/${fileCode}`, {
           headers: {
             "User-Agent": DDOWNLOAD_WEB_UA,
@@ -3445,10 +3259,9 @@ class DdownloadClient {
           signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
         });
 
-        // Premium with direct downloads enabled → redirect immediately
         if (filePageRes.status >= 300 && filePageRes.status < 400) {
           const directUrl = filePageRes.headers.get("location") || "";
-          try { await filePageRes.text(); } catch { /* drain */ }
+          try { await filePageRes.text(); } catch {  }
           if (directUrl) {
             return {
               fileName: filenameFromUrl(directUrl) || filenameFromUrl(link),
@@ -3462,18 +3275,15 @@ class DdownloadClient {
 
         const html = await filePageRes.text();
 
-        // Check for file not found
         if (/File Not Found|file was removed|file was banned/i.test(html)) {
           throw new Error("DDownload: Datei nicht gefunden");
         }
 
-        // Extract form fields
         const idVal = html.match(/name="id" value="([^"]+)"/)?.[1] || fileCode;
         const randVal = html.match(/name="rand" value="([^"]+)"/)?.[1] || "";
         const fileNameMatch = html.match(/class="file-info-name"[^>]*>([^<]+)</);
         const fileName = fileNameMatch?.[1]?.trim() || filenameFromUrl(link);
 
-        // Step 2: POST download2 for premium download
         const dlBody = new URLSearchParams({
           op: "download2",
           id: idVal,
@@ -3498,7 +3308,7 @@ class DdownloadClient {
 
         if (dlRes.status >= 300 && dlRes.status < 400) {
           const directUrl = dlRes.headers.get("location") || "";
-          try { await dlRes.text(); } catch { /* drain */ }
+          try { await dlRes.text(); } catch {  }
           if (directUrl) {
             return {
               fileName: fileName || filenameFromUrl(directUrl),
@@ -3511,7 +3321,6 @@ class DdownloadClient {
         }
 
         const dlHtml = await dlRes.text();
-        // Try to find direct URL in response HTML
         const directMatch = dlHtml.match(/https?:\/\/[a-z0-9]+\.(?:dstorage\.org|ddownload\.com|ddl\.to|ucdn\.to)[^\s"'<>]+/i);
         if (directMatch) {
           return {
@@ -3523,7 +3332,6 @@ class DdownloadClient {
           };
         }
 
-        // Check for error messages
         const errMatch = dlHtml.match(/class="err"[^>]*>([^<]+)</i);
         if (errMatch) {
           throw new Error(`DDownload: ${errMatch[1].trim()}`);
@@ -3535,7 +3343,6 @@ class DdownloadClient {
         if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
           break;
         }
-        // Re-login on auth errors
         if (/login|session|cookie/i.test(lastError)) {
           this.cookies = "";
         }
@@ -3571,10 +3378,6 @@ export class DebridService {
     const prev = this.settings;
     this.settings = cloneSettings(next);
 
-    // Invalidate cached provider clients whose credentials/keys changed.
-    // Without this, switching API keys or session-cookie-bound accounts
-    // (LinkSnappy, Ddownload) would keep using the previous Client instance
-    // — which holds the OLD session cookies — until the app is restarted.
     if (prev.debridLinkApiKeys !== next.debridLinkApiKeys) {
       this.cachedDebridLinkClient = null;
       this.cachedDebridLinkKey = "";
@@ -3588,12 +3391,6 @@ export class DebridService {
       this.cachedDdownloadKey = "";
     }
 
-    // Mega-Debrid token cache (static, module-level): tokens are keyed by
-    // login (lowercase). When credentials change, drop tokens for logins
-    // that are no longer in the active account list, AND force-clear any
-    // login whose password changed. Otherwise stale tokens linger up to
-    // 20 minutes and the new credentials won't be tried until the cached
-    // token starts returning 401/403.
     const prevAccounts = parseMegaDebridAccounts(prev.megaCredentials || "", prev.megaPassword || "");
     const nextAccounts = parseMegaDebridAccounts(next.megaCredentials || "", next.megaPassword || "");
     const nextLogins = new Set<string>();
@@ -3602,17 +3399,13 @@ export class DebridService {
       nextLogins.add(acc.login.toLowerCase());
       nextPasswordByLogin.set(acc.login.toLowerCase(), acc.password);
     }
-    // Drop tokens for logins no longer present
     MegaDebridClient.pruneCachedTokensNotIn(nextLogins);
-    // For logins still present but with a changed password, force-clear the token
     for (const prevAcc of prevAccounts) {
       const loginKey = prevAcc.login.toLowerCase();
       if (nextLogins.has(loginKey) && nextPasswordByLogin.get(loginKey) !== prevAcc.password) {
         MegaDebridClient.clearCachedApiToken(prevAcc.login);
       }
     }
-    // Also prune module-level Debrid-Link cooldowns for keys that no longer exist —
-    // otherwise a key removed and re-added later would still show its old cooldown.
     const nextDebridLinkKeyIds = new Set<string>(parseDebridLinkApiKeys(next.debridLinkApiKeys || "").map((entry) => entry.id));
     pruneDebridLinkRuntimeStateForKeys(nextDebridLinkKeyIds);
   }
@@ -3683,14 +3476,9 @@ export class DebridService {
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
-        // ignore and continue with host page fallback
       }
     }
 
-    // Mega.nz Pre-Resolve via Public API (kein Mega-Debrid-Quota-Verbrauch).
-    // Liefert echten Filename sobald Links in die Queue kommen, anstatt erst
-    // beim Unrestrict. Concurrency 4 — Mega's Public API ist tolerant gegen
-    // kleine Bursts.
     const megaLinks = unresolved.filter((link) => !clean.has(link) && isMegaFileUrl(link));
     if (megaLinks.length > 0) {
       await runWithConcurrency(megaLinks, 4, async (link) => {
@@ -3704,8 +3492,6 @@ export class DebridService {
           if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
             throw error;
           }
-          // Schluck — Public API kann fehlen oder rate-limiten; faellt auf
-          // den normalen Mega-Debrid Unrestrict-Pfad zurueck.
         }
       });
     }
@@ -3766,7 +3552,6 @@ export class DebridService {
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
-    // Hoster-Zuordnung: prüfe ob für diesen Hoster ein bestimmter Provider konfiguriert ist
     const routing = settings.hosterRouting || {};
     const hosterKey = extractHosterFromUrl(link);
     if (hosterKey && routing[hosterKey]) {
@@ -3795,7 +3580,6 @@ export class DebridService {
             throw new Error(`Hoster-Zuordnung fehlgeschlagen (${hosterKey} → ${PROVIDER_LABELS[routedProvider]}): ${errorText}`);
           }
           logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} fehlgeschlagen, Fallback auf Provider-Kette: ${errorText}`);
-          // Fall through to normal provider chain
         }
       } else if (this.isProviderConfiguredFor(settings, routedProvider) && this.isProviderDailyLimited(settings, routedProvider)) {
         logger.info(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
@@ -3804,8 +3588,6 @@ export class DebridService {
       }
     }
 
-    // 1Fichier is a direct file hoster. If the link is a 1fichier.com URL
-    // and the API key is configured, use 1Fichier directly before debrid providers.
     if (ONEFICHIER_URL_RE.test(link) && this.isProviderSelectableFor(settings, "onefichier")) {
       try {
         const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
@@ -3819,13 +3601,9 @@ export class DebridService {
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
-        // Fall through to normal provider chain
       }
     }
 
-    // DDownload is a direct file hoster, not a debrid service.
-    // If the link is a ddownload.com/ddl.to URL and the account is configured,
-    // use DDownload directly before trying any debrid providers.
     if (DDOWNLOAD_URL_RE.test(link) && this.isProviderSelectableFor(settings, "ddownload")) {
       try {
         const result = await this.unrestrictViaProvider(settings, "ddownload", link, signal);
@@ -3839,11 +3617,9 @@ export class DebridService {
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
-        // Fall through to normal provider chain (debrid services may also support ddownload links)
       }
     }
 
-    // Dynamische Reihenfolge: providerOrder hat Vorrang, Fallback auf altes primary/secondary/tertiary
     const order: DebridProvider[] = (settings.providerOrder && settings.providerOrder.length > 0)
       ? uniqueProviderOrder(settings.providerOrder)
       : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);

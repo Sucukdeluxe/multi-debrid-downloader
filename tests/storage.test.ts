@@ -453,19 +453,13 @@ describe("settings storage", () => {
     saveSession(paths, session);
     const loaded = loadSession(paths);
 
-    // Active statuses (downloading, paused) should be reset to "queued"
     expect(loaded.items["item1"].status).toBe("queued");
     expect(loaded.items["item2"].status).toBe("queued");
-    // Speed should be cleared
     expect(loaded.items["item1"].speedBps).toBe(0);
-    // lastError should be cleared for reset items
     expect(loaded.items["item1"].lastError).toBe("");
-    // Completed and queued statuses should be preserved
     expect(loaded.items["item3"].status).toBe("completed");
     expect(loaded.items["item4"].status).toBe("queued");
-    // Downloaded bytes should be preserved
     expect(loaded.items["item1"].downloadedBytes).toBe(5000);
-    // Package data should be preserved
     expect(loaded.packages["pkg1"].name).toBe("Test Package");
   });
 
@@ -542,7 +536,6 @@ describe("settings storage", () => {
     tempDirs.push(dir);
     const paths = createStoragePaths(dir);
 
-    // Write invalid JSON to the config file
     fs.writeFileSync(paths.configFile, "{{{{not valid json!!!}", "utf8");
 
     const loaded = loadSettings(paths);
@@ -728,7 +721,6 @@ describe("settings storage", () => {
     tempDirs.push(dir);
     const paths = createStoragePaths(dir);
 
-    // Write a minimal config that simulates an old version missing newer fields
     fs.writeFileSync(
       paths.configFile,
       JSON.stringify({
@@ -742,11 +734,9 @@ describe("settings storage", () => {
     const loaded = loadSettings(paths);
     const defaults = defaultSettings();
 
-    // Old fields should be preserved
     expect(loaded.token).toBe("my-token");
     expect(loaded.outputDir).toBe(path.resolve("/custom/output"));
 
-    // Missing new fields should get default values
     expect(loaded.autoProviderFallback).toBe(defaults.autoProviderFallback);
     expect(loaded.hybridExtract).toBe(defaults.hybridExtract);
     expect(loaded.completedCleanupPolicy).toBe(defaults.completedCleanupPolicy);

@@ -115,8 +115,6 @@ interface AccountDialogState {
   megaAccounts: MegaDialogAccount[];
   megaNewLogin: string;
   megaNewPassword: string;
-  // IDs der im Bearbeiten-Dialog (temporär) deaktivierten Mega-Debrid-Accounts.
-  // Draft-State: wird erst beim Speichern in settings.megaDebridDisabledAccountIds übernommen.
   megaDisabledIds: string[];
 }
 
@@ -467,17 +465,12 @@ function getActiveProvidersFromSettings(settings: AppSettings): DebridProvider[]
   return getConfiguredProvidersFromSettings(settings).filter((p) => !disabled.has(p));
 }
 
-// Leitet die aktive Provider-Reihenfolge aus providerOrder ab,
-// gefiltert auf tatsächlich konfigurierte und nicht deaktivierte Provider.
-// Direkt-Hoster (onefichier, ddownload) werden ausgeschlossen.
 const DIRECT_HOSTERS: ReadonlySet<DebridProvider> = new Set(["onefichier", "ddownload"]);
 
 function normalizeProviderOrderForSettings(settings: AppSettings): DebridProvider[] {
   const active = new Set(getActiveProvidersFromSettings(settings).filter((p) => !DIRECT_HOSTERS.has(p)));
-  // Behalte bestehende Reihenfolge aus providerOrder, filtere nicht-konfigurierte heraus
   const ordered = (settings.providerOrder || []).filter((p) => active.has(p));
   const inOrder = new Set(ordered);
-  // Füge neue Provider hinten an, die noch nicht in der Reihenfolge sind
   for (const p of active) {
     if (!inOrder.has(p)) ordered.push(p);
   }
@@ -609,7 +602,6 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "megadebrid-api":
     case "megadebrid-web": {
-      // Populate megaAccounts from megaCredentials, or build from legacy megaLogin/megaPassword
       let megaToken = (settings.megaCredentials || "").trim();
       if (!megaToken && settings.megaLogin.trim() && settings.megaPassword.trim()) {
         megaToken = `${settings.megaLogin.trim()}:${settings.megaPassword.trim()}`;
@@ -1288,7 +1280,6 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     maxSpeed = Math.max(maxSpeed, 1024 * 1024);
     const niceMax = Math.pow(2, Math.ceil(Math.log2(maxSpeed)));
 
-    // Measure widest label to set dynamic left padding
     ctx.font = "11px 'Manrope', sans-serif";
     let maxLabelWidth = 0;
     for (let i = 0; i <= 5; i += 1) {
@@ -1371,12 +1362,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   }, [running, paused]);
 
   useEffect(() => {
-    // Always draw once on mount / when running/paused state changes so the
-    // chart shows the latest history.
     drawChart();
-    // Only schedule periodic redraws while actively downloading — when
-    // stopped or paused the speed history doesn't change, so polling
-    // every 250ms would just burn CPU on the renderer process.
     if (!running || paused) {
       return;
     }
@@ -1387,7 +1373,6 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   }, [drawChart, running, paused]);
 
   useEffect(() => {
-    // Only record samples while the session is running and not paused
     if (!running || paused) return;
 
     const now = Date.now();
@@ -1442,7 +1427,6 @@ let nextCollectorId = 1;
 function createScheduleId(): string {
   return `schedule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
-
 
 function sortPackageOrderBySize(order: string[], packages: Record<string, PackageEntry>, items: Record<string, DownloadItem>, descending: boolean): string[] {
   const sorted = [...order];
@@ -1578,10 +1562,6 @@ export function App(): ReactElement {
   const settingsDraftRevisionRef = useRef(0);
   const panelDirtyRevisionRef = useRef(0);
   const latestStateRef = useRef<UiSnapshot | null>(null);
-  // Master state used to apply incoming delta payloads. The wire format from
-  // the main process sends only changed items/packages (with payloadKind="delta")
-  // most of the time and a full snapshot every 30s for safety. Without this
-  // master, we'd only see the changed slice each emit.
   const masterSnapshotRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
@@ -1616,7 +1596,6 @@ export function App(): ReactElement {
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [accountCheckBusy, setAccountCheckBusy] = useState(false);
-  // Account-IDs, die gerade beim Hinzufügen einzeln geprüft werden (Mega-Debrid).
   const [megaCheckingIds, setMegaCheckingIds] = useState<Set<string>>(() => new Set());
   const actionBusyRef = useRef(false);
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1691,7 +1670,6 @@ export function App(): ReactElement {
     window.addEventListener("mouseup", stopAccountColumnResize);
   }, [accountColumnWidths, onAccountColumnResizeMove, stopAccountColumnResize]);
 
-  // Load history when tab changes to history
   useEffect(() => {
     if (tab !== "history") return;
     const loadHistory = async (): Promise<void> => {
@@ -1713,7 +1691,6 @@ export function App(): ReactElement {
     try {
       window.localStorage.setItem(ACCOUNT_COLUMN_STORAGE_KEY, JSON.stringify(accountColumnWidths));
     } catch {
-      // Ignore local persistence failures for optional UI state.
     }
   }, [accountColumnWidths]);
 
@@ -1722,16 +1699,10 @@ export function App(): ReactElement {
     try {
       window.localStorage.removeItem(ACCOUNT_COLUMN_STORAGE_KEY);
     } catch {
-      // Ignore local persistence failures for optional UI state.
     }
     showToast("Accounts-Spalten zurückgesetzt", 1800);
   }, []);
 
-  // Sync column order from settings. Avoid JSON.stringify on every render
-  // (which was a 7-element array stringify per snapshot tick). A simple
-  // join() is one O(n) string concat without Object/Array allocation overhead,
-  // and useMemo caches the resulting key so React only sees a new dep when the
-  // contents actually changed.
   const columnOrderKey = useMemo(
     () => (snapshot.settings.columnOrder || []).join("|"),
     [snapshot.settings.columnOrder]
@@ -1741,7 +1712,6 @@ export function App(): ReactElement {
     if (order && order.length > 0) {
       setColumnOrder(order);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columnOrderKey]);
 
   const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
@@ -1917,7 +1887,6 @@ export function App(): ReactElement {
       if (!mountedRef.current) {
         return;
       }
-      // Seed the master snapshot — incoming delta payloads will merge into this.
       masterSnapshotRef.current = state;
       setSnapshot(state);
       if (state.settings.columnOrder?.length > 0) {
@@ -1940,14 +1909,6 @@ export function App(): ReactElement {
       showToast(`Snapshot konnte nicht geladen werden: ${String(error)}`, 2800);
     });
     unsubscribe = window.rd.onStateUpdate((wireState) => {
-      // Merge delta payloads into the master snapshot. Full payloads replace
-      // the master entirely (initial sync + periodic 30s resync).
-      // NOTE: `settings` and `rotationEvents` are NOT delta-filtered — every emit
-      // (full or delta) carries the complete `settings` object and recent
-      // rotationEvents. The account-validity badges read
-      // `snapshot.settings.debridAccountStatuses` and the rotation panel reads
-      // `snapshot.rotationEvents`; if `settings` is ever delta-optimized, both
-      // must keep flowing on every emit or those views go stale.
       let merged: UiSnapshot;
       const master = masterSnapshotRef.current;
       if (wireState.payloadKind === "delta" && master) {
@@ -2151,11 +2112,6 @@ export function App(): ReactElement {
   const hiddenPackageCount = shouldLimitPackageRendering
     ? Math.max(0, totalPackageCount - packages.length)
     : 0;
-  // The sort-by-progress logic only runs when the session is running AND auto-sort
-  // is enabled AND there's more than one package. When any of those isn't true,
-  // the items reference is irrelevant — passing null here makes useMemo skip the
-  // re-evaluation that previously fired on EVERY item update (progress, status,
-  // speed) even when the sort would have returned the original `packages` array.
   const sortRelevantItems = (snapshot.session.running && settingsDraft.autoSortPackagesByProgress && packages.length > 1)
     ? snapshot.session.items
     : null;
@@ -2193,7 +2149,6 @@ export function App(): ReactElement {
     void loadAllDebridHostInfo(true);
   }, [settingsSubTab, hasSavedAllDebridAccount, snapshot.settings.allDebridToken, snapshot.settings.allDebridUseWebLogin, loadAllDebridHostInfo]);
 
-  // Auto-expand packages that are currently extracting (only once per extraction cycle)
   useEffect(() => {
     const extractingPkgIds: string[] = [];
     const currentlyExtracting = new Set<string>();
@@ -2210,7 +2165,6 @@ export function App(): ReactElement {
         }
       }
     }
-    // Reset tracking for packages no longer extracting
     for (const id of autoExpandedPkgsRef.current) {
       if (!currentlyExtracting.has(id)) {
         autoExpandedPkgsRef.current.delete(id);
@@ -2231,9 +2185,6 @@ export function App(): ReactElement {
 
   const configuredProviders = useMemo(() => getActiveProvidersFromSettings(settingsDraft), [settingsDraft]);
 
-  // DDownload is a direct file hoster (not a debrid service) and is used automatically
-  // for ddownload.com/ddl.to URLs. It counts as a configured account but does not
-  // appear in the primary/secondary/tertiary provider dropdowns.
   const hasDdownloadAccount = useMemo(() =>
     Boolean((settingsDraft.ddownloadLogin || "").trim() && (settingsDraft.ddownloadPassword || "").trim()),
   [settingsDraft.ddownloadLogin, settingsDraft.ddownloadPassword]);
@@ -2244,10 +2195,8 @@ export function App(): ReactElement {
 
   const totalConfiguredAccounts = configuredProviders.length + (hasDdownloadAccount ? 1 : 0) + (hasOneFichierAccount ? 1 : 0);
 
-  // Dynamische Provider-Reihenfolge (ersetzt altes primary/secondary/tertiary)
   const activeProviderOrder = useMemo(() => normalizeProviderOrderForSettings(settingsDraft), [settingsDraft]);
 
-  // Setzt providerOrder + backwards-kompatible Felder synchron
   const setProviderOrder = useCallback((newOrder: DebridProvider[]) => {
     settingsDraftRevisionRef.current += 1;
     panelDirtyRevisionRef.current += 1;
@@ -3332,7 +3281,7 @@ export function App(): ReactElement {
   const onPackageFinishEdit = useCallback((packageId: string, currentName: string, nextName: string): void => {
     let shouldRename = false;
     setEditingPackageId((prev) => {
-      if (prev !== packageId) return prev; // already finished (e.g. blur after Enter key)
+      if (prev !== packageId) return prev;
       shouldRename = true;
       return null;
     });
@@ -3418,8 +3367,6 @@ export function App(): ReactElement {
     pendingPackageOrderRef.current = [...order];
     pendingPackageOrderAtRef.current = Date.now();
     packageOrderRef.current = [...order];
-    // Optimistic UI update ? apply the new order immediately so the user
-    // sees the change without waiting for the backend round-trip.
     setSnapshot((prev) => {
       if (!prev) return prev;
       return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
@@ -3428,7 +3375,6 @@ export function App(): ReactElement {
       pendingPackageOrderRef.current = null;
       pendingPackageOrderAtRef.current = 0;
       packageOrderRef.current = serverPackageOrderRef.current;
-      // Rollback: restore original order from server
       setSnapshot((prev) => {
         if (!prev) return prev;
         return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
@@ -3578,7 +3524,6 @@ export function App(): ReactElement {
   const dragDidMoveRef = useRef(false);
   const lastClickedIdRef = useRef<string | null>(null);
 
-  // Flat list of all visible IDs (package headers + their visible items) in display order
   const visibleOrderIds = useMemo(() => {
     const ids: string[] = [];
     for (const pkg of visiblePackages) {
@@ -3595,7 +3540,7 @@ export function App(): ReactElement {
   }, [visiblePackages, collapsedPackages, itemsByPackage, snapshot.settings.hideExtractedItems]);
 
   const onSelectId = useCallback((id: string, ctrlKey: boolean, shiftKey: boolean): void => {
-    if (dragDidMoveRef.current) return; // drag handled it, skip click
+    if (dragDidMoveRef.current) return;
     if (shiftKey && lastClickedIdRef.current) {
       const anchorIdx = visibleOrderIds.indexOf(lastClickedIdRef.current);
       const targetIdx = visibleOrderIds.indexOf(id);
@@ -3642,7 +3587,6 @@ export function App(): ReactElement {
     if (!dragSelectRef.current) return;
     if (!dragDidMoveRef.current) {
       dragDidMoveRef.current = true;
-      // Add anchor item now that we know it's a drag
       const anchor = dragAnchorRef.current;
       if (anchor) {
         setSelectedIds((prev) => { if (prev.has(anchor)) return prev; const next = new Set(prev); next.add(anchor); return next; });
@@ -3655,7 +3599,6 @@ export function App(): ReactElement {
     const sel = selectedIds;
     const currentPackages = snapshotRef.current.session.packages;
     const currentItems = snapshotRef.current.session.items;
-    // Multi-select: collect links from all selected packages/items
     if (sel.size > 1) {
       const allLinks: { name: string; url: string }[] = [];
       for (const id of sel) {
@@ -3785,7 +3728,6 @@ export function App(): ReactElement {
   useEffect(() => {
     if (!colHeaderCtx) return;
     const close = (e: MouseEvent): void => {
-      // Don't close if click is inside the menu or on the header bar (re-position instead)
       if (colHeaderCtxRef.current && colHeaderCtxRef.current.contains(e.target as Node)) return;
       if (colHeaderBarRef.current && colHeaderBarRef.current.contains(e.target as Node)) return;
       setColHeaderCtx(null);
@@ -3856,7 +3798,6 @@ export function App(): ReactElement {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
         if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
-          // Don't clear selection if an overlay is open ? let the overlay close first
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
           if (tabRef.current === "downloads") setSelectedIds(new Set());
           else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
@@ -4524,7 +4465,7 @@ export function App(): ReactElement {
                 {snapshot.session.reconnectReason && <span> ({snapshot.session.reconnectReason})</span>}
               </div>
             )}
-            {/* Action buttons moved to footer */}
+            {}
             <div ref={colHeaderBarRef} className="pkg-column-header" style={{ gridTemplateColumns: gridTemplate }} onContextMenu={(e) => { e.preventDefault(); setColHeaderCtx({ x: e.clientX, y: e.clientY }); }}>
               {columnOrder.map((col) => {
                 const def = COLUMN_DEFS[col];
@@ -5713,8 +5654,6 @@ export function App(): ReactElement {
                                 const nextAccounts = [...prev.megaAccounts, { login, password }];
                                 return { ...prev, megaAccounts: nextAccounts, megaNewLogin: "", megaNewPassword: "", token: serializeMegaDebridAccounts(nextAccounts) };
                               });
-                              // Sofort beim Anlegen pruefen (Gueltigkeit + Premium-Restlaufzeit) —
-                              // Badge aktualisiert sich via Snapshot, ohne Tab schliessen / "Alle pruefen".
                               if (!exists) {
                                 void runMegaAccountCheck(login, password);
                               }
@@ -6139,7 +6078,6 @@ export function App(): ReactElement {
                   if (isVisible) {
                     newOrder = columnOrder.filter((c) => c !== col);
                   } else {
-                    // Insert at original default position relative to existing columns
                     newOrder = [...columnOrder];
                     const defaultIdx = ALL_COLUMN_KEYS.indexOf(col);
                     let insertAt = newOrder.length;
@@ -6338,8 +6276,6 @@ export function App(): ReactElement {
   );
 }
 
-/** Computes the user-facing status text for an item, applying business rules
- *  about which states are visible while the session is stopped. */
 function computeDisplayedItemStatus(item: DownloadItem, sessionRunning: boolean): string {
   const statusText = String(item.fullStatus || "").trim();
   if (statusText === "Wartet") return "";
@@ -6365,9 +6301,6 @@ interface ItemRowProps {
   onContextMenu: (packageId: string, itemId: string | undefined, x: number, y: number) => void;
 }
 
-/** Per-item row, memoized so a status update on one item doesn't re-render
- *  every other item in the same package (the bottleneck on packages with
- *  many episodes). Custom equality only checks the fields actually rendered. */
 const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunning, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onContextMenu }: ItemRowProps): ReactElement {
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -6385,10 +6318,7 @@ const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunn
     e.stopPropagation();
     onContextMenu(packageId, item.id, e.clientX, e.clientY);
   }, [packageId, item.id, onContextMenu]);
-  // Memoize the date string so it doesn't get re-formatted on every re-render
-  // when only progress/speed changed but createdAt is stable.
   const formattedCreatedAt = useMemo(() => formatDateTime(item.createdAt), [item.createdAt]);
-  // Memoize the displayed status so we don't compute it twice (title + body)
   const displayStatus = useMemo(() => computeDisplayedItemStatus(item, sessionRunning), [item, sessionRunning]);
   const statusTitle = displayStatus ? (item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus) : "";
 
@@ -6453,7 +6383,6 @@ const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunn
     </div>
   );
 }, (prev, next) => {
-  // Skip re-render unless something visible actually changed for THIS item.
   if (prev.item !== next.item) {
     const a = prev.item;
     const b = next.item;
@@ -6521,8 +6450,6 @@ interface PackageCardProps {
 }
 
 const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripeVariant, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, sessionRunning, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
-  // Single-pass aggregation: replaces 5 separate filter()/some() + 2 reduce() calls.
-  // For a package with N items this is O(N) instead of O(7N) per render.
   const stats = useMemo(() => {
     let done = 0;
     let failed = 0;
@@ -6688,10 +6615,6 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
     || prev.gridTemplate !== next.gridTemplate) {
     return false;
   }
-  // selectedIds is a Set that gets a new reference on every selection change
-  // anywhere in the app. Only re-render this card if the selection state
-  // changed for an item that ACTUALLY belongs to this package — that way
-  // selecting an item in a different package doesn't re-render all 200+ cards.
   if (prev.selectedIds !== next.selectedIds) {
     for (const itemId of next.pkg.itemIds) {
       if (prev.selectedIds.has(itemId) !== next.selectedIds.has(itemId)) {

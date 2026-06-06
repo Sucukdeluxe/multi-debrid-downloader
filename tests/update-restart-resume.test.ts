@@ -10,14 +10,6 @@ import { createStoragePaths, emptySession, loadSession } from "../src/main/stora
 import { shutdownItemLogs } from "../src/main/item-log";
 import { shutdownPackageLogs } from "../src/main/package-log";
 
-// Regression for the reported symptom: after an app update while downloading,
-// packages that were in flight do not continue after the restart.
-//
-// Root cause: installUpdate() called manager.stop(), whose abort continuation
-// marks the in-flight item "cancelled"/"Gestoppt". autoResumeOnStart only
-// resumes "queued"/"reconnect_wait" items, so after the silent-install relaunch
-// the download silently stays parked instead of continuing.
-
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
 
@@ -47,9 +39,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 20000): Promise<voi
   }
 }
 
-/** Starts an HTTP server that trickles bytes forever so a download stays
- *  actively "downloading" until it is aborted. Returns the direct URL plus a
- *  stop() that tears down all open responses and the server. */
 async function startTricklingServer(): Promise<{ directUrl: string; stop: () => Promise<void> }> {
   const openTimers = new Set<NodeJS.Timeout>();
   const openResponses = new Set<http.ServerResponse>();
@@ -68,7 +57,6 @@ async function startTricklingServer(): Promise<{ directUrl: string; stop: () => 
       try {
         res.write(Buffer.alloc(16 * 1024, 9));
       } catch {
-        // socket gone
       }
     }, 100);
     openTimers.add(timer);
@@ -94,7 +82,6 @@ async function startTricklingServer(): Promise<{ directUrl: string; stop: () => 
       try {
         res.destroy();
       } catch {
-        // ignore
       }
     }
     openResponses.clear();
@@ -157,7 +144,6 @@ describe("update restart resume", () => {
       const reloaded = loadSession(paths);
       const item = Object.values(reloaded.items)[0];
       expect(item).toBeTruthy();
-      // Documents the loss of resumability: cancelled items are not auto-resumed.
       expect(item.status).toBe("cancelled");
     } finally {
       await serverStop();
@@ -169,7 +155,6 @@ describe("update restart resume", () => {
     tempDirs.push(root);
     const { manager, paths, serverStop } = await driveActiveDownload(root);
     try {
-      // Mirrors AppController.installUpdate(): park downloads, then sync-persist.
       manager.stop({ parkForRestart: true });
       manager.persistNowSync();
       await waitFor(() => (manager as unknown as { activeTasks: Map<string, unknown> }).activeTasks.size === 0);
@@ -178,7 +163,6 @@ describe("update restart resume", () => {
       const reloaded = loadSession(paths);
       const item = Object.values(reloaded.items)[0];
       expect(item).toBeTruthy();
-      // The package/item must survive AND be resumable so auto-resume continues it.
       expect(Object.keys(reloaded.packages).length).toBe(1);
       expect(item.status).toBe("queued");
     } finally {

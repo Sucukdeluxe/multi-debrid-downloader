@@ -8,8 +8,6 @@ import { UpdateCheckResult, UpdateInstallProgress, UpdateInstallResult } from ".
 import { compactErrorText, humanSize } from "./utils";
 import { logger } from "./logger";
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
-
 const RELEASE_FETCH_TIMEOUT_MS = 12_000;
 const CONNECT_TIMEOUT_MS = 30_000;
 const DOWNLOAD_BODY_IDLE_TIMEOUT_MS = 45_000;
@@ -17,8 +15,6 @@ const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1_500;
 const MAX_DOWNLOAD_PASSES = 3;
 const USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
-
-// ─── Types ─────────────────────────────────────────────────────────────────────
 
 type UpdateSource = {
   name: string;
@@ -40,8 +36,6 @@ type ExpectedDigest = {
   encoding: "hex" | "base64";
 };
 
-// ─── Update Sources ────────────────────────────────────────────────────────────
-
 const UPDATE_SOURCES: UpdateSource[] = [
   { name: "git24", webBase: "https://git.24-music.de", apiBase: "https://git.24-music.de/api/v1" },
   { name: "codeberg", webBase: "https://codeberg.org", apiBase: "https://codeberg.org/api/v1" },
@@ -52,22 +46,15 @@ const PRIMARY_SOURCE = UPDATE_SOURCES[0];
 const WEB_BASE = PRIMARY_SOURCE.webBase;
 const API_BASE = PRIMARY_SOURCE.apiBase;
 
-// ─── Module State ──────────────────────────────────────────────────────────────
-
 let activeAbortController: AbortController | null = null;
-
-// ─── Progress Helper ───────────────────────────────────────────────────────────
 
 function emitProgress(cb: UpdateProgressCallback | undefined, progress: UpdateInstallProgress): void {
   if (!cb) return;
   try {
     cb(progress);
   } catch {
-    // ignore renderer callback errors
   }
 }
-
-// ─── Version Utilities ─────────────────────────────────────────────────────────
 
 export function parseVersionParts(version: string): number[] {
   const cleaned = version.replace(/^v/i, "").trim();
@@ -86,8 +73,6 @@ export function isRemoteNewer(currentVersion: string, latestVersion: string): bo
   }
   return false;
 }
-
-// ─── Repository Normalization ──────────────────────────────────────────────────
 
 function isValidRepoPart(value: string): boolean {
   const part = String(value || "").trim();
@@ -127,14 +112,11 @@ export function normalizeUpdateRepo(repo: string): string {
       if (result) return result;
     }
   } catch {
-    // not a URL, try as plain text
   }
 
   const result = extractOwnerRepo(raw);
   return result || DEFAULT_UPDATE_REPO;
 }
-
-// ─── Network Utilities ─────────────────────────────────────────────────────────
 
 function timeoutController(ms: number): { signal: AbortSignal; clear: () => void } {
   const ctrl = new AbortController();
@@ -190,24 +172,17 @@ function getBodyIdleTimeout(): number {
   return DOWNLOAD_BODY_IDLE_TIMEOUT_MS;
 }
 
-// ─── Digest Parsing & Verification ─────────────────────────────────────────────
-//
-// SHA-256 = 32 bytes → hex: 64 chars, base64: 43-44 chars (+ up to 1 padding =)
-// SHA-512 = 64 bytes → hex: 128 chars, base64: 86-88 chars (+ up to 2 padding =)
-
 function normalizeBase64(raw: string): string {
   return String(raw || "")
     .trim()
-    .replace(/-/g, "+")   // URL-safe → standard
-    .replace(/_/g, "/")   // URL-safe → standard
-    .replace(/=+$/g, ""); // strip padding for consistent comparison
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .replace(/=+$/g, "");
 }
 
 export function parseExpectedDigest(raw: string): ExpectedDigest | null {
   const text = String(raw || "").trim();
   if (!text) return null;
-
-  // ── Prefixed: sha256:<value> ──
 
   const pre256hex = text.match(/^sha256:([a-fA-F0-9]{64})$/i);
   if (pre256hex) {
@@ -219,8 +194,6 @@ export function parseExpectedDigest(raw: string): ExpectedDigest | null {
     return { algorithm: "sha256", digest: normalizeBase64(pre256b64[1]), encoding: "base64" };
   }
 
-  // ── Prefixed: sha512:<value> ──
-
   const pre512hex = text.match(/^sha512:([a-fA-F0-9]{128})$/i);
   if (pre512hex) {
     return { algorithm: "sha512", digest: pre512hex[1].toLowerCase(), encoding: "hex" };
@@ -231,16 +204,12 @@ export function parseExpectedDigest(raw: string): ExpectedDigest | null {
     return { algorithm: "sha512", digest: normalizeBase64(pre512b64[1]), encoding: "base64" };
   }
 
-  // ── Plain hex ──
-
   if (/^[a-fA-F0-9]{64}$/.test(text)) {
     return { algorithm: "sha256", digest: text.toLowerCase(), encoding: "hex" };
   }
   if (/^[a-fA-F0-9]{128}$/.test(text)) {
     return { algorithm: "sha512", digest: text.toLowerCase(), encoding: "hex" };
   }
-
-  // ── Plain base64 (SHA-512 first since it's longer → won't accidentally match SHA-256) ──
 
   const plain512b64 = text.match(/^([A-Za-z0-9+/_-]{86,88}={0,2})$/);
   if (plain512b64) {
@@ -271,8 +240,6 @@ async function hashFile(filePath: string, algorithm: "sha256" | "sha512", encodi
   });
 }
 
-// ─── latest.yml Parsing ────────────────────────────────────────────────────────
-
 function normalizeNameForMatch(value: string): string {
   const name = String(value || "").trim().split(/[\\/]/g).filter(Boolean).pop() || "";
   return name.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -284,10 +251,8 @@ function stripYamlQuotes(raw: string): string {
 
 function extractSha512Value(raw: string): string {
   const stripped = stripYamlQuotes(raw);
-  // Base64 SHA-512: 86-88 chars + optional padding
   const b64 = stripped.match(/^([A-Za-z0-9+/_-]{86,88}={0,2})$/);
   if (b64) return b64[1];
-  // Hex SHA-512: exactly 128 hex chars
   const hex = stripped.match(/^([a-fA-F0-9]{128})$/);
   if (hex) return hex[1];
   return "";
@@ -305,28 +270,24 @@ function parseSha512FromLatestYml(content: string, setupAssetName: string): stri
   for (const rawLine of lines) {
     const line = String(rawLine);
 
-    // File entry URL (inside files: array)
     const fileUrlItem = line.match(/^\s*-\s*url\s*:\s*(.+)\s*$/i);
     if (fileUrlItem?.[1]) {
       currentFileUrl = stripYamlQuotes(fileUrlItem[1]);
       continue;
     }
 
-    // Top-level or non-array URL
     const urlMatch = line.match(/^\s*url\s*:\s*(.+)\s*$/i);
     if (urlMatch?.[1]) {
       currentFileUrl = stripYamlQuotes(urlMatch[1]);
       continue;
     }
 
-    // Top-level path
     const pathMatch = line.match(/^\s*path\s*:\s*(.+)\s*$/i);
     if (pathMatch?.[1]) {
       topLevelPath = stripYamlQuotes(pathMatch[1]);
       continue;
     }
 
-    // SHA-512 value (handles quoted and unquoted)
     const shaMatch = line.match(/^\s*sha512\s*:\s*(.+)\s*$/i);
     if (!shaMatch?.[1]) continue;
 
@@ -345,7 +306,6 @@ function parseSha512FromLatestYml(content: string, setupAssetName: string): stri
     if (!topLevelSha) topLevelSha = sha;
   }
 
-  // Try matching via top-level path
   if (target && topLevelPath && topLevelSha) {
     if (normalizeNameForMatch(topLevelPath) === target) {
       return topLevelSha;
@@ -354,8 +314,6 @@ function parseSha512FromLatestYml(content: string, setupAssetName: string): stri
 
   return topLevelSha || firstFileSha || "";
 }
-
-// ─── Installer Verification ───────────────────────────────────────────────────
 
 async function verifyBinaryShape(filePath: string): Promise<void> {
   const stats = await fs.promises.stat(filePath);
@@ -401,8 +359,6 @@ async function verifyDownloadedInstaller(filePath: string, digestRaw: string): P
 
   logger.info(`${expected.algorithm.toUpperCase()} Integrität bestätigt`);
 }
-
-// ─── Release API ───────────────────────────────────────────────────────────────
 
 async function fetchRelease(repo: string, endpoint: string): Promise<{
   ok: boolean;
@@ -474,8 +430,6 @@ function parseReleasePayload(payload: Record<string, unknown>, fallbackUrl: stri
     releaseNotes: body || undefined,
   };
 }
-
-// ─── Download Candidates ───────────────────────────────────────────────────────
 
 function uniqueStrings(values: string[]): string[] {
   const seen = new Set<string>();
@@ -555,8 +509,6 @@ function deriveFileName(check: UpdateCheckResult, url: string): string {
   }
 }
 
-// ─── Error Classification ──────────────────────────────────────────────────────
-
 function httpStatusFromError(error: unknown): number {
   const match = String(error || "").match(/HTTP\s+(\d{3})/i);
   return match ? Number(match[1]) : 0;
@@ -585,8 +537,6 @@ function isIntegrityError(error: unknown): boolean {
   return text.includes("integrit") || text.includes("mismatch");
 }
 
-// ─── Sleep ─────────────────────────────────────────────────────────────────────
-
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
   if (signal.aborted) throw new Error("aborted:update_shutdown");
@@ -611,8 +561,6 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-// ─── Download Engine ───────────────────────────────────────────────────────────
-
 async function downloadFile(
   url: string,
   targetPath: string,
@@ -623,7 +571,6 @@ async function downloadFile(
 
   logger.info(`Update-Download versucht: ${url}`);
 
-  // Connect with timeout
   const tc = timeoutController(CONNECT_TIMEOUT_MS);
   let response: Response;
   try {
@@ -640,11 +587,9 @@ async function downloadFile(
     throw new Error(`Update Download fehlgeschlagen (HTTP ${response.status})`);
   }
 
-  // Parse content-length
   const clRaw = Number(response.headers.get("content-length") || NaN);
   const totalBytes = Number.isFinite(clRaw) && clRaw > 0 ? Math.max(0, Math.floor(clRaw)) : null;
 
-  // Progress tracking
   let downloadedBytes = 0;
   let lastProgressAt = 0;
 
@@ -663,13 +608,11 @@ async function downloadFile(
 
   reportProgress(true);
 
-  // Prepare filesystem
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   const tempPath = `${targetPath}.tmp`;
   const writeStream = fs.createWriteStream(tempPath);
   const reader = response.body.getReader();
 
-  // Idle timeout tracking
   const idleMs = getBodyIdleTimeout();
   let idleTimer: NodeJS.Timeout | null = null;
   let idleTimedOut = false;
@@ -691,7 +634,6 @@ async function downloadFile(
     }
   };
 
-  // Stream body to disk
   try {
     resetIdle();
     for (;;) {
@@ -721,25 +663,21 @@ async function downloadFile(
     clearIdle();
   }
 
-  // Flush and close write stream
   await new Promise<void>((resolve, reject) => {
     writeStream.end(() => resolve());
     writeStream.on("error", reject);
   });
 
-  // Handle idle timeout on clean reader exit
   if (idleTimedOut) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
   }
 
-  // Verify completeness
   if (totalBytes && downloadedBytes !== totalBytes) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     throw new Error(`Update Download unvollständig (${downloadedBytes} / ${totalBytes} Bytes)`);
   }
 
-  // Atomic rename temp → final
   await fs.promises.rename(tempPath, targetPath);
   reportProgress(true);
   logger.info(`Update-Download abgeschlossen: ${targetPath} (${downloadedBytes} Bytes)`);
@@ -803,8 +741,6 @@ async function downloadFromCandidates(
   throw lastError;
 }
 
-// ─── Asset Resolution Helpers ──────────────────────────────────────────────────
-
 async function resolveAssetFromApi(repo: string, tag: string): Promise<{
   setupAssetUrl: string;
   setupAssetName: string;
@@ -827,7 +763,6 @@ async function resolveAssetFromApi(repo: string, tag: string): Promise<{
         setupAssetDigest: setup.digest,
       };
     } catch {
-      // try next endpoint
     }
   }
   return null;
@@ -863,13 +798,10 @@ async function resolveDigestFromYml(repo: string, tag: string, setupName: string
       const sha = parseSha512FromLatestYml(yamlText, setupName);
       if (sha) return `sha512:${sha}`;
     } catch {
-      // try next endpoint
     }
   }
   return "";
 }
-
-// ─── Public API ────────────────────────────────────────────────────────────────
 
 export function buildInstallerLaunchArgs(): string[] {
   return ["/S", "--updated", "--force-run"];
@@ -903,7 +835,6 @@ export async function installLatestUpdate(
   prechecked?: UpdateCheckResult,
   onProgress?: UpdateProgressCallback,
 ): Promise<UpdateInstallResult> {
-  // Prevent concurrent updates
   if (activeAbortController && !activeAbortController.signal.aborted) {
     emitProgress(onProgress, {
       stage: "error", percent: null, downloadedBytes: 0, totalBytes: null,
@@ -916,7 +847,6 @@ export async function installLatestUpdate(
   activeAbortController = abortCtrl;
   const safeRepo = normalizeUpdateRepo(repo);
 
-  // Resolve update check
   const check = prechecked && !prechecked.error
     ? prechecked
     : await checkGitHubUpdate(safeRepo);
@@ -939,7 +869,6 @@ export async function installLatestUpdate(
     return { started: false, message: "Kein neues Update verfügbar" };
   }
 
-  // Mutable effective state for enrichment
   let effective: UpdateCheckResult = {
     ...check,
     setupAssetUrl: String(check.setupAssetUrl || ""),
@@ -947,7 +876,6 @@ export async function installLatestUpdate(
     setupAssetDigest: String(check.setupAssetDigest || ""),
   };
 
-  // Enrich: resolve asset from API if needed
   if (!effective.setupAssetUrl || !effective.setupAssetDigest) {
     const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag);
     if (refreshed) {
@@ -960,7 +888,6 @@ export async function installLatestUpdate(
     }
   }
 
-  // Enrich: resolve digest from latest.yml if still missing
   if (!effective.setupAssetDigest && effective.setupAssetUrl) {
     const digest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "");
     if (digest) {
@@ -969,7 +896,6 @@ export async function installLatestUpdate(
     }
   }
 
-  // Build download candidates
   let candidates = buildCandidates(safeRepo, effective);
   if (candidates.length === 0) {
     activeAbortController = null;
@@ -991,7 +917,6 @@ export async function installLatestUpdate(
 
     if (abortCtrl.signal.aborted) throw new Error("aborted:update_shutdown");
 
-    // ── Download + verify with retry passes ──
     let verified = false;
     let lastVerifyError: unknown = null;
     let integrityError: unknown = null;
@@ -1030,7 +955,6 @@ export async function installLatestUpdate(
 
       if (verified) break;
 
-      // Refresh candidates on 404 or integrity mismatch
       const status = httpStatusFromError(lastVerifyError);
       const shouldRefresh = pass < MAX_DOWNLOAD_PASSES - 1 && (status === 404 || integrityError !== null);
       if (!shouldRefresh) break;
@@ -1073,7 +997,6 @@ export async function installLatestUpdate(
       throw integrityError || lastVerifyError || new Error("Update-Download fehlgeschlagen");
     }
 
-    // ── Launch installer ──
     emitProgress(onProgress, {
       stage: "launching", percent: 100, downloadedBytes: 0, totalBytes: null,
       message: "Starte stille Update-Installation",
@@ -1099,7 +1022,6 @@ export async function installLatestUpdate(
     try {
       await fs.promises.rm(targetPath, { force: true });
     } catch {
-      // ignore
     }
     const releaseUrl = String(effective.releaseUrl || "").trim();
     const hint = releaseUrl ? ` – Manuell: ${releaseUrl}` : "";

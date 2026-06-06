@@ -94,7 +94,6 @@ function flushPending(): void {
     try {
       fs.appendFileSync(logPath, chunk, "utf8");
     } catch {
-      // ignore write errors
     }
   }
 }
@@ -124,11 +123,9 @@ async function cleanupOldItemLogs(dir: string): Promise<void> {
           await fs.promises.unlink(filePath);
         }
       } catch {
-        // ignore locked/missing files
       }
     }
   } catch {
-    // ignore missing dir
   }
 }
 
@@ -226,7 +223,6 @@ export function shutdownItemLogs(): void {
     try {
       fs.appendFileSync(logPath, `=== Item-Log Ende: ${logTimestamp()} ===\n`, "utf8");
     } catch {
-      // ignore
     }
   }
   pendingLinesByItem.clear();

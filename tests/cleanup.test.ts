@@ -42,7 +42,6 @@ describe("cleanup", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-"));
     tempDirs.push(dir);
 
-    // Create nested directory structure with archive files
     const sub1 = path.join(dir, "season1");
     const sub2 = path.join(dir, "season1", "extras");
     fs.mkdirSync(sub2, { recursive: true });
@@ -51,17 +50,15 @@ describe("cleanup", () => {
     fs.writeFileSync(path.join(sub1, "episode.part2.rar"), "x");
     fs.writeFileSync(path.join(sub2, "bonus.zip"), "x");
     fs.writeFileSync(path.join(sub2, "bonus.7z"), "x");
-    // Non-archive files should be kept
     fs.writeFileSync(path.join(sub1, "video.mkv"), "real content");
     fs.writeFileSync(path.join(sub2, "subtitle.srt"), "subtitle content");
 
     const removed = cleanupCancelledPackageArtifacts(dir);
-    expect(removed).toBe(4); // 2 rar parts + zip + 7z
+    expect(removed).toBe(4);
     expect(fs.existsSync(path.join(sub1, "episode.part1.rar"))).toBe(false);
     expect(fs.existsSync(path.join(sub1, "episode.part2.rar"))).toBe(false);
     expect(fs.existsSync(path.join(sub2, "bonus.zip"))).toBe(false);
     expect(fs.existsSync(path.join(sub2, "bonus.7z"))).toBe(false);
-    // Non-archives kept
     expect(fs.existsSync(path.join(sub1, "video.mkv"))).toBe(true);
     expect(fs.existsSync(path.join(sub2, "subtitle.srt"))).toBe(true);
   });
@@ -70,23 +67,17 @@ describe("cleanup", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-"));
     tempDirs.push(dir);
 
-    // File with link-like name containing URLs should be removed
     fs.writeFileSync(path.join(dir, "download_links.txt"), "https://rapidgator.net/file/abc123\nhttps://uploaded.net/file/def456\n");
-    // File with link-like name but no URLs should be kept
     fs.writeFileSync(path.join(dir, "my_downloads.txt"), "Just some random text without URLs");
-    // Regular text file that doesn't match the link pattern should be kept
     fs.writeFileSync(path.join(dir, "readme.txt"), "https://example.com");
-    // .url files should always be removed
     fs.writeFileSync(path.join(dir, "bookmark.url"), "[InternetShortcut]\nURL=https://example.com");
-    // .dlc files should always be removed
     fs.writeFileSync(path.join(dir, "container.dlc"), "encrypted-data");
 
     const removed = await removeDownloadLinkArtifacts(dir);
-    expect(removed).toBeGreaterThanOrEqual(3); // download_links.txt + bookmark.url + container.dlc
+    expect(removed).toBeGreaterThanOrEqual(3);
     expect(fs.existsSync(path.join(dir, "download_links.txt"))).toBe(false);
     expect(fs.existsSync(path.join(dir, "bookmark.url"))).toBe(false);
     expect(fs.existsSync(path.join(dir, "container.dlc"))).toBe(false);
-    // Non-matching files should be kept
     expect(fs.existsSync(path.join(dir, "readme.txt"))).toBe(true);
   });
 

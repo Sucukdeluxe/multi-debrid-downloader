@@ -8,9 +8,7 @@ import { setLogListener } from "../src/main/logger";
 const tempDirs: string[] = [];
 
 afterEach(() => {
-  // Ensure session log is shut down between tests
   shutdownSessionLog();
-  // Ensure listener is cleared between tests
   setLogListener(null);
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -42,11 +40,9 @@ describe("session-log", () => {
     initSessionLog(baseDir);
     const logPath = getSessionLogPath()!;
 
-    // Simulate a log line via the listener
     const { logger } = await import("../src/main/logger");
     logger.info("Test-Nachricht für Session-Log");
 
-    // Wait for flush (200ms interval + margin)
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const content = fs.readFileSync(logPath, "utf8");
@@ -77,7 +73,6 @@ describe("session-log", () => {
 
     shutdownSessionLog();
 
-    // Log after shutdown - should NOT appear in session log
     const { logger } = await import("../src/main/logger");
     logger.info("Nach-Shutdown-Nachricht");
 
@@ -94,21 +89,16 @@ describe("session-log", () => {
     const logsDir = path.join(baseDir, "session-logs");
     fs.mkdirSync(logsDir, { recursive: true });
 
-    // Create a fake old session log
     const oldFile = path.join(logsDir, "session_2020-01-01_00-00-00.txt");
     fs.writeFileSync(oldFile, "old session");
-    // Set mtime to 30 days ago
     const oldTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     fs.utimesSync(oldFile, oldTime, oldTime);
 
-    // Create a recent file
     const newFile = path.join(logsDir, "session_2099-01-01_00-00-00.txt");
     fs.writeFileSync(newFile, "new session");
 
-    // initSessionLog triggers cleanup
     initSessionLog(baseDir);
 
-    // Wait for async cleanup
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     expect(fs.existsSync(oldFile)).toBe(false);
@@ -124,7 +114,6 @@ describe("session-log", () => {
     const logsDir = path.join(baseDir, "session-logs");
     fs.mkdirSync(logsDir, { recursive: true });
 
-    // Create a file from 2 days ago (should be kept)
     const recentFile = path.join(logsDir, "session_2025-12-01_00-00-00.txt");
     fs.writeFileSync(recentFile, "recent session");
     const recentTime = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
@@ -147,7 +136,6 @@ describe("session-log", () => {
     const path1 = getSessionLogPath();
     shutdownSessionLog();
 
-    // Small delay to ensure different timestamp
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
     initSessionLog(baseDir);

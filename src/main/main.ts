@@ -9,7 +9,6 @@ import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
 import { cleanupStaleSubstDrives, shutdownDaemon } from "./extractor";
 
-/* ── IPC validation helpers ────────────────────────────────────── */
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
     throw new Error(`${name} muss ein String sein`);
@@ -44,14 +43,12 @@ function validateStringArray(value: unknown, name: string): string[] {
   return value as string[];
 }
 
-/* ── Single Instance Lock ───────────────────────────────────────── */
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.exit(0);
   process.exit(0);
 }
 
-/* ── Unhandled error protection ─────────────────────────────────── */
 process.on("uncaughtException", (error) => {
   logger.error(`Uncaught Exception: ${String(error?.stack || error)}`);
 });
@@ -137,9 +134,6 @@ function createTray(): void {
   try {
     tray = new Tray(iconPath);
   } catch (error) {
-    // Fails on headless servers / Windows Service / RDP-disconnected sessions.
-    // Log so a user running on a non-Administrator/headless server can see
-    // why minimize-to-tray doesn't work, instead of getting an inaccessible window.
     logger.warn(`Tray-Icon konnte nicht erstellt werden (Headless/RDP/Service?): ${String(error)} - Minimize-to-Tray steht nicht zur Verfuegung, Fenster bleibt sichtbar.`);
     return;
   }
@@ -282,7 +276,6 @@ function registerIpcHandlers(): void {
     const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
-    // Manage scheduled-start timer
     if (scheduledStartTimer !== null) {
       clearTimeout(scheduledStartTimer);
       scheduledStartTimer = null;
@@ -291,7 +284,6 @@ function registerIpcHandlers(): void {
     if (schedMs > 0) {
       const delay = schedMs - Date.now();
       if (delay <= 0) {
-        // Time already passed — start immediately and clear setting
         void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
         controller.updateSettings({ scheduledStartEpochMs: 0 });
       } else {
@@ -345,7 +337,6 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
   ipcMain.handle(IPC_CHANNELS.START, () => {
-    // Cancel any pending scheduled start when the user starts manually
     if (scheduledStartTimer !== null) {
       clearTimeout(scheduledStartTimer);
       scheduledStartTimer = null;
@@ -674,12 +665,6 @@ function registerIpcHandlers(): void {
     const data = await fs.promises.readFile(filePath);
     const importResult = controller.importBackup(data);
     if (importResult.restored) {
-      // M2: Nach erfolgreichem Import die App automatisch neu starten. Der frische
-      // Prozess lädt die wiederhergestellte Session sauber vom Disk (kein Stale-
-      // In-Memory-State, kein dauerhaft blockierter Persist in einer lebenden Session).
-      // Vom Main getrieben (nicht Renderer), damit ein Renderer-Fehler den Restart
-      // nicht verhindern kann. Kurze Verzögerung, damit das Ergebnis den Renderer
-      // erreicht (Toast "App startet automatisch neu…").
       setTimeout(() => {
         app.relaunch();
         app.quit();

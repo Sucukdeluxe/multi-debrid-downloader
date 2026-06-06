@@ -319,7 +319,6 @@ export function hasRecentWindowsMinidumps(): boolean {
         return true;
       }
     } catch {
-      // ignore
     }
   }
   return false;

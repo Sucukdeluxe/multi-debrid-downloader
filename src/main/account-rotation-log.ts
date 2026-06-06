@@ -4,51 +4,30 @@ import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RotationEvent } from "../shared/types";
 
-/** Item-scoped sink: while a single item's link-unrestrict runs, the
- *  download-manager wraps it in runWithRotationItemSink() so EVERY rotation
- *  event for that item (Account 1 wird versucht, fehlgeschlagen, → Account 2)
- *  lands in that item's own log — exactly where the user looks. AsyncLocalStorage
- *  keeps this correct even with 8 items unrestricting in parallel: each runs in
- *  its own async context, so events never cross-attribute. */
 export type RotationItemSink = (event: RotationEvent) => void;
 const rotationItemContext = new AsyncLocalStorage<RotationItemSink>();
 
-/** Run `fn` with an item-scoped rotation sink active for its whole async chain. */
 export function runWithRotationItemSink<T>(sink: RotationItemSink, fn: () => Promise<T>): Promise<T> {
   return rotationItemContext.run(sink, fn);
 }
 
-/** Dedicated log file for multi-account/key rotation events:
- *  Mega-Debrid account selection, Debrid-Link key selection, per-attempt
- *  test result, cooldown set, fallback to next account/key, etc.
- *  Separate from rd_downloader.log so the user can see the rotation flow
- *  without the noise of normal download activity. */
-
 type RotationLevel = "INFO" | "WARN" | "ERROR";
 
-/** In-memory ring buffer of the most recent rotation events so the UI can show
- *  a live "which account was tried and why it failed" panel — the same events
- *  written to account-rotation.log, but surfaced to the renderer via snapshot. */
 const ROTATION_EVENT_RING_MAX = 60;
 const rotationEventRing: RotationEvent[] = [];
 let rotationEventSeq = 0;
 let rotationEventListener: ((event: RotationEvent) => void) | null = null;
 
-/** Register a callback fired whenever a new rotation event is recorded (used by
- *  the download-manager to push a fresh snapshot to the UI immediately). */
 export function setRotationEventListener(listener: ((event: RotationEvent) => void) | null): void {
   rotationEventListener = listener;
 }
 
-/** Returns the recent rotation events, newest first. */
 export function getRecentRotationEvents(limit = ROTATION_EVENT_RING_MAX): RotationEvent[] {
   const slice = rotationEventRing.slice(-limit);
   slice.reverse();
   return slice;
 }
 
-/** Events that are noise for the UI panel (per-attempt TEST markers). The panel
- *  focuses on outcomes: OK / FAILED / FATAL / skips. */
 function isUiRelevantRotationEvent(event: string): boolean {
   return event !== "TEST";
 }
@@ -75,20 +54,14 @@ function pushRotationEvent(
     next: fields && fields.next != null ? String(fields.next) : undefined
   };
 
-  // Always route to the item-scoped sink (if any) — the per-item log wants the
-  // FULL trail including "TEST" (Account X wird versucht), so the user sees the
-  // rotation right where they look.
   const itemSink = rotationItemContext.getStore();
   if (itemSink) {
     try {
       itemSink(entry);
     } catch {
-      // never let item logging break the rotation flow
     }
   }
 
-  // The global UI panel ring + live push skip noisy per-attempt TEST markers;
-  // it focuses on outcomes (OK / FAILED / FATAL / skips).
   if (!isUiRelevantRotationEvent(event)) {
     return;
   }
@@ -100,7 +73,6 @@ function pushRotationEvent(
     try {
       rotationEventListener(entry);
     } catch {
-      // never let a UI push break the rotation flow
     }
   }
 }
@@ -147,11 +119,9 @@ function rotateIfNeeded(filePath: string): void {
     try {
       fs.rmSync(backup, { force: true });
     } catch {
-      // ignore
     }
     fs.renameSync(filePath, backup);
   } catch {
-    // ignore
   }
 }
 
@@ -164,7 +134,6 @@ function cleanupOldBackup(filePath: string): void {
       fs.rmSync(backup, { force: true });
     }
   } catch {
-    // ignore
   }
 }
 
@@ -190,13 +159,6 @@ export function initAccountRotationLog(baseDir: string): void {
   }
 }
 
-/** Record an account/key rotation event. The format is intentionally compact
- *  and grep-friendly: timestamp + level + provider + accountLabel + event + fields.
- *  Example output:
- *    2026-04-19T20:48:50.000Z [INFO] Mega-Debrid Web | Account 2 (fa**david@...) | TEST | link=https://...
- *    2026-04-19T20:48:52.000Z [WARN] Mega-Debrid Web | Account 2 (fa**david@...) | FAILED reason="Antwort leer" cooldownSec=30 | link=https://...
- *    2026-04-19T20:48:53.000Z [INFO] Mega-Debrid Web | Account 3 (am**@example.com) | TEST | link=https://...
- *    2026-04-19T20:48:55.000Z [INFO] Mega-Debrid Web | Account 3 (am**@example.com) | OK directLink=https://... | link=https://... */
 export function logAccountRotation(
   level: RotationLevel,
   provider: string,
@@ -204,7 +166,6 @@ export function logAccountRotation(
   event: string,
   fields?: Record<string, unknown>
 ): void {
-  // Surface to the UI ring buffer regardless of whether the file log is ready.
   pushRotationEvent(level, provider, accountLabel, event, fields);
   if (!rotationLogPath) {
     return;
@@ -217,7 +178,6 @@ export function logAccountRotation(
     const head = `${logTimestamp()} [${level}] ${provider} | ${accountLabel} | ${event}`;
     fs.appendFileSync(rotationLogPath, `${head}${formatFields(fields)}\n`, "utf8");
   } catch {
-    // ignore write errors
   }
 }
 
@@ -239,7 +199,6 @@ export function shutdownAccountRotationLog(): void {
       "utf8"
     );
   } catch {
-    // ignore
   }
   rotationLogPath = null;
 }

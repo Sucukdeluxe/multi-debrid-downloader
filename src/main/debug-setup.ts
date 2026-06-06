@@ -53,7 +53,6 @@ function readPort(baseDir: string): number {
       return raw;
     }
   } catch {
-    // ignore
   }
   return DEFAULT_PORT;
 }
@@ -71,7 +70,6 @@ function readHost(baseDir: string): string {
       return raw;
     }
   } catch {
-    // ignore
   }
   return DEFAULT_HOST;
 }
@@ -158,7 +156,6 @@ function getDirectorySizeInfo(dirPath: string, skipPath?: string | null): Suppor
         bytes += fs.statSync(fullPath).size;
         fileCount += 1;
       } catch {
-        // ignore unreadable files
       }
     }
   }

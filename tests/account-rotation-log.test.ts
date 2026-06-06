@@ -10,7 +10,6 @@ describe("rotation item-sink (AsyncLocalStorage)", () => {
       logAccountRotation("WARN", "Mega-Debrid Web", "Account 1/3 (ab**xy)", "FAILED", { reason: "Timeout", cooldownSec: 30, next: "Account 2/3 (cd**zw)" });
       logAccountRotation("INFO", "Mega-Debrid Web", "Account 2/3 (cd**zw)", "TEST", { link: "x" });
       logAccountRotation("INFO", "Mega-Debrid Web", "Account 2/3 (cd**zw)", "OK", { fileName: "f.mkv" });
-      // simulate an await boundary — ALS must survive it
       await Promise.resolve();
     });
 
@@ -23,7 +22,6 @@ describe("rotation item-sink (AsyncLocalStorage)", () => {
 
   it("does not leak events to the sink outside the run() scope", () => {
     const captured: RotationEvent[] = [];
-    // No active sink here
     logAccountRotation("INFO", "Debrid-Link", "Key 1/2 (k1)", "OK");
     expect(captured).toHaveLength(0);
   });
@@ -43,7 +41,6 @@ describe("rotation item-sink (AsyncLocalStorage)", () => {
         logAccountRotation("WARN", "Debrid-Link", "Key 1 (b)", "FAILED", { reason: "badToken" });
       })
     ]);
-    // Each sink only saw its own provider's events
     expect(a.every((e) => e.provider === "Mega-Debrid Web")).toBe(true);
     expect(b.every((e) => e.provider === "Debrid-Link")).toBe(true);
     expect(a.map((e) => e.event)).toEqual(["TEST", "OK"]);
@@ -54,7 +51,6 @@ describe("rotation item-sink (AsyncLocalStorage)", () => {
     logAccountRotation("INFO", "Mega-Debrid API", "Account 9 (zz)", "TEST");
     logAccountRotation("INFO", "Mega-Debrid API", "Account 9 (zz)", "OK", { fileName: "ring.mkv" });
     const ring = getRecentRotationEvents(10);
-    // OK is in the ring; the TEST marker is filtered out of the panel
     expect(ring.some((e) => e.event === "OK" && e.accountLabel === "Account 9 (zz)")).toBe(true);
     expect(ring.some((e) => e.event === "TEST" && e.accountLabel === "Account 9 (zz)")).toBe(false);
   });

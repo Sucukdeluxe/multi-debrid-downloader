@@ -120,7 +120,6 @@ function normalizeColumnOrder(raw: unknown): string[] {
       result.push(col);
     }
   }
-  // "name" is mandatory — ensure it's always present
   if (!seen.has("name")) {
     result.unshift("name");
   }
@@ -309,7 +308,6 @@ function normalizeProviderOrder(
   if (Array.isArray(raw) && raw.length > 0) {
     list = raw;
   } else {
-    // Migrate from old primary/secondary/tertiary
     const candidates = [legacyPrimary, legacySecondary, legacyTertiary].filter(
       (v) => v && String(v).trim() && String(v).trim() !== "none"
     );
@@ -347,7 +345,6 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const currentUsageDay = getProviderUsageDayKey();
   const megaLogin = asText(settings.megaLogin);
   const megaPassword = asText(settings.megaPassword);
-  // Migrate legacy single-account to multi-account format
   let megaCredentials = String(settings.megaCredentials ?? "").replace(/\r\n|\r/g, "\n").trim();
   if (!megaCredentials && megaLogin && megaPassword) {
     megaCredentials = `${megaLogin}:${megaPassword}`;
@@ -575,7 +572,6 @@ function ensureBaseDir(baseDir: string): void {
   }
 }
 
-/** JSON replacer that sanitizes NaN/Infinity to null to prevent file corruption. */
 function safeJsonReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "number" && !Number.isFinite(value)) {
     return null;
@@ -599,12 +595,8 @@ function readSettingsFile(filePath: string): AppSettings | null {
     });
     return sanitizeCredentialPersistence(merged);
   } catch (error) {
-    // Distinguish permission/access errors from missing/corrupt JSON so a
-    // misconfigured server (e.g. unusual user, restricted AppData) shows a
-    // clear log entry instead of silently falling back to defaults.
     const code = (error as NodeJS.ErrnoException)?.code || "";
     if (code === "ENOENT") {
-      // file doesn't exist — normal on first run
     } else if (code === "EACCES" || code === "EPERM") {
       logger.error(`Settings-Datei nicht zugreifbar (${code}): ${filePath} - pruefe Datei-/Ordner-Berechtigungen fuer Benutzer ${process.env.USERNAME || process.env.USER || "?"}`);
     } else {
@@ -790,7 +782,6 @@ export function loadSettings(paths: StoragePaths): AppSettings {
       fs.writeFileSync(tempPath, payload, "utf8");
       syncRenameWithExdevFallback(tempPath, paths.configFile);
     } catch {
-      // ignore restore write failure
     }
     return backupLoaded;
   }
@@ -821,18 +812,15 @@ function sessionBackupPath(sessionFile: string): string {
 }
 
 export function normalizeLoadedSessionTransientFields(session: SessionState): SessionState {
-  // Reset transient fields that may be stale from a previous crash
   const ACTIVE_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
   for (const item of Object.values(session.items)) {
     if (ACTIVE_STATUSES.has(item.status)) {
       item.status = "queued";
       item.lastError = "";
     }
-    // Always clear stale speed values
     item.speedBps = 0;
   }
 
-  // Reset package-level active statuses to queued (mirrors item reset above)
   const ACTIVE_PKG_STATUSES = new Set(["downloading", "validating", "extracting", "integrity_check", "paused", "reconnect_wait"]);
   for (const pkg of Object.values(session.packages)) {
     if (ACTIVE_PKG_STATUSES.has(pkg.status)) {
@@ -841,7 +829,6 @@ export function normalizeLoadedSessionTransientFields(session: SessionState): Se
     pkg.postProcessLabel = undefined;
   }
 
-  // Clear stale session-level running/paused flags
   session.running = false;
   session.paused = false;
 
@@ -850,9 +837,6 @@ export function normalizeLoadedSessionTransientFields(session: SessionState): Se
 
 function readSessionFile(filePath: string): SessionState | null {
   try {
-    // Inline readFileSync into JSON.parse so the raw string is not bound to a
-    // variable and can be GC'd immediately — avoids holding the full JSON text
-    // and the parsed object graph in memory simultaneously.
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
     const session = normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
     const pkgCount = Object.keys(session.packages).length;
@@ -872,12 +856,10 @@ function readSessionFile(filePath: string): SessionState | null {
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   ensureBaseDir(paths.baseDir);
-  // Create a backup of the existing config before overwriting
   if (fs.existsSync(paths.configFile)) {
     try {
       fs.copyFileSync(paths.configFile, `${paths.configFile}.bak`);
     } catch {
-      // Best-effort backup; proceed even if it fails
     }
   }
   const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
@@ -887,7 +869,7 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
     fs.writeFileSync(tempPath, payload, "utf8");
     syncRenameWithExdevFallback(tempPath, paths.configFile);
   } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(tempPath, { force: true }); } catch {  }
     throw error;
   }
 }
@@ -956,11 +938,6 @@ export function loadSession(paths: StoragePaths): SessionState {
   ensureBaseDir(paths.baseDir);
   const backupFile = sessionBackupPath(paths.sessionFile);
   const primaryExists = fs.existsSync(paths.sessionFile);
-  // A missing primary file is only a genuine "fresh start" when there is also
-  // nothing to recover from. If a backup or an interrupted-write temp file
-  // exists, fall through to the recovery chain below instead of returning an
-  // empty session — otherwise a momentarily-absent primary during an update
-  // restart would discard a perfectly good backup and wipe the whole queue.
   if (!primaryExists) {
     const hasRecoverable = fs.existsSync(backupFile)
       || fs.existsSync(sessionTempPath(paths.sessionFile, "sync"))
@@ -974,7 +951,6 @@ export function loadSession(paths: StoragePaths): SessionState {
 
   const primary = primaryExists ? readSessionFile(paths.sessionFile) : null;
 
-  // If primary loaded but is empty, check if backup has packages (safety net)
   if (primary) {
     const primaryPkgCount = Object.keys(primary.packages).length;
     if (primaryPkgCount === 0 && fs.existsSync(backupFile)) {
@@ -989,7 +965,6 @@ export function loadSession(paths: StoragePaths): SessionState {
             fs.writeFileSync(tempPath, payload, "utf8");
             syncRenameWithExdevFallback(tempPath, paths.sessionFile);
           } catch {
-            // ignore restore write failure
           }
           return backup;
         }
@@ -1007,12 +982,10 @@ export function loadSession(paths: StoragePaths): SessionState {
       fs.writeFileSync(tempPath, payload, "utf8");
       syncRenameWithExdevFallback(tempPath, paths.sessionFile);
     } catch {
-      // ignore restore write failure
     }
     return backup;
   }
 
-  // Last resort: try to recover from temp files left by interrupted writes
   for (const kind of ["sync", "async"] as const) {
     const tmpPath = sessionTempPath(paths.sessionFile, kind);
     if (fs.existsSync(tmpPath)) {
@@ -1023,7 +996,6 @@ export function loadSession(paths: StoragePaths): SessionState {
           const payload = JSON.stringify({ ...tmpSession, updatedAt: Date.now() }, safeJsonReplacer);
           fs.writeFileSync(paths.sessionFile, payload, "utf8");
         } catch {
-          // ignore restore write failure
         }
         return tmpSession;
       }
@@ -1041,7 +1013,6 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
     try {
       fs.copyFileSync(paths.sessionFile, sessionBackupPath(paths.sessionFile));
     } catch {
-      // Best-effort backup; proceed even if it fails
     }
   }
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
@@ -1050,7 +1021,7 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
     fs.writeFileSync(tempPath, payload, "utf8");
     syncRenameWithExdevFallback(tempPath, paths.sessionFile);
   } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(tempPath, { force: true }); } catch {  }
     throw error;
   }
 }
@@ -1064,7 +1035,6 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
   const tempPath = sessionTempPath(paths.sessionFile, "async");
   await fsp.writeFile(tempPath, payload, "utf8");
-  // If a synchronous save occurred after this async save started, discard the stale write
   if (generation < syncSaveGeneration) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
@@ -1088,11 +1058,6 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
 
 async function saveSessionPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   if (asyncSaveRunning) {
-    // Keep the freshest payload, but preserve the generation captured when THIS
-    // payload was snapshotted. Re-reading syncSaveGeneration at re-invoke time
-    // would let a stale queued write slip past the guard and clobber a newer
-    // synchronous save (persistNowSync/prepareForShutdown) — which could drop
-    // packages that the sync save had just persisted.
     asyncSaveQueued = { paths, payload, generation };
     return;
   }
@@ -1118,8 +1083,6 @@ export function cancelPendingAsyncSaves(): void {
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
-  // Capture the generation at snapshot time so the guard in writeSessionPayload
-  // can reliably discard this write if a synchronous save lands afterwards.
   const generation = syncSaveGeneration;
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
   await saveSessionPayloadAsync(paths, payload, generation);
@@ -1130,11 +1093,11 @@ const MAX_HISTORY_ENTRIES = 500;
 export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry | null {
   const entry = asRecord(raw);
   if (!entry) return null;
-  
+
   const id = asText(entry.id) || `hist-${Date.now().toString(36)}-${index}`;
   const name = asText(entry.name) || "Unbenannt";
   const providerRaw = asText(entry.provider);
-  
+
   return {
     id,
     name,
@@ -1155,11 +1118,11 @@ export function loadHistory(paths: StoragePaths): HistoryEntry[] {
   if (!fs.existsSync(paths.historyFile)) {
     return [];
   }
-  
+
   try {
     const raw = JSON.parse(fs.readFileSync(paths.historyFile, "utf8")) as unknown;
     if (!Array.isArray(raw)) return [];
-    
+
     const entries: HistoryEntry[] = [];
     for (let i = 0; i < raw.length && entries.length < MAX_HISTORY_ENTRIES; i++) {
       const normalized = normalizeHistoryEntry(raw[i], i);
@@ -1180,7 +1143,7 @@ export function saveHistory(paths: StoragePaths, entries: HistoryEntry[]): void 
     fs.writeFileSync(tempPath, payload, "utf8");
     syncRenameWithExdevFallback(tempPath, paths.historyFile);
   } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(tempPath, { force: true }); } catch {  }
     throw error;
   }
 }
@@ -1223,7 +1186,6 @@ export function clearHistory(paths: StoragePaths): void {
     try {
       fs.unlinkSync(paths.historyFile);
     } catch {
-      // ignore
     }
   }
 }

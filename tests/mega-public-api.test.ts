@@ -17,7 +17,6 @@ function makeRandomFileKey(): Buffer {
 
 function encryptAttributes(jsonAttrs: Record<string, unknown>, aesKey: Buffer): string {
   const plain = "MEGA" + JSON.stringify(jsonAttrs);
-  // Pad to 16-byte boundary with \0 (Mega convention).
   const padded = Buffer.from(plain, "utf8");
   const padLen = (16 - (padded.length % 16)) % 16;
   const buf = Buffer.concat([padded, Buffer.alloc(padLen, 0)]);
@@ -59,7 +58,6 @@ describe("mega-public-api", () => {
       expect(parsed?.rawKey.length).toBe(32);
     });
     it("parses legacy-format URL", () => {
-      // Make a valid legacy URL with a 32-byte key.
       const id = "abcDEF12";
       const key = makeRandomFileKey();
       const url = `https://mega.nz/#!${id}!${base64Url(key)}`;
@@ -143,7 +141,7 @@ describe("mega-public-api", () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         async json() {
-          return -9; // ENOENT — file not found
+          return -9;
         }
       } as unknown as Response);
 
@@ -156,7 +154,7 @@ describe("mega-public-api", () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         async json() {
-          return [-16]; // EBLOCKED
+          return [-16];
         }
       } as unknown as Response);
 

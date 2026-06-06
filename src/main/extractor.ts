@@ -1,7 +1,3 @@
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 1 — Imports & Konstanten
-// ════════════════════════════════════════════════════════════════════════════
-
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -46,10 +42,6 @@ const packageLearnedPasswords = new Map<string, string>();
 const EXTRACTOR_PROBE_TIMEOUT_MS = 8_000;
 const DEFAULT_EXTRACT_CPU_BUDGET_PERCENT = 80;
 let currentExtractCpuPriority: string | undefined;
-
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 2 — Types & Interfaces
-// ════════════════════════════════════════════════════════════════════════════
 
 export interface ExtractOptions {
   packageDir: string;
@@ -169,20 +161,15 @@ interface DaemonRequest {
   passwordCount: number;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 3 — Subst Drive Mapping (Windows long-path workaround)
-// ════════════════════════════════════════════════════════════════════════════
-
 const activeSubstDrives = new Set<string>();
 
 function findFreeSubstDrive(): string | null {
   if (process.platform !== "win32") return null;
-  for (let code = 90; code >= 71; code--) { // Z to G
+  for (let code = 90; code >= 71; code--) {
     const letter = String.fromCharCode(code);
     if (activeSubstDrives.has(letter)) continue;
     try {
       fs.accessSync(`${letter}:\\`);
-      // Drive exists, skip
     } catch {
       return letter;
     }
@@ -226,13 +213,8 @@ export function cleanupStaleSubstDrives(): void {
       }
     }
   } catch {
-    // ignore — subst cleanup is best-effort
   }
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 4 — Archiv-Erkennung & Kandidaten
-// ════════════════════════════════════════════════════════════════════════════
 
 export async function detectArchiveSignature(filePath: string): Promise<ArchiveSignature> {
   let fd: fs.promises.FileHandle | null = null;
@@ -368,7 +350,6 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
     return !fileNamesLower.has(`${fileName}.001`.toLowerCase());
   });
   const tarCompressed = files.filter((filePath) => /\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i.test(filePath));
-  // Generic .001 splits (HJSplit etc.) — exclude already-recognized .zip.001 and .7z.001
   const genericSplit = files.filter((filePath) => {
     const fileName = archiveDetectionName(filePath).toLowerCase();
     if (!/\.001$/.test(fileName)) return false;
@@ -406,10 +387,6 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
   return unique;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 5 — Cleanup & Dateisystem
-// ════════════════════════════════════════════════════════════════════════════
-
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -438,8 +415,6 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     }
   };
 
-  // Companion metadata files (.sfv, .nfo, .md5, etc.) share the same base stem
-  // as the archive and should be cleaned up together with the archive parts.
   const COMPANION_EXTS_RE = /\.(?:sfv|nfo|nzb|md5|sha1|sha256|crc|srr)$/i;
   const addCompanions = (stemRe: string): void => {
     for (const candidate of filesInDir) {
@@ -504,12 +479,10 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
     return Array.from(targets);
   }
 
-  // Tar compound archives (.tar.gz, .tar.bz2, .tar.xz, .tgz, .tbz2, .txz)
   if (/\.(?:tar\.(?:gz|bz2|xz)|tgz|tbz2|txz)$/i.test(fileName)) {
     return Array.from(targets);
   }
 
-  // Generic .NNN split files (HJSplit etc.)
   const genericSplit = fileName.match(/^(.*)\.(\d{3})$/i);
   if (genericSplit) {
     const stem = escapeRegex(genericSplit[1]);
@@ -572,7 +545,6 @@ export async function cleanupArchives(
         index += 1;
       }
     } catch {
-      // ignore
     }
     return false;
   };
@@ -595,7 +567,6 @@ export async function cleanupArchives(
       await fs.promises.rm(filePath, { force: true });
       removed += 1;
     } catch {
-      // ignore
     }
   }
   return removed;
@@ -684,15 +655,10 @@ export async function removeEmptyDirectoryTree(rootDir: string): Promise<number>
         removed += 1;
       }
     } catch {
-      // ignore
     }
   }
   return removed;
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 6 — Passwort-Management (LRU-Cache & Kandidaten)
-// ════════════════════════════════════════════════════════════════════════════
 
 function packagePasswordCacheKey(packageDir: string, packageId?: string): string {
   const normalizedPackageId = String(packageId || "").trim();
@@ -715,7 +681,6 @@ function readCachedPackagePassword(cacheKey: string): string {
   if (!cached) {
     return "";
   }
-  // Refresh insertion order to keep recently used package caches alive.
   packageLearnedPasswords.delete(cacheKey);
   packageLearnedPasswords.set(cacheKey, cached);
   return cached;
@@ -742,24 +707,6 @@ function clearCachedPackagePassword(cacheKey: string): void {
   packageLearnedPasswords.delete(cacheKey);
 }
 
-/**
- * Setzt den Extractor-Zustand zurück, wenn der User die Archiv-Passwortliste
- * ändert. Repliziert, was ein App-Neustart am Extractor-Subsystem tut:
- *  - leert den In-Memory Learned-Password-Cache (gelernte Passwörter aller Pakete)
- *  - fährt den langlebigen JVM-Daemon herunter (sofern nicht gerade beschäftigt),
- *    damit die nächste Extraktion mit einem frischen Prozess + frischen Passwörtern
- *    startet.
- *
- * Hintergrund: User-Report — ein neu hinzugefügtes Passwort griff bei "Jetzt
- * entpacken" erst NACH App-Neustart. Die gesamte TS/Java-Kette propagiert die
- * Liste pro Request korrekt; die einzige zustandsbehaftete Komponente, die ein
- * Neustart zurücksetzt (und dieser Aufruf ebenfalls), ist der Daemon-Prozess.
- *
- * Bewusst KEIN Shutdown eines beschäftigten Daemons: läuft gerade eine Extraktion
- * (z.B. weil Settings während des Entpackens gespeichert werden), bleibt sie
- * unangetastet — der nächste Lauf bekommt dann ggf. noch den alten Daemon, aber
- * der häufige Fall (Liste im Leerlauf ändern) wird sauber abgedeckt.
- */
 export function resetExtractorCachesForPasswordChange(): { learnedCleared: number; daemonRestarted: boolean } {
   const learnedCleared = packageLearnedPasswords.size;
   packageLearnedPasswords.clear();
@@ -819,10 +766,6 @@ function prioritizePassword(passwords: string[], successful: string): string[] {
   next.unshift(value);
   return next;
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 7 — Fehler-Klassifizierung
-// ════════════════════════════════════════════════════════════════════════════
 
 export function cleanErrorText(text: string): string {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
@@ -964,10 +907,6 @@ function isJvmRuntimeMissingError(errorText: string): boolean {
     || text.includes("enoent");
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 8 — Backend-Modus (auto / jvm / legacy)
-// ════════════════════════════════════════════════════════════════════════════
-
 export function resolveExtractorBackendMode(
   rawValue?: string | null,
   isVitestEnv = Boolean(process.env.VITEST)
@@ -993,9 +932,6 @@ export function resolveExtractorBackendModeForArchive(
   if (requestedMode !== "auto") {
     return requestedMode;
   }
-  // On Windows, multipart RAR extraction feels significantly snappier with the
-  // native CLI path than with the JVM backend, and we already harden that path
-  // with subst + flat-mode fallback.
   if (String(platform || "").toLowerCase() === "win32" && isRarArchivePath(archivePath)) {
     return "legacy";
   }
@@ -1013,10 +949,6 @@ function extractorBackendModeForArchive(archivePath: string): ExtractBackendMode
 function isRarArchivePath(filePath: string): boolean {
   return /\.(?:rar|r\d{2,3})$/i.test(String(filePath || ""));
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 9 — Native Extractor Resolution (7-Zip / WinRAR)
-// ════════════════════════════════════════════════════════════════════════════
 
 function is7zCommand(command: string): boolean {
   const lower = command.toLowerCase();
@@ -1229,12 +1161,6 @@ async function findAlternativeExtractor(currentCommand: string, archivePath = ""
   return null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 10 — CPU / Thread / Priority
-// ════════════════════════════════════════════════════════════════════════════
-
-/** Compute a safe JVM -Xmx value based on available physical RAM.
- *  Reserves 4 GB for Windows + Electron + other processes, caps at 16 GB. */
 function jvmMaxHeapArg(): string {
   const totalGb = os.totalmem() / (1024 ** 3);
   const heapGb = Math.max(1, Math.min(Math.floor(totalGb - 4), 16));
@@ -1301,13 +1227,8 @@ function lowerExtractProcessPriority(childPid: number | undefined, cpuPriority?:
   try {
     os.setPriority(pid, extractOsPriority(cpuPriority));
   } catch {
-    // ignore: priority lowering is best-effort
   }
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 11 — Prozess-Ausführung (spawn, kill, progress parsing)
-// ════════════════════════════════════════════════════════════════════════════
 
 function killProcessTree(child: { pid?: number; kill: () => void }): void {
   const pid = Number(child.pid || 0);
@@ -1315,7 +1236,6 @@ function killProcessTree(child: { pid?: number; kill: () => void }): void {
     try {
       child.kill();
     } catch {
-      // ignore
     }
     return;
   }
@@ -1330,14 +1250,12 @@ function killProcessTree(child: { pid?: number; kill: () => void }): void {
         try {
           child.kill();
         } catch {
-          // ignore
         }
       });
     } catch {
       try {
         child.kill();
       } catch {
-        // ignore
       }
     }
     return;
@@ -1346,7 +1264,6 @@ function killProcessTree(child: { pid?: number; kill: () => void }): void {
   try {
     child.kill();
   } catch {
-    // ignore
   }
 }
 
@@ -1503,10 +1420,6 @@ function runExtractCommand(
   });
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 12 — JVM Backend & Daemon
-// ════════════════════════════════════════════════════════════════════════════
-
 let cachedJvmLayout: JvmExtractorLayout | null | undefined;
 let cachedJvmLayoutNullSince = 0;
 const JVM_LAYOUT_NULL_TTL_MS = 5 * 60 * 1000;
@@ -1628,10 +1541,6 @@ function parseJvmLine(
   }
 }
 
-// ── Persistent JVM Daemon ──
-// Keeps a single JVM process alive across multiple extraction requests,
-// eliminating the ~5s JVM boot overhead per archive.
-
 let daemonProcess: ChildProcess | null = null;
 let daemonReady = false;
 let daemonBusy = false;
@@ -1645,8 +1554,8 @@ let daemonLayout: JvmExtractorLayout | null = null;
 
 export function shutdownDaemon(): void {
   if (daemonProcess) {
-    try { daemonProcess.stdin?.end(); } catch { /* ignore */ }
-    try { killProcessTree(daemonProcess); } catch { /* ignore */ }
+    try { daemonProcess.stdin?.end(); } catch {  }
+    try { killProcessTree(daemonProcess); } catch {  }
     daemonProcess = null;
   }
   daemonReady = false;
@@ -1822,7 +1731,6 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
           usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
         });
       }
-      // Clean up tmp dir
       fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
       daemonProcess = null;
       daemonReady = false;
@@ -1845,7 +1753,6 @@ function isDaemonAvailable(layout: JvmExtractorLayout): boolean {
   return Boolean(daemonProcess && daemonReady && !daemonBusy);
 }
 
-/** Wait for the daemon to become ready (boot phase) or free (busy phase), with timeout. */
 function waitForDaemonReady(maxWaitMs: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -1958,14 +1865,12 @@ async function runJvmExtractCommand(
     });
   }
 
-  // Try persistent daemon first — saves ~5s JVM boot per archive
   if (isDaemonAvailable(layout)) {
     lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
     logger.info(`JVM Daemon: Sofort verfügbar, sende Request für ${path.basename(archivePath)} (pwCandidates=${passwordCandidates.length})`);
     return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
   }
 
-  // Daemon exists but is still booting or busy — wait up to 15s for it
   if (daemonProcess) {
     const reason = !daemonReady ? "booting" : "busy";
     const waitStartedAt = Date.now();
@@ -1980,7 +1885,6 @@ async function runJvmExtractCommand(
     logger.warn(`JVM Daemon: Timeout nach ${waitedMs}ms beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
   }
 
-  // Fallback: spawn a new JVM process (daemon not available after waiting)
   logger.info(`JVM Spawn: Neuer Prozess für ${path.basename(archivePath)}`);
 
   const mode = effectiveConflictMode(conflictMode);
@@ -2149,10 +2053,6 @@ async function runJvmExtractCommand(
   });
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Sektion 13 — Legacy Extraction (buildExternalExtractArgs, runExternalExtract*)
-// ════════════════════════════════════════════════════════════════════════════
-
 export function buildExternalExtractArgs(
   command: string,
   archivePath: string,
@@ -2179,7 +2079,6 @@ export function buildExternalExtractArgs(
   return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
 }
 
-// Delay helper for extraction retries
 const extractRetryDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runExternalExtractInner(
@@ -2213,7 +2112,6 @@ async function runExternalExtractInner(
   let createErrorText = "";
   let createErrorPassword = "";
 
-  // Skip normal extraction loop if flat mode is already known to be needed for this package
   if (forceFlatMode) {
     logger.info(`Flat-Modus direkt (gespeichert vom vorherigen Archiv): ${path.basename(archivePath)}`);
     onLog?.("INFO", `Flat-Modus direkt (gespeichert vom vorherigen Archiv): ${path.basename(archivePath)}`);
@@ -2330,8 +2228,6 @@ async function runExternalExtractInner(
     lastError = result.errorText;
   }
 
-  // Some archives store internal paths with a leading \, causing invalid \\ paths.
-  // Retry in flat mode ("e" instead of "x") which strips all archive paths.
   const pathCreateError = createErrorText || (lastError.includes("Cannot create") ? lastError : "");
   if (pathCreateError) {
     const flatPasswords = createErrorPassword
@@ -2455,7 +2351,6 @@ async function runExternalExtract(
       }
     }
 
-    // Use a short drive mapping for legacy native extractors on Windows.
     subst = createSubstMapping(targetDir);
     const effectiveTargetDir = subst ? `${subst.drive}:\\` : targetDir;
     if (subst) {
@@ -2508,7 +2403,6 @@ async function runExternalExtract(
       const isCrcOrWrongPw = initialLegacyCategory === "crc_error" || initialLegacyCategory === "wrong_password";
       let finalLegacyError: Error;
 
-      // Retry once after a short delay to let Windows flush freshly completed archive parts.
       if (isCrcOrWrongPw && !signal?.aborted) {
         const retryDelayMs = 2500;
         logger.warn(
@@ -2634,10 +2528,6 @@ async function runExternalExtract(
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Sektion 14 – ZIP Extraction (AdmZip)
-// ══════════════════════════════════════════════════════════════════════════════
-
 function isZipSafetyGuardError(error: unknown): boolean {
   const text = String(error || "").toLowerCase();
   return text.includes("path traversal")
@@ -2726,9 +2616,6 @@ async function extractZipArchive(archivePath: string, targetDir: string, conflic
     let outputKey = pathSetKey(outputPath);
 
     await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
-    // TOCTOU note: There is a small race between access and writeFile below.
-    // This is acceptable here because zip extraction is single-threaded and we need
-    // the exists check to implement skip/rename conflict resolution semantics.
     const outputExists = usedOutputs.has(outputKey) || await fs.promises.access(outputPath).then(() => true, () => false);
     if (outputExists) {
       if (mode === "skip") {
@@ -2778,10 +2665,6 @@ async function extractZipArchive(archivePath: string, targetDir: string, conflic
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Sektion 15 – Disk Space, Timeout & Memory Limits
-// ══════════════════════════════════════════════════════════════════════════════
-
 async function estimateArchivesTotalBytes(candidates: string[]): Promise<number> {
   let total = 0;
   for (const archivePath of candidates) {
@@ -2789,7 +2672,7 @@ async function estimateArchivesTotalBytes(candidates: string[]): Promise<number>
     for (const part of parts) {
       try {
         total += (await fs.promises.stat(part)).size;
-      } catch { /* missing part, ignore */ }
+      } catch {  }
     }
   }
   return total;
@@ -2852,7 +2735,6 @@ async function computeExtractTimeoutMs(archivePath: string): Promise<number> {
       try {
         totalBytes += (await fs.promises.stat(filePath)).size;
       } catch {
-        // ignore missing parts
       }
     }
     if (totalBytes <= 0) {
@@ -2865,10 +2747,6 @@ async function computeExtractTimeoutMs(archivePath: string): Promise<number> {
     return EXTRACT_BASE_TIMEOUT_MS;
   }
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Sektion 16 – Resume State
-// ══════════════════════════════════════════════════════════════════════════════
 
 function extractProgressFilePath(packageDir: string, packageId?: string): string {
   if (packageId) {
@@ -2905,7 +2783,6 @@ async function writeExtractResumeState(packageDir: string, completedArchives: Se
     const tmpPath = progressPath + "." + Date.now() + "." + Math.random().toString(36).slice(2, 8) + ".tmp";
     await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
     await fs.promises.rename(tmpPath, progressPath).catch(async () => {
-      // rename may fail if another writer renamed tmpPath first (parallel workers)
       await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
     });
   } catch (error) {
@@ -2917,13 +2794,8 @@ export async function clearExtractResumeState(packageDir: string, packageId?: st
   try {
     await fs.promises.rm(extractProgressFilePath(packageDir, packageId), { force: true });
   } catch {
-    // ignore
   }
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Sektion 17 – Progress & Conflict Helpers
-// ══════════════════════════════════════════════════════════════════════════════
 
 function emitExtractLog(
   onLog: ExtractOptions["onLog"] | undefined,
@@ -2950,10 +2822,6 @@ function effectiveConflictMode(conflictMode: ConflictMode): "overwrite" | "skip"
   return "skip";
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Sektion 18 – extractPackageArchives (Orchestrierung)
-// ══════════════════════════════════════════════════════════════════════════════
-
 export async function extractPackageArchives(options: ExtractOptions): Promise<{ extracted: number; failed: number; lastError: string }> {
   if (options.signal?.aborted) {
     throw new Error("aborted:extract");
@@ -2969,12 +2837,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
   options.onLog?.("INFO", `Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
 
-  // Disk space pre-check
   if (candidates.length > 0) {
     options.onProgress?.({ current: 0, total: candidates.length, percent: 0, archiveName: "Speicherplatz prüfen...", phase: "preparing" });
     try {
       await fs.promises.mkdir(options.targetDir, { recursive: true });
-    } catch { /* ignore */ }
+    } catch {  }
     await checkDiskSpaceForExtraction(options.targetDir, candidates);
   }
 
@@ -3096,9 +2963,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
   emitProgress(extracted, "", "extracting");
 
-  // Emit "done" progress for archives already completed via resume state
-  // so the caller's onProgress handler can mark their items as "Done" immediately
-  // rather than leaving them as "Entpacken - Ausstehend" until all extraction finishes.
   for (const archivePath of candidates) {
     if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
       emitProgress(extracted, path.basename(archivePath), "extracting", 100, 0, undefined, { archiveDone: true, archiveSuccess: true });
@@ -3131,8 +2995,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
     }, 1100);
     const hybrid = Boolean(options.hybridMode);
-    // Before the first successful extraction, filename-derived candidates are useful.
-    // After a known password is learned, try that first to avoid per-archive delays.
     const filenamePasswords = archiveFilenamePasswords(archiveName);
     const nonEmptyBasePasswords = passwordCandidates.filter((p) => p !== "");
     const orderedNonEmpty = learnedPassword
@@ -3150,7 +3012,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt);
     };
 
-    // Validate generic .001 splits via file signature before attempting extraction
     const isGenericSplit = /\.\d{3}$/i.test(archiveName) && !/\.(zip|7z)\.\d{3}$/i.test(archiveName);
     if (isGenericSplit) {
       const sig = await detectArchiveSignature(archivePath);
@@ -3185,7 +3046,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
       : undefined;
     try {
-      // Set module-level priority before each extract call (race-safe: spawn is synchronous)
       currentExtractCpuPriority = options.extractCpuPriority;
       const ext = path.extname(archivePath).toLowerCase();
       if (ext === ".zip") {
@@ -3297,7 +3157,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       if (options.signal?.aborted || noExtractorEncountered) break;
       await extractSingleArchive(archivePath);
     }
-    // Count remaining archives as failed when no extractor was found
     if (noExtractorEncountered) {
       const remaining = candidates.length - (extracted + failed);
       if (remaining > 0) {
@@ -3306,8 +3165,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       }
     }
   } else {
-    // Password discovery: extract first archive serially to find the correct password,
-    // then run remaining archives in parallel with the promoted password order.
     let parallelQueue = pendingCandidates;
     if (passwordCandidates.length > 1 && pendingCandidates.length > 1) {
       logger.info(`Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
@@ -3318,7 +3175,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       } catch (err) {
         const errText = String(err);
         if (/aborted:extract/i.test(errText)) throw err;
-        // noextractor:skipped — handled by noExtractorEncountered flag below
       }
       parallelQueue = pendingCandidates.slice(1);
       if (parallelQueue.length > 0) {
@@ -3327,7 +3183,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
 
     if (parallelQueue.length > 0 && !options.signal?.aborted && !noExtractorEncountered) {
-      // Parallel extraction pool: N workers pull from a shared queue
       const queue = [...parallelQueue];
       let nextIdx = 0;
       let abortError: Error | null = null;
@@ -3342,24 +3197,20 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           } catch (error) {
             const errText = String(error);
             if (errText.includes("noextractor:skipped")) {
-              break; // handled by noExtractorEncountered flag after the pool
+              break;
             }
             if (isExtractAbortError(errText)) {
               abortError = error instanceof Error ? error : new Error(errText);
               break;
             }
-            // Non-abort errors are already handled inside extractSingleArchive
           }
         }
       };
 
       const workerCount = Math.min(maxParallel, parallelQueue.length);
       logger.info(`Parallele Extraktion: ${workerCount} gleichzeitige Worker für ${parallelQueue.length} Archive`);
-      // Snapshot passwordCandidates before parallel extraction to avoid concurrent mutation.
-      // Each worker reads the same promoted order from the serial password-discovery pass.
       const frozenPasswords = [...passwordCandidates];
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
-      // Restore passwordCandidates from frozen snapshot (parallel mutations are discarded).
       passwordCandidates = frozenPasswords;
 
       if (abortError) throw new Error("aborted:extract");
@@ -3391,11 +3242,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         }
       }
 
-      // ── Retry failed wrong_password archives serially ──
-      // Parallel UnRAR processes writing to the same target directory can cause
-      // CRC mismatches that are misreported as "Incorrect password".
-      // If any archive succeeded (i.e. the password is known), retry the failed
-      // ones one-at-a-time to eliminate false positives from I/O contention.
       if (failed > 0 && extracted > 0) {
         const failedArchives = parallelQueue.filter((ap) => !extractedArchives.has(ap) && !resumeCompleted.has(archiveNameKey(path.basename(ap))));
         if (failedArchives.length > 0) {
@@ -3404,14 +3250,12 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           for (const archivePath of failedArchives) {
             if (options.signal?.aborted || noExtractorEncountered) break;
             try {
-              // Reset failed count for this archive before retry
               failed -= 1;
               await extractSingleArchive(archivePath);
               retryRecovered += 1;
             } catch (retryError) {
               const errText = String(retryError);
               if (isExtractAbortError(errText)) throw retryError;
-              // extractSingleArchive already incremented failed and logged the error
             }
           }
           if (retryRecovered > 0) {
@@ -3430,7 +3274,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
     }
   }
 
-  // ── Nested extraction: extract archives found inside the output (1 level) ──
   if (extracted > 0 && failed === 0 && !options.skipPostCleanup && !options.onlyArchives) {
     try {
       const nestedCandidates = (await findArchiveCandidates(options.targetDir))
@@ -3559,7 +3402,6 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         await fs.promises.rm(options.targetDir, { recursive: true, force: true });
       }
     } catch {
-      // ignore
     }
   }
 

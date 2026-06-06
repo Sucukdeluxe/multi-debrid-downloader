@@ -212,18 +212,15 @@ export class BestDebridWebFallback {
           storages: ["cookies", "indexdb", "localstorage", "serviceworkers", "cachestorage"]
         });
       } catch {
-        // ignore
       }
       try {
         await currentSession.clearCache();
       } catch {
-        // ignore
       }
     }
   }
 
   public dispose(): void {
-    // nothing to clean up
   }
 
   private getPartition(): string {
@@ -344,7 +341,6 @@ export class BestDebridWebFallback {
     try {
       await currentSession.clearCache();
     } catch {
-      // ignore cache clear failures
     }
   }
 }

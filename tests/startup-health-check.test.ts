@@ -13,7 +13,6 @@ afterEach(() => {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch {
-      // ignore cleanup errors
     }
   }
 });
@@ -88,7 +87,6 @@ describe("runStartupHealthCheck", () => {
   it("flags large state files", () => {
     const { outputDir, paths } = makeTempBase();
     fs.mkdirSync(paths.baseDir, { recursive: true });
-    // 60 MB dummy state file, threshold is 50 MB
     fs.writeFileSync(paths.sessionFile, Buffer.alloc(60 * 1024 * 1024, 0));
 
     const settings = {
@@ -103,7 +101,6 @@ describe("runStartupHealthCheck", () => {
 
   it("flags missing base dir as ERROR", () => {
     const { outputDir, paths } = makeTempBase();
-    // Intentionally DON'T create baseDir.
 
     const settings = {
       ...defaultSettings(),

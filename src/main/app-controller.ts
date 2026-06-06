@@ -92,12 +92,6 @@ export class AppController {
     initAuditLog(this.storagePaths.baseDir);
     initAccountRotationLog(this.storagePaths.baseDir);
     initRenameLog(this.storagePaths.baseDir);
-    // Session-eigenes Rename-Protokoll auf dem Desktop (eigener Ordner Downloader-Log,
-    // selbstheilend) — luekenlose Uebersicht + Post-Rename-Verifikation fuer kuenftige
-    // Renaming-Diagnose, getrennt von den userData-Logs. app.getPath("desktop") wird vom
-    // Aufrufer ausgewertet (ausserhalb der modul-internen try/catch) — der "desktop"-
-    // Known-Folder kann in Headless-/Service-Account-Setups scheitern, daher hier gegen
-    // einen Startup-Crash absichern (initDesktopRenameLog behandelt null als no-op).
     let desktopDir: string | null = null;
     try {
       desktopDir = app.getPath("desktop");
@@ -135,10 +129,6 @@ export class AppController {
       appVersion: APP_VERSION,
       runtimeDir: this.storagePaths.baseDir
     });
-    // Startup Health-Check: surface problematic state early (missing download
-    // dir, low disk space, no provider configured, corrupted state file).
-    // Never blocks startup — findings go into the normal log + audit log so
-    // the user can diagnose issues before hitting them mid-download.
     try {
       const report = runStartupHealthCheck(this.settings, this.storagePaths);
       if (report.errorCount > 0 || report.warnCount > 0) {
@@ -181,8 +171,6 @@ export class AppController {
         void this.manager.getStartConflicts().then((conflicts) => {
           const hasConflicts = conflicts.length > 0;
           if (this.hasAnyProviderToken(this.settings) && !hasConflicts) {
-            // If the onState handler is already set (renderer connected), start immediately.
-            // Otherwise mark as pending so the onState setter triggers the start.
             if (this.onStateHandler) {
               logger.info("Auto-Resume beim Start aktiviert (nach Konflikt-Check)");
               void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
@@ -225,7 +213,6 @@ export class AppController {
         void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
         logger.info("Auto-Resume beim Start aktiviert");
       } else {
-        // Trigger pending extractions without starting the session
         this.manager.triggerIdleExtractions();
       }
     }
@@ -296,7 +283,6 @@ export class AppController {
       return previousSettings;
     }
 
-    // Preserve the live all-time counters from the download manager
     const liveSettings = this.manager.getSettings();
     nextSettings.totalDownloadedAllTime = Math.max(nextSettings.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
     nextSettings.totalCompletedFilesAllTime = Math.max(nextSettings.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);
@@ -310,11 +296,6 @@ export class AppController {
     nextSettings.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
       Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
     );
-    // debridAccountStatuses ist main-owned Runtime-State (wird NUR von
-    // applyDebridAccountStatuses gesetzt). Der Renderer schickt in seinem Settings-
-    // Patch eine evtl. veraltete Kopie mit; die Live-Version bewahren, damit ein
-    // Settings-Save (z.B. direkt nach Hinzufuegen+Pruefen eines Mega-Accounts im
-    // Dialog) einen frisch geprueften Status nicht ueberschreibt.
     nextSettings.debridAccountStatuses = { ...(liveSettings.debridAccountStatuses || {}) };
     const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
     this.settings = nextSettings;
@@ -401,9 +382,6 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-  /** Check login validity + premium expiry for ALL configured multi-account
-   *  credentials (Mega-Debrid accounts + Debrid-Link keys), persist the result
-   *  into settings (so badges survive restart), and return the statuses. */
 public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     const statuses = await checkAllDebridAccounts(this.settings);
     this.manager.applyDebridAccountStatuses(statuses);
@@ -415,9 +393,6 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return statuses;
   }
 
-  /** Check a SINGLE Mega-Debrid account by raw credentials (used when an account
-   *  is added in the dialog, before it is saved) and merge the result so the
-   *  validity/premium badge updates immediately — without a full "Alle pruefen". */
   public async checkSingleMegaDebridAccount(login: string, password: string): Promise<DebridAccountStatus | null> {
     const entry = parseMegaDebridAccounts(`${login.trim()}:${password.trim()}`)[0];
     if (!entry) {
@@ -438,20 +413,9 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
-    // Stop active downloads before installing. Extractions may continue briefly
-    // until prepareForShutdown() is called during app quit.
-    // parkForRestart MUST stay true here: it keeps in-flight items as "queued"
-    // (not "cancelled") so the updated app auto-resumes them after the silent
-    // install relaunch. A plain stop() marks them "cancelled"/"Gestoppt", which
-    // autoResumeOnStart does NOT pick up — the downloads then silently fail to
-    // continue after the update (the reported "packages gone after update" bug).
-    // Regression coverage: tests/update-restart-resume.test.ts asserts this exact
-    // stop({parkForRestart:true}) + persistNowSync() sequence reloads as "queued".
     if (this.manager.isSessionRunning()) {
       this.manager.stop({ parkForRestart: true });
     }
-    // Flush any pending async saves BEFORE the update process starts.
-    // This ensures the queue is fully persisted to disk so it survives the restart.
     this.manager.persistNowSync();
 
     const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
@@ -672,11 +636,9 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   public importBackup(data: Buffer): { restored: boolean; message: string } {
     let parsed: Record<string, unknown>;
     try {
-      // Try encrypted MDD format first
       const json = decryptBackup(data);
       parsed = JSON.parse(json) as Record<string, unknown>;
     } catch {
-      // Fallback: try legacy plaintext JSON (old backups)
       try {
         const json = data.toString("utf8");
         parsed = JSON.parse(json) as Record<string, unknown>;
@@ -688,11 +650,9 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
     }
 
-    // Restore settings — ALL credentials are included (no more masking)
     const importedSettings = parsed.settings as AppSettings;
     const importedSettingsRecord = importedSettings as unknown as Record<string, unknown>;
     const currentSettingsRecord = this.settings as unknown as Record<string, unknown>;
-    // Legacy backup compatibility: if credentials were masked with ***, keep current values
     const SENSITIVE_KEYS: (keyof AppSettings)[] = [
       "token", "megaLogin", "megaPassword", "bestToken", "allDebridToken",
       "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
@@ -709,19 +669,16 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
 
-    // Full stop including extraction abort
     this.manager.stop();
     this.manager.abortAllPostProcessing();
     this.manager.clearPersistTimer();
     cancelPendingAsyncSaves();
 
-    // Restore session
     const restoredSession = normalizeLoadedSessionTransientFields(
       normalizeLoadedSession(parsed.session)
     );
     saveSession(this.storagePaths, restoredSession);
 
-    // Restore history (if present in backup)
     if (Array.isArray(parsed.history) && parsed.history.length > 0) {
       const normalizedHistory = (parsed.history as unknown[])
         .map((raw, idx) => normalizeHistoryEntry(raw, idx))
@@ -734,15 +691,6 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
 
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
 
-    // Block runtime + shutdown persistence so the STALE in-memory session (the
-    // manager still holds the PRE-import session — importBackup only wrote to disk)
-    // cannot overwrite the restored data in the brief window before the auto-relaunch.
-    // The relaunch (triggered in main.ts when restored===true) starts a fresh process
-    // that loads the restored session cleanly via the normal startup path, so these
-    // flags never linger in a live session.
-    // M2-Fix: vorher blieb blockAllPersistence dauerhaft true wenn der User die
-    // manuelle "Bitte neustarten"-Aufforderung ignorierte → stille Persistenz-Blockade,
-    // alle weiteren Änderungen gingen bei hartem Crash verloren. Jetzt: Auto-Relaunch.
     this.manager.skipShutdownPersist = true;
     this.manager.blockAllPersistence = true;
     logger.info("Backup wiederhergestellt — App startet automatisch neu");

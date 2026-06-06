@@ -21,19 +21,18 @@ describe("mega-web-fallback", () => {
       globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
         const urlStr = String(url);
         fetchCallCount += 1;
-        
+
         if (urlStr.includes("form=login")) {
           const headers = new Headers();
           headers.append("set-cookie", "session=goodcookie; path=/");
           return new Response("", { headers, status: 200 });
         }
-        
+
         if (urlStr.includes("page=debrideur")) {
           return new Response('<form id="debridForm"></form>', { status: 200 });
         }
-        
+
         if (urlStr.includes("form=debrid")) {
-          // The POST to generate the code
           return new Response(`
             <div class="acp-box">
               <h3>Link: https://mega.debrid/link1</h3>
@@ -41,22 +40,20 @@ describe("mega-web-fallback", () => {
             </div>
           `, { status: 200 });
         }
-        
+
         if (urlStr.includes("ajax=debrid")) {
-          // Polling endpoint
           return new Response(JSON.stringify({ link: "https://mega.direct/123" }), { status: 200 });
         }
-        
+
         return new Response("Not found", { status: 404 });
       }) as unknown as typeof fetch;
 
       const fallback = new MegaWebFallback(() => ({ login: "user", password: "pwd" }));
-      
+
       const result = await fallback.unrestrict("https://mega.debrid/link1");
       expect(result).not.toBeNull();
       expect(result?.directUrl).toBe("https://mega.direct/123");
       expect(result?.fileName).toBe("link1");
-      // Calls: 1. Login POST, 2. Verify GET, 3. Generate POST, 4. Polling POST
       expect(fetchCallCount).toBe(4);
     });
 
@@ -83,17 +80,11 @@ describe("mega-web-fallback", () => {
       }) as unknown as typeof fetch;
 
       const fallback = new MegaWebFallback(() => ({ login: "user", password: "pwd" }));
-      // Muss schnell mit der ECHTEN Meldung scheitern — NICHT null zurückgeben (was
-      // re-Login + erneutes Pollen auslösen würde und das Rotations-Budget frisst).
       await expect(fallback.unrestrict("https://mega.debrid/l1")).rejects.toThrow(/kein server für diesen hoster/i);
       expect(ajaxCalls).toBe(1);
     });
 
     it("surfaces 'Kein Server für diesen Hoster' from the debrid PAGE (daily limit, no debrid code) instead of empty", async () => {
-      // Tageslimit dieses Accounts: die DEBRID-Seite enthält KEINEN processDebrid-Code,
-      // sondern die Limit-Meldung als Page-Error. Früher -> kein Code -> null -> "Antwort
-      // leer" (auf Message-Ebene nicht als Tageslimit erkennbar). Jetzt muss die Meldung
-      // als Fehler hochkommen, damit die Rotation den Account als limitiert behandelt.
       let ajaxCalls = 0;
       globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
         const urlStr = String(url);
@@ -106,7 +97,6 @@ describe("mega-web-fallback", () => {
           return new Response('<form id="debridForm"></form>', { status: 200 });
         }
         if (urlStr.includes("form=debrid")) {
-          // Keine processDebrid(...)-Codes — nur die Tageslimit-Meldung als Page-Error.
           return new Response('<div class="error">Erreur : Kein Server für diesen Hoster verfügbar. Bitte versuchen Sie es später noch einmal.</div>', { status: 200 });
         }
         if (urlStr.includes("ajax=debrid")) {
@@ -118,7 +108,6 @@ describe("mega-web-fallback", () => {
 
       const fallback = new MegaWebFallback(() => ({ login: "user", password: "pwd" }));
       await expect(fallback.unrestrict("https://mega.debrid/l1")).rejects.toThrow(/kein server für diesen hoster/i);
-      // Ohne Code wird gar nicht erst gepollt — die Meldung kommt direkt von der Seite.
       expect(ajaxCalls).toBe(0);
     });
 
@@ -145,9 +134,7 @@ describe("mega-web-fallback", () => {
         return new Response("Not found", { status: 404 });
       }) as unknown as typeof fetch;
 
-      // getCredentials liefert den DEFAULT/Legacy-Account ...
       const fallback = new MegaWebFallback(() => ({ login: "defaultacc", password: "defpw" }));
-      // ... aber die Rotation übergibt explizit Account 2 — DESSEN Login MUSS verwendet werden.
       const result = await fallback.unrestrict("https://mega.debrid/l1", undefined, { login: "account2", password: "pw2" });
       expect(result?.directUrl).toBe("https://mega.direct/ok");
       expect(loginsUsed).toContain("account2");
@@ -158,14 +145,14 @@ describe("mega-web-fallback", () => {
       globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
         const urlStr = String(url);
         if (urlStr.includes("form=login")) {
-          const headers = new Headers(); // No cookie
+          const headers = new Headers();
           return new Response("", { headers, status: 200 });
         }
         return new Response("Not found", { status: 404 });
       }) as unknown as typeof fetch;
 
       const fallback = new MegaWebFallback(() => ({ login: "bad", password: "bad" }));
-      
+
       await expect(fallback.unrestrict("http://mega.debrid/file"))
         .rejects.toThrow("Mega-Web Login liefert kein Session-Cookie");
     });
@@ -179,18 +166,17 @@ describe("mega-web-fallback", () => {
           return new Response("", { headers, status: 200 });
         }
         if (urlStr.includes("page=debrideur")) {
-          // Missing form!
           return new Response('<html><body>Nothing here</body></html>', { status: 200 });
         }
         return new Response("Not found", { status: 404 });
       }) as unknown as typeof fetch;
 
       const fallback = new MegaWebFallback(() => ({ login: "a", password: "b" }));
-      
+
       await expect(fallback.unrestrict("http://mega.debrid/file"))
         .rejects.toThrow("Mega-Web Login ungültig oder Session blockiert");
     });
-    
+
     it("returns null if generation fails to find a code", async () => {
       let callCount = 0;
       globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
@@ -205,7 +191,6 @@ describe("mega-web-fallback", () => {
           return new Response('<form id="debridForm"></form>', { status: 200 });
         }
         if (urlStr.includes("form=debrid")) {
-          // The generate POST returns HTML without any codes
           return new Response(`<div>No links here</div>`, { status: 200 });
         }
         return new Response("Not found", { status: 404 });
@@ -213,8 +198,7 @@ describe("mega-web-fallback", () => {
 
       const fallback = new MegaWebFallback(() => ({ login: "a", password: "b" }));
       const result = await fallback.unrestrict("http://mega.debrid/file");
-      
-      // Generation fails -> resets cookie -> tries again -> fails again -> returns null
+
       expect(result).toBeNull();
     });
 

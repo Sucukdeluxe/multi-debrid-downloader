@@ -17,7 +17,6 @@ function makeItems(names: string[]): MinimalItem[] {
 }
 
 describe("resolveArchiveItemsFromList", () => {
-  // ── Multipart RAR (.partN.rar) ──
 
   it("matches multipart .part1.rar archives", () => {
     const items = makeItems([
@@ -46,8 +45,6 @@ describe("resolveArchiveItemsFromList", () => {
     expect(result).toHaveLength(3);
   });
 
-  // ── Old-style RAR (.rar + .r00, .r01, etc.) ──
-
   it("matches old-style .rar + .rNN volumes", () => {
     const items = makeItems([
       "Archive.rar",
@@ -60,16 +57,12 @@ describe("resolveArchiveItemsFromList", () => {
     expect(result).toHaveLength(4);
   });
 
-  // ── Single RAR ──
-
   it("matches a single .rar file", () => {
     const items = makeItems(["SingleFile.rar", "Other.mkv"]);
     const result = resolveArchiveItemsFromList("SingleFile.rar", items as any);
     expect(result).toHaveLength(1);
     expect((result[0] as any).fileName).toBe("SingleFile.rar");
   });
-
-  // ── Split ZIP ──
 
   it("matches split .zip.NNN files", () => {
     const items = makeItems([
@@ -82,8 +75,6 @@ describe("resolveArchiveItemsFromList", () => {
     expect(result).toHaveLength(4);
   });
 
-  // ── Split 7z ──
-
   it("matches split .7z.NNN files", () => {
     const items = makeItems([
       "Backup.7z.001",
@@ -92,8 +83,6 @@ describe("resolveArchiveItemsFromList", () => {
     const result = resolveArchiveItemsFromList("Backup.7z.001", items as any);
     expect(result).toHaveLength(2);
   });
-
-  // ── Generic .NNN splits ──
 
   it("matches generic .NNN split files", () => {
     const items = makeItems([
@@ -105,16 +94,12 @@ describe("resolveArchiveItemsFromList", () => {
     expect(result).toHaveLength(3);
   });
 
-  // ── Exact filename match ──
-
   it("matches a single .zip by exact name", () => {
     const items = makeItems(["myarchive.zip", "other.rar"]);
     const result = resolveArchiveItemsFromList("myarchive.zip", items as any);
     expect(result).toHaveLength(1);
     expect((result[0] as any).fileName).toBe("myarchive.zip");
   });
-
-  // ── Case insensitivity ──
 
   it("matches case-insensitively", () => {
     const items = makeItems([
@@ -125,39 +110,25 @@ describe("resolveArchiveItemsFromList", () => {
     expect(result).toHaveLength(2);
   });
 
-  // ── Stem-based fallback ──
-
   it("uses stem-based fallback when exact patterns fail", () => {
-    // Simulate a debrid service that renames "Movie.part1.rar" to "Movie.part1_dl.rar"
-    // but the disk file is "Movie.part1.rar"
     const items = makeItems([
       "Movie.rar",
     ]);
-    // The archive on disk is "Movie.part1.rar" but there's no item matching the
-    // .partN pattern. The stem "movie" should match "Movie.rar" via fallback.
     const result = resolveArchiveItemsFromList("Movie.part1.rar", items as any);
-    // stem fallback: "movie" starts with "movie" and ends with .rar
     expect(result).toHaveLength(1);
   });
-
-  // ── Single item fallback ──
 
   it("returns single archive item when no pattern matches", () => {
     const items = makeItems(["totally-different-name.rar"]);
     const result = resolveArchiveItemsFromList("Original.rar", items as any);
-    // Single item in list with archive extension → return it
     expect(result).toHaveLength(1);
   });
-
-  // ── Empty when no match ──
 
   it("returns empty when items have no archive extensions", () => {
     const items = makeItems(["video.mkv", "subtitle.srt"]);
     const result = resolveArchiveItemsFromList("Archive.rar", items as any);
     expect(result).toHaveLength(0);
   });
-
-  // ── Items without targetPath ──
 
   it("falls back to fileName when targetPath is missing", () => {
     const items = [
@@ -167,8 +138,6 @@ describe("resolveArchiveItemsFromList", () => {
     const result = resolveArchiveItemsFromList("Movie.part1.rar", items as any);
     expect(result).toHaveLength(2);
   });
-
-  // ── Multiple archives, should not cross-match ──
 
   it("does not cross-match different archive groups", () => {
     const items = makeItems([

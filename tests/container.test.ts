@@ -22,9 +22,7 @@ describe("container", () => {
     const oversizedFilePath = path.join(dir, "oversized.dlc");
     fs.writeFileSync(oversizedFilePath, Buffer.alloc((8 * 1024 * 1024) + 1, 1));
 
-    // Create a valid mockup DLC that would be skipped if an error was thrown
     const validFilePath = path.join(dir, "valid.dlc");
-    // Just needs to be short enough to pass file limits but fail parsing, triggering dcrypt fallback
     fs.writeFileSync(validFilePath, Buffer.from("Valid but not real DLC content..."));
 
     const fetchSpy = vi.fn(async (url: string | URL | Request) => {
@@ -38,7 +36,6 @@ describe("container", () => {
 
     const result = await importDlcContainers([oversizedFilePath, validFilePath]);
 
-    // Expect the oversized to be silently skipped, and valid to be parsed into 1 package with DLC filename
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("valid");
     expect(result[0].links).toEqual(["http://example.com/file1.rar", "http://example.com/file2.rar"]);
@@ -60,17 +57,14 @@ describe("container", () => {
     tempDirs.push(dir);
     const filePath = path.join(dir, "fallback.dlc");
 
-    // A file large enough to trigger local decryption attempt (needs > 89 bytes to pass the slice check)
     fs.writeFileSync(filePath, Buffer.alloc(100, 1).toString("base64"));
 
     const fetchSpy = vi.fn(async (url: string | URL | Request) => {
       const urlStr = String(url);
       if (urlStr.includes("service.jdownloader.org")) {
-        // Mock local RC service failure (returning 404)
         return new Response("", { status: 404 });
       }
       if (urlStr.includes("dcrypt.it/decrypt/upload")) {
-        // Mock dcrypt fallback success
         return new Response("http://fallback.com/1", { status: 200 });
       }
       return new Response("", { status: 404 });
@@ -81,7 +75,6 @@ describe("container", () => {
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("fallback");
     expect(result[0].links).toEqual(["http://fallback.com/1"]);
-    // Should have tried both!
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
@@ -135,7 +128,6 @@ describe("container", () => {
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("big-dlc");
     expect(result[0].links).toEqual(["http://paste-fallback.com/file1.rar", "http://paste-fallback.com/file2.rar"]);
-    // local RC + upload + paste = 3 calls
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 

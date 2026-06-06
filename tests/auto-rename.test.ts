@@ -14,10 +14,6 @@ import {
 } from "../src/main/download-manager";
 
 describe("decideAutoRenameBaseName (shared naming decision — used by auto-rename AND mkv-collect)", () => {
-  // Characterization corpus: pins the EXACT decision for the real failures from
-  // rename-session_2026-06-02 (17 raw files that mkv-move moved un-renamed) plus
-  // the guard cases. mkv-collect now routes through this same function so a file
-  // auto-rename missed still lands clean in the library.
 
   it("derives the clean name for a Herzflimmern episode from the per-episode folder (S07E12 — the reported failure)", () => {
     const source = "tvarchiv.herzflimmern.die.klinik.am.see.s07e12-720.mkv";
@@ -78,7 +74,6 @@ describe("decideAutoRenameBaseName (shared naming decision — used by auto-rena
   });
 
   it("GUARD: lets the parent folder token override an OBFUSCATED source filename (anti-piracy scramble)", () => {
-    // Obfuscated file (E16) inside an explicitly-named E01 folder → trust the folder.
     const decision = decideAutoRenameBaseName(
       ["Die.Thundermans.S02E01.Der.Thunder.Van.GERMAN.x264-aWake"],
       "awa-diethundermans02e16hd.mkv",
@@ -91,7 +86,6 @@ describe("decideAutoRenameBaseName (shared naming decision — used by auto-rena
   });
 
   it("GUARD: a CLEAN scene source is NEVER overridden by a mismatching folder token (folder is wrong, not the file)", () => {
-    // Clean source S01E09 in a folder that says E08 → must NOT rename to E08.
     const decision = decideAutoRenameBaseName(
       ["The.Royals.2015.S01E08.German.DL.720p.BluRay.x264-iNTENTiON"],
       "the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f.mkv",
@@ -115,9 +109,6 @@ describe("decideAutoRenameBaseName (shared naming decision — used by auto-rena
   });
 
   it("uses the CLEAN per-episode folder (scene group WITH underscore, e.g. -idTV_iNT) — not the obfuscated package folder", () => {
-    // User-Report v1.7.178: castle.s08e02....mkv im sauberen Ordner "Castle.S08E02...H264-idTV_iNT"
-    // (Paket: "scn2-cstl7") wurde zu "scn2-cstl7.S08E02" verschlimmbessert, weil hasSceneGroupSuffix
-    // die Unterstrich-Gruppe "-idTV_iNT" nicht erkannte und auf den Paketordner zurueckfiel.
     const epFolder = "Castle.S08E02.GERMAN.DL.720p.WEB.H264-idTV_iNT";
     const decision = decideAutoRenameBaseName(
       [epFolder, "scn2-cstl7"],
@@ -131,9 +122,6 @@ describe("decideAutoRenameBaseName (shared naming decision — used by auto-rena
   });
 
   it("uses the complete per-episode folder when the SOURCE has no SxxExx token (bare 'Folge 01' format)", () => {
-    // User-Report: "Kreuzfahrt ins Glück" — Datei "bet_kig_01_hdt.mkv" (kein SxxExx-Token),
-    // Episoden-Ordner nummeriert mit "01" statt S01E01. Frueher "kein Zielname" -> roh in die
-    // Library. Jetzt: der vollstaendige Release-Ordnername wird direkt verwendet.
     const folders = [
       "Kreuzfahrt.ins.Glueck.01.Hochzeitsreise.nach.Burma.2007.German.720p.HDTV.x264-BET",
       "kig.hdtv.7p-001",
@@ -189,14 +177,12 @@ describe("hasMeaningfulSeriesPrefix", () => {
 
 describe("looksLikeObfuscatedSceneFileName", () => {
   it("flags hoster-obfuscated names with no scene markers as obfuscated", () => {
-    // No 720p / german / x264 / bluray, no dot-separated structure
     expect(looksLikeObfuscatedSceneFileName("awa-diethundermans02e16hd.mkv")).toBe(true);
     expect(looksLikeObfuscatedSceneFileName("scn-dthund7-S02E06.mkv")).toBe(true);
     expect(looksLikeObfuscatedSceneFileName("4sj-blue-bloods-s08e21-720p.mkv")).toBe(true);
   });
 
   it("treats clean scene releases with multiple markers as NOT obfuscated", () => {
-    // Has 720p + german + bluray + x264 — clearly a clean scene file
     expect(looksLikeObfuscatedSceneFileName("the.royals.2015.s01e09.german.dl.720p.bluray.x264-j4f.mkv")).toBe(false);
     expect(looksLikeObfuscatedSceneFileName("Die.Thundermans.S02E06.Tickets.und.Shreddy.GERMAN.WS.720p.HDTV.x264-aWake.mkv")).toBe(false);
     expect(looksLikeObfuscatedSceneFileName("Desperate.Housewives.S01E01.German.Synced.DL.720p.WEB-DL.AC3.h264.mkv")).toBe(false);
@@ -208,7 +194,6 @@ describe("looksLikeObfuscatedSceneFileName", () => {
   });
 
   it("treats long dotted names as scene-style even with few markers", () => {
-    // 6+ dots → looks like scene structure even without quality/codec markers
     expect(looksLikeObfuscatedSceneFileName("Some.Show.With.Many.Tokens.S01E01.mkv")).toBe(false);
   });
 });
@@ -218,31 +203,22 @@ describe("extractEpisodeToken (extended formats)", () => {
     expect(extractEpisodeToken("show.1x01.720p.mkv")).toBe("S01E01");
     expect(extractEpisodeToken("show-2x05-hdtv.mkv")).toBe("S02E05");
     expect(extractEpisodeToken("Show.Name.10x99.mkv")).toBe("S10E99");
-    // 3-digit episode in xX format is intentionally NOT supported — would
-    // collide with codec tokens (x264/x265/x266). 3-digit episodes still
-    // work in the modern SxxEnnn format which has explicit S/E delimiters.
     expect(extractEpisodeToken("Show.Name.10x100.mkv")).toBeNull();
     expect(extractEpisodeToken("Show.Name.S10E100.mkv")).toBe("S10E100");
   });
 
   it("does not falsely match resolution tokens like 1080x720", () => {
-    // The xX regex is bounded; 1080p shouldn't match as "1080x???" because
-    // there's no second number group in 1080p / 720p / etc.
     expect(extractEpisodeToken("show.1080p.mkv")).toBeNull();
     expect(extractEpisodeToken("show.S01E01.1080p.mkv")).toBe("S01E01");
   });
 
   it("does not falsely match codec tokens like x264 / x265 (caps episode digits)", () => {
-    // First number 5, second number capped to 2 digits → "5x265" CANNOT
-    // match because 265 has 3 digits. Same for x264, x266, h264, h265.
     expect(extractEpisodeToken("Movie.x264-GROUP.mkv")).toBeNull();
     expect(extractEpisodeToken("Movie.5x265.x265.mkv")).toBeNull();
-    // SxxExx still wins ahead of phantom xX matches.
     expect(extractEpisodeToken("Show.S01E01.x265-GROUP.mkv")).toBe("S01E01");
   });
 
   it("does not falsely match common aspect ratios like 1920x1080", () => {
-    // 1920 has 4 digits, first group capped at 2 → no match.
     expect(extractEpisodeToken("Movie.1920x1080.mkv")).toBeNull();
   });
 });
@@ -491,7 +467,6 @@ describe("buildAutoRenameBaseName", () => {
     expect(result).toBeNull();
   });
 
-  // Edge cases
   it("handles 2160p quality token", () => {
     const result = buildAutoRenameBaseName("Show.S01.2160p-4sf", "show.s01e01.rp.2160p.mkv");
     expect(result).toBe("Show.S01E01.REPACK.2160p-4sf");
@@ -509,12 +484,10 @@ describe("buildAutoRenameBaseName", () => {
 
   it("handles high season and episode numbers", () => {
     const result = buildAutoRenameBaseName("Show.S99.720p-4sf", "show.s99e999.720p.mkv");
-    // SCENE_EPISODE_RE allows up to 3-digit episodes and 2-digit seasons
     expect(result).not.toBeNull();
     expect(result!).toContain("S99E999");
   });
 
-  // Real-world scene release patterns
   it("real-world: German series with dots", () => {
     const result = buildAutoRenameBaseName(
       "Der.Bergdoktor.S18.German.720p.WEB.x264-4SJ",
@@ -579,18 +552,13 @@ describe("buildAutoRenameBaseName", () => {
     expect(result).toBe("Cobra.Kai.S06E14.720p.NF.WEB-DL.DDP5.1.x264-4SF");
   });
 
-  // Bug-hunting edge cases
   it("source filename extension is not included in episode detection", () => {
-    // The sourceFileName passed to buildAutoRenameBaseName is the basename without extension
-    // so .mkv should not interfere, but let's verify with an actual extension
     const result = buildAutoRenameBaseName("Show.S01-4sf", "show.s01e01.mkv");
-    // "mkv" should not be treated as part of the filename match
     expect(result).not.toBeNull();
     expect(result!).toContain("S01E01");
   });
 
   it("does not match episode-like patterns in codec strings", () => {
-    // h.265 has digits but should not be confused with episode tokens
     const token = extractEpisodeToken("show.s01e01.h.265");
     expect(token).toBe("S01E01");
   });
@@ -608,23 +576,19 @@ describe("buildAutoRenameBaseName", () => {
       "Show.S01E05.720p-4sf",
       "show.s01e05.720p"
     );
-    // Must NOT produce "Show.S01E05.720p.S01E05-4sf" (double episode bug)
     expect(result).toBe("Show.S01E05.720p-4sf");
   });
 
   it("handles folder with only -4sf suffix (edge case)", () => {
     const result = buildAutoRenameBaseName("-4sf", "show.s01e01.mkv");
-    // Extreme edge case - sanitizeFilename trims leading dots
     expect(result).not.toBeNull();
     expect(result!).toContain("S01E01");
     expect(result!).toContain("-4sf");
-    expect(result!).not.toContain(".S01E01.S01E01"); // no duplication
+    expect(result!).not.toContain(".S01E01.S01E01");
   });
 
   it("sanitizes special characters from result", () => {
-    // sanitizeFilename should strip dangerous chars
     const result = buildAutoRenameBaseName("Show:Name.S01-4sf", "show.s01e01.mkv");
-    // The colon should be sanitized away
     expect(result).not.toBeNull();
     expect(result!).not.toContain(":");
   });
@@ -888,7 +852,6 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
     expect(result).toBe("Mammon.S01E05E06.German.1080P.Bluray.x264-SMAHD");
   });
 
-  // Last-resort fallback: folder has season but no scene group suffix (user-renamed packages)
   it("renames when folder has season but no scene group suffix (Mystery Road case)", () => {
     const result = buildAutoRenameBaseNameFromFoldersWithOptions(
       ["Mystery Road S02"],
@@ -916,7 +879,6 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
       "myst.road.de.dl.hdtv.7p-s02e05",
       { forceEpisodeForSeasonFolder: true }
     );
-    // Should use the scene-group folder (hrs), not the custom one
     expect(result).toBe("Mystery.Road.S02E05.GERMAN.DL.AC3.720p.HDTV.x264-hrs");
   });
 
@@ -1002,11 +964,6 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
   });
 
   it("documents malformed package name (S01GERMAN) limitation", () => {
-    // Real-world: "Drei.Meter.ueber.dem.Himmel.S01GERMAN.DL.720P.WEB.X264-WAYNE"
-    // is malformed (no separator between S01 and GERMAN). SCENE_SEASON_ONLY_RE
-    // doesn't match this, so the helper falls back to the package name as-is.
-    // The download-manager autoRenameExtractedVideoFiles safety net repairs
-    // this at runtime by inserting the source's episode token.
     const result = buildAutoRenameBaseNameFromFoldersWithOptions(
       [
         "3MH.web.7p-101",
@@ -1015,8 +972,6 @@ describe("buildAutoRenameBaseNameFromFolders", () => {
       "Drei.Meter.ueber.dem.Himmel.S01E01.GERMAN.DL.720P.WEB.X264-WAYNE",
       { forceEpisodeForSeasonFolder: true }
     );
-    // Helper limitation: returns the malformed folder name unchanged.
-    // The download-manager safety net catches this at runtime.
     if (result !== null) {
       expect(typeof result).toBe("string");
     }
@@ -1027,7 +982,6 @@ describe("isBonusContent (numbered episodes are never bonus)", () => {
   const pkgDir = "/pkg/Show.S04.GERMAN.DL.720p.WEB.x264-GRP";
 
   it("does NOT treat a numbered episode as bonus even when its TITLE is a bonus word", () => {
-    // Der gemeldete Bug: Revenge.2011.S04E19.Interview wurde als Bonus verworfen.
     const name = "Revenge.2011.S04E19.Interview.GERMAN.DL.720p.WEB.x264-TSCC";
     const fp = `${pkgDir}/${name}/${name}.mkv`;
     expect(isBonusContent(fp, pkgDir, name)).toBe(false);
@@ -1066,9 +1020,6 @@ describe("complete episode folder WITHOUT group suffix (codec/resolution only)",
   const hash = "c284d9d9072eaf3ac314d05f951dd115";
 
   it("uses the clean folder name when it has an episode token + codec but no -GROUP (safari S04E08a)", () => {
-    // Echter Bug (rename-session 2026-06-04): alte deutsche Doku ohne Gruppen-Suffix.
-    // Ordner endet auf ".XviD" (kein "-GROUP") -> buildAutoRenameBaseName lieferte null ->
-    // "kein Zielname" -> Datei landete roh als "safari-fm-s04e08a.avi" in der Library.
     const folder = "Fluss-Monster.S04E08a.Am.Essequibo.Teil.1.German.DOKU.SATRiP.XviD";
     const decision = decideAutoRenameBaseName([folder, hash], "safari-fm-s04e08a.avi", "safari-fm-s04e08a", hash, hash);
     expect(decision).toEqual({ kind: "rename", baseName: folder });
@@ -1081,7 +1032,6 @@ describe("complete episode folder WITHOUT group suffix (codec/resolution only)",
     const db = decideAutoRenameBaseName([fb, hash], "safari-fm-s04e08b.avi", "safari-fm-s04e08b", hash, hash);
     expect(da).toEqual({ kind: "rename", baseName: fa });
     expect(db).toEqual({ kind: "rename", baseName: fb });
-    // Verschiedene Zielnamen -> keine "(2)"-Kollision beim Sammeln.
     expect((da as any).baseName).not.toBe((db as any).baseName);
   });
 
@@ -1092,8 +1042,6 @@ describe("complete episode folder WITHOUT group suffix (codec/resolution only)",
   });
 
   it("does NOT use a bare episode folder WITHOUT any codec/resolution marker (stays conservative)", () => {
-    // "Show.S01E01" allein (keine Qualitaets-/Codec-Info, kein -GROUP) ist mehrdeutig ->
-    // weiterhin kein Ableiten (kein Over-Firing auf generische Ordner).
     const decision = decideAutoRenameBaseName(["Show.S01E01", hash], "abc-s01e01.avi", "abc-s01e01", hash, hash);
     expect(decision.kind).toBe("skip");
   });
@@ -1106,11 +1054,6 @@ describe("complete episode folder WITHOUT group suffix (codec/resolution only)",
 
 describe("collect must not mangle an already-clean SxxExx name via an episode-title folder", () => {
   const hash = "c284d9d9072eaf3ac314d05f951dd115";
-  // Echter Bug (rename-session 2026-06-05): Miniserie "Steven Spielbergs Taken". Auto-Rename
-  // benannte korrekt zu "...S01E01...-GTVG". Der per-Episode-Ordner traegt aber nur einen
-  // Episode-only-Token + Titel ("...E01.Hinter.dem.Himmel...-GTVG", KEIN S01). Der Collect leitete
-  // daraus neu ab und HAENGTE den Quell-Token verkrueppelt an: "...-GTVG.S01E01" → in der Library
-  // stand dann "E01.Titel...S01E01" statt sauber "S01E01".
   const epFolder = "Steven.Spielbergs.Taken.E01.Hinter.dem.Himmel.German.720p.HDTV.x264-GTVG";
   const pkgFolder = "Steven.Spielbergs.Taken.S01.German.720p.HDTV.x264-GTVG";
   const cleanSource = "Steven.Spielbergs.Taken.S01E01.German.720p.HDTV.x264-GTVG";
@@ -1118,14 +1061,10 @@ describe("collect must not mangle an already-clean SxxExx name via an episode-ti
   it("keeps the clean source (skip) instead of appending the token to the episode-title folder", () => {
     const decision = decideAutoRenameBaseName([epFolder, pkgFolder], cleanSource + ".mkv", cleanSource, epFolder, pkgFolder);
     expect(decision.kind).toBe("skip");
-    // NICHT der verkrueppelte "...-GTVG.S01E01"-Name.
     expect(JSON.stringify(decision)).not.toContain("GTVG.S01E01");
   });
 
   it("still cleans a JUNK/obfuscated source via an episode-title folder (append path intact, no skip)", () => {
-    // Obfuskierter Hoster-Name (obf=true) → meine Klausel greift NICHT (sie behaelt nur saubere
-    // Quellen). Mit Season-Ordner als Kontext (Root-Guard ok) wird der Token weiter angewandt:
-    // die Quelle wird NICHT roh behalten. Pruegt, dass der Fix nicht zu breit ist.
     const epFolder = "Show.E05.Die.Sache.German.720p.HDTV.x264-GRP";
     const seasonFolder = "Show.S01.German.720p.HDTV.x264-GRP";
     const decision = decideAutoRenameBaseName([epFolder, seasonFolder], "scn-show7-S01E05.mkv", "scn-show7-S01E05", epFolder, seasonFolder);
@@ -1140,9 +1079,6 @@ describe("collect must not mangle an already-clean SxxExx name via an episode-ti
   });
 
   it("keeps a clean SHORT-prefix series source (ER) instead of the crippled token append", () => {
-    // Adversarial-Befund: die Praefix-Laenge darf KEIN Kriterium sein. Kurze Serien (ER, V, 24, Yu)
-    // sind genauso autoritativ; mit dem alten `hasMeaningfulSeriesPrefix`-Konjunkt (>=3 Alpha vor S0x)
-    // waere ER durchgefallen -> selber verkrueppelter Name wie der gemeldete Bug.
     const epFolder = "ER.E01.Tag.und.Nacht.German.720p.HDTV.x264-GROUP";
     const seasonFolder = "ER.S01.German.720p.HDTV.x264-GROUP";
     const cleanSource = "ER.S01E01.German.720p.HDTV.x264-GROUP";

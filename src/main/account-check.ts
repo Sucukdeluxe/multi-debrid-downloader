@@ -4,18 +4,6 @@ import { parseDebridLinkApiKeys, type DebridLinkApiKeyEntry } from "../shared/de
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
 
-/**
- * Account-Validity + Premium-Check fuer Multi-Account-Provider.
- *
- * Standalone (eigene fetch-Calls, kein Import aus debrid.ts) damit es ohne
- * Zirkular-Abhaengigkeit von der "Check all"-IPC und beim Programmstart genutzt
- * werden kann.
- *
- * Verifizierte API-Felder (Live-Probe):
- *  - Mega-Debrid connectUser -> { response_code:"ok", token, vip_end (Unix-ts), email }
- *  - Debrid-Link /account/infos -> { success, value: { accountType, premiumLeft (s), username } }
- */
-
 const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const DEBRID_LINK_API = "https://debrid-link.com/api/v2";
 const CHECK_USER_AGENT =
@@ -55,7 +43,6 @@ function formatRemaining(premiumUntilMs: number | null, now: number): string {
   return `Premium noch ${hours} Std`;
 }
 
-/** Check a single Mega-Debrid account via connectUser. */
 export async function checkMegaDebridAccount(
   account: MegaDebridAccountEntry,
   signal?: AbortSignal,
@@ -87,7 +74,6 @@ export async function checkMegaDebridAccount(
       const reason = String(payload.response_text || payload.response_code || "Login abgelehnt");
       return { ...base, message: `Ungueltiger Login: ${reason}` };
     }
-    // vip_end is a Unix timestamp (seconds). 0 / missing => no premium.
     const vipEndRaw = Number(payload.vip_end || 0);
     const premiumUntilMs = Number.isFinite(vipEndRaw) && vipEndRaw > 0 ? vipEndRaw * 1000 : 0;
     const isPremium = premiumUntilMs > now;
@@ -110,7 +96,6 @@ export async function checkMegaDebridAccount(
   }
 }
 
-/** Check a single Debrid-Link API key via /account/infos. */
 export async function checkDebridLinkKey(
   key: DebridLinkApiKeyEntry,
   signal?: AbortSignal,
@@ -138,7 +123,6 @@ export async function checkDebridLinkKey(
     const text = await response.text();
     const payload = parseJsonSafe(text);
     if (!response.ok || !payload) {
-      // 401 = bad/expired token
       if (response.status === 401 || response.status === 403) {
         return { ...base, message: "Ungueltiger API-Key (nicht autorisiert)" };
       }
@@ -149,7 +133,6 @@ export async function checkDebridLinkKey(
       return { ...base, message: `Ungueltiger API-Key: ${reason}` };
     }
     const value = (payload.value && typeof payload.value === "object" ? payload.value : payload) as Record<string, unknown>;
-    // premiumLeft = seconds of premium remaining. accountType>0 also indicates premium.
     const premiumLeftSec = Number(value.premiumLeft || 0);
     const accountType = Number(value.accountType || 0);
     const premiumUntilMs = Number.isFinite(premiumLeftSec) && premiumLeftSec > 0 ? now + premiumLeftSec * 1000 : 0;
@@ -175,8 +158,6 @@ export async function checkDebridLinkKey(
   }
 }
 
-/** Check ALL configured multi-account credentials (Mega-Debrid accounts +
- *  Debrid-Link keys) concurrently. Returns one status per account id. */
 export async function checkAllDebridAccounts(
   settings: AppSettings,
   signal?: AbortSignal
@@ -185,9 +166,6 @@ export async function checkAllDebridAccounts(
   const megaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
   const debridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
 
-  // Each task is a thunk so we can throttle concurrency. Firing all accounts at
-  // once (e.g. 9+ Debrid-Link keys) can trip provider rate-limits and produce
-  // false "invalid" badges, so cap at CHECK_CONCURRENCY parallel checks.
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
     ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now))
@@ -203,7 +181,6 @@ export async function checkAllDebridAccounts(
 
 const CHECK_CONCURRENCY = 4;
 
-/** Run thunks with a bounded number in flight, preserving result order. */
 async function runWithConcurrency<T>(taskFns: Array<() => Promise<T>>, limit: number): Promise<T[]> {
   const results: T[] = new Array(taskFns.length);
   let nextIndex = 0;

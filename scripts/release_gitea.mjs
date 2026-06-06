@@ -116,7 +116,6 @@ function getGiteaRepo() {
       }
       return { remote, ...parsed, baseUrl: `${preferredProtocol}//${parsed.host}` };
     } catch {
-      // try next remote
     }
   }
 
@@ -256,9 +255,6 @@ async function createOrGetRelease(baseApi, tag, authHeader, notes) {
     target_commitish: "main",
     name: tag,
     body: notes || `Release ${tag}`,
-    // Als Draft anlegen — der Auto-Updater ueberspringt Drafts. So wird das Release erst
-    // NACH dem Asset-Upload (unten via PATCH draft:false) "latest"; ein Update-Check kann
-    // nie ein Release ohne Setup/latest.yml sehen ("Setup-Asset nicht gefunden").
     draft: true,
     prerelease: false
   };
@@ -266,8 +262,6 @@ async function createOrGetRelease(baseApi, tag, authHeader, notes) {
   if (created.ok) {
     return created.body;
   }
-  // Gitea can return 409/422/500 UNIQUE when the release was already partially created.
-  // Retry the GET — it may now exist.
   if (created.status === 409 || created.status === 422 || created.status === 500) {
     const retry = await apiRequest("GET", `${baseApi}/releases/tags/${encodeURIComponent(tag)}`, authHeader);
     if (retry.ok) {
@@ -285,11 +279,6 @@ async function uploadReleaseAssets(baseApi, releaseId, authHeader, releaseDir, f
     const fileSize = fs.statSync(filePath).size;
     const uploadUrl = `${baseApi}/releases/${releaseId}/assets?name=${encodeURIComponent(fileName)}`;
 
-    // Grosse Assets (~80MB Setup/portable) brechen gelegentlich mitten im Upload ab
-    // (Netzwerk-Reset oder 5xx). Da das Release vorher als Draft angelegt wird, bleibt ein
-    // Fehlschlag hier unsichtbar — aber der Release ist dann unvollstaendig. Deshalb je Asset
-    // bis zu MAX_ATTEMPTS Versuche mit Backoff; ein konsumierter Stream laesst sich nicht
-    // erneut senden, also pro Versuch einen FRISCHEN createReadStream.
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const fileStream = fs.createReadStream(filePath);
       let response;
@@ -331,7 +320,6 @@ async function uploadReleaseAssets(baseApi, releaseId, authHeader, releaseDir, f
         process.stdout.write(`Skipped existing asset: ${fileName}\n`);
         break;
       }
-      // 5xx = transient -> neu versuchen; 4xx (ausser 409/422) = echter Fehler -> abbrechen.
       if (response.status >= 500 && attempt < MAX_ATTEMPTS) {
         process.stdout.write(`Upload ${fileName} fehlgeschlagen (${response.status}, Versuch ${attempt}/${MAX_ATTEMPTS}), neuer Versuch...\n`);
         await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
@@ -390,9 +378,6 @@ async function main() {
   const release = await createOrGetRelease(baseApi, tag, authHeader, releaseNotes);
   await uploadReleaseAssets(baseApi, release.id, authHeader, assets.releaseDir, assets.files);
 
-  // Erst JETZT veroeffentlichen (draft:false), nachdem ALLE Assets oben hochgeladen sind.
-  // Davor war das Release den ganzen Upload ueber sichtbar, aber ohne latest.yml/Setup →
-  // Auto-Update-Checks in diesem Fenster scheiterten mit "Setup-Asset nicht gefunden".
   const published = await apiRequest("PATCH", `${baseApi}/releases/${release.id}`, authHeader, JSON.stringify({ draft: false }));
   if (!published.ok) {
     throw new Error(`Failed to publish release (${published.status}): ${JSON.stringify(published.body)}`);

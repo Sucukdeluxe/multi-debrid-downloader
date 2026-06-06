@@ -113,13 +113,11 @@ function parsePackagesFromDlcXml(xml: string): ParsedPackageInput[] {
           try {
             fileName = Buffer.from(fnMatch[1].trim(), "base64").toString("utf8").trim();
           } catch {
-            // ignore
           }
         }
         links.push(url);
         fileNames.push(sanitizeFilename(fileName));
       } catch {
-        // skip broken entries
       }
     }
 
@@ -132,7 +130,6 @@ function parsePackagesFromDlcXml(xml: string): ParsedPackageInput[] {
             links.push(url);
           }
         } catch {
-          // skip broken entries
         }
       }
     }

@@ -70,7 +70,6 @@ function writeStderr(text: string): void {
   try {
     process.stderr.write(text);
   } catch {
-    // ignore stderr failures
   }
 }
 
@@ -136,11 +135,9 @@ function rotateIfNeeded(filePath: string): void {
     try {
       fs.rmSync(backup, { force: true });
     } catch {
-      // ignore
     }
     fs.renameSync(filePath, backup);
   } catch {
-    // ignore - file may not exist yet
   }
 }
 
@@ -160,7 +157,6 @@ async function rotateIfNeededAsync(filePath: string): Promise<void> {
     await fs.promises.rm(backup, { force: true }).catch(() => {});
     await fs.promises.rename(filePath, backup);
   } catch {
-    // ignore - file may not exist yet
   }
 }
 
@@ -215,7 +211,7 @@ function write(level: "INFO" | "WARN" | "ERROR", message: string): void {
   pendingChars += line.length;
 
   for (const listener of logListeners) {
-    try { listener(line); } catch { /* ignore */ }
+    try { listener(line); } catch {  }
   }
 
   while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {

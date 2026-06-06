@@ -5,17 +5,6 @@ import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { StoragePaths } from "./storage";
 
-/** Startup Health-Check: runs once at app boot and surfaces potential problem
- *  states BEFORE the user hits them mid-download.
- *
- *  Goals:
- *   - Warn on missing / unreachable download directory
- *   - Warn on low disk space (< 5 GB free)
- *   - Warn when no debrid provider is configured (app is effectively offline)
- *   - Warn when state file is suspiciously large (>50 MB → pruning recommended)
- *
- *  Non-goals: blocking startup. The check only logs — the app continues. */
-
 export type HealthCheckSeverity = "INFO" | "WARN" | "ERROR";
 
 export interface HealthCheckFinding {
@@ -32,8 +21,8 @@ export interface HealthCheckReport {
   infoCount: number;
 }
 
-const LOW_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
-const LARGE_STATE_FILE_BYTES = 50 * 1024 * 1024;     // 50 MB
+const LOW_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024;
+const LARGE_STATE_FILE_BYTES = 50 * 1024 * 1024;
 
 function safeExists(p: string): boolean {
   try {
@@ -52,9 +41,6 @@ function getFileSizeBytes(p: string): number {
   }
 }
 
-/** Attempt a tiny write-probe in the given directory. Returns true on
- *  success, false if the directory isn't writable. We write and immediately
- *  delete a uniquely-named temp file so we never leave garbage behind. */
 function isWritable(dir: string): boolean {
   const probe = path.join(dir, `.rddl-health-probe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   try {
@@ -66,12 +52,8 @@ function isWritable(dir: string): boolean {
   }
 }
 
-/** Query free disk space for a given path. Returns null if unsupported or
- *  the query fails — callers treat null as "unknown" and skip the check. */
 function getFreeDiskSpaceBytes(target: string): number | null {
   try {
-    // fs.statfsSync is available on Node 18.15+; on Windows it still maps to
-    // the underlying volume so it works for download dirs on any drive.
     const statfs = (fs as unknown as { statfsSync?: (p: string) => { bavail: bigint; bsize: bigint } }).statfsSync;
     if (typeof statfs !== "function") {
       return null;
@@ -123,12 +105,9 @@ function countConfiguredProviders(settings: AppSettings): { count: number; provi
   return { count: providers.length, providers };
 }
 
-/** Pure check function: takes inputs, returns findings. Kept side-effect-free
- *  so it's trivial to unit-test — the caller handles logging / persistence. */
 export function runStartupHealthCheck(settings: AppSettings, storagePaths: StoragePaths): HealthCheckReport {
   const findings: HealthCheckFinding[] = [];
 
-  // ── 1. Download directory ───────────────────────────────────────────────
   const outputDir = String(settings.outputDir || "").trim();
   if (!outputDir) {
     findings.push({
@@ -152,7 +131,6 @@ export function runStartupHealthCheck(settings: AppSettings, storagePaths: Stora
       hint: "Rechte pruefen oder anderen Ordner waehlen. Downloads werden sonst direkt scheitern."
     });
   } else {
-    // Check available disk space only when the directory is actually usable
     const freeBytes = getFreeDiskSpaceBytes(outputDir);
     if (freeBytes !== null && freeBytes < LOW_DISK_SPACE_BYTES) {
       const freeMb = Math.round(freeBytes / (1024 * 1024));
@@ -165,7 +143,6 @@ export function runStartupHealthCheck(settings: AppSettings, storagePaths: Stora
     }
   }
 
-  // ── 2. Provider-Credentials ─────────────────────────────────────────────
   const { count, providers } = countConfiguredProviders(settings);
   if (count === 0) {
     findings.push({
@@ -182,7 +159,6 @@ export function runStartupHealthCheck(settings: AppSettings, storagePaths: Stora
     });
   }
 
-  // ── 3. State-File-Groesse ──────────────────────────────────────────────
   if (safeExists(storagePaths.sessionFile)) {
     const sizeBytes = getFileSizeBytes(storagePaths.sessionFile);
     if (sizeBytes > LARGE_STATE_FILE_BYTES) {
@@ -196,7 +172,6 @@ export function runStartupHealthCheck(settings: AppSettings, storagePaths: Stora
     }
   }
 
-  // ── 4. Storage-Basis-Verzeichnis muss beschreibbar sein (fuer Logs) ────
   if (!safeExists(storagePaths.baseDir)) {
     findings.push({
       severity: "ERROR",

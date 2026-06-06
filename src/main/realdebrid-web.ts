@@ -158,12 +158,10 @@ export class RealDebridWebFallback {
           storages: ["cookies", "indexdb", "localstorage", "serviceworkers", "cachestorage"]
         });
       } catch {
-        // ignore
       }
       try {
         await currentSession.clearCache();
       } catch {
-        // ignore
       }
     }
   }
@@ -320,7 +318,6 @@ export class RealDebridWebFallback {
         return this.rememberToken(token);
       }
     } catch {
-      // ignore window scraping errors and fall back to session fetch
     }
 
     return null;
@@ -330,14 +327,12 @@ export class RealDebridWebFallback {
     try {
       await this.extractApiTokenFromWindow(window);
     } catch {
-      // ignore best-effort token warmup failures
     }
   }
 
   private async extractApiToken(signal?: AbortSignal): Promise<string | null> {
     throwIfAborted(signal);
 
-    // Return cached token if fresh (max 30 min)
     if (this.cachedToken && Date.now() - this.cachedTokenAt < 30 * 60 * 1000) {
       return this.cachedToken;
     }
@@ -399,7 +394,6 @@ export class RealDebridWebFallback {
         const text = await response.text();
 
         if (response.status === 401 || response.status === 403) {
-          // Token expired or revoked — invalidate cache
           this.cachedToken = "";
           this.cachedTokenAt = 0;
           return { kind: "login_required" };

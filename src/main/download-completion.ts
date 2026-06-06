@@ -127,11 +127,6 @@ export function validateDownloadedFileCompletion(args: {
   }
 
   if (args.plan.source === "stream-end") {
-    // H3: Kein Content-Length, keine Provider-Größe UND 0 Bytes empfangen → der
-    // Hoster hat die Verbindung sofort geschlossen. Das ist ein fehlgeschlagener
-    // Download, kein gültiges "fertig" — sonst gilt eine leere Datei als komplett
-    // und es gibt keinen Auto-Redownload. Verhält sich jetzt wie der bereits
-    // behandelte Fall actualBytes<=0 mit bekannter Größe (oben).
     if (actualBytes <= 0) {
       return {
         ok: false,

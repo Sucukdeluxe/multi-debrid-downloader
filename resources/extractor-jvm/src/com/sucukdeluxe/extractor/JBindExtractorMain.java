@@ -98,13 +98,12 @@ public final class JBindExtractorMain {
                 System.out.flush();
             }
         } catch (IOException ignored) {
-            // stdin closed — parent process exited
+
         }
     }
 
     private static ExtractionRequest parseDaemonRequest(String jsonLine) {
-        // Minimal JSON parsing without external dependencies.
-        // Expected format: {"archive":"...","target":"...","conflict":"...","backend":"...","passwords":["...","..."]}
+
         ExtractionRequest request = new ExtractionRequest();
         request.archiveFile = new File(extractJsonString(jsonLine, "archive"));
         request.targetDir = new File(extractJsonString(jsonLine, "target"));
@@ -116,7 +115,7 @@ public final class JBindExtractorMain {
         if (backend.length() > 0) {
             request.backend = Backend.fromValue(backend);
         }
-        // Parse passwords array
+
         int pwStart = jsonLine.indexOf("\"passwords\"");
         if (pwStart >= 0) {
             int arrStart = jsonLine.indexOf('[', pwStart);
@@ -161,7 +160,7 @@ public final class JBindExtractorMain {
         for (int i = from; i < s.length(); i++) {
             char c = s.charAt(i);
             if (c == '\\') {
-                i++; // skip escaped character
+                i++;
                 continue;
             }
             if (c == '"') return i;
@@ -367,7 +366,6 @@ public final class JBindExtractorMain {
                 throw new IOException("Archiv enthalt keine Eintrage oder konnte nicht gelesen werden: " + request.archiveFile.getAbsolutePath());
             }
 
-            // Pre-scan: collect file indices, sizes, output paths, and detect encryption
             long totalUnits = 0;
             boolean encrypted = false;
             List<Integer> fileIndices = new ArrayList<Integer>();
@@ -391,7 +389,7 @@ public final class JBindExtractorMain {
                     Boolean isEncrypted = (Boolean) archive.getProperty(i, PropID.ENCRYPTED);
                     encrypted = encrypted || Boolean.TRUE.equals(isEncrypted);
                 } catch (Throwable ignored) {
-                    // ignore encrypted flag read issues
+
                 }
 
                 Long rawSize = (Long) archive.getProperty(i, PropID.SIZE);
@@ -400,12 +398,12 @@ public final class JBindExtractorMain {
 
                 File output = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
                 fileIndices.add(i);
-                outputFiles.add(output); // null if skipped
+                outputFiles.add(output);
                 fileSizes.add(itemSize);
             }
 
             if (fileIndices.isEmpty()) {
-                // All items are folders or skipped
+
                 ProgressTracker progress = new ProgressTracker(1);
                 progress.emitStart();
                 progress.emitDone();
@@ -415,19 +413,16 @@ public final class JBindExtractorMain {
             ProgressTracker progress = new ProgressTracker(totalUnits);
             progress.emitStart();
 
-            // Build index array for bulk extract
             int[] indices = new int[fileIndices.size()];
             for (int i = 0; i < fileIndices.size(); i++) {
                 indices[i] = fileIndices.get(i);
             }
 
-            // Map from archive index to our position in fileIndices/outputFiles
             Map<Integer, Integer> indexToPos = new HashMap<Integer, Integer>();
             for (int i = 0; i < fileIndices.size(); i++) {
                 indexToPos.put(fileIndices.get(i), i);
             }
 
-            // Bulk extraction state
             final boolean encryptedFinal = encrypted;
             final String effectivePassword = password == null ? "" : password;
             final File[] currentOutput = new File[1];
@@ -674,7 +669,7 @@ public final class JBindExtractorMain {
         if (entry.length() == 0) {
             return fallback;
         }
-        // Sanitize Windows special characters from each path segment
+
         String[] segments = entry.split("/", -1);
         StringBuilder sanitized = new StringBuilder();
         for (int i = 0; i < segments.length; i++) {
@@ -708,7 +703,7 @@ public final class JBindExtractorMain {
         if (Files.isSymbolicLink(file.toPath())) {
             throw new IOException("Zieldatei ist ein Symlink, Schreiben verweigert: " + file.getAbsolutePath());
         }
-        // Also check parent directories for symlinks
+
         File parent = file.getParentFile();
         while (parent != null) {
             if (Files.isSymbolicLink(parent.toPath())) {
@@ -879,12 +874,6 @@ public final class JBindExtractorMain {
         private final List<String> passwords = new ArrayList<String>();
     }
 
-    /**
-     * Bulk extraction callback that implements both IArchiveExtractCallback and
-     * ICryptoGetTextPassword. Using the bulk IInArchive.extract() API instead of
-     * per-item extractSlow() is critical for performance — solid RAR archives
-     * otherwise re-decode from the beginning for every single item.
-     */
     private static final class BulkExtractCallback implements IArchiveExtractCallback, ICryptoGetTextPassword {
         private final IInArchive archive;
         private final Map<Integer, Integer> indexToPos;
@@ -930,12 +919,12 @@ public final class JBindExtractorMain {
 
         @Override
         public void setTotal(long total) {
-            // 7z reports total compressed bytes; we track uncompressed via ProgressTracker
+
         }
 
         @Override
         public void setCompleted(long complete) {
-            // Not used — we track per-write progress
+
         }
 
         @Override
@@ -990,7 +979,7 @@ public final class JBindExtractorMain {
 
         @Override
         public void prepareOperation(ExtractAskMode extractAskMode) {
-            // no-op
+
         }
 
         @Override
@@ -1011,7 +1000,7 @@ public final class JBindExtractorMain {
                             currentOutput[0].setLastModified(modified.getTime());
                         }
                     } catch (Throwable ignored) {
-                        // best effort
+
                     }
                 }
             } else {
@@ -1179,12 +1168,12 @@ public final class JBindExtractorMain {
 
         @Override
         public void setTotal(Long files, Long bytes) {
-            // no-op
+
         }
 
         @Override
         public void setCompleted(Long files, Long bytes) {
-            // no-op
+
         }
 
         @Override
@@ -1196,8 +1185,7 @@ public final class JBindExtractorMain {
             if (filename == null || filename.trim().length() == 0) {
                 return null;
             }
-            // Always resolve relative to the archive's parent directory.
-            // Never accept absolute paths to prevent path traversal.
+
             String baseName = new File(filename).getName();
             if (archiveDir != null) {
                 File relative = new File(archiveDir, baseName);
