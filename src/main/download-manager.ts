@@ -1502,6 +1502,19 @@ export function decideAutoRenameBaseName(
   if (targetBaseName && sourceEpisodeToken) {
     const targetEpisodeToken = extractEpisodeToken(targetBaseName);
     if (!targetEpisodeToken) {
+      // Die QUELLE traegt einen sauberen SxxExx-Token, der Ziel-Ordner aber nur einen
+      // Episoden-Titel mit Episode-only-Token (Ordner "Show.E01.Titel...-GRP", Quelle bereits
+      // "Show.S01E01...-GRP" — z.B. Miniserien, die der Auto-Rename schon korrekt benannt hat).
+      // Den Quell-Token an den Ordnernamen anzuhaengen erzeugt einen verkrueppelten Namen
+      // ("...-GRP.S01E01" — Token HINTER der Gruppe). In DIESEM Zweig traegt die Quelle den
+      // EINZIGEN SxxExx-Token (der Ordner hat keinen) → ist die Quelle ein sauberer, NICHT
+      // obfuskierter Scene-Name, ist sie autoritativ → behalten, den Ordner NICHT verwenden.
+      // (Die Laenge des Serien-Praefixes ist KEIN Kriterium: kurze Serien wie "ER"/"V"/"24"
+      // sind genauso autoritativ; nur Obfuskierung soll den Ordner gewinnen lassen.) Greift
+      // v.a. im Collect, der sonst den fertigen Auto-Rename-Namen wieder zerstoeren wuerde.
+      if (!looksLikeObfuscatedSceneFileName(sourceName)) {
+        return { kind: "skip", reason: "source-better", targetBaseName };
+      }
       const insertedEpisode = targetBaseName.replace(
         /(^|[._\-\s])(s\d{1,2})(?=[A-Za-z0-9])/i,
         `$1${sourceEpisodeToken}.`
