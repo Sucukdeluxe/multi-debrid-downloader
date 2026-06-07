@@ -6,6 +6,7 @@ import { APP_VERSION } from "./constants";
 import { getAuditLogPath } from "./audit-log";
 import { getDebugSetupCheck } from "./debug-setup";
 import { logger, getLogFilePath } from "./logger";
+import { getRecentErrors } from "./error-ring";
 import { getItemLogPath as getPersistedItemLogPath } from "./item-log";
 import { getSessionLogPath } from "./session-log";
 import { getPackageLogPath as getPersistedPackageLogPath } from "./package-log";
@@ -44,6 +45,7 @@ const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/logs/session", queryExample: "lines=100&grep=keyword", description: "Reads the session log tail." },
   { method: "GET", path: "/logs/package", queryExample: "package=Release&lines=100&grep=keyword", description: "Reads the package log for a specific package name or id." },
   { method: "GET", path: "/logs/item", queryExample: "item=episode.part2.rar&lines=100&grep=keyword", description: "Reads the item log for a specific file name or item id." },
+  { method: "GET", path: "/errors", queryExample: "level=ERROR&limit=100", description: "Returns the in-memory ring of the most recent WARN/ERROR log lines." },
   { method: "GET", path: "/trace/config", queryExample: "enable=1&note=support&durationMinutes=120", description: "Reads or updates the support trace configuration." },
   { method: "GET", path: "/settings", description: "Returns a redacted settings snapshot without raw secrets." },
   { method: "GET", path: "/accounts", description: "Returns a redacted account/provider configuration summary." },
@@ -525,6 +527,18 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const grep = url.searchParams.get("grep") || "";
     const lines = filterLines(readLogTailFromFile(getLogFilePath(), count), grep);
     jsonResponse(res, 200, { lines, count: lines.length });
+    return;
+  }
+
+  if (pathname === "/errors") {
+    const levelFilter = (url.searchParams.get("level") || "").toUpperCase();
+    const limit = normalizeLinesParam(url.searchParams.get("limit"), 100);
+    let entries = getRecentErrors();
+    if (levelFilter === "ERROR" || levelFilter === "WARN") {
+      entries = entries.filter((entry) => entry.level === levelFilter);
+    }
+    const limited = entries.slice(-limit);
+    jsonResponse(res, 200, { count: limited.length, total: entries.length, entries: limited });
     return;
   }
 

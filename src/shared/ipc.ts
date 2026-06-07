@@ -66,5 +66,6 @@ export const IPC_CHANNELS = {
   SET_PACKAGE_PRIORITY: "queue:set-package-priority",
   SKIP_ITEMS: "queue:skip-items",
   RESET_ITEMS: "queue:reset-items",
-  START_ITEMS: "queue:start-items"
+  START_ITEMS: "queue:start-items",
+  LOG_RENDERER_ERROR: "log:renderer-error"
 } as const;

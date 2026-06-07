@@ -499,3 +499,13 @@ export interface HistoryState {
   entries: HistoryEntry[];
   maxEntries: number;
 }
+
+export interface RendererErrorReport {
+  kind: "error" | "unhandledrejection" | "react";
+  message: string;
+  stack?: string;
+  source?: string;
+  line?: number;
+  column?: number;
+  componentStack?: string;
+}

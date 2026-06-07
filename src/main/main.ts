@@ -53,7 +53,13 @@ process.on("uncaughtException", (error) => {
   logger.error(`Uncaught Exception: ${String(error?.stack || error)}`);
 });
 process.on("unhandledRejection", (reason) => {
-  logger.error(`Unhandled Rejection: ${String(reason)}`);
+  const detail = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+  logger.error(`Unhandled Rejection: ${detail}`);
+});
+// Node-Warnungen (z.B. MaxListenersExceeded, DeprecationWarning) sind ein
+// Frühindikator für Leaks/Fehlnutzung in einem langlaufenden Server-Prozess.
+process.on("warning", (warning) => {
+  logger.warn(`Node-Warnung: ${warning.name}: ${warning.message}${warning.stack ? ` | ${warning.stack.replace(/\s*\n\s*/g, " ⏎ ")}` : ""}`);
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -110,6 +116,23 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+let rendererReloadTimes: number[] = [];
+const RENDERER_RELOAD_WINDOW_MS = 5 * 60 * 1000;
+const RENDERER_RELOAD_MAX = 3;
+
+// Circuit breaker: recover from a one-off renderer crash by reloading, but stop
+// after a few crashes in a short window so a reproducible crash can't spin into a
+// reload loop that pegs an unattended server.
+function allowRendererReload(): boolean {
+  const now = Date.now();
+  rendererReloadTimes = rendererReloadTimes.filter((t) => now - t < RENDERER_RELOAD_WINDOW_MS);
+  if (rendererReloadTimes.length >= RENDERER_RELOAD_MAX) {
+    return false;
+  }
+  rendererReloadTimes.push(now);
+  return true;
+}
+
 function bindMainWindowLifecycle(window: BrowserWindow): void {
   window.on("close", (event) => {
     const settings = controller.getSettings();
@@ -123,6 +146,33 @@ function bindMainWindowLifecycle(window: BrowserWindow): void {
     if (mainWindow === window) {
       mainWindow = null;
     }
+  });
+
+  window.webContents.on("render-process-gone", (_event, details) => {
+    logger.error(`Renderer-Prozess beendet: reason=${details.reason} exitCode=${details.exitCode ?? "?"}`);
+    if (details.reason === "clean-exit" || window.isDestroyed()) {
+      return;
+    }
+    if (allowRendererReload()) {
+      logger.warn("Renderer wird automatisch neu geladen (Wiederherstellung nach Absturz)");
+      try {
+        window.webContents.reload();
+      } catch (error) {
+        logger.error(`Renderer-Reload fehlgeschlagen: ${String(error)}`);
+      }
+    } else {
+      logger.error(`Renderer-Absturz: Auto-Reload gestoppt (mehr als ${RENDERER_RELOAD_MAX} Abstürze in ${RENDERER_RELOAD_WINDOW_MS / 60000} Min) - manueller Neustart nötig`);
+    }
+  });
+
+  // Nur protokollieren, niemals killen/neu laden: "unresponsive" feuert auch
+  // während legitimer langer Sync-Arbeit (große JSON-Serialisierung) und erholt
+  // sich meist von selbst. Eingreifen würde einen Schluckauf zum Ausfall machen.
+  window.webContents.on("unresponsive", () => {
+    logger.warn("Renderer reagiert nicht (unresponsive) - evtl. langer Sync-Task, warte auf Erholung");
+  });
+  window.webContents.on("responsive", () => {
+    logger.info("Renderer wieder reaktionsfähig (responsive)");
   });
 }
 
@@ -676,6 +726,14 @@ function registerIpcHandlers(): void {
     return importResult;
   });
 
+  ipcMain.on(IPC_CHANNELS.LOG_RENDERER_ERROR, (_event, rawReport: unknown) => {
+    try {
+      logger.error(formatRendererErrorReport(rawReport));
+    } catch (error) {
+      logger.error(`[Renderer] Fehlerbericht konnte nicht verarbeitet werden: ${String(error)}`);
+    }
+  });
+
   controller.onState = (snapshot) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
@@ -683,6 +741,41 @@ function registerIpcHandlers(): void {
     mainWindow.webContents.send(IPC_CHANNELS.STATE_UPDATE, snapshot);
   };
 }
+
+function formatRendererErrorReport(rawReport: unknown): string {
+  const report = (rawReport && typeof rawReport === "object" ? rawReport : {}) as Record<string, unknown>;
+  const str = (value: unknown): string => (typeof value === "string" ? value : "");
+  const num = (value: unknown): string => (typeof value === "number" && Number.isFinite(value) ? String(value) : "");
+  const kind = str(report.kind) || "error";
+  const message = (str(report.message) || "(ohne Nachricht)").slice(0, 2000);
+  const source = str(report.source);
+  const line = num(report.line);
+  const column = num(report.column);
+  const stack = str(report.stack).slice(0, 4000);
+  const componentStack = str(report.componentStack).slice(0, 4000);
+
+  const parts: string[] = [`[Renderer:${kind}] ${message}`];
+  if (source) {
+    parts.push(`@ ${source}${line ? `:${line}${column ? `:${column}` : ""}` : ""}`);
+  }
+  if (stack) {
+    parts.push(`| stack: ${stack.replace(/\s*\n\s*/g, " ⏎ ")}`);
+  }
+  if (componentStack) {
+    parts.push(`| react: ${componentStack.replace(/\s*\n\s*/g, " ⏎ ")}`);
+  }
+  return parts.join(" ");
+}
+
+app.on("child-process-gone", (_event, details) => {
+  const killed = details.reason !== "clean-exit" && details.reason !== "killed";
+  const line = `Subprozess beendet: type=${details.type} reason=${details.reason} exitCode=${details.exitCode ?? "?"}${details.name ? ` name=${details.name}` : ""}${details.serviceName ? ` service=${details.serviceName}` : ""}`;
+  if (killed) {
+    logger.error(line);
+  } else {
+    logger.warn(line);
+  }
+});
 
 app.on("second-instance", () => {
   if (mainWindow) {

@@ -5,6 +5,7 @@ import { APP_VERSION } from "./constants";
 import { getAuditLogPath } from "./audit-log";
 import { getDebugSetupCheck } from "./debug-setup";
 import { getLogFilePath } from "./logger";
+import { getRecentErrors } from "./error-ring";
 import { getPackageLogPath } from "./package-log";
 import { getRenameLogPath } from "./rename-log";
 import { getDesktopRenameLogPath } from "./desktop-rename-log";
@@ -169,6 +170,8 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string, op
   });
   addJson(zip, "overview/host-diagnostics.json", resolveHostDiagnostics(hostDiagnosticsMode));
   addJson(zip, "overview/trace-config.json", getTraceConfig());
+  const recentErrors = getRecentErrors();
+  addJson(zip, "overview/recent-errors.json", { count: recentErrors.length, entries: recentErrors });
 
   addFileIfExists(zip, path.join(baseDir, AI_MANIFEST_FILE), `runtime/${AI_MANIFEST_FILE}`);
   addFileIfExists(zip, path.join(baseDir, "debug_host.txt"), "runtime/debug_host.txt");

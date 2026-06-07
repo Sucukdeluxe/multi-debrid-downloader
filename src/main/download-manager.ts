@@ -53,6 +53,7 @@ import { planDownloadCompletion, validateDownloadedFileCompletion } from "./down
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
+import { classifyDiskError } from "./fs-error";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
 import type { RotationEvent } from "../shared/types";
@@ -8563,16 +8564,24 @@ export class DownloadManager extends EventEmitter {
             item.updatedAt = nowMs();
             this.emitState();
 
+            const integrityStartedAt = nowMs();
             const validation = await validateFileAgainstManifest(item.targetPath, pkg.outputDir);
             if (active.abortController.signal.aborted) {
               throw new Error(`aborted:${active.abortReason}`);
             }
+            const integrityElapsedMs = nowMs() - integrityStartedAt;
             if (!validation.ok) {
               item.lastError = validation.message;
               item.fullStatus = `${validation.message}, Neuversuch`;
+              this.logPackageForItem(item, "WARN", "Integritätsprüfung fehlgeschlagen", {
+                result: validation.message,
+                elapsedMs: integrityElapsedMs,
+                willRetry: item.attempts < maxAttempts
+              });
               try {
                 fs.rmSync(item.targetPath, { force: true });
-              } catch {
+              } catch (rmErr) {
+                logger.debug(`Integrity-Cleanup rm fehlgeschlagen (${item.fileName}): ${String(rmErr)}`);
               }
               if (item.attempts < maxAttempts) {
                 item.status = "integrity_check";
@@ -8586,6 +8595,11 @@ export class DownloadManager extends EventEmitter {
               }
               throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
             }
+            // Symmetry: a passed check was previously silent in the item log, so a
+            // reader could not tell whether integrity ran and passed vs was skipped.
+            this.logPackageForItem(item, "INFO", "Integritätsprüfung bestanden", {
+              elapsedMs: integrityElapsedMs
+            });
           }
 
           if (active.abortController.signal.aborted) {
@@ -10045,11 +10059,18 @@ export class DownloadManager extends EventEmitter {
         }
         lastError = compactErrorText(error);
         const normalizedLastError = lastError.replace(/^Error:\s*/i, "");
+        const diskCause = classifyDiskError(error);
         logAttemptEvent("WARN", "HTTP-Download-Versuch fehlgeschlagen", {
           attempt,
           error: lastError,
-          targetPath: effectiveTargetPath
+          targetPath: effectiveTargetPath,
+          ...(diskCause ? { diskCause } : {})
         });
+        if (diskCause) {
+          // Surface the concrete OS cause (disk full, permission, ...) prominently
+          // instead of leaving only a generic write/stream error in the log.
+          logger.error(`Schreibfehler beim Download: ${diskCause} - ${item.fileName} (ziel=${effectiveTargetPath})`);
+        }
         if (
           normalizedLastError.startsWith("range_ignored_on_resume:")
           || normalizedLastError.startsWith("range_mismatch_on_resume:")

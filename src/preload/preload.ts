@@ -9,6 +9,7 @@ import {
   DuplicatePolicy,
   HistoryEntry,
   PackagePriority,
+  RendererErrorReport,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -88,6 +89,7 @@ const api: ElectronApi = {
   skipItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKIP_ITEMS, itemIds),
   resetItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_ITEMS, itemIds),
   startItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.START_ITEMS, itemIds),
+  reportRendererError: (report: RendererErrorReport): void => ipcRenderer.send(IPC_CHANNELS.LOG_RENDERER_ERROR, report),
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void): (() => void) => {
     const listener = (_event: unknown, snapshot: UiSnapshot): void => callback(snapshot);
     ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, listener);

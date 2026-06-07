@@ -1,4 +1,5 @@
 import path from "node:path";
+import v8 from "node:v8";
 import { app } from "electron";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import {
@@ -84,6 +85,7 @@ export class AppController {
 
   private autoResumePending = false;
   private runtimeStatsTimer: NodeJS.Timeout | null = null;
+  private lastMemoryWarnAt = 0;
 
   public constructor() {
     configureLogger(this.storagePaths.baseDir);
@@ -162,6 +164,7 @@ export class AppController {
     this.runtimeStatsTimer = setInterval(() => {
       this.manager.persistRuntimeStats();
       this.settings = this.manager.getSettings();
+      this.checkMemoryPressure();
     }, 60_000);
     this.runtimeStatsTimer.unref?.();
 
@@ -184,6 +187,34 @@ export class AppController {
           }
         }).catch((err) => logger.warn(`getStartConflicts Fehler (constructor): ${String(err)}`));
       }
+    }
+  }
+
+  // Early-warning for OOM on a long-running process. Measured against the V8
+  // heap_size_limit (the real ceiling at which the process is killed), NOT against
+  // heapTotal: V8 routinely runs near-full of its current heapTotal just before it
+  // grows it, so a heapUsed/heapTotal ratio would cry wolf and — since every WARN
+  // now feeds the error ring — crowd real failures out. Throttled to 1 warning per
+  // 5 min so a genuine sustained-pressure run does not spam the log/ring.
+  private checkMemoryPressure(): void {
+    try {
+      const mem = process.memoryUsage();
+      const heapLimit = v8.getHeapStatistics().heap_size_limit;
+      const ratio = heapLimit > 0 ? mem.heapUsed / heapLimit : 0;
+      if (ratio < 0.9) {
+        return;
+      }
+      const now = Date.now();
+      if (now - this.lastMemoryWarnAt < 5 * 60_000) {
+        return;
+      }
+      this.lastMemoryWarnAt = now;
+      const mb = (bytes: number): number => Math.round(bytes / 1048576);
+      logger.warn(
+        `Speicherdruck: heapUsed=${mb(mem.heapUsed)}MB von Limit ${mb(heapLimit)}MB ` +
+        `(${Math.round(ratio * 100)}%), heapTotal=${mb(mem.heapTotal)}MB, rss=${mb(mem.rss)}MB, external=${mb(mem.external)}MB`
+      );
+    } catch {
     }
   }
 

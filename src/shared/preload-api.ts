@@ -9,6 +9,7 @@ import type {
   DuplicatePolicy,
   HistoryEntry,
   PackagePriority,
+  RendererErrorReport,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -85,6 +86,7 @@ export interface ElectronApi {
   skipItems: (itemIds: string[]) => Promise<void>;
   resetItems: (itemIds: string[]) => Promise<void>;
   startItems: (itemIds: string[]) => Promise<void>;
+  reportRendererError: (report: RendererErrorReport) => void;
   onStateUpdate: (callback: (snapshot: UiSnapshot) => void) => () => void;
   onClipboardDetected: (callback: (links: string[]) => void) => () => void;
   onUpdateInstallProgress: (callback: (progress: UpdateInstallProgress) => void) => () => void;
