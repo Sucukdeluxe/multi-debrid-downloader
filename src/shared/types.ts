@@ -129,6 +129,7 @@ export interface AppSettings {
   autoSkipExtracted: boolean;
   hideExtractedItems: boolean;
   confirmDeleteSelection: boolean;
+  backupIncludeDownloads: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
   totalRuntimeAllTimeMs: number;

@@ -44,23 +44,50 @@ function createItem(id: string, packageId: string, status: DownloadItem["status"
 }
 
 describe("sortPackagesForDisplay", () => {
-  it("moves active packages with more progress to the top when auto sort is enabled", () => {
+  it("floats active packages to the top, keeping queue order within each group", () => {
+    // pkg-a and pkg-b both have an active (downloading) item -> both float up in
+    // their original queue order; pkg-c (queued only) sinks below.
     const packages = [
       createPackage("pkg-a", ["a1", "a2"]),
-      createPackage("pkg-b", ["b1", "b2"]),
-      createPackage("pkg-c", ["c1"])
+      createPackage("pkg-c", ["c1"]),
+      createPackage("pkg-b", ["b1", "b2"])
     ];
     const items: Record<string, DownloadItem> = {
       a1: createItem("a1", "pkg-a", "downloading", 250),
       a2: createItem("a2", "pkg-a", "completed", 500),
+      c1: createItem("c1", "pkg-c", "queued", 0),
       b1: createItem("b1", "pkg-b", "downloading", 800),
-      b2: createItem("b2", "pkg-b", "completed", 900),
-      c1: createItem("c1", "pkg-c", "queued", 0)
+      b2: createItem("b2", "pkg-b", "completed", 900)
     };
 
     const sorted = sortPackagesForDisplay(packages, items, true, true);
 
-    expect(sorted.map((pkg) => pkg.id)).toEqual(["pkg-b", "pkg-a", "pkg-c"]);
+    // active group [pkg-a, pkg-b] in queue order, then rest [pkg-c]
+    expect(sorted.map((pkg) => pkg.id)).toEqual(["pkg-a", "pkg-b", "pkg-c"]);
+  });
+
+  it("does NOT reshuffle active packages when only their progress changes (anti-flicker)", () => {
+    const packages = [
+      createPackage("pkg-a", ["a1"]),
+      createPackage("pkg-b", ["b1"])
+    ];
+    // Both active. pkg-b initially has more bytes than pkg-a.
+    const before: Record<string, DownloadItem> = {
+      a1: createItem("a1", "pkg-a", "downloading", 100),
+      b1: createItem("b1", "pkg-b", "downloading", 900)
+    };
+    const orderBefore = sortPackagesForDisplay(packages, before, true, true).map((p) => p.id);
+
+    // A progress tick: pkg-a overtakes pkg-b in bytes. Order must NOT change —
+    // both are still active, so they keep queue order. (Old code swapped them.)
+    const after: Record<string, DownloadItem> = {
+      a1: createItem("a1", "pkg-a", "downloading", 5000),
+      b1: createItem("b1", "pkg-b", "downloading", 950)
+    };
+    const orderAfter = sortPackagesForDisplay(packages, after, true, true).map((p) => p.id);
+
+    expect(orderBefore).toEqual(["pkg-a", "pkg-b"]);
+    expect(orderAfter).toEqual(orderBefore);
   });
 
   it("keeps package order untouched when auto sort is disabled", () => {

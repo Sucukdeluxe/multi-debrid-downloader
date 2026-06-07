@@ -32,6 +32,7 @@ import {
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
 import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
+import { pruneSelection } from "./selection";
 
 type Tab = "collector" | "downloads" | "history" | "statistics" | "settings";
 type SettingsSubTab = "allgemein" | "accounts" | "entpacken" | "geschwindigkeit" | "bereinigung" | "updates";
@@ -850,7 +851,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true,
+    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
@@ -2108,6 +2109,13 @@ export function App(): ReactElement {
       return changed ? next : prev;
     });
   }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
+
+  // Prune selection when its packages/items disappear (e.g. via delta-removal or
+  // a backup-driven session swap). selectedIds holds BOTH package and item ids;
+  // a stale id would otherwise inflate the selection count and the "(N)" labels.
+  useEffect(() => {
+    setSelectedIds((prev) => pruneSelection(prev, snapshot.session));
+  }, [snapshot.session.packages, snapshot.session.items]);
 
   const hiddenPackageCount = shouldLimitPackageRendering
     ? Math.max(0, totalPackageCount - packages.length)
@@ -3539,6 +3547,11 @@ export function App(): ReactElement {
     return ids;
   }, [visiblePackages, collapsedPackages, itemsByPackage, snapshot.settings.hideExtractedItems]);
 
+  // Keep a ref of the currently VISIBLE ids so the (deps-[]) Ctrl+A keyboard
+  // handler can select exactly what the user sees — not the whole unfiltered map.
+  const visibleOrderIdsRef = useRef<string[]>(visibleOrderIds);
+  visibleOrderIdsRef.current = visibleOrderIds;
+
   const onSelectId = useCallback((id: string, ctrlKey: boolean, shiftKey: boolean): void => {
     if (dragDidMoveRef.current) return;
     if (shiftKey && lastClickedIdRef.current) {
@@ -3838,6 +3851,13 @@ export function App(): ReactElement {
       const result = await window.rd.importBackup();
       if (result.restored) {
         showToast(result.message, 4000);
+        // A settings-only import applies live without a relaunch, so the editable
+        // settings form would otherwise keep showing the old values. Pull the
+        // fresh settings and re-seed the draft so the UI reflects the import.
+        if (!result.relaunch) {
+          const fresh = await window.rd.getSnapshot();
+          applyPersistedSettings(fresh.settings);
+        }
       } else if (result.message !== "Abgebrochen") {
         showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
       }
@@ -3961,7 +3981,10 @@ export function App(): ReactElement {
           if (inInput) return;
           if (tabRef.current === "downloads") {
             e.preventDefault();
-            setSelectedIds(new Set(Object.keys(snapshotRef.current.session.packages)));
+            // Select exactly the VISIBLE rows (packages + their items), honouring
+            // the active search / collapse / hide-extracted filters — selecting
+            // the unfiltered package map would let a later delete hit hidden ones.
+            setSelectedIds(new Set(visibleOrderIdsRef.current));
           } else if (tabRef.current === "history") {
             e.preventDefault();
             setSelectedHistoryIds(new Set(historyEntriesRef.current.map(e => e.id)));
@@ -4881,6 +4904,7 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste in Sicherung mitsichern (Standard: nur Einstellungen)</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
                       const next = e.target.checked ? "light" : "dark";
                       settingsDraftRevisionRef.current += 1;
@@ -6335,7 +6359,10 @@ const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunn
         switch (col) {
           case "name": return (
             <span key={col} className="pkg-col pkg-col-name item-indent" title={item.fileName}>
-              {item.onlineStatus && <span className={`link-status-dot ${item.onlineStatus}`} title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : "Wird geprüft..."} />}
+              <span
+                className={item.onlineStatus ? `link-status-dot ${item.onlineStatus}` : "link-status-dot link-status-dot-empty"}
+                title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : item.onlineStatus === "checking" ? "Wird geprüft..." : undefined}
+              />
               {item.fileName}
             </span>
           );

@@ -104,6 +104,7 @@ export function defaultSettings(): AppSettings {
     autoSkipExtracted: false,
     hideExtractedItems: true,
     confirmDeleteSelection: true,
+    backupIncludeDownloads: false,
     totalDownloadedAllTime: 0,
     totalCompletedFilesAllTime: 0,
     totalRuntimeAllTimeMs: 0,

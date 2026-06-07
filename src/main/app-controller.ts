@@ -39,6 +39,7 @@ import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, 
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
+import { buildBackupPayload, planBackupImport } from "./backup-payload";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { initAccountRotationLog, shutdownAccountRotationLog } from "./account-rotation-log";
 import { runStartupHealthCheck } from "./startup-health-check";
@@ -598,23 +599,21 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public exportBackup(): Buffer {
-    const settings = { ...this.settings };
-    const session = this.manager.getSession();
-    const history = loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
-    const payload = JSON.stringify({
-      version: 2,
+    const includeDownloads = Boolean(this.settings.backupIncludeDownloads);
+    const payloadObj = buildBackupPayload({
+      settings: { ...this.settings },
       appVersion: APP_VERSION,
       exportedAt: new Date().toISOString(),
-      settings,
-      session,
-      history
+      session: this.manager.getSession(),
+      history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode)
     });
     this.audit("INFO", "Backup exportiert", {
-      historyEntries: history.length,
-      sessionItems: Object.keys(session.items).length,
-      sessionPackages: Object.keys(session.packages).length
+      kind: payloadObj.kind,
+      historyEntries: payloadObj.history ? payloadObj.history.length : 0,
+      sessionItems: payloadObj.session ? Object.keys(payloadObj.session.items).length : 0,
+      sessionPackages: payloadObj.session ? Object.keys(payloadObj.session.packages).length : 0
     });
-    return encryptBackup(payload);
+    return encryptBackup(JSON.stringify(payloadObj));
   }
 
   public exportSupportBundle(): { buffer: Buffer; defaultFileName: string } {
@@ -633,7 +632,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return getSupportBundleDefaultFileName();
   }
 
-  public importBackup(data: Buffer): { restored: boolean; message: string } {
+  public importBackup(data: Buffer): { restored: boolean; relaunch: boolean; message: string } {
     let parsed: Record<string, unknown>;
     try {
       const json = decryptBackup(data);
@@ -643,12 +642,14 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
         const json = data.toString("utf8");
         parsed = JSON.parse(json) as Record<string, unknown>;
       } catch {
-        return { restored: false, message: "Backup-Datei konnte nicht entschlüsselt werden" };
+        return { restored: false, relaunch: false, message: "Backup-Datei konnte nicht entschlüsselt werden" };
       }
     }
-    if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.session) {
-      return { restored: false, message: "Kein gültiges Backup (settings/session fehlen)" };
+    const plan = planBackupImport(parsed);
+    if (!plan.valid) {
+      return { restored: false, relaunch: false, message: plan.message };
     }
+    const hasSession = plan.restoreDownloads;
 
     const importedSettings = parsed.settings as AppSettings;
     const importedSettingsRecord = importedSettings as unknown as Record<string, unknown>;
@@ -668,6 +669,20 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
+
+    // Settings-only backup: settings are already applied live (same path as the
+    // normal updateSettings flow). Do NOT stop the manager, wipe the session,
+    // block persistence or relaunch — the running queue stays untouched.
+    if (!hasSession) {
+      this.audit("INFO", "Backup importiert (nur Einstellungen)", {
+        accountSummary: buildAccountSummary(this.settings)
+      });
+      return {
+        restored: true,
+        relaunch: false,
+        message: "Einstellungen wiederhergestellt"
+      };
+    }
 
     this.manager.stop();
     this.manager.abortAllPostProcessing();
@@ -698,7 +713,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       historyEntries: Array.isArray(parsed.history) ? parsed.history.length : 0,
       accountSummary: buildAccountSummary(this.settings)
     });
-    return { restored: true, message: "Backup wiederhergestellt – App startet automatisch neu…" };
+    return { restored: true, relaunch: true, message: "Backup wiederhergestellt – App startet automatisch neu…" };
   }
 
   public getSessionLogPath(): string | null {

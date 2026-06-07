@@ -36,38 +36,26 @@ export function sortPackagesForDisplay(
     return packages;
   }
 
-  const active: Array<{ pkg: PackageEntry; index: number; completedRatio: number; downloadedBytes: number }> = [];
+  const active: PackageEntry[] = [];
   const rest: PackageEntry[] = [];
 
-  packages.forEach((pkg, index) => {
-    const items = pkg.itemIds
-      .map((id) => itemsById[id])
-      .filter((item): item is DownloadItem => Boolean(item));
-    const hasActive = items.some((item) => ACTIVE_PACKAGE_STATUSES.has(item.status));
-    if (!hasActive) {
-      rest.push(pkg);
-      return;
-    }
-    const completedRatio = items.length > 0
-      ? items.filter((item) => item.status === "completed").length / items.length
-      : 0;
-    const downloadedBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
-    active.push({ pkg, index, completedRatio, downloadedBytes });
-  });
+  // Float packages that have an active item to the top, but keep BOTH groups in
+  // their original (queue) order. Earlier this sorted the active group by live
+  // completedRatio/downloadedBytes — which change on every progress tick (every
+  // 150-700ms), so active packages visibly reshuffled the whole time. A package
+  // entering/leaving the active bucket is a real, discrete event (start/finish);
+  // ranking *within* the bucket by live bytes was pure jitter nobody needs.
+  for (const pkg of packages) {
+    const hasActive = pkg.itemIds.some((id) => {
+      const item = itemsById[id];
+      return item != null && ACTIVE_PACKAGE_STATUSES.has(item.status);
+    });
+    (hasActive ? active : rest).push(pkg);
+  }
 
   if (active.length === 0 || active.length === packages.length) {
     return packages;
   }
 
-  active.sort((a, b) => {
-    if (a.completedRatio !== b.completedRatio) {
-      return b.completedRatio - a.completedRatio;
-    }
-    if (a.downloadedBytes !== b.downloadedBytes) {
-      return b.downloadedBytes - a.downloadedBytes;
-    }
-    return a.index - b.index;
-  });
-
-  return [...active.map((entry) => entry.pkg), ...rest];
+  return [...active, ...rest];
 }

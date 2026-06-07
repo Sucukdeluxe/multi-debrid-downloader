@@ -664,7 +664,10 @@ function registerIpcHandlers(): void {
     }
     const data = await fs.promises.readFile(filePath);
     const importResult = controller.importBackup(data);
-    if (importResult.restored) {
+    // Only a full restore (queue swapped) needs the auto-relaunch. A settings-
+    // only import applied live — relaunching would be pointless and would drop
+    // the running queue.
+    if (importResult.restored && importResult.relaunch) {
       setTimeout(() => {
         app.relaunch();
         app.quit();

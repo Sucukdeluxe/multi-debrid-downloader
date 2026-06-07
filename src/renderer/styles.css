@@ -2434,6 +2434,12 @@ td {
   background: #f59e0b;
   box-shadow: 0 0 4px #f59e0b80;
 }
+/* Reserve the dot's footprint even before a status exists, so the filename does
+   not shift ~14px right when the online/offline/checking dot first appears. */
+.link-status-dot-empty {
+  background: transparent;
+  box-shadow: none;
+}
 
 .prio-high {
   color: #f59e0b !important;
