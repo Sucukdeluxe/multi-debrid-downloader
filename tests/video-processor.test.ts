@@ -1,0 +1,241 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  stripDualLangMarker,
+  hasDualLangMarker,
+  isRemuxableVideoFile,
+  pickAudioTrack,
+  parseFfprobeAudioStreams,
+  buildFfprobeArgs,
+  buildFfmpegRemuxArgs,
+  computeRemuxTimeoutMs,
+  processVideoFile,
+  type VideoSpawnResult
+} from "../src/main/video-processor";
+
+describe("stripDualLangMarker", () => {
+  it("strips a mid-name .DL. token", () => {
+    expect(stripDualLangMarker("Show.S01E01.German.DL.720p.WEB.x264.mkv")).toBe("Show.S01E01.German.720p.WEB.x264.mkv");
+  });
+  it("strips a .DL. directly before the extension", () => {
+    expect(stripDualLangMarker("Movie.DL.mkv")).toBe("Movie.mkv");
+  });
+  it("strips a trailing .DL token before extension", () => {
+    expect(stripDualLangMarker("Movie.German.DL.mp4")).toBe("Movie.German.mp4");
+  });
+  it("is case-insensitive", () => {
+    expect(stripDualLangMarker("Show.dl.1080p.mkv")).toBe("Show.1080p.mkv");
+  });
+  it("leaves files without the marker unchanged", () => {
+    expect(stripDualLangMarker("Show.S01E01.German.1080p.mkv")).toBe("Show.S01E01.German.1080p.mkv");
+  });
+  it("does not strip unrelated tokens containing DL", () => {
+    expect(stripDualLangMarker("Show.HANDLES.1080p.mkv")).toBe("Show.HANDLES.1080p.mkv");
+  });
+});
+
+describe("hasDualLangMarker", () => {
+  it("detects the marker", () => {
+    expect(hasDualLangMarker("X.German.DL.720p.mkv")).toBe(true);
+    expect(hasDualLangMarker("X.DL.mkv")).toBe(true);
+  });
+  it("returns false without the marker", () => {
+    expect(hasDualLangMarker("X.German.720p.mkv")).toBe(false);
+  });
+});
+
+describe("isRemuxableVideoFile", () => {
+  it("accepts mkv/mp4 only", () => {
+    expect(isRemuxableVideoFile("a.mkv")).toBe(true);
+    expect(isRemuxableVideoFile("a.MP4")).toBe(true);
+    expect(isRemuxableVideoFile("a.avi")).toBe(false);
+    expect(isRemuxableVideoFile("a.srt")).toBe(false);
+  });
+});
+
+describe("pickAudioTrack", () => {
+  const ger = { language: "ger", title: "" };
+  const eng = { language: "eng", title: "" };
+  const untagged = { language: "", title: "" };
+
+  it("no audio -> skip", () => {
+    expect(pickAudioTrack([], "tag").action).toBe("skip");
+  });
+
+  it("first mode keeps first of many", () => {
+    const d = pickAudioTrack([eng, ger], "first");
+    expect(d).toMatchObject({ action: "remux", audioRelIndex: 0 });
+  });
+
+  it("first mode with single audio -> single (no remux)", () => {
+    expect(pickAudioTrack([eng], "first")).toMatchObject({ action: "single" });
+  });
+
+  it("tag mode picks the German track even if not first", () => {
+    const d = pickAudioTrack([eng, ger], "tag");
+    expect(d).toMatchObject({ action: "remux", audioRelIndex: 1, reason: "german-tag" });
+  });
+
+  it("tag mode picks German via title when language untagged", () => {
+    const d = pickAudioTrack([{ language: "", title: "Englisch" }, { language: "", title: "Deutsch" }], "tag");
+    expect(d).toMatchObject({ action: "remux", audioRelIndex: 1 });
+  });
+
+  it("tag mode with single German -> single (no remux)", () => {
+    expect(pickAudioTrack([ger], "tag")).toMatchObject({ action: "single" });
+  });
+
+  it("tag mode, fully untagged multi -> fallback to first", () => {
+    const d = pickAudioTrack([untagged, untagged], "tag");
+    expect(d).toMatchObject({ action: "remux", audioRelIndex: 0, reason: "fallback-first-untagged" });
+  });
+
+  it("tag mode, tagged but no German -> SKIP (never delete the only usable audio)", () => {
+    expect(pickAudioTrack([eng, { language: "fre", title: "" }], "tag")).toMatchObject({ action: "skip", reason: "no-german-track" });
+  });
+});
+
+describe("parseFfprobeAudioStreams", () => {
+  it("parses language/title tags", () => {
+    const json = JSON.stringify({ streams: [{ index: 1, tags: { language: "ger", title: "Deutsch" } }, { index: 2, tags: { language: "eng" } }] });
+    expect(parseFfprobeAudioStreams(json)).toEqual([{ language: "ger", title: "Deutsch" }, { language: "eng", title: "" }]);
+  });
+  it("returns [] on invalid json", () => {
+    expect(parseFfprobeAudioStreams("not json")).toEqual([]);
+  });
+  it("returns [] when streams missing", () => {
+    expect(parseFfprobeAudioStreams("{}")).toEqual([]);
+  });
+});
+
+describe("buildFfprobeArgs", () => {
+  it("requests audio streams as json", () => {
+    const args = buildFfprobeArgs("in.mkv");
+    expect(args).toContain("-select_streams");
+    expect(args).toContain("a");
+    expect(args[args.length - 1]).toBe("in.mkv");
+    expect(args).toContain("json");
+  });
+});
+
+describe("buildFfmpegRemuxArgs", () => {
+  it("maps video + chosen audio, stream-copy, keeps metadata (language tag), no subs by default", () => {
+    const args = buildFfmpegRemuxArgs({ input: "in.mkv", output: "out.mkv", audioRelIndex: 1 });
+    expect(args).toEqual([
+      "-i", "in.mkv", "-map", "0:v:0", "-map", "0:a:1",
+      "-c", "copy", "-disposition:a:0", "default", "-y", "out.mkv"
+    ]);
+    expect(args).not.toContain("-map_metadata"); // language tag of kept track must survive
+  });
+  it("adds optional German subtitle maps when keepSubs", () => {
+    const args = buildFfmpegRemuxArgs({ input: "in.mkv", output: "out.mkv", audioRelIndex: 0, keepSubs: true });
+    expect(args.join(" ")).toContain("0:s:m:language:ger?");
+  });
+});
+
+describe("computeRemuxTimeoutMs", () => {
+  it("has a floor", () => {
+    expect(computeRemuxTimeoutMs(0)).toBe(120_000);
+  });
+  it("scales with size and caps at 60 min", () => {
+    expect(computeRemuxTimeoutMs(50 * 1024 * 1024 * 1024)).toBe(60 * 60 * 1000);
+  });
+});
+
+// Exercises the REAL file-mutating body (temp -> replace -> utimes -> rm) with a
+// fake ffmpeg/ffprobe runner. This is the irreversible-overwrite path that the
+// download-manager integration test (which mocks processVideoFile wholesale)
+// cannot cover.
+describe("processVideoFile (real fs body, fake runner)", () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tempDirs.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  function makeFile(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-vp-"));
+    tempDirs.push(dir);
+    const file = path.join(dir, "Show.S01E01.German.DL.720p.mkv");
+    fs.writeFileSync(file, content);
+    return file;
+  }
+
+  function fakeRunner(opts: { probeJson: string; ffmpegOk?: boolean }): typeof import("../src/main/video-processor").runVideoProcess {
+    return async (_command: string, args: string[]): Promise<VideoSpawnResult> => {
+      const base = { aborted: false, timedOut: false, missing: false } as const;
+      if (args.includes("-show_entries")) {
+        return { ...base, ok: true, exitCode: 0, stdout: opts.probeJson, stderr: "" };
+      }
+      const output = args[args.length - 1];
+      if (opts.ffmpegOk !== false) {
+        fs.writeFileSync(output, "REMUXED-GERMAN-ONLY");
+        return { ...base, ok: true, exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { ...base, ok: false, exitCode: 1, stdout: "", stderr: "ffmpeg boom" };
+    };
+  }
+
+  const tooling = async (): Promise<{ ffmpeg: string; ffprobe: string }> => ({ ffmpeg: "ffmpeg", ffprobe: "ffprobe" });
+  const twoTracksGerSecond = JSON.stringify({ streams: [{ tags: { language: "eng" } }, { tags: { language: "ger" } }] });
+
+  it("replaces the original in place and preserves mtime on success", async () => {
+    const file = makeFile("ORIGINAL");
+    const oldTime = new Date(Date.now() - 5 * 60 * 1000);
+    fs.utimesSync(file, oldTime, oldTime);
+    const beforeMtime = fs.statSync(file).mtimeMs;
+
+    const result = await processVideoFile(file, { mode: "tag" }, {
+      resolveTooling: tooling,
+      runProcess: fakeRunner({ probeJson: twoTracksGerSecond })
+    });
+
+    expect(result.action).toBe("remuxed");
+    expect(result.keptTrackIndex).toBe(1); // German was second
+    expect(fs.readFileSync(file, "utf8")).toBe("REMUXED-GERMAN-ONLY"); // original overwritten
+    expect(Math.abs(fs.statSync(file).mtimeMs - beforeMtime)).toBeLessThan(1500); // mtime preserved
+    expect(fs.existsSync(`${file}.gertmp.mkv`)).toBe(false); // temp cleaned up
+  });
+
+  it("leaves the original intact and removes temp when ffmpeg fails", async () => {
+    const file = makeFile("ORIGINAL");
+    const result = await processVideoFile(file, { mode: "tag" }, {
+      resolveTooling: tooling,
+      runProcess: fakeRunner({ probeJson: twoTracksGerSecond, ffmpegOk: false })
+    });
+
+    expect(result.action).toBe("error");
+    expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL"); // never lost
+    expect(fs.existsSync(`${file}.gertmp.mkv`)).toBe(false);
+  });
+
+  it("does not touch a single-audio file (no remux)", async () => {
+    const file = makeFile("ORIGINAL");
+    const result = await processVideoFile(file, { mode: "tag" }, {
+      resolveTooling: tooling,
+      runProcess: fakeRunner({ probeJson: JSON.stringify({ streams: [{ tags: { language: "ger" } }] }) })
+    });
+    expect(result.action).toBe("kept-single");
+    expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL");
+  });
+
+  it("leaves the file untouched when tagged but no German track", async () => {
+    const file = makeFile("ORIGINAL");
+    const result = await processVideoFile(file, { mode: "tag" }, {
+      resolveTooling: tooling,
+      runProcess: fakeRunner({ probeJson: JSON.stringify({ streams: [{ tags: { language: "eng" } }, { tags: { language: "fre" } }] }) })
+    });
+    expect(result.action).toBe("skipped-no-german");
+    expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL");
+  });
+
+  it("returns skipped-no-tool when ffmpeg/ffprobe are absent", async () => {
+    const file = makeFile("ORIGINAL");
+    const result = await processVideoFile(file, { mode: "tag" }, { resolveTooling: async () => null });
+    expect(result.action).toBe("skipped-no-tool");
+    expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL");
+  });
+});

@@ -844,7 +844,7 @@ const emptySnapshot = (): UiSnapshot => ({
     archivePasswordList: "",
     rememberToken: true, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
     providerTertiary: "none", autoProviderFallback: true, outputDir: "", packageName: "",
-    autoExtract: true, autoRename4sf4sj: false, extractDir: "", createExtractSubfolder: true, hybridExtract: true,
+    autoExtract: true, autoRename4sf4sj: false, keepGermanAudioOnly: false, germanAudioMode: "tag", extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     collectMkvToLibrary: false, mkvLibraryDir: "",
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
@@ -5372,6 +5372,11 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSkipExtracted} onChange={(e) => setBool("autoSkipExtracted", e.target.checked)} /> Bereits Entpacktes beim Start überspringen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hideExtractedItems} onChange={(e) => setBool("hideExtractedItems", e.target.checked)} /> Entpackte Items in Paketliste ausblenden</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (Beta)</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.keepGermanAudioOnly} onChange={(e) => setBool("keepGermanAudioOnly", e.target.checked)} /> Nur deutsche Tonspur behalten (.DL.-Dateien, braucht ffmpeg)</label>
+                    <div><label>Tonspur-Auswahl</label><select value={settingsDraft.germanAudioMode} disabled={!settingsDraft.keepGermanAudioOnly} onChange={(e) => setText("germanAudioMode", e.target.value)}>
+                      <option value="tag">Deutsche Spur per Sprach-Tag (empfohlen)</option>
+                      <option value="first">Immer erste Tonspur (wie Script)</option>
+                    </select></div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Session (bei Stopp / Programmstart)</label>

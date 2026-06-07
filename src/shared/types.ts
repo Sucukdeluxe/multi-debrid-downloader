@@ -97,6 +97,8 @@ export interface AppSettings {
   packageName: string;
   autoExtract: boolean;
   autoRename4sf4sj: boolean;
+  keepGermanAudioOnly: boolean;
+  germanAudioMode: "tag" | "first";
   extractDir: string;
   collectMkvToLibrary: boolean;
   mkvLibraryDir: string;

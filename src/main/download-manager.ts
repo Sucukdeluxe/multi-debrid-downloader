@@ -54,6 +54,7 @@ import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, Meg
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
+import { processVideoFile, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
 import type { RotationEvent } from "../shared/types";
@@ -2040,7 +2041,7 @@ export class DownloadManager extends EventEmitter {
   private logRenameProcess(
     pkg: PackageEntry,
     level: "INFO" | "WARN" | "ERROR",
-    stage: "auto-rename" | "mkv-move",
+    stage: "auto-rename" | "mkv-move" | "audio-strip",
     message: string,
     fields?: Record<string, unknown>,
     item?: DownloadItem | null,
@@ -3892,6 +3893,128 @@ export class DownloadManager extends EventEmitter {
     );
   }
 
+  private async keepGermanAudioOnly(
+    extractDir: string,
+    pkg?: PackageEntry,
+    shouldAbort?: () => boolean,
+    signal?: AbortSignal
+  ): Promise<number> {
+    if (!pkg) {
+      return this.keepGermanAudioOnlyImpl(extractDir, undefined, shouldAbort, signal);
+    }
+    return this.chainPackageFileOp(pkg.id, () =>
+      this.keepGermanAudioOnlyImpl(extractDir, pkg, shouldAbort, signal)
+    );
+  }
+
+  // Post-extract step: for ".DL." (Dual-Language) MKV/MP4 files, keep only the
+  // German audio track and strip the ".DL." marker from the filename. Operates
+  // only inside pkg.extractDir, before MKV-collect. Best-effort per file; an
+  // error never fails the package. Original is never lost (see video-processor).
+  private async keepGermanAudioOnlyImpl(
+    extractDir: string,
+    pkg?: PackageEntry,
+    shouldAbort?: () => boolean,
+    signal?: AbortSignal
+  ): Promise<number> {
+    if (!this.settings.keepGermanAudioOnly) {
+      return 0;
+    }
+    const mkvLibraryDir = String(this.settings.mkvLibraryDir || "").trim();
+    if (mkvLibraryDir && (isPathInsideDir(mkvLibraryDir, extractDir) || isPathInsideDir(extractDir, mkvLibraryDir))) {
+      logger.warn(`Tonspur-Bereinigung ABGEBROCHEN: extractDir=${extractDir} ueberlappt mit mkvLibraryDir=${mkvLibraryDir}`);
+      return 0;
+    }
+
+    const videoFiles = await this.collectVideoFiles(extractDir);
+    const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
+    const targets = videoFiles.filter((p) => {
+      const name = path.basename(p);
+      if (!isRemuxableVideoFile(name) || !hasDualLangMarker(name)) {
+        return false;
+      }
+      if (sampleTokenRe.test(name) || ["sample", "samples"].includes(path.basename(path.dirname(p)).toLowerCase())) {
+        return false;
+      }
+      return true;
+    });
+    if (targets.length === 0) {
+      return 0;
+    }
+    if (pkg) {
+      this.logRenameProcess(pkg, "INFO", "audio-strip", "Tonspur-Bereinigung gestartet", { extractDir, candidates: targets.length });
+    }
+
+    const mode: GermanAudioMode = this.settings.germanAudioMode === "first" ? "first" : "tag";
+    let processed = 0;
+    for (const sourcePath of targets) {
+      if (shouldAbort?.() || signal?.aborted) {
+        return processed;
+      }
+      const sourceName = path.basename(sourcePath);
+      let result: VideoProcessResult;
+      try {
+        result = await processVideoFile(sourcePath, { mode, cpuPriority: this.settings.extractCpuPriority, signal });
+      } catch (error) {
+        result = { action: "error", reason: "exception", error: compactErrorText(error) };
+      }
+      if (result.action === "aborted") {
+        return processed;
+      }
+      if (result.action === "skipped-no-tool") {
+        logger.warn("Tonspur-Bereinigung: ffmpeg/ffprobe nicht gefunden — Schritt uebersprungen (PATH oder RD_FFMPEG_BIN setzen)");
+        if (pkg) {
+          this.logRenameProcess(pkg, "WARN", "audio-strip", "Tonspur-Bereinigung uebersprungen: ffmpeg/ffprobe fehlt", { sourceName });
+        }
+        return processed;
+      }
+      if (pkg) {
+        const level = result.action === "error" ? "WARN" : "INFO";
+        const resolved = this.inferItemForMediaLog(pkg, sourcePath, sourceName);
+        this.logRenameProcess(pkg, level, "audio-strip", `Tonspur: ${result.action} (${result.reason})`, {
+          sourceName,
+          keptTrack: result.keptTrackIndex,
+          audioTracks: result.totalAudioTracks,
+          ...(result.error ? { error: result.error } : {})
+        }, resolved.item, resolved.matchedBy);
+      }
+      if (result.action === "remuxed") {
+        processed += 1;
+      }
+      // Only strip ".DL." once the file is confirmed German-only (remuxed) or
+      // already single-track. Skips/errors leave the file fully untouched so the
+      // unprocessed state stays visible.
+      if (result.action === "remuxed" || result.action === "kept-single") {
+        await this.stripDualLangFromFileName(sourcePath, pkg);
+      }
+    }
+    return processed;
+  }
+
+  private async stripDualLangFromFileName(sourcePath: string, pkg?: PackageEntry): Promise<void> {
+    const dir = path.dirname(sourcePath);
+    const name = path.basename(sourcePath);
+    const newName = stripDualLangMarker(name);
+    if (newName === name) {
+      return;
+    }
+    const targetPath = path.join(dir, newName);
+    if (pathKey(targetPath) !== pathKey(sourcePath) && await this.existsAsync(targetPath)) {
+      logger.warn(`.DL.-Strip uebersprungen (Ziel existiert): ${newName}`);
+      return;
+    }
+    try {
+      await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "audio-strip" });
+      await this.renameCompanionFiles(sourcePath, targetPath, pkg);
+      if (pkg) {
+        const resolved = this.inferItemForMediaLog(pkg, targetPath, path.basename(targetPath));
+        this.logRenameProcess(pkg, "INFO", "audio-strip", ".DL. aus Dateiname entfernt", { sourcePath, targetPath }, resolved.item, resolved.matchedBy);
+      }
+    } catch (error) {
+      logger.warn(`.DL.-Strip fehlgeschlagen (${name}): ${compactErrorText(error)}`);
+    }
+  }
+
   private async autoRenameExtractedVideoFilesImpl(
     extractDir: string,
     pkg?: PackageEntry,
@@ -4511,7 +4634,12 @@ export class DownloadManager extends EventEmitter {
     if (!cleanBase) {
       return null;
     }
-    const cleanFileName = `${cleanBase}${sourceExt}`;
+    // Safety net: collect derives names from folder tokens that may still carry
+    // ".DL.". When German-audio-only is on, never reintroduce the marker the
+    // audio step already stripped from the file.
+    const cleanFileName = this.settings.keepGermanAudioOnly
+      ? stripDualLangMarker(`${cleanBase}${sourceExt}`)
+      : `${cleanBase}${sourceExt}`;
     if (cleanFileName.toLowerCase() === path.basename(sourcePath).toLowerCase()) {
       return null;
     }
@@ -7076,6 +7204,7 @@ export class DownloadManager extends EventEmitter {
       return false;
     }
     return this.settings.autoRename4sf4sj
+      || this.settings.keepGermanAudioOnly
       || this.settings.collectMkvToLibrary
       || this.settings.removeLinkFilesAfterExtract
       || this.settings.removeSamplesAfterExtract
@@ -10942,6 +11071,7 @@ export class DownloadManager extends EventEmitter {
           try {
             await this.chainPackageFileOp(pkg.id, async () => {
               await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, pkg, hybridShouldAbort);
+              await this.keepGermanAudioOnlyImpl(pkg.extractDir, pkg, hybridShouldAbort, hybridController.signal);
               await this.collectMkvFilesToLibrary(packageId, pkg, hybridShouldAbort, true);
             });
           } catch (err) {
@@ -11612,6 +11742,12 @@ export class DownloadManager extends EventEmitter {
         });
         throwIfAborted();
         await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort, true);
+        if (this.settings.keepGermanAudioOnly) {
+          pkg.postProcessLabel = "Tonspur...";
+          this.emitState();
+          throwIfAborted();
+          await this.keepGermanAudioOnly(pkg.extractDir, pkg, shouldAbort, deferredController.signal);
+        }
       }
 
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none") {

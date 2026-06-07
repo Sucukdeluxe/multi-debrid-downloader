@@ -421,6 +421,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     packageName: asText(settings.packageName),
     autoExtract: Boolean(settings.autoExtract),
     autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),
+    keepGermanAudioOnly: Boolean(settings.keepGermanAudioOnly),
+    germanAudioMode: settings.germanAudioMode === "first" ? "first" : "tag",
     extractDir: normalizeAbsoluteDir(settings.extractDir, defaults.extractDir),
     collectMkvToLibrary: Boolean(settings.collectMkvToLibrary),
     mkvLibraryDir: normalizeAbsoluteDir(settings.mkvLibraryDir, defaults.mkvLibraryDir),

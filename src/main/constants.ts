@@ -72,6 +72,8 @@ export function defaultSettings(): AppSettings {
     packageName: "",
     autoExtract: true,
     autoRename4sf4sj: false,
+    keepGermanAudioOnly: false,
+    germanAudioMode: "tag",
     extractDir: path.join(baseDir, "_entpackt"),
     collectMkvToLibrary: false,
     mkvLibraryDir: path.join(baseDir, "_mkv"),
