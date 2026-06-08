@@ -89,10 +89,11 @@ export function isRemuxableVideoFile(fileName: string): boolean {
 // True when the release name explicitly marks it as a German release. Used in
 // tag mode to fall back to the first audio track (German-first scene convention)
 // when the audio language tags are wrong (a German dub mislabeled "eng"), instead
-// of skipping. Deliberately requires an explicit german/deutsch/dubbed token —
-// the ".DL." marker alone (present on every processed file) is not enough.
+// of skipping. Deliberately requires an explicit german/deutsch token — the
+// ".DL." marker alone (present on every processed file) is not enough, and a bare
+// "dubbed" can mean an Italian/French dub, so it must NOT flag a German release.
 export function looksLikeGermanRelease(fileName: string): boolean {
-  return /(^|[._\s-])(german|deutsch|dubbed)([._\s-]|$)/i.test(fileName);
+  return /(^|[._\s-])(german|deutsch)([._\s-]|$)/i.test(fileName);
 }
 
 function isGermanStream(stream: ProbedAudioStream): boolean {
@@ -100,8 +101,11 @@ function isGermanStream(stream: ProbedAudioStream): boolean {
   if (["ger", "deu", "de", "german", "deutsch"].includes(lang)) {
     return true;
   }
+  // Free-text title fallback (used when the language tag is missing). Full words
+  // only — the 2-3 letter codes ger/deu are too ambiguous in a title and would
+  // pick the wrong track to keep (which then deletes the real German one).
   const title = (stream.title || "").toLowerCase();
-  return /\b(german|deutsch|ger|deu)\b/.test(title);
+  return /\b(german|deutsch)\b/.test(title);
 }
 
 // Decide which audio track to keep. Safety invariant: only ever choose to remux

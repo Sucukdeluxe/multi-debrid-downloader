@@ -85,6 +85,13 @@ describe("pickAudioTrack", () => {
     expect(d).toMatchObject({ action: "remux", audioRelIndex: 1 });
   });
 
+  it("tag mode does NOT treat an ambiguous 3-letter title code as German (no false-positive pick)", () => {
+    // Two untagged tracks whose titles are only "Ger"/"Deu" must not be mistaken
+    // for a German track; with no real German signal this falls back to first.
+    const d = pickAudioTrack([{ language: "", title: "Ger" }, { language: "", title: "Deu" }], "tag");
+    expect(d).toMatchObject({ action: "remux", audioRelIndex: 0, reason: "fallback-first-untagged" });
+  });
+
   it("tag mode with single German -> single (no remux)", () => {
     expect(pickAudioTrack([ger], "tag")).toMatchObject({ action: "single" });
   });
@@ -124,6 +131,10 @@ describe("looksLikeGermanRelease", () => {
   it("does not flag a bare .DL. name without an explicit German token", () => {
     expect(looksLikeGermanRelease("Show.S01E01.DL.720p.x264.mkv")).toBe(false);
     expect(looksLikeGermanRelease("Show.S01E01.MULTi.1080p.mkv")).toBe(false);
+  });
+  it("does not flag a non-German dub as a German release (bare 'Dubbed' is ambiguous)", () => {
+    expect(looksLikeGermanRelease("Movie.2020.ITALIAN.Dubbed.DL.1080p.mkv")).toBe(false);
+    expect(looksLikeGermanRelease("Movie.2020.FRENCH.DUBBED.DL.720p.mkv")).toBe(false);
   });
 });
 

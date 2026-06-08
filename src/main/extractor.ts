@@ -2883,6 +2883,13 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   const resumeCompletedAtStart = resumeCompleted.size;
   const allCandidateNames = new Set(allCandidates.map((archivePath) => archiveNameKey(path.basename(archivePath))));
   for (const archiveName of Array.from(resumeCompleted.values())) {
+    // Nested-archive progress (keyed "nested:<name>") has no top-level candidate on
+    // disk to validate against, so it must NOT be pruned here — otherwise every
+    // extractPackageArchives call wiped it and nested archives were re-extracted on
+    // resume. It is cleared together with the rest once the package fully completes.
+    if (archiveName.startsWith("nested:")) {
+      continue;
+    }
     if (!allCandidateNames.has(archiveName)) {
       resumeCompleted.delete(archiveName);
     }

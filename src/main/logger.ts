@@ -183,7 +183,14 @@ async function flushAsync(): Promise<void> {
   }
 
   flushInFlight = true;
-  const linesSnapshot = pendingLines.slice();
+  // Move (not copy) the pending lines out and take ownership. A concurrent write()
+  // during the await below pushes new lines AND can trim the 1MB cap from the FRONT
+  // of pendingLines; the old count-based removal (pendingLines.slice(snapshot.length))
+  // then sliced off the wrong lines and dropped unwritten ones. Resetting the buffer
+  // here means await-time writes queue independently and nothing desyncs.
+  const linesSnapshot = pendingLines;
+  pendingLines = [];
+  pendingChars = 0;
   const chunk = linesSnapshot.join("");
 
   try {
@@ -200,9 +207,19 @@ async function flushAsync(): Promise<void> {
     } else if (!primary.ok) {
       writeStderr(`LOGGER write failed: ${primary.errorText}\n`);
     }
-    if (wroteAny) {
-      pendingLines = pendingLines.slice(linesSnapshot.length);
-      pendingChars = Math.max(0, pendingChars - chunk.length);
+    if (!wroteAny) {
+      // Write failed: requeue the unwritten lines AHEAD of anything that arrived
+      // during the await (preserve order), then re-apply the buffer cap so a
+      // persistent write failure cannot grow the buffer without bound.
+      pendingLines = linesSnapshot.concat(pendingLines);
+      pendingChars += chunk.length;
+      while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {
+        const removed = pendingLines.shift();
+        if (!removed) {
+          break;
+        }
+        pendingChars = Math.max(0, pendingChars - removed.length);
+      }
     }
   } finally {
     flushInFlight = false;

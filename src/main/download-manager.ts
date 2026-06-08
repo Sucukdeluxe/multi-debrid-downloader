@@ -2081,7 +2081,7 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
   }
 
-  public setSettings(next: AppSettings): void {
+  public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean }): void {
     const previous = this.settings;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
@@ -2145,7 +2145,7 @@ export class DownloadManager extends EventEmitter {
 
     this.resolveExistingQueuedOpaqueFilenames();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
-    if (next.completedCleanupPolicy !== "never") {
+    if (!opts?.suppressRetroactiveCleanup && next.completedCleanupPolicy !== "never") {
       this.applyRetroactiveCleanupPolicy();
     }
     this.emitState();
@@ -3544,6 +3544,11 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         if (!entry.isFile()) {
+          continue;
+        }
+        // Never collect our own remux temp/orphan sidecars (~rd<token>.<ext>): a
+        // partial file left by a crash mid-remux must not be swept into the library.
+        if (entry.name.startsWith("~rd")) {
           continue;
         }
         const extension = path.extname(entry.name).toLowerCase();
@@ -6107,6 +6112,11 @@ export class DownloadManager extends EventEmitter {
   }
 
   private dropItemContribution(itemId: string): void {
+    // NOTE: deliberately does NOT subtract from session.totalDownloadedBytes /
+    // sessionDownloadedBytes. Those are cumulative-session counters and must stay
+    // put when a completed item is removed from the queue (see the test "keeps
+    // cumulative session totals when completed items are removed from the queue").
+    // The retry path subtracts on its own because those bytes get re-downloaded.
     this.itemContributedBytes.delete(itemId);
     this.invalidateStatsCache();
   }
@@ -7151,6 +7161,9 @@ export class DownloadManager extends EventEmitter {
     const abortController = new AbortController();
     this.packagePostProcessAbortControllers.set(packageId, abortController);
 
+    // Holder so the task's own finally can identity-check itself (the task Promise
+    // cannot reference its own const inside its initializer). Assigned right after.
+    const handle: { task?: Promise<void> } = {};
     const task = (async () => {
       const slotWaitStart = nowMs();
       await this.acquirePostProcessSlot(packageId);
@@ -7197,8 +7210,16 @@ export class DownloadManager extends EventEmitter {
         } while (this.hybridExtractRequeue.has(packageId));
       } finally {
         this.releasePostProcessSlot();
-        this.packagePostProcessTasks.delete(packageId);
-        this.packagePostProcessAbortControllers.delete(packageId);
+        // Identity guard: only clear the map entries if they still point to THIS
+        // task/controller. After an abort deletes our handle a new run can install
+        // a fresh task+controller for the same packageId; a blind delete here would
+        // orphan that newer task (uncancellable) and allow a duplicate concurrent run.
+        if (this.packagePostProcessTasks.get(packageId) === handle.task) {
+          this.packagePostProcessTasks.delete(packageId);
+        }
+        if (this.packagePostProcessAbortControllers.get(packageId) === abortController) {
+          this.packagePostProcessAbortControllers.delete(packageId);
+        }
         this.persistSoon();
         this.emitState();
         if (this.hybridExtractRequeue.delete(packageId)) {
@@ -7209,6 +7230,7 @@ export class DownloadManager extends EventEmitter {
       }
     })();
 
+    handle.task = task;
     this.packagePostProcessTasks.set(packageId, task);
     return task;
   }

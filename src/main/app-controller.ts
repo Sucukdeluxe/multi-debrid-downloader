@@ -303,6 +303,27 @@ export class AppController {
     return next;
   }
 
+  // Carry the live, runtime-maintained usage/status counters onto a settings
+  // object about to be applied, so they are never rolled back to a stale snapshot.
+  // All-time totals take the max; daily/total usage and account statuses are taken
+  // live; per-key Debrid-Link usage is filtered to keys that still exist.
+  private overlayLiveUsageCounters(target: AppSettings): void {
+    const liveSettings = this.manager.getSettings();
+    target.totalDownloadedAllTime = Math.max(target.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
+    target.totalCompletedFilesAllTime = Math.max(target.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);
+    target.totalRuntimeAllTimeMs = Math.max(target.totalRuntimeAllTimeMs || 0, this.manager.getLiveTotalRuntimeMs());
+    target.providerDailyUsageDay = liveSettings.providerDailyUsageDay;
+    target.providerDailyUsageBytes = { ...(liveSettings.providerDailyUsageBytes || {}) };
+    target.providerTotalUsageBytes = { ...(liveSettings.providerTotalUsageBytes || {}) };
+    target.debridLinkApiKeyDailyUsageBytes = Object.fromEntries(
+      Object.entries(liveSettings.debridLinkApiKeyDailyUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(target.debridLinkApiKeys).includes(keyId))
+    );
+    target.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
+      Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(target.debridLinkApiKeys).includes(keyId))
+    );
+    target.debridAccountStatuses = { ...(liveSettings.debridAccountStatuses || {}) };
+  }
+
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
@@ -315,20 +336,7 @@ export class AppController {
       return previousSettings;
     }
 
-    const liveSettings = this.manager.getSettings();
-    nextSettings.totalDownloadedAllTime = Math.max(nextSettings.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
-    nextSettings.totalCompletedFilesAllTime = Math.max(nextSettings.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);
-    nextSettings.totalRuntimeAllTimeMs = Math.max(nextSettings.totalRuntimeAllTimeMs || 0, this.manager.getLiveTotalRuntimeMs());
-    nextSettings.providerDailyUsageDay = liveSettings.providerDailyUsageDay;
-    nextSettings.providerDailyUsageBytes = { ...(liveSettings.providerDailyUsageBytes || {}) };
-    nextSettings.providerTotalUsageBytes = { ...(liveSettings.providerTotalUsageBytes || {}) };
-    nextSettings.debridLinkApiKeyDailyUsageBytes = Object.fromEntries(
-      Object.entries(liveSettings.debridLinkApiKeyDailyUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
-    );
-    nextSettings.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
-      Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(nextSettings.debridLinkApiKeys).includes(keyId))
-    );
-    nextSettings.debridAccountStatuses = { ...(liveSettings.debridAccountStatuses || {}) };
+    this.overlayLiveUsageCounters(nextSettings);
     const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
     this.settings = nextSettings;
     if (retentionChanged) {
@@ -697,14 +705,18 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       }
     }
     const restoredSettings = normalizeSettings(importedSettings);
-    this.settings = restoredSettings;
-    saveSettings(this.storagePaths, this.settings);
-    this.manager.setSettings(this.settings);
 
-    // Settings-only backup: settings are already applied live (same path as the
-    // normal updateSettings flow). Do NOT stop the manager, wipe the session,
-    // block persistence or relaunch — the running queue stays untouched.
+    // Settings-only backup: keep the running queue AND the live counters untouched.
+    // Overlay the live usage/status counters so they don't roll back to the backup's
+    // (older) snapshot (BUG I), and suppress the retroactive cleanup sweep so the
+    // backup's cleanup policy can't purge the live completed queue here (BUG B) — the
+    // policy still governs FUTURE completions through the normal path. Do NOT stop the
+    // manager, wipe the session, block persistence or relaunch.
     if (!hasSession) {
+      this.overlayLiveUsageCounters(restoredSettings);
+      this.settings = restoredSettings;
+      saveSettings(this.storagePaths, this.settings);
+      this.manager.setSettings(this.settings, { suppressRetroactiveCleanup: true });
       this.audit("INFO", "Backup importiert (nur Einstellungen)", {
         accountSummary: buildAccountSummary(this.settings)
       });
@@ -714,6 +726,10 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
         message: "Einstellungen wiederhergestellt"
       };
     }
+
+    this.settings = restoredSettings;
+    saveSettings(this.storagePaths, this.settings);
+    this.manager.setSettings(this.settings);
 
     this.manager.stop();
     this.manager.abortAllPostProcessing();
