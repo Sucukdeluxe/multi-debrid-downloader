@@ -283,6 +283,16 @@ const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
 const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000;
 const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
 
+// A Mega-Web account abort (the shared unrestrict timeout firing while this
+// account ran) only cools the account down — so the next attempt rotates on —
+// if it actually ran this long. Below this, it's treated as a quick user-cancel
+// (no cooldown). Env-overridable for tests.
+const MEGA_DEBRID_ABORT_MIN_RUN_MS_DEFAULT = 8000;
+function getMegaDebridAbortMinRunMs(): number {
+  const fromEnv = Number(process.env.RD_MEGA_ABORT_MIN_RUN_MS ?? NaN);
+  return Number.isFinite(fromEnv) && fromEnv >= 0 ? Math.floor(fromEnv) : MEGA_DEBRID_ABORT_MIN_RUN_MS_DEFAULT;
+}
+
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
 
@@ -1958,8 +1968,29 @@ class MegaDebridClient {
           sourceAccountLabel: account.label
         };
       } catch (error) {
-        const failure = MegaDebridClient.classifyAccountFailure(error);
         const elapsedMs = Date.now() - testStartedAt;
+        const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
+        // Timeout/abort on THIS account (the shared unrestrict signal fired). Cool
+        // the account down — if it actually ran, not a quick user-cancel — so the
+        // download-manager's retry rotates to the NEXT account instead of hammering
+        // this one. The shared signal is now aborted, so we stop this pass; the
+        // retry runs the rotation fresh with this account skipped. A genuine cancel
+        // is not retried by the caller, so the cooldown is harmless there.
+        if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
+          const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
+          if (ranLongEnough) {
+            setMegaDebridAccountCooldownState(cooldownKey, MEGA_DEBRID_ACCOUNT_COOLDOWN_MS, `Abbruch/Timeout nach ${Math.ceil(elapsedMs / 1000)}s`, "temporary");
+          }
+          failures.push(`Mega-Debrid${accountLabel}: ${abortText}`);
+          logAccountRotation("WARN", providerName, rotationLabel, "TIMEOUT_COOLDOWN", {
+            elapsedMs,
+            reason: abortText,
+            cooldownSec: ranLongEnough ? Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000) : 0,
+            next: "naechster Account beim Retry"
+          });
+          throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
+        }
+        const failure = MegaDebridClient.classifyAccountFailure(error);
         failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
 
         let parkUntilRestart = false;

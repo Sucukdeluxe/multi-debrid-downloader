@@ -11,6 +11,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   resetDebridLinkRuntimeStateForTests();
   resetMegaDebridRuntimeStateForTests();
+  delete process.env.RD_MEGA_ABORT_MIN_RUN_MS;
   vi.restoreAllMocks();
 });
 
@@ -1639,6 +1640,77 @@ describe("debrid service", () => {
 
     expect(megaWeb).toHaveBeenCalled();
     expect(getMegaDebridAccountCooldownState(key)?.untilRestart).toBe(true);
+  }, 20000);
+
+  it("cools down a Mega-Web account that aborts (timeout) so the NEXT unrestrict rotates to the next account", async () => {
+    process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0"; // treat the instant mock abort as a real timeout
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const loginsSeen: Array<string | undefined> = [];
+    const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
+      loginsSeen.push(account?.login);
+      if (account?.login === "user1") {
+        throw new Error("aborted:debrid");
+      }
+      return { fileName: "acc2.rar", directUrl: "https://mega-web.example/acc2.rar", fileSize: null, retriesUsed: 0 };
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const user1Key = `${getMegaDebridAccountId("user1")}:web`;
+
+    // Call 1: account 1 aborts -> rotation stops this pass, account 2 NOT tried, but account 1 is cooled down.
+    await expect(service.unrestrictLink("https://rapidgator.net/file/abort-call-1")).rejects.toThrow();
+    expect(loginsSeen).toContain("user1");
+    expect(loginsSeen).not.toContain("user2");
+    expect(getMegaDebridAccountCooldownState(user1Key)).not.toBeNull();
+
+    // Call 2 (the retry, same state): account 1 is on cooldown -> skipped -> account 2 served.
+    loginsSeen.length = 0;
+    const result = await service.unrestrictLink("https://rapidgator.net/file/abort-call-2");
+    expect(loginsSeen).not.toContain("user1");
+    expect(loginsSeen).toContain("user2");
+    expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
+  }, 20000);
+
+  it("does NOT cool down a Mega-Web account on a quick abort (below the min-run threshold = user cancel)", async () => {
+    process.env.RD_MEGA_ABORT_MIN_RUN_MS = "99999"; // any realistic elapsed stays below -> no cooldown
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const megaWeb = vi.fn(async () => { throw new Error("aborted:debrid"); });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const user1Key = `${getMegaDebridAccountId("user1")}:web`;
+
+    await expect(service.unrestrictLink("https://rapidgator.net/file/quick-cancel")).rejects.toThrow();
+    expect(getMegaDebridAccountCooldownState(user1Key)).toBeNull();
   }, 20000);
 
   it("respects provider selection and does not append hidden providers", async () => {

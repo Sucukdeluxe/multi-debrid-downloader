@@ -1150,6 +1150,10 @@ function rotationEventText(ev: { event: string; cooldownSec?: number; next?: str
       return `fehlgeschlagen${cd}${nx}`;
     }
     case "FATAL": return "abgebrochen (fataler Fehler)";
+    case "TIMEOUT_COOLDOWN": {
+      const cd = ev.cooldownSec ? `, Cooldown ${ev.cooldownSec}s` : "";
+      return `Timeout/Abbruch${cd} → nächster Account beim Retry`;
+    }
     case "SKIP_COOLDOWN": return untilRestart ? "übersprungen (bis Neustart gesperrt)" : "übersprungen (Cooldown aktiv)";
     case "SKIP_DISABLED": return "übersprungen (deaktiviert)";
     case "SKIP_DAILY_LIMIT": return "übersprungen (Tageslimit erreicht)";
