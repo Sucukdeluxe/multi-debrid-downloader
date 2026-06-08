@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 
 // Removes only-German audio handling for "Dual Language" (.DL.) scene releases.
@@ -55,6 +56,9 @@ export interface ProcessVideoOptions {
 export interface ProcessVideoDeps {
   resolveTooling?: () => Promise<{ ffmpeg: string; ffprobe: string } | null>;
   runProcess?: typeof runVideoProcess;
+  // Seam for the atomic-replace rename so its failure/recovery path is testable
+  // without provoking a real OS file lock. Production uses renameWithRetry.
+  rename?: (from: string, to: string) => Promise<void>;
 }
 
 const VIDEO_REMUX_EXTENSIONS = new Set([".mkv", ".mp4"]);
@@ -378,6 +382,41 @@ async function getFreeSpaceBytes(dir: string): Promise<number | null> {
   }
 }
 
+const RENAME_RETRY_DELAYS_MS = [200, 500, 1000];
+const RENAME_RETRYABLE_CODES = new Set(["EBUSY", "EACCES", "EPERM", "EEXIST"]);
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Windows file locks from antivirus, the search indexer, or a media scanner are
+// transient: a rename that hits EBUSY/EACCES/EPERM/EEXIST often succeeds a moment
+// later. Retry with backoff before giving up so a momentary lock doesn't abort
+// the atomic replace and leave the file unprocessed.
+export async function renameWithRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.promises.rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (!code || !RENAME_RETRYABLE_CODES.has(code) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      await delayMs(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+// Short, unique, same-directory sidecar name (never longer than the original file
+// name) so concurrent packages / retries never collide on a fixed temp name and a
+// long scene filename + suffix cannot push the path past Windows MAX_PATH.
+function uniqueTempPath(filePath: string): string {
+  const ext = path.extname(filePath);
+  const token = `${process.pid.toString(36)}${crypto.randomBytes(3).toString("hex")}`;
+  return path.join(path.dirname(filePath), `~rd${token}${ext}`);
+}
+
 export async function processVideoFile(filePath: string, opts: ProcessVideoOptions, deps: ProcessVideoDeps = {}): Promise<VideoProcessResult> {
   const resolveTool = deps.resolveTooling || resolveVideoTooling;
   const run = deps.runProcess || runVideoProcess;
@@ -424,11 +463,7 @@ export async function processVideoFile(filePath: string, opts: ProcessVideoOptio
     return { action: "skipped-no-space", reason: "zu wenig freier Speicher fuer Remux", totalAudioTracks: streams.length, audioLanguages };
   }
 
-  const ext = path.extname(filePath);
-  // Short, same-directory temp name (never longer than the original file name) so
-  // a long scene filename + temp suffix cannot push the temp path past Windows
-  // MAX_PATH and make ffmpeg fail (which would leave the file unprocessed).
-  const tempPath = path.join(path.dirname(filePath), `~rdtmp${ext}`);
+  const tempPath = uniqueTempPath(filePath);
   await fs.promises.rm(tempPath, { force: true }).catch(() => {});
 
   const remux = await run(
@@ -451,15 +486,18 @@ export async function processVideoFile(filePath: string, opts: ProcessVideoOptio
     return { action: "error", reason: "Remux ergab leere Datei", totalAudioTracks: streams.length, audioLanguages };
   }
 
+  const renameOp = deps.rename || renameWithRetry;
   try {
-    // libuv rename replaces an existing destination on Windows; fall back if not.
-    await fs.promises.rename(tempPath, filePath).catch(async () => {
-      await fs.promises.rm(filePath, { force: true });
-      await fs.promises.rename(tempPath, filePath);
-    });
+    // Atomic replace-over: libuv maps fs.rename to MoveFileEx(REPLACE_EXISTING) on
+    // Windows and rename(2) on POSIX, both atomic on the same volume, so filePath
+    // holds either the full original or the full remux at every instant. Retried
+    // for transient locks. We must NEVER rm the original first (the old fallback
+    // did): an rm-then-failed-rename left zero copies of the file on disk.
+    await renameOp(tempPath, filePath);
     // Preserve original mtime so freshness gates (hybrid collect) don't skip it.
     await fs.promises.utimes(filePath, originalStat.atime, originalStat.mtime).catch(() => {});
   } catch (error) {
+    // Replace failed -> the original is untouched at filePath. Drop the temp only.
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     return { action: "error", reason: "Ersetzen der Datei fehlgeschlagen", error: String(error), totalAudioTracks: streams.length, audioLanguages };
   }

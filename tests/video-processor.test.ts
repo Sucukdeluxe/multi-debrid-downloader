@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   stripDualLangMarker,
   hasDualLangMarker,
@@ -13,6 +13,7 @@ import {
   buildFfmpegRemuxArgs,
   computeRemuxTimeoutMs,
   processVideoFile,
+  renameWithRetry,
   type VideoSpawnResult
 } from "../src/main/video-processor";
 
@@ -208,6 +209,11 @@ describe("processVideoFile (real fs body, fake runner)", () => {
     };
   }
 
+  // Any sidecar the replace machinery may leave behind (unique "~rd…" temp names).
+  function leftoverTemps(file: string): string[] {
+    return fs.readdirSync(path.dirname(file)).filter((n) => n.startsWith("~rd"));
+  }
+
   const tooling = async (): Promise<{ ffmpeg: string; ffprobe: string }> => ({ ffmpeg: "ffmpeg", ffprobe: "ffprobe" });
   const twoTracksGerSecond = JSON.stringify({ streams: [{ tags: { language: "eng" } }, { tags: { language: "ger" } }] });
 
@@ -226,7 +232,7 @@ describe("processVideoFile (real fs body, fake runner)", () => {
     expect(result.keptTrackIndex).toBe(1); // German was second
     expect(fs.readFileSync(file, "utf8")).toBe("REMUXED-GERMAN-ONLY"); // original overwritten
     expect(Math.abs(fs.statSync(file).mtimeMs - beforeMtime)).toBeLessThan(1500); // mtime preserved
-    expect(fs.existsSync(`${file}.gertmp.mkv`)).toBe(false); // temp cleaned up
+    expect(leftoverTemps(file)).toEqual([]); // unique temp cleaned up
   });
 
   it("leaves the original intact and removes temp when ffmpeg fails", async () => {
@@ -238,7 +244,23 @@ describe("processVideoFile (real fs body, fake runner)", () => {
 
     expect(result.action).toBe("error");
     expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL"); // never lost
-    expect(fs.existsSync(`${file}.gertmp.mkv`)).toBe(false);
+    expect(leftoverTemps(file)).toEqual([]);
+  });
+
+  it("keeps the original intact and cleans the temp when the atomic replace rename fails (no zero-copy window)", async () => {
+    // Simulate a Windows file lock that defeats the replace even after retries.
+    // The original must survive: the old rm-then-rename fallback could leave the
+    // file with NEITHER the original nor the remux on disk.
+    const file = makeFile("ORIGINAL");
+    const result = await processVideoFile(file, { mode: "tag" }, {
+      resolveTooling: tooling,
+      runProcess: fakeRunner({ probeJson: twoTracksGerSecond }),
+      rename: async () => { throw Object.assign(new Error("locked"), { code: "EBUSY" }); }
+    });
+
+    expect(result.action).toBe("error");
+    expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL"); // original never destroyed
+    expect(leftoverTemps(file)).toEqual([]); // remux temp removed
   });
 
   it("does not touch a single-audio file (no remux)", async () => {
@@ -279,5 +301,37 @@ describe("processVideoFile (real fs body, fake runner)", () => {
     const result = await processVideoFile(file, { mode: "tag" }, { resolveTooling: async () => null });
     expect(result.action).toBe("skipped-no-tool");
     expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL");
+  });
+});
+
+describe("renameWithRetry", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const busy = (): NodeJS.ErrnoException => Object.assign(new Error("locked"), { code: "EBUSY" });
+
+  it("retries a transient EBUSY and then succeeds", async () => {
+    let calls = 0;
+    vi.spyOn(fs.promises, "rename").mockImplementation(async () => {
+      calls += 1;
+      if (calls <= 2) { throw busy(); }
+    });
+    await expect(renameWithRetry("a", "b")).resolves.toBeUndefined();
+    expect(calls).toBe(3); // failed twice, succeeded on the third attempt
+  });
+
+  it("gives up after exhausting retries on a persistent lock", async () => {
+    let calls = 0;
+    vi.spyOn(fs.promises, "rename").mockImplementation(async () => { calls += 1; throw busy(); });
+    await expect(renameWithRetry("a", "b")).rejects.toThrow("locked");
+    expect(calls).toBe(4); // initial attempt + 3 backoff retries
+  });
+
+  it("does not retry a non-retryable error (e.g. EXDEV) — fails fast", async () => {
+    let calls = 0;
+    vi.spyOn(fs.promises, "rename").mockImplementation(async () => {
+      calls += 1;
+      throw Object.assign(new Error("cross-device"), { code: "EXDEV" });
+    });
+    await expect(renameWithRetry("a", "b")).rejects.toThrow("cross-device");
+    expect(calls).toBe(1);
   });
 });
