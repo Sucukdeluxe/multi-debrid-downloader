@@ -54,7 +54,7 @@ import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, Meg
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
-import { processVideoFile, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
+import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
 import type { RotationEvent } from "../shared/types";
@@ -3941,12 +3941,26 @@ export class DownloadManager extends EventEmitter {
     if (targets.length === 0) {
       return 0;
     }
+    logger.info(`Tonspur-Bereinigung: ${targets.length} .DL.-Datei(en) in ${extractDir}, Modus=${this.settings.germanAudioMode}`);
     if (pkg) {
-      this.logRenameProcess(pkg, "INFO", "audio-strip", "Tonspur-Bereinigung gestartet", { extractDir, candidates: targets.length });
+      this.logRenameProcess(pkg, "INFO", "audio-strip", "Tonspur-Bereinigung gestartet", { extractDir, candidates: targets.length, mode: this.settings.germanAudioMode });
     }
+
+    // Resolve ffmpeg/ffprobe ONCE up front and log it loudly — a missing tool is
+    // the single most common reason the whole step silently does nothing.
+    const tooling = await resolveVideoTooling();
+    if (!tooling) {
+      logger.warn(`Tonspur-Bereinigung: ffmpeg/ffprobe NICHT gefunden — Schritt uebersprungen, ${targets.length} Datei(en) unangetastet. ffmpeg in den PATH legen oder RD_FFMPEG_BIN/RD_FFPROBE_BIN setzen.`);
+      if (pkg) {
+        this.logRenameProcess(pkg, "WARN", "audio-strip", "Tonspur-Bereinigung uebersprungen: ffmpeg/ffprobe nicht gefunden", { candidates: targets.length });
+      }
+      return 0;
+    }
+    logger.info(`Tonspur-Bereinigung: ffmpeg=${tooling.ffmpeg} ffprobe=${tooling.ffprobe}`);
 
     const mode: GermanAudioMode = this.settings.germanAudioMode === "first" ? "first" : "tag";
     let processed = 0;
+    let failed = 0;
     for (const sourcePath of targets) {
       if (shouldAbort?.() || signal?.aborted) {
         return processed;
@@ -3961,13 +3975,7 @@ export class DownloadManager extends EventEmitter {
       if (result.action === "aborted") {
         return processed;
       }
-      if (result.action === "skipped-no-tool") {
-        logger.warn("Tonspur-Bereinigung: ffmpeg/ffprobe nicht gefunden — Schritt uebersprungen (PATH oder RD_FFMPEG_BIN setzen)");
-        if (pkg) {
-          this.logRenameProcess(pkg, "WARN", "audio-strip", "Tonspur-Bereinigung uebersprungen: ffmpeg/ffprobe fehlt", { sourceName });
-        }
-        return processed;
-      }
+      const langs = (result.audioLanguages || []).join(",");
       if (pkg) {
         const level = result.action === "error" ? "WARN" : "INFO";
         const resolved = this.inferItemForMediaLog(pkg, sourcePath, sourceName);
@@ -3975,11 +3983,22 @@ export class DownloadManager extends EventEmitter {
           sourceName,
           keptTrack: result.keptTrackIndex,
           audioTracks: result.totalAudioTracks,
+          languages: langs || undefined,
           ...(result.error ? { error: result.error } : {})
         }, resolved.item, resolved.matchedBy);
       }
-      if (result.action === "remuxed") {
+      // Per-file main-log lines so the cause of any unprocessed file is visible
+      // without opening the rename/item logs.
+      if (result.action === "error") {
+        failed += 1;
+        logger.warn(`Tonspur-Bereinigung FEHLER: ${sourceName} — ${result.reason}${result.error ? ` — ${result.error}` : ""} (Spuren: ${langs || "?"}, ${result.totalAudioTracks ?? "?"} Audio)`);
+      } else if (result.action === "remuxed") {
         processed += 1;
+        logger.info(`Tonspur-Bereinigung OK: ${sourceName} — Spur ${result.keptTrackIndex} behalten (${langs || "?"})`);
+      } else if (result.action === "skipped-no-german") {
+        logger.info(`Tonspur-Bereinigung uebersprungen (kein Deutsch-Tag, Spuren: ${langs || "?"}): ${sourceName}`);
+      } else if (result.action === "skipped-no-space") {
+        logger.warn(`Tonspur-Bereinigung uebersprungen (zu wenig Speicher): ${sourceName}`);
       }
       // Only strip ".DL." once the file is confirmed German-only (remuxed) or
       // already single-track. Skips/errors leave the file fully untouched so the
@@ -3987,6 +4006,10 @@ export class DownloadManager extends EventEmitter {
       if (result.action === "remuxed" || result.action === "kept-single") {
         await this.stripDualLangFromFileName(sourcePath, pkg);
       }
+    }
+    logger.info(`Tonspur-Bereinigung fertig: ${processed} verarbeitet, ${failed} Fehler von ${targets.length} Kandidaten in ${extractDir}`);
+    if (pkg) {
+      this.logRenameProcess(pkg, failed > 0 ? "WARN" : "INFO", "audio-strip", "Tonspur-Bereinigung fertig", { processed, failed, candidates: targets.length });
     }
     return processed;
   }

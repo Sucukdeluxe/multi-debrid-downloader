@@ -6,6 +6,7 @@ import {
   stripDualLangMarker,
   hasDualLangMarker,
   isRemuxableVideoFile,
+  looksLikeGermanRelease,
   pickAudioTrack,
   parseFfprobeAudioStreams,
   buildFfprobeArgs,
@@ -95,6 +96,34 @@ describe("pickAudioTrack", () => {
   it("tag mode, tagged but no German -> SKIP (never delete the only usable audio)", () => {
     expect(pickAudioTrack([eng, { language: "fre", title: "" }], "tag")).toMatchObject({ action: "skip", reason: "no-german-track" });
   });
+
+  it("tag mode, no German tag but GERMAN release -> fall back to first track (mislabeled dub)", () => {
+    expect(pickAudioTrack([eng, eng], "tag", true)).toMatchObject({ action: "remux", audioRelIndex: 0, reason: "fallback-first-german-release" });
+  });
+
+  it("tag mode, single mislabeled track on a German release -> keep it (no remux)", () => {
+    expect(pickAudioTrack([eng], "tag", true)).toMatchObject({ action: "single", reason: "single-german-mislabeled" });
+  });
+
+  it("tag mode, no German tag and NOT flagged German -> still SKIP (safety preserved)", () => {
+    expect(pickAudioTrack([eng, eng], "tag", false)).toMatchObject({ action: "skip", reason: "no-german-track" });
+  });
+
+  it("correctly tagged German still wins even on a German release (fallback not needed)", () => {
+    expect(pickAudioTrack([eng, ger], "tag", true)).toMatchObject({ action: "remux", audioRelIndex: 1, reason: "german-tag" });
+  });
+});
+
+describe("looksLikeGermanRelease", () => {
+  it("detects German/Dubbed release names", () => {
+    expect(looksLikeGermanRelease("Desperate.Housewives.S02E01.German.DD51.Dubbed.DL.720p.WEB-DL.x264.mkv")).toBe(true);
+    expect(looksLikeGermanRelease("1899.S01E01.German.DL.720p.WEB-x264-WvF.mkv")).toBe(true);
+    expect(looksLikeGermanRelease("Show.S01E01.Deutsch.1080p.mkv")).toBe(true);
+  });
+  it("does not flag a bare .DL. name without an explicit German token", () => {
+    expect(looksLikeGermanRelease("Show.S01E01.DL.720p.x264.mkv")).toBe(false);
+    expect(looksLikeGermanRelease("Show.S01E01.MULTi.1080p.mkv")).toBe(false);
+  });
 });
 
 describe("parseFfprobeAudioStreams", () => {
@@ -156,10 +185,10 @@ describe("processVideoFile (real fs body, fake runner)", () => {
     }
   });
 
-  function makeFile(content: string): string {
+  function makeFile(content: string, name = "Show.S01E01.German.DL.720p.mkv"): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-vp-"));
     tempDirs.push(dir);
-    const file = path.join(dir, "Show.S01E01.German.DL.720p.mkv");
+    const file = path.join(dir, name);
     fs.writeFileSync(file, content);
     return file;
   }
@@ -222,8 +251,21 @@ describe("processVideoFile (real fs body, fake runner)", () => {
     expect(fs.readFileSync(file, "utf8")).toBe("ORIGINAL");
   });
 
-  it("leaves the file untouched when tagged but no German track", async () => {
-    const file = makeFile("ORIGINAL");
+  it("remuxes a German-named release with MISLABELED audio tags (fallback to first track)", async () => {
+    // Name says German, but both audio tracks are tagged eng/fre (the dub is
+    // mislabeled). The fallback keeps the first track instead of skipping.
+    const file = makeFile("ORIGINAL"); // name contains "German"
+    const result = await processVideoFile(file, { mode: "tag" }, {
+      resolveTooling: tooling,
+      runProcess: fakeRunner({ probeJson: JSON.stringify({ streams: [{ tags: { language: "eng" } }, { tags: { language: "fre" } }] }) })
+    });
+    expect(result.action).toBe("remuxed");
+    expect(result.keptTrackIndex).toBe(0);
+    expect(fs.readFileSync(file, "utf8")).toBe("REMUXED-GERMAN-ONLY");
+  });
+
+  it("leaves a NON-German-named file untouched when tagged but no German track (safety preserved)", async () => {
+    const file = makeFile("ORIGINAL", "Show.S01E01.MULTi.DL.720p.mkv");
     const result = await processVideoFile(file, { mode: "tag" }, {
       resolveTooling: tooling,
       runProcess: fakeRunner({ probeJson: JSON.stringify({ streams: [{ tags: { language: "eng" } }, { tags: { language: "fre" } }] }) })

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // download-manager's selection + .DL.-rename wiring is exercised for real.
 vi.mock("../src/main/video-processor", async (importActual) => {
   const actual = await importActual<typeof import("../src/main/video-processor")>();
-  return { ...actual, processVideoFile: vi.fn() };
+  return { ...actual, processVideoFile: vi.fn(), resolveVideoTooling: vi.fn() };
 });
 
 import { DownloadManager } from "../src/main/download-manager";
@@ -17,13 +17,15 @@ import { createStoragePaths, emptySession } from "../src/main/storage";
 import { shutdownItemLogs } from "../src/main/item-log";
 import { shutdownPackageLogs } from "../src/main/package-log";
 import { shutdownRenameLog } from "../src/main/rename-log";
-import { processVideoFile, type VideoProcessResult } from "../src/main/video-processor";
+import { processVideoFile, resolveVideoTooling, type VideoProcessResult } from "../src/main/video-processor";
 
 const mockedProcess = processVideoFile as unknown as ReturnType<typeof vi.fn>;
+const mockedTooling = resolveVideoTooling as unknown as ReturnType<typeof vi.fn>;
 const tempDirs: string[] = [];
 
 afterEach(() => {
   mockedProcess.mockReset();
+  mockedTooling.mockReset();
   shutdownItemLogs();
   shutdownPackageLogs();
   shutdownRenameLog();
@@ -66,6 +68,9 @@ function setup(keepGermanAudioOnly: boolean): { extractDir: string; manager: Dow
     createdAt: 0,
     updatedAt: 0
   };
+  // Default: ffmpeg/ffprobe "available" so the step proceeds to the (mocked)
+  // processVideoFile. Tests that need the no-tool path override this.
+  mockedTooling.mockResolvedValue({ ffmpeg: "ffmpeg", ffprobe: "ffprobe" });
   return { extractDir, manager, pkg };
 }
 
@@ -131,14 +136,15 @@ describe("keepGermanAudioOnly integration", () => {
     expect(fs.readdirSync(extractDir)).toContain("Show.S01E01.German.720p.x264.mkv");
   });
 
-  it("stops the run and leaves files untouched when ffmpeg is missing", async () => {
+  it("skips up front (no processVideoFile calls) and leaves files untouched when ffmpeg is missing", async () => {
     const { extractDir, manager, pkg } = setup(true);
     stage(extractDir);
-    mockedProcess.mockResolvedValue({ action: "skipped-no-tool", reason: "ffmpeg/ffprobe nicht gefunden" } as VideoProcessResult);
+    mockedTooling.mockResolvedValue(null); // ffmpeg/ffprobe not found
 
     const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
 
     expect(n).toBe(0);
+    expect(mockedProcess).not.toHaveBeenCalled(); // bailed before touching any file
     expect(fs.readdirSync(extractDir)).toContain(DL_MKV); // untouched
   });
 });

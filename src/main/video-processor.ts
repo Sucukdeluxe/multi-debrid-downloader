@@ -39,6 +39,7 @@ export interface VideoProcessResult {
   reason: string;
   keptTrackIndex?: number;
   totalAudioTracks?: number;
+  audioLanguages?: string[];
   error?: string;
 }
 
@@ -81,6 +82,15 @@ export function isRemuxableVideoFile(fileName: string): boolean {
   return VIDEO_REMUX_EXTENSIONS.has(path.extname(fileName).toLowerCase());
 }
 
+// True when the release name explicitly marks it as a German release. Used in
+// tag mode to fall back to the first audio track (German-first scene convention)
+// when the audio language tags are wrong (a German dub mislabeled "eng"), instead
+// of skipping. Deliberately requires an explicit german/deutsch/dubbed token —
+// the ".DL." marker alone (present on every processed file) is not enough.
+export function looksLikeGermanRelease(fileName: string): boolean {
+  return /(^|[._\s-])(german|deutsch|dubbed)([._\s-]|$)/i.test(fileName);
+}
+
 function isGermanStream(stream: ProbedAudioStream): boolean {
   const lang = (stream.language || "").toLowerCase().trim();
   if (["ger", "deu", "de", "german", "deutsch"].includes(lang)) {
@@ -92,7 +102,7 @@ function isGermanStream(stream: ProbedAudioStream): boolean {
 
 // Decide which audio track to keep. Safety invariant: only ever choose to remux
 // (which destroys the original) when we are confident; otherwise skip untouched.
-export function pickAudioTrack(streams: ProbedAudioStream[], mode: GermanAudioMode): AudioTrackDecision {
+export function pickAudioTrack(streams: ProbedAudioStream[], mode: GermanAudioMode, germanRelease = false): AudioTrackDecision {
   const total = streams.length;
   if (total === 0) {
     return { action: "skip", reason: "no-audio" };
@@ -116,7 +126,15 @@ export function pickAudioTrack(streams: ProbedAudioStream[], mode: GermanAudioMo
       ? { action: "single", audioRelIndex: 0, reason: "single-untagged" }
       : { action: "remux", audioRelIndex: 0, reason: "fallback-first-untagged" };
   }
-  // Tagged, but no German track -> never guess-delete the only usable audio.
+  if (germanRelease) {
+    // Tagged, no German track found, but the release name explicitly says German
+    // -> the dub is mislabeled (German audio tagged "eng"). Trust the German-first
+    // scene convention rather than skipping.
+    return total === 1
+      ? { action: "single", audioRelIndex: 0, reason: "single-german-mislabeled" }
+      : { action: "remux", audioRelIndex: 0, reason: "fallback-first-german-release" };
+  }
+  // Tagged, no German track, and nothing says German -> never guess-delete.
   return { action: "skip", reason: "no-german-track" };
 }
 
@@ -380,16 +398,18 @@ export async function processVideoFile(filePath: string, opts: ProcessVideoOptio
   }
 
   const streams = parseFfprobeAudioStreams(probe.stdout);
-  const decision = pickAudioTrack(streams, opts.mode);
+  const audioLanguages = streams.map((s) => (s.language || "").trim() || "und");
+  const decision = pickAudioTrack(streams, opts.mode, looksLikeGermanRelease(path.basename(filePath)));
   if (decision.action === "skip") {
     return {
       action: decision.reason === "no-german-track" ? "skipped-no-german" : "skipped-no-audio",
       reason: decision.reason,
-      totalAudioTracks: streams.length
+      totalAudioTracks: streams.length,
+      audioLanguages
     };
   }
   if (decision.action === "single") {
-    return { action: "kept-single", reason: decision.reason, totalAudioTracks: streams.length, keptTrackIndex: 0 };
+    return { action: "kept-single", reason: decision.reason, totalAudioTracks: streams.length, audioLanguages, keptTrackIndex: 0 };
   }
 
   // remux path
@@ -397,15 +417,18 @@ export async function processVideoFile(filePath: string, opts: ProcessVideoOptio
   try {
     originalStat = await fs.promises.stat(filePath);
   } catch (error) {
-    return { action: "error", reason: "stat fehlgeschlagen", error: String(error) };
+    return { action: "error", reason: "stat fehlgeschlagen", error: String(error), audioLanguages };
   }
   const free = await getFreeSpaceBytes(path.dirname(filePath));
   if (free !== null && free < Math.ceil(originalStat.size * 1.05)) {
-    return { action: "skipped-no-space", reason: "zu wenig freier Speicher fuer Remux", totalAudioTracks: streams.length };
+    return { action: "skipped-no-space", reason: "zu wenig freier Speicher fuer Remux", totalAudioTracks: streams.length, audioLanguages };
   }
 
   const ext = path.extname(filePath);
-  const tempPath = `${filePath}.gertmp${ext}`;
+  // Short, same-directory temp name (never longer than the original file name) so
+  // a long scene filename + temp suffix cannot push the temp path past Windows
+  // MAX_PATH and make ffmpeg fail (which would leave the file unprocessed).
+  const tempPath = path.join(path.dirname(filePath), `~rdtmp${ext}`);
   await fs.promises.rm(tempPath, { force: true }).catch(() => {});
 
   const remux = await run(
@@ -419,13 +442,13 @@ export async function processVideoFile(filePath: string, opts: ProcessVideoOptio
   }
   if (!remux.ok) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
-    return { action: "error", reason: "ffmpeg remux fehlgeschlagen", error: remux.stderr || `exit ${String(remux.exitCode)}`, totalAudioTracks: streams.length };
+    return { action: "error", reason: "ffmpeg remux fehlgeschlagen", error: remux.stderr || `exit ${String(remux.exitCode)}`, totalAudioTracks: streams.length, audioLanguages, keptTrackIndex: decision.audioRelIndex };
   }
 
   const tempStat = await fs.promises.stat(tempPath).catch(() => null);
   if (!tempStat || tempStat.size <= 0) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
-    return { action: "error", reason: "Remux ergab leere Datei", totalAudioTracks: streams.length };
+    return { action: "error", reason: "Remux ergab leere Datei", totalAudioTracks: streams.length, audioLanguages };
   }
 
   try {
@@ -438,8 +461,8 @@ export async function processVideoFile(filePath: string, opts: ProcessVideoOptio
     await fs.promises.utimes(filePath, originalStat.atime, originalStat.mtime).catch(() => {});
   } catch (error) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
-    return { action: "error", reason: "Ersetzen der Datei fehlgeschlagen", error: String(error), totalAudioTracks: streams.length };
+    return { action: "error", reason: "Ersetzen der Datei fehlgeschlagen", error: String(error), totalAudioTracks: streams.length, audioLanguages };
   }
 
-  return { action: "remuxed", reason: decision.reason, keptTrackIndex: decision.audioRelIndex, totalAudioTracks: streams.length };
+  return { action: "remuxed", reason: decision.reason, keptTrackIndex: decision.audioRelIndex, totalAudioTracks: streams.length, audioLanguages };
 }
