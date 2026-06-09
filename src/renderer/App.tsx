@@ -4958,7 +4958,17 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste in Sicherung mitsichern (Standard: nur Einstellungen)</label>
                     <label>Webhook-URL (Discord)</label>
-                    <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
+                    <div className="input-row">
+                      <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
+                      <button className="btn" disabled={!settingsDraft.notifyUrl.trim()} onClick={() => {
+                        void performQuickAction(async () => {
+                          const ok = await window.rd.testNotification(settingsDraft.notifyUrl, settingsDraft.notifyMention);
+                          showToast(ok ? "Test-Nachricht gesendet — schau in Discord" : "Test fehlgeschlagen — Webhook-URL prüfen (Details unter Hilfe → Letzte Fehler)", 4200);
+                        }, (error) => {
+                          showToast(`Test fehlgeschlagen: ${String(error)}`, 3600);
+                        });
+                      }}>Testen</button>
+                    </div>
                     <div className="hint">In Discord: Servereinstellungen → Integrationen → Webhooks → Neuer Webhook → URL kopieren und hier eintragen. Die gewählten Ereignisse landen als Nachricht im Kanal.</div>
                     <label>Discord-Ping (optional)</label>
                     <input value={settingsDraft.notifyMention} placeholder="Deine User-ID, @everyone oder @here" onChange={(e) => setText("notifyMention", e.target.value)} />

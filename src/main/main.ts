@@ -6,6 +6,7 @@ import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { getLogFilePath, logger } from "./logger";
 import { getRecentErrors } from "./error-ring";
+import { sendNotification } from "./notify";
 import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
 import { cleanupStaleSubstDrives, shutdownDaemon } from "./extractor";
@@ -628,6 +629,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.GET_DEBUG_SETUP_CHECK, async () => controller.getDebugSetupCheck());
 
   ipcMain.handle(IPC_CHANNELS.GET_RECENT_ERRORS, async () => getRecentErrors());
+
+  ipcMain.handle(IPC_CHANNELS.TEST_NOTIFY, async (_event: IpcMainInvokeEvent, url: string, mention: string) => {
+    validateString(url, "url");
+    return sendNotification(url, {
+      title: "🔔 Test-Benachrichtigung",
+      message: "Webhook funktioniert — Benachrichtigungen kommen hier an.",
+      mention: typeof mention === "string" ? mention : ""
+    });
+  });
 
   ipcMain.handle(IPC_CHANNELS.GET_TRACE_CONFIG, async () => controller.getTraceConfig());
 

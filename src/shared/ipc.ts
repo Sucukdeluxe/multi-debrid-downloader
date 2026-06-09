@@ -48,6 +48,7 @@ export const IPC_CHANNELS = {
   OPEN_ITEM_LOG: "app:open-item-log",
   GET_DEBUG_SETUP_CHECK: "app:get-debug-setup-check",
   GET_RECENT_ERRORS: "app:get-recent-errors",
+  TEST_NOTIFY: "app:test-notify",
   GET_TRACE_CONFIG: "app:get-trace-config",
   SET_TRACE_ENABLED: "app:set-trace-enabled",
   ROTATE_DEBUG_TOKEN: "app:rotate-debug-token",
