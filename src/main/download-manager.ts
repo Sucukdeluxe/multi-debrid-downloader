@@ -10496,10 +10496,8 @@ export class DownloadManager extends EventEmitter {
     }
     this.notifiedPackages.add(pkg.id);
     void sendNotification(url, {
-      title: kind === "completed" ? "Paket fertig" : "Paket fehlgeschlagen",
-      message: `${pkg.name}\n${detail}`,
-      priority: kind === "failed" ? "high" : "default",
-      tags: kind === "completed" ? "white_check_mark" : "x"
+      title: kind === "completed" ? "✅ Paket fertig" : "❌ Paket fehlgeschlagen",
+      message: `${pkg.name}\n${detail}`
     });
   }
 
@@ -12122,10 +12120,8 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
     if (this.settings.notifyOnRunFinished && total > 0) {
       void sendNotification(this.settings.notifyUrl, {
-        title: "Durchlauf beendet",
-        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s`,
-        priority: failed > 0 ? "high" : "default",
-        tags: failed > 0 ? "warning" : "checkered_flag"
+        title: failed > 0 ? "⚠️ Durchlauf beendet" : "🏁 Durchlauf beendet",
+        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s`
       });
     }
     this.runItemIds.clear();

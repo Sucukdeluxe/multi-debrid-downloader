@@ -3,30 +3,24 @@ import { logger } from "./logger";
 export interface NotifyPayload {
   title: string;
   message: string;
-  priority?: "default" | "high";
-  tags?: string;
 }
 
 const NOTIFY_TIMEOUT_MS = 5000;
+const WEBHOOK_USERNAME = "Real-Debrid Downloader";
 
 export function isNotifyUrlValid(url: string): boolean {
   return /^https?:\/\/\S+$/i.test(String(url || "").trim());
 }
 
 export function buildNotifyRequest(url: string, payload: NotifyPayload): { url: string; init: RequestInit } {
-  const headers: Record<string, string> = {
-    "Title": payload.title,
-    "Content-Type": "text/plain; charset=utf-8"
-  };
-  if (payload.priority && payload.priority !== "default") {
-    headers["Priority"] = payload.priority;
-  }
-  if (payload.tags) {
-    headers["Tags"] = payload.tags;
-  }
+  const content = `**${payload.title}**\n${payload.message}`.slice(0, 2000);
   return {
     url: String(url || "").trim(),
-    init: { method: "POST", headers, body: payload.message }
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: WEBHOOK_USERNAME, content })
+    }
   };
 }
 

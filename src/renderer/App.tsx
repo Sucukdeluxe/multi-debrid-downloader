@@ -4957,9 +4957,9 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste in Sicherung mitsichern (Standard: nur Einstellungen)</label>
-                    <label>Benachrichtigungs-URL (ntfy/Webhook)</label>
-                    <input value={settingsDraft.notifyUrl} placeholder="https://ntfy.sh/mein-topic" onChange={(e) => setText("notifyUrl", e.target.value)} />
-                    <div className="hint">POST an diese URL bei den unten gewählten Ereignissen. Mit der ntfy-App aufs Handy: Topic-URL eintragen, Topic in der App abonnieren — kein Account nötig.</div>
+                    <label>Webhook-URL (Discord)</label>
+                    <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
+                    <div className="hint">In Discord: Servereinstellungen → Integrationen → Webhooks → Neuer Webhook → URL kopieren und hier eintragen. Die gewählten Ereignisse landen als Nachricht im Kanal.</div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageCompleted} onChange={(e) => setBool("notifyOnPackageCompleted", e.target.checked)} /> Benachrichtigen wenn ein Paket fertig ist</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageFailed} onChange={(e) => setBool("notifyOnPackageFailed", e.target.checked)} /> Benachrichtigen wenn ein Paket fehlschlägt</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnRunFinished} onChange={(e) => setBool("notifyOnRunFinished", e.target.checked)} /> Benachrichtigen wenn der Durchlauf beendet ist</label>
