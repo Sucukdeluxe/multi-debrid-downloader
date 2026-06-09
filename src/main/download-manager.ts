@@ -10497,7 +10497,8 @@ export class DownloadManager extends EventEmitter {
     this.notifiedPackages.add(pkg.id);
     void sendNotification(url, {
       title: kind === "completed" ? "✅ Paket fertig" : "❌ Paket fehlgeschlagen",
-      message: `${pkg.name}\n${detail}`
+      message: `${pkg.name}\n${detail}`,
+      mention: this.settings.notifyMention
     });
   }
 
@@ -12121,7 +12122,8 @@ export class DownloadManager extends EventEmitter {
     if (this.settings.notifyOnRunFinished && total > 0) {
       void sendNotification(this.settings.notifyUrl, {
         title: failed > 0 ? "⚠️ Durchlauf beendet" : "🏁 Durchlauf beendet",
-        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s`
+        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s`,
+        mention: this.settings.notifyMention
       });
     }
     this.runItemIds.clear();

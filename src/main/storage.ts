@@ -460,6 +460,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     backupIncludeDownloads: settings.backupIncludeDownloads !== undefined ? Boolean(settings.backupIncludeDownloads) : defaults.backupIncludeDownloads,
     notifyUrl: asText(settings.notifyUrl) || defaults.notifyUrl,
+    notifyMention: asText(settings.notifyMention) || defaults.notifyMention,
     notifyOnPackageCompleted: settings.notifyOnPackageCompleted !== undefined ? Boolean(settings.notifyOnPackageCompleted) : defaults.notifyOnPackageCompleted,
     notifyOnPackageFailed: settings.notifyOnPackageFailed !== undefined ? Boolean(settings.notifyOnPackageFailed) : defaults.notifyOnPackageFailed,
     notifyOnRunFinished: settings.notifyOnRunFinished !== undefined ? Boolean(settings.notifyOnRunFinished) : defaults.notifyOnRunFinished,

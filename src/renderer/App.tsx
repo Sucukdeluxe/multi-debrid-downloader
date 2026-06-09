@@ -853,7 +853,7 @@ const emptySnapshot = (): UiSnapshot => ({
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false,
-    notifyUrl: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
+    notifyUrl: "", notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
@@ -4960,6 +4960,9 @@ export function App(): ReactElement {
                     <label>Webhook-URL (Discord)</label>
                     <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
                     <div className="hint">In Discord: Servereinstellungen → Integrationen → Webhooks → Neuer Webhook → URL kopieren und hier eintragen. Die gewählten Ereignisse landen als Nachricht im Kanal.</div>
+                    <label>Discord-Ping (optional)</label>
+                    <input value={settingsDraft.notifyMention} placeholder="Deine User-ID, @everyone oder @here" onChange={(e) => setText("notifyMention", e.target.value)} />
+                    <div className="hint">Wird jeder Nachricht vorangestellt, damit Discord dich pingt. Eigene ID: Discord-Einstellungen → Erweitert → Entwicklermodus an, dann Rechtsklick auf deinen Namen → "User-ID kopieren" und die Zahl hier eintragen.</div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageCompleted} onChange={(e) => setBool("notifyOnPackageCompleted", e.target.checked)} /> Benachrichtigen wenn ein Paket fertig ist</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageFailed} onChange={(e) => setBool("notifyOnPackageFailed", e.target.checked)} /> Benachrichtigen wenn ein Paket fehlschlägt</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnRunFinished} onChange={(e) => setBool("notifyOnRunFinished", e.target.checked)} /> Benachrichtigen wenn der Durchlauf beendet ist</label>

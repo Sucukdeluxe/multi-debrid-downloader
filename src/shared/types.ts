@@ -133,6 +133,7 @@ export interface AppSettings {
   confirmDeleteSelection: boolean;
   backupIncludeDownloads: boolean;
   notifyUrl: string;
+  notifyMention: string;
   notifyOnPackageCompleted: boolean;
   notifyOnPackageFailed: boolean;
   notifyOnRunFinished: boolean;

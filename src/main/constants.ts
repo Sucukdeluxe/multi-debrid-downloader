@@ -108,6 +108,7 @@ export function defaultSettings(): AppSettings {
     confirmDeleteSelection: true,
     backupIncludeDownloads: false,
     notifyUrl: "",
+    notifyMention: "",
     notifyOnPackageCompleted: false,
     notifyOnPackageFailed: false,
     notifyOnRunFinished: false,

@@ -3,6 +3,7 @@ import { logger } from "./logger";
 export interface NotifyPayload {
   title: string;
   message: string;
+  mention?: string;
 }
 
 const NOTIFY_TIMEOUT_MS = 5000;
@@ -12,8 +13,22 @@ export function isNotifyUrlValid(url: string): boolean {
   return /^https?:\/\/\S+$/i.test(String(url || "").trim());
 }
 
+// Accepts a bare Discord user ID (wrapped as <@id> so it actually pings),
+// @everyone/@here, or an already-formed <@...>/<@&...> mention as-is.
+export function normalizeDiscordMention(raw: string): string {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (/^\d{5,}$/.test(text)) {
+    return `<@${text}>`;
+  }
+  return text;
+}
+
 export function buildNotifyRequest(url: string, payload: NotifyPayload): { url: string; init: RequestInit } {
-  const content = `**${payload.title}**\n${payload.message}`.slice(0, 2000);
+  const mention = normalizeDiscordMention(payload.mention || "");
+  const content = `${mention ? `${mention} ` : ""}**${payload.title}**\n${payload.message}`.slice(0, 2000);
   return {
     url: String(url || "").trim(),
     init: {

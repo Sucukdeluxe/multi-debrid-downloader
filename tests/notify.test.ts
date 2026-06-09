@@ -1,5 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildNotifyRequest, isNotifyUrlValid, sendNotification } from "../src/main/notify";
+import { buildNotifyRequest, isNotifyUrlValid, normalizeDiscordMention, sendNotification } from "../src/main/notify";
+
+describe("normalizeDiscordMention", () => {
+  it("wraps a bare user ID as a pinging mention", () => {
+    expect(normalizeDiscordMention("123456789012345678")).toBe("<@123456789012345678>");
+    expect(normalizeDiscordMention("  987654321  ")).toBe("<@987654321>");
+  });
+  it("passes @everyone/@here and formed mentions through", () => {
+    expect(normalizeDiscordMention("@everyone")).toBe("@everyone");
+    expect(normalizeDiscordMention("@here")).toBe("@here");
+    expect(normalizeDiscordMention("<@123456789>")).toBe("<@123456789>");
+    expect(normalizeDiscordMention("<@&111222333>")).toBe("<@&111222333>");
+  });
+  it("returns empty for empty input", () => {
+    expect(normalizeDiscordMention("")).toBe("");
+    expect(normalizeDiscordMention("   ")).toBe("");
+  });
+});
 
 describe("isNotifyUrlValid", () => {
   it("accepts http/https URLs", () => {
@@ -29,6 +46,16 @@ describe("buildNotifyRequest", () => {
     const req = buildNotifyRequest("https://discord.com/api/webhooks/123/abc", { title: "T", message: "x".repeat(3000) });
     const body = JSON.parse(String(req.init.body));
     expect(body.content.length).toBe(2000);
+  });
+  it("prepends the mention so Discord pings (bare ID gets wrapped)", () => {
+    const req = buildNotifyRequest("https://discord.com/api/webhooks/123/abc", { title: "T", message: "M", mention: "123456789012345678" });
+    const body = JSON.parse(String(req.init.body));
+    expect(body.content).toBe("<@123456789012345678> **T**\nM");
+  });
+  it("sends no mention prefix when the field is empty", () => {
+    const req = buildNotifyRequest("https://discord.com/api/webhooks/123/abc", { title: "T", message: "M", mention: "" });
+    const body = JSON.parse(String(req.init.body));
+    expect(body.content).toBe("**T**\nM");
   });
 });
 
