@@ -5,6 +5,7 @@ import type {
   AllDebridHostInfo,
   AppSettings,
   AppTheme,
+  AudioStripSummary,
   BandwidthScheduleEntry,
   DebugSetupCheckResult,
   DebridFallbackProvider,
@@ -852,6 +853,7 @@ const emptySnapshot = (): UiSnapshot => ({
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false,
+    notifyUrl: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
@@ -982,6 +984,23 @@ function extractHoster(url: string): string {
     const parts = host.split(".");
     return parts.length >= 2 ? parts[parts.length - 2] : host;
   } catch { return ""; }
+}
+
+function formatAudioStripSummary(summary: AudioStripSummary): { text: string; tooltip: string; attention: boolean } {
+  const parts: string[] = [];
+  const ok = summary.remuxed + summary.keptSingle;
+  if (ok > 0) parts.push(`${ok} OK`);
+  if (summary.skippedNoGerman > 0) parts.push(`${summary.skippedNoGerman} ohne DE-Tag`);
+  if (summary.skippedNoTool > 0) parts.push("ffmpeg fehlt");
+  if (summary.failed > 0) parts.push(`${summary.failed} Fehler`);
+  const tooltip = summary.files
+    .map((f) => `${f.name}: ${f.action} (${f.reason}${f.languages ? `, Spuren: ${f.languages}` : ""})`)
+    .join("\n");
+  return {
+    text: `Tonspur: ${parts.join(" · ") || "—"}`,
+    tooltip,
+    attention: summary.skippedNoGerman > 0 || summary.skippedNoTool > 0 || summary.failed > 0
+  };
 }
 
 const settingsSubTabs: { key: SettingsSubTab; label: string }[] = [
@@ -3914,6 +3933,32 @@ export function App(): ReactElement {
     }
   };
 
+  const onShowRecentErrors = async (): Promise<void> => {
+    closeMenus();
+    try {
+      const entries = await window.rd.getRecentErrors();
+      const errorCount = entries.filter((e) => e.level === "ERROR").length;
+      const warnCount = entries.filter((e) => e.level === "WARN").length;
+      const details = entries.map((e) => `${e.ts} [${e.level}] ${e.message}`).join("\n");
+      const copy = await askConfirmPrompt({
+        title: "Letzte Fehler",
+        message: entries.length === 0
+          ? "Keine Fehler oder Warnungen seit dem App-Start aufgezeichnet."
+          : `${errorCount} Fehler, ${warnCount} Warnungen (letzte ${entries.length})`,
+        confirmLabel: entries.length > 0 ? "In Zwischenablage kopieren" : "Schließen",
+        cancelLabel: "Schließen",
+        details: details || undefined,
+        detailsLabel: "Einträge anzeigen"
+      });
+      if (copy && entries.length > 0) {
+        await navigator.clipboard.writeText(details);
+        showToast("Fehlerliste kopiert", 2600);
+      }
+    } catch (error) {
+      showToast(`Fehler-Ansicht fehlgeschlagen: ${String(error)}`, 3000);
+    }
+  };
+
   const onRotateDebugToken = async (): Promise<void> => {
     closeMenus();
     const confirmed = await askConfirmPrompt({
@@ -4320,6 +4365,9 @@ export function App(): ReactElement {
               </button>
               <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}>
                 <span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span>
+              </button>
+              <button className="menu-dropdown-item" onClick={() => { void onShowRecentErrors(); }}>
+                <span>Letzte Fehler anzeigen</span>
               </button>
               <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}>
                 <span>Debug-Setup prüfen</span>
@@ -4909,6 +4957,12 @@ export function App(): ReactElement {
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste in Sicherung mitsichern (Standard: nur Einstellungen)</label>
+                    <label>Benachrichtigungs-URL (ntfy/Webhook)</label>
+                    <input value={settingsDraft.notifyUrl} placeholder="https://ntfy.sh/mein-topic" onChange={(e) => setText("notifyUrl", e.target.value)} />
+                    <div className="hint">POST an diese URL bei den unten gewählten Ereignissen. Mit der ntfy-App aufs Handy: Topic-URL eintragen, Topic in der App abonnieren — kein Account nötig.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageCompleted} onChange={(e) => setBool("notifyOnPackageCompleted", e.target.checked)} /> Benachrichtigen wenn ein Paket fertig ist</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageFailed} onChange={(e) => setBool("notifyOnPackageFailed", e.target.checked)} /> Benachrichtigen wenn ein Paket fehlschlägt</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnRunFinished} onChange={(e) => setBool("notifyOnRunFinished", e.target.checked)} /> Benachrichtigen wenn der Durchlauf beendet ist</label>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
                       const next = e.target.checked ? "light" : "dark";
                       settingsDraftRevisionRef.current += 1;
@@ -6594,9 +6648,12 @@ const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripe
               case "prio": return (
                 <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
               );
-              case "status": return (
-                <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` | ${failed} Fehler` : ""}{cancelled > 0 ? ` | ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}</span>
-              );
+              case "status": {
+                const audioStrip = pkg.audioStripSummary ? formatAudioStripSummary(pkg.audioStripSummary) : null;
+                return (
+                  <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` | ${failed} Fehler` : ""}{cancelled > 0 ? ` | ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}{audioStrip ? <span className={`pkg-audio-strip${audioStrip.attention ? " pkg-audio-strip-warn" : ""}`} title={audioStrip.tooltip}>{` · ${audioStrip.text}`}</span> : null}</span>
+                );
+              }
               case "speed": return (
                 <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>
               );

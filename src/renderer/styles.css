@@ -736,6 +736,14 @@ body,
   padding-right: 12px;
 }
 
+.pkg-audio-strip {
+  color: var(--muted);
+}
+
+.pkg-audio-strip-warn {
+  color: var(--danger);
+}
+
 .progress-size {
   display: block;
   position: relative;

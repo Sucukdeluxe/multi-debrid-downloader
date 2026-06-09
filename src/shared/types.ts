@@ -132,6 +132,10 @@ export interface AppSettings {
   hideExtractedItems: boolean;
   confirmDeleteSelection: boolean;
   backupIncludeDownloads: boolean;
+  notifyUrl: string;
+  notifyOnPackageCompleted: boolean;
+  notifyOnPackageFailed: boolean;
+  notifyOnRunFinished: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
   totalRuntimeAllTimeMs: number;
@@ -181,6 +185,24 @@ export interface DownloadItem {
   onlineStatus?: "online" | "offline" | "checking";
 }
 
+export interface AudioStripFileResult {
+  name: string;
+  action: string;
+  reason: string;
+  languages?: string;
+}
+
+export interface AudioStripSummary {
+  at: number;
+  candidates: number;
+  remuxed: number;
+  keptSingle: number;
+  skippedNoGerman: number;
+  skippedNoTool: number;
+  failed: number;
+  files: AudioStripFileResult[];
+}
+
 export interface PackageEntry {
   id: string;
   name: string;
@@ -192,6 +214,7 @@ export interface PackageEntry {
   enabled: boolean;
   priority?: PackagePriority;
   postProcessLabel?: string;
+  audioStripSummary?: AudioStripSummary;
   downloadStartedAt?: number;
   downloadCompletedAt?: number;
   createdAt: number;

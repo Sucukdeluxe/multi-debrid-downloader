@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds } from "../shared/mega-debrid-accounts";
-import { AppSettings, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
 import { logger } from "./logger";
@@ -459,6 +459,10 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     hideExtractedItems: settings.hideExtractedItems !== undefined ? Boolean(settings.hideExtractedItems) : defaults.hideExtractedItems,
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     backupIncludeDownloads: settings.backupIncludeDownloads !== undefined ? Boolean(settings.backupIncludeDownloads) : defaults.backupIncludeDownloads,
+    notifyUrl: asText(settings.notifyUrl) || defaults.notifyUrl,
+    notifyOnPackageCompleted: settings.notifyOnPackageCompleted !== undefined ? Boolean(settings.notifyOnPackageCompleted) : defaults.notifyOnPackageCompleted,
+    notifyOnPackageFailed: settings.notifyOnPackageFailed !== undefined ? Boolean(settings.notifyOnPackageFailed) : defaults.notifyOnPackageFailed,
+    notifyOnRunFinished: settings.notifyOnRunFinished !== undefined ? Boolean(settings.notifyOnRunFinished) : defaults.notifyOnRunFinished,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     totalCompletedFilesAllTime: typeof settings.totalCompletedFilesAllTime === "number" && settings.totalCompletedFilesAllTime >= 0 ? settings.totalCompletedFilesAllTime : defaults.totalCompletedFilesAllTime,
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
@@ -589,6 +593,37 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function normalizeAudioStripSummary(raw: unknown): AudioStripSummary | undefined {
+  const parsed = asRecord(raw);
+  if (!parsed) {
+    return undefined;
+  }
+  const files = Array.isArray(parsed.files)
+    ? parsed.files.slice(0, 100).flatMap((entry) => {
+      const file = asRecord(entry);
+      if (!file) {
+        return [];
+      }
+      const name = asText(file.name);
+      if (!name) {
+        return [];
+      }
+      const languages = asText(file.languages);
+      return [{ name, action: asText(file.action), reason: asText(file.reason), ...(languages ? { languages } : {}) }];
+    })
+    : [];
+  return {
+    at: clampNumber(parsed.at, 0, 0, Number.MAX_SAFE_INTEGER),
+    candidates: clampNumber(parsed.candidates, 0, 0, 1_000_000),
+    remuxed: clampNumber(parsed.remuxed, 0, 0, 1_000_000),
+    keptSingle: clampNumber(parsed.keptSingle, 0, 0, 1_000_000),
+    skippedNoGerman: clampNumber(parsed.skippedNoGerman, 0, 0, 1_000_000),
+    skippedNoTool: clampNumber(parsed.skippedNoTool, 0, 0, 1_000_000),
+    failed: clampNumber(parsed.failed, 0, 0, 1_000_000),
+    files
+  };
+}
+
 function readSettingsFile(filePath: string): AppSettings | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
@@ -689,6 +724,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       cancelled: Boolean(pkg.cancelled),
       enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
       priority: VALID_PACKAGE_PRIORITIES.has(asText(pkg.priority)) ? asText(pkg.priority) as PackagePriority : "normal",
+      audioStripSummary: normalizeAudioStripSummary(pkg.audioStripSummary),
       downloadStartedAt: clampNumber(pkg.downloadStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       downloadCompletedAt: clampNumber(pkg.downloadCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),

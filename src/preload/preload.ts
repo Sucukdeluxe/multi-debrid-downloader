@@ -69,6 +69,7 @@ const api: ElectronApi = {
   openPackageLog: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_PACKAGE_LOG, packageId),
   openItemLog: (itemId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_ITEM_LOG, itemId),
   getDebugSetupCheck: () => ipcRenderer.invoke(IPC_CHANNELS.GET_DEBUG_SETUP_CHECK),
+  getRecentErrors: () => ipcRenderer.invoke(IPC_CHANNELS.GET_RECENT_ERRORS),
   getTraceConfig: () => ipcRenderer.invoke(IPC_CHANNELS.GET_TRACE_CONFIG),
   setTraceEnabled: (enabled: boolean, note?: string, durationMinutes?: number) => ipcRenderer.invoke(IPC_CHANNELS.SET_TRACE_ENABLED, enabled, note, durationMinutes),
   rotateDebugToken: (): Promise<{ path: string }> => ipcRenderer.invoke(IPC_CHANNELS.ROTATE_DEBUG_TOKEN),

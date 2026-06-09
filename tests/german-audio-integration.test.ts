@@ -146,5 +146,20 @@ describe("keepGermanAudioOnly integration", () => {
     expect(n).toBe(0);
     expect(mockedProcess).not.toHaveBeenCalled(); // bailed before touching any file
     expect(fs.readdirSync(extractDir)).toContain(DL_MKV); // untouched
+    expect(pkg.audioStripSummary).toMatchObject({ candidates: 1, skippedNoTool: 1, remuxed: 0 });
+    expect(pkg.audioStripSummary.files[0]).toMatchObject({ name: DL_MKV, action: "skipped-no-tool" });
+  });
+
+  it("stores a per-package summary with counts and file details", async () => {
+    const { extractDir, manager, pkg } = setup(true);
+    stage(extractDir);
+    mockedProcess.mockResolvedValue({ action: "skipped-no-german", reason: "no-german-track", totalAudioTracks: 2, audioLanguages: ["eng", "fre"] } as VideoProcessResult);
+
+    await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+
+    expect(pkg.audioStripSummary).toMatchObject({ candidates: 1, skippedNoGerman: 1, remuxed: 0, failed: 0 });
+    expect(pkg.audioStripSummary.files).toHaveLength(1);
+    expect(pkg.audioStripSummary.files[0]).toMatchObject({ name: DL_MKV, action: "skipped-no-german", reason: "no-german-track", languages: "eng,fre" });
+    expect(pkg.updatedAt).toBeGreaterThan(0); // bumped so the snapshot delta picks it up
   });
 });

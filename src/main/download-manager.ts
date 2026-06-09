@@ -7,6 +7,7 @@ import {
   AllDebridHostInfo,
   AppSettings,
   DebridProvider,
+  AudioStripSummary,
   DownloadItem,
   DownloadStats,
   DownloadSummary,
@@ -55,6 +56,7 @@ import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets,
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
 import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
+import { sendNotification } from "./notify";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
 import type { RotationEvent } from "../shared/types";
@@ -1749,6 +1751,8 @@ export class DownloadManager extends EventEmitter {
 
   private historyRecordedPackages = new Set<string>();
 
+  private notifiedPackages = new Set<string>();
+
   private itemCount = 0;
 
   private lastSchedulerHeartbeatAt = 0;
@@ -2189,7 +2193,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private buildPackageHash(pkg: PackageEntry): string {
-    return `${pkg.updatedAt}|${pkg.status}|${pkg.name}|${pkg.enabled ? 1 : 0}|${pkg.cancelled ? 1 : 0}|${pkg.priority || ""}|${pkg.itemIds.length}|${pkg.postProcessLabel || ""}`;
+    return `${pkg.updatedAt}|${pkg.status}|${pkg.name}|${pkg.enabled ? 1 : 0}|${pkg.cancelled ? 1 : 0}|${pkg.priority || ""}|${pkg.itemIds.length}|${pkg.postProcessLabel || ""}|${pkg.audioStripSummary?.at || 0}`;
   }
 
   public getSnapshotForEmit(forceFull = false): UiSnapshot {
@@ -2787,6 +2791,7 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.historyRecordedPackages.clear();
+    this.notifiedPackages.clear();
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
@@ -3951,6 +3956,28 @@ export class DownloadManager extends EventEmitter {
       this.logRenameProcess(pkg, "INFO", "audio-strip", "Tonspur-Bereinigung gestartet", { extractDir, candidates: targets.length, mode: this.settings.germanAudioMode });
     }
 
+    const summary: AudioStripSummary = {
+      at: nowMs(),
+      candidates: targets.length,
+      remuxed: 0,
+      keptSingle: 0,
+      skippedNoGerman: 0,
+      skippedNoTool: 0,
+      failed: 0,
+      files: []
+    };
+    const recordFile = (name: string, action: string, reason: string, languages?: string): void => {
+      if (summary.files.length < 100) {
+        summary.files.push({ name, action, reason, ...(languages ? { languages } : {}) });
+      }
+    };
+    const writeSummary = (): void => {
+      if (pkg) {
+        pkg.audioStripSummary = summary;
+        pkg.updatedAt = nowMs();
+      }
+    };
+
     // Resolve ffmpeg/ffprobe ONCE up front and log it loudly — a missing tool is
     // the single most common reason the whole step silently does nothing.
     const tooling = await resolveVideoTooling();
@@ -3959,6 +3986,11 @@ export class DownloadManager extends EventEmitter {
       if (pkg) {
         this.logRenameProcess(pkg, "WARN", "audio-strip", "Tonspur-Bereinigung uebersprungen: ffmpeg/ffprobe nicht gefunden", { candidates: targets.length });
       }
+      summary.skippedNoTool = targets.length;
+      for (const p of targets) {
+        recordFile(path.basename(p), "skipped-no-tool", "ffmpeg/ffprobe nicht gefunden");
+      }
+      writeSummary();
       return 0;
     }
     logger.info(`Tonspur-Bereinigung: ffmpeg=${tooling.ffmpeg} ffprobe=${tooling.ffprobe}`);
@@ -3992,18 +4024,29 @@ export class DownloadManager extends EventEmitter {
           ...(result.error ? { error: result.error } : {})
         }, resolved.item, resolved.matchedBy);
       }
+      recordFile(sourceName, result.action, result.error ? `${result.reason} — ${result.error}` : result.reason, langs || undefined);
       // Per-file main-log lines so the cause of any unprocessed file is visible
       // without opening the rename/item logs.
       if (result.action === "error") {
         failed += 1;
+        summary.failed += 1;
         logger.warn(`Tonspur-Bereinigung FEHLER: ${sourceName} — ${result.reason}${result.error ? ` — ${result.error}` : ""} (Spuren: ${langs || "?"}, ${result.totalAudioTracks ?? "?"} Audio)`);
       } else if (result.action === "remuxed") {
         processed += 1;
+        summary.remuxed += 1;
         logger.info(`Tonspur-Bereinigung OK: ${sourceName} — Spur ${result.keptTrackIndex} behalten (${langs || "?"})`);
+      } else if (result.action === "kept-single") {
+        summary.keptSingle += 1;
       } else if (result.action === "skipped-no-german") {
+        summary.skippedNoGerman += 1;
         logger.info(`Tonspur-Bereinigung uebersprungen (kein Deutsch-Tag, Spuren: ${langs || "?"}): ${sourceName}`);
       } else if (result.action === "skipped-no-space") {
+        summary.failed += 1;
         logger.warn(`Tonspur-Bereinigung uebersprungen (zu wenig Speicher): ${sourceName}`);
+      } else if (result.action === "skipped-no-tool") {
+        summary.skippedNoTool += 1;
+      } else {
+        summary.failed += 1;
       }
       // Only strip ".DL." once the file is confirmed German-only (remuxed) or
       // already single-track. Skips/errors leave the file fully untouched so the
@@ -4012,6 +4055,7 @@ export class DownloadManager extends EventEmitter {
         await this.stripDualLangFromFileName(sourcePath, pkg);
       }
     }
+    writeSummary();
     logger.info(`Tonspur-Bereinigung fertig: ${processed} verarbeitet, ${failed} Fehler von ${targets.length} Kandidaten in ${extractDir}`);
     if (pkg) {
       this.logRenameProcess(pkg, failed > 0 ? "WARN" : "INFO", "audio-strip", "Tonspur-Bereinigung fertig", { processed, failed, candidates: targets.length });
@@ -5069,6 +5113,7 @@ export class DownloadManager extends EventEmitter {
     pkg.enabled = true;
     pkg.updatedAt = nowMs();
     this.historyRecordedPackages.delete(packageId);
+    this.notifiedPackages.delete(packageId);
 
     if (this.session.running) {
       for (const itemId of itemIds) {
@@ -5136,6 +5181,7 @@ export class DownloadManager extends EventEmitter {
       this.abortPackagePostProcessing(pkgId, "reset");
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
+      this.notifiedPackages.delete(pkgId);
 
       const pkg = this.session.packages[pkgId];
       if (pkg && (pkg.status === "completed" || pkg.status === "failed" || pkg.status === "cancelled")) {
@@ -7568,6 +7614,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
     this.historyRecordedPackages.delete(packageId);
+    this.notifiedPackages.delete(packageId);
     this.abortPackagePostProcessing(packageId, "package_removed");
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
@@ -10428,6 +10475,34 @@ export class DownloadManager extends EventEmitter {
     return /\b0\s*B\b/i.test(item.fullStatus || "");
   }
 
+  // Once per package and run; trailing post-processing after run-end still
+  // notifies (runPackageIds keeps the id), startup recovery does not (set empty).
+  private notifyPackageOutcome(pkg: PackageEntry, kind: "completed" | "failed", detail: string): void {
+    const url = String(this.settings.notifyUrl || "").trim();
+    if (!url) {
+      return;
+    }
+    if (kind === "completed" && !this.settings.notifyOnPackageCompleted) {
+      return;
+    }
+    if (kind === "failed" && !this.settings.notifyOnPackageFailed) {
+      return;
+    }
+    if (!this.session.running && !this.runPackageIds.has(pkg.id)) {
+      return;
+    }
+    if (this.notifiedPackages.has(pkg.id)) {
+      return;
+    }
+    this.notifiedPackages.add(pkg.id);
+    void sendNotification(url, {
+      title: kind === "completed" ? "Paket fertig" : "Paket fehlgeschlagen",
+      message: `${pkg.name}\n${detail}`,
+      priority: kind === "failed" ? "high" : "default",
+      tags: kind === "completed" ? "white_check_mark" : "x"
+    });
+  }
+
   private refreshPackageStatus(pkg: PackageEntry): void {
     let pending = 0;
     let success = 0;
@@ -10461,6 +10536,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
+    const prevStatus = pkg.status;
     if (failed > 0) {
       pkg.status = "failed";
     } else if (cancelled > 0) {
@@ -10469,6 +10545,11 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "completed";
     }
     pkg.updatedAt = nowMs();
+    // A package whose items ALL failed never enters post-processing, so the
+    // post-process notify hook can't fire for it — cover that case here.
+    if (pkg.status === "failed" && prevStatus !== "failed" && success === 0) {
+      this.notifyPackageOutcome(pkg, "failed", `${failed} von ${total} Datei(en) fehlgeschlagen`);
+    }
   }
 
   private cachedSpeedLimitKbps = 0;
@@ -11691,6 +11772,12 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "completed";
     }
 
+    if (pkg.status === "completed") {
+      this.notifyPackageOutcome(pkg, "completed", `${success} Datei(en)${extractedCount > 0 ? `, ${extractedCount} entpackt` : ""}`);
+    } else if (pkg.status === "failed") {
+      this.notifyPackageOutcome(pkg, "failed", `${failed} von ${success + failed + cancelled} Datei(en) fehlgeschlagen`);
+    }
+
     this.emitState();
 
     if (pkg.status === "completed" || (pkg.status === "failed" && success > 0)) {
@@ -12033,6 +12120,14 @@ export class DownloadManager extends EventEmitter {
       averageSpeedBps: avgSpeed
     };
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
+    if (this.settings.notifyOnRunFinished && total > 0) {
+      void sendNotification(this.settings.notifyUrl, {
+        title: "Durchlauf beendet",
+        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s`,
+        priority: failed > 0 ? "high" : "default",
+        tags: failed > 0 ? "warning" : "checkered_flag"
+      });
+    }
     this.runItemIds.clear();
     this.runOutcomes.clear();
     if (this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending()) {

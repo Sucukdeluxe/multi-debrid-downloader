@@ -66,6 +66,7 @@ export interface ElectronApi {
   openPackageLog: (packageId: string) => Promise<void>;
   openItemLog: (itemId: string) => Promise<void>;
   getDebugSetupCheck: () => Promise<DebugSetupCheckResult>;
+  getRecentErrors: () => Promise<Array<{ ts: string; level: string; message: string }>>;
   getTraceConfig: () => Promise<SupportTraceConfig>;
   setTraceEnabled: (enabled: boolean, note?: string, durationMinutes?: number) => Promise<SupportTraceConfig>;
   rotateDebugToken: () => Promise<{ path: string }>;
