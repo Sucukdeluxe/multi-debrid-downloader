@@ -4960,10 +4960,14 @@ export function App(): ReactElement {
                     <label>Webhook-URL (Discord)</label>
                     <div className="input-row">
                       <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
-                      <button className="btn" disabled={!settingsDraft.notifyUrl.trim()} onClick={() => {
+                      <button className="btn" disabled={actionBusy || !settingsDraft.notifyUrl.trim()} onClick={() => {
                         void performQuickAction(async () => {
                           const ok = await window.rd.testNotification(settingsDraft.notifyUrl, settingsDraft.notifyMention);
-                          showToast(ok ? "Test-Nachricht gesendet — schau in Discord" : "Test fehlgeschlagen — Webhook-URL prüfen (Details unter Hilfe → Letzte Fehler)", 4200);
+                          if (ok) {
+                            showToast(settingsDirty ? "Test-Nachricht gesendet — Einstellungen jetzt noch speichern!" : "Test-Nachricht gesendet — schau in Discord", 4800);
+                          } else {
+                            showToast("Test fehlgeschlagen — Webhook-URL prüfen (Details unter Hilfe → Letzte Fehler)", 4200);
+                          }
                         }, (error) => {
                           showToast(`Test fehlgeschlagen: ${String(error)}`, 3600);
                         });

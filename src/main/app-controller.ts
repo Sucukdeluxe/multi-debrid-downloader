@@ -696,7 +696,8 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     const SENSITIVE_KEYS: (keyof AppSettings)[] = [
       "token", "megaLogin", "megaPassword", "bestToken", "allDebridToken",
       "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
-      "debridLinkApiKeys", "linkSnappyLogin", "linkSnappyPassword"
+      "debridLinkApiKeys", "linkSnappyLogin", "linkSnappyPassword",
+      "notifyUrl"
     ];
     for (const key of SENSITIVE_KEYS) {
       const val = importedSettingsRecord[key];

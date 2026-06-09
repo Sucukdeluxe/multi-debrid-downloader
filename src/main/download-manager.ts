@@ -4661,6 +4661,29 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
+  // Packages whose post-processing (task, deferred pass or hybrid round) is still
+  // alive must keep their run-membership when the run set is replaced/cleared —
+  // otherwise their terminal notification is dropped as soon as session.running
+  // flips false (the notify guard checks running || runPackageIds).
+  private addTrailingPostProcessPackageIds(target: Set<string>): void {
+    for (const id of this.packagePostProcessTasks.keys()) {
+      target.add(id);
+    }
+    for (const [id, controller] of this.packageDeferredPostProcessAbortControllers) {
+      if (!controller.signal.aborted) {
+        target.add(id);
+      }
+    }
+    for (const [id, hybridSet] of this.packageHybridPostProcessControllers) {
+      for (const c of hybridSet) {
+        if (!c.signal.aborted) {
+          target.add(id);
+          break;
+        }
+      }
+    }
+  }
+
   private buildCollectFolderCandidates(sourcePath: string, sourceRoot: string, pkg: PackageEntry): string[] {
     const folderCandidates: string[] = [];
     let currentDir = path.dirname(sourcePath);
@@ -5249,24 +5272,26 @@ export class DownloadManager extends EventEmitter {
       const pkg = this.session.packages[pkgId];
       if (pkg) this.refreshPackageStatus(pkg);
     }
-    if (this.settings.autoExtract) {
-      for (const pkgId of affectedPackageIds) {
-        const pkg = this.session.packages[pkgId];
-        if (!pkg || pkg.cancelled || this.packagePostProcessTasks.has(pkgId)) continue;
-        const pkgItems = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
-        const hasPending = pkgItems.some((i) => i.status !== "completed" && i.status !== "failed" && i.status !== "cancelled");
-        const hasFailed = pkgItems.some((i) => i.status === "failed");
-        const hasUnextracted = pkgItems.some((i) => i.status === "completed" && shouldAutoRetryExtraction(i.fullStatus || ""));
-        if (!hasPending && !hasFailed && hasUnextracted) {
-          for (const it of pkgItems) {
-            if (it.status === "completed" && shouldAutoRetryExtraction(it.fullStatus || "")) {
-              it.fullStatus = "Entpacken - Ausstehend";
-              it.updatedAt = nowMs();
-            }
+    // A skip can be the package's LAST terminal event; without this trigger the
+    // post-processing terminal block (notify, history, cleanup policy) never runs
+    // for it — earlier rounds returned while the skipped item was still pending.
+    for (const pkgId of affectedPackageIds) {
+      const pkg = this.session.packages[pkgId];
+      if (!pkg || pkg.cancelled || this.packagePostProcessTasks.has(pkgId)) continue;
+      const pkgItems = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+      const hasPending = pkgItems.some((i) => i.status !== "completed" && i.status !== "failed" && i.status !== "cancelled");
+      if (hasPending) continue;
+      const hasFailed = pkgItems.some((i) => i.status === "failed");
+      const hasUnextracted = pkgItems.some((i) => i.status === "completed" && shouldAutoRetryExtraction(i.fullStatus || ""));
+      if (this.settings.autoExtract && !hasFailed && hasUnextracted) {
+        for (const it of pkgItems) {
+          if (it.status === "completed" && shouldAutoRetryExtraction(it.fullStatus || "")) {
+            it.fullStatus = "Entpacken - Ausstehend";
+            it.updatedAt = nowMs();
           }
-          void this.runPackagePostProcessing(pkgId).catch((err) => logger.warn(`Post-processing nach Skip: ${compactErrorText(err)}`));
         }
       }
+      void this.runPackagePostProcessing(pkgId).catch((err) => logger.warn(`Post-processing nach Skip: ${compactErrorText(err)}`));
     }
     this.persistSoon();
     this.emitState();
@@ -5324,6 +5349,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.addTrailingPostProcessPackageIds(this.runPackageIds);
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -5428,6 +5454,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.addTrailingPostProcessPackageIds(this.runPackageIds);
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -5517,6 +5544,7 @@ export class DownloadManager extends EventEmitter {
       if (this.packagePostProcessTasks.size > 0) {
         this.runItemIds.clear();
         this.runPackageIds.clear();
+        this.addTrailingPostProcessPackageIds(this.runPackageIds);
         this.runOutcomes.clear();
         this.runCompletedPackages.clear();
         this.session.running = true;
@@ -5535,6 +5563,7 @@ export class DownloadManager extends EventEmitter {
       }
       this.runItemIds.clear();
       this.runPackageIds.clear();
+      this.addTrailingPostProcessPackageIds(this.runPackageIds);
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
@@ -5565,6 +5594,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.addTrailingPostProcessPackageIds(this.runPackageIds);
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -5610,6 +5640,7 @@ export class DownloadManager extends EventEmitter {
     const parkForRestart = options?.parkForRestart === true;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
     const keepExtraction = this.settings.autoExtractWhenStopped;
+    const wasRunning = this.session.running;
     this.schedulerGeneration += 1;
     this.session.running = false;
     this.session.paused = false;
@@ -5654,6 +5685,19 @@ export class DownloadManager extends EventEmitter {
         pkg.status = "queued";
         pkg.updatedAt = nowMs();
       }
+    }
+    // A manual stop ends the run without ever reaching finishRun (the scheduler
+    // loop exits at its while condition), so the run summary would be lost.
+    // Suppressed for the restart/shutdown path: the process is about to die.
+    if (wasRunning && !parkForRestart && this.settings.notifyOnRunFinished && this.runItemIds.size > 0) {
+      const outcomes = Array.from(this.runOutcomes.values());
+      const success = outcomes.filter((s) => s === "completed").length;
+      const failed = outcomes.filter((s) => s === "failed").length;
+      void sendNotification(this.settings.notifyUrl, {
+        title: "⏹️ Durchlauf gestoppt",
+        message: `${success}/${this.runItemIds.size} erfolgreich, ${failed} fehlgeschlagen — Rest zurueck in der Warteschlange`,
+        mention: this.settings.notifyMention
+      });
     }
     this.persistSoon();
     this.emitState(true);
@@ -7497,6 +7541,11 @@ export class DownloadManager extends EventEmitter {
       completedItems: completedItems.length,
       targetedItems: targetItems.length
     });
+    // Fresh outcome must notify again (the corrective checkmark after a notified
+    // extraction failure); unconditional run-membership so the notify guard also
+    // passes when the retry happens after the run already ended.
+    this.notifiedPackages.delete(packageId);
+    this.runPackageIds.add(packageId);
     this.persistSoon();
     this.emitState(true);
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (retryExtraction): ${compactErrorText(err)}`));
@@ -7525,6 +7574,8 @@ export class DownloadManager extends EventEmitter {
       completedItems: completedItems.length,
       targetedItems: targetItems.length
     });
+    this.notifiedPackages.delete(packageId);
+    this.runPackageIds.add(packageId);
     this.persistSoon();
     this.emitState(true);
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
@@ -8211,6 +8262,14 @@ export class DownloadManager extends EventEmitter {
     } finally {
       this.scheduleRunning = false;
       logger.info(`Scheduler beendet (gen=${myGeneration})`);
+      // Stop->Start race: a new run can begin while this loop sleeps (start()'s
+      // ensureScheduler early-returns on scheduleRunning, then this loop exits on
+      // the generation mismatch). Without a respawn the run sits leaderless
+      // forever: running=true, but nothing schedules and finishRun never comes.
+      if (this.session.running && this.schedulerGeneration !== myGeneration) {
+        logger.warn(`Scheduler-Respawn: Run aktiv, alte Generation ${myGeneration} beendet (Stop->Start-Race)`);
+        void this.ensureScheduler().catch((error) => logger.error(`Scheduler-Respawn fehlgeschlagen: ${compactErrorText(error)}`));
+      }
     }
   }
 
@@ -9125,6 +9184,8 @@ export class DownloadManager extends EventEmitter {
             item.fullStatus = `Fehler: ${item.lastError}`;
             item.speedBps = 0;
             item.updatedAt = nowMs();
+            const failPkg416 = this.session.packages[item.packageId];
+            if (failPkg416) this.refreshPackageStatus(failPkg416);
             this.persistSoon();
             this.emitState();
             this.retryStateByItem.delete(item.id);
@@ -9161,6 +9222,8 @@ export class DownloadManager extends EventEmitter {
             item.speedBps = 0;
             item.updatedAt = nowMs();
             this.retryStateByItem.delete(item.id);
+            const failPkgDead = this.session.packages[item.packageId];
+            if (failPkgDead) this.refreshPackageStatus(failPkgDead);
             this.persistSoon();
             this.emitState();
             return;
@@ -9219,6 +9282,8 @@ export class DownloadManager extends EventEmitter {
             item.speedBps = 0;
             item.updatedAt = nowMs();
             this.retryStateByItem.delete(item.id);
+            const failPkgDl = this.session.packages[item.packageId];
+            if (failPkgDl) this.refreshPackageStatus(failPkgDl);
             this.persistSoon();
             this.emitState();
             return;
@@ -10411,6 +10476,10 @@ export class DownloadManager extends EventEmitter {
         if (!pkg) {
           continue;
         }
+        // The package gets a fresh chance — its next outcome must notify again
+        // (a recovery success after a notified failure is the message the user
+        // most wants). History dedup stays untouched (separate semantics).
+        this.notifiedPackages.delete(packageId);
         this.refreshPackageStatus(pkg);
       }
       logger.warn(
@@ -10495,10 +10564,17 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     this.notifiedPackages.add(pkg.id);
+    // Release the dedup marker if the delivery ultimately failed (after the
+    // sender's own retries), so a later manual re-run can notify again instead
+    // of a transient outage permanently consuming the once-per-package slot.
     void sendNotification(url, {
       title: kind === "completed" ? "✅ Paket fertig" : "❌ Paket fehlgeschlagen",
       message: `${pkg.name}\n${detail}`,
       mention: this.settings.notifyMention
+    }).then((ok) => {
+      if (!ok) {
+        this.notifiedPackages.delete(pkg.id);
+      }
     });
   }
 
@@ -10544,10 +10620,17 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "completed";
     }
     pkg.updatedAt = nowMs();
-    // A package whose items ALL failed never enters post-processing, so the
-    // post-process notify hook can't fire for it — cover that case here.
-    if (pkg.status === "failed" && prevStatus !== "failed" && success === 0) {
+    // A package whose LAST terminal event is a failure never (re-)enters
+    // post-processing (its trigger sits only on completion paths), so the
+    // post-process notify hook can't fire — cover every failed-transition here.
+    // That includes mixed packages (success > 0): the dedup set prevents a
+    // double-fire if post-processing does run later.
+    if (pkg.status === "failed" && prevStatus !== "failed") {
       this.notifyPackageOutcome(pkg, "failed", `${failed} von ${total} Datei(en) fehlgeschlagen`);
+      if (success > 0) {
+        const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+        this.recordPackageHistory(pkg.id, pkg, items);
+      }
     }
   }
 
@@ -12120,9 +12203,14 @@ export class DownloadManager extends EventEmitter {
     };
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
     if (this.settings.notifyOnRunFinished && total > 0) {
+      // With autoExtractWhenStopped (default) the run ends as soon as downloads
+      // are done while extraction may still be running — say so instead of
+      // claiming the whole run is finished.
+      const postProcessPending = this.packagePostProcessTasks.size > 0 || this.hasAnyDeferredPostProcessPending();
+      const scope = postProcessPending ? "Downloads beendet" : "Durchlauf beendet";
       void sendNotification(this.settings.notifyUrl, {
-        title: failed > 0 ? "⚠️ Durchlauf beendet" : "🏁 Durchlauf beendet",
-        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s`,
+        title: failed > 0 ? `⚠️ ${scope}` : `🏁 ${scope}`,
+        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s${postProcessPending ? "\nEntpacken laeuft noch — Paket-Meldungen folgen." : ""}`,
         mention: this.settings.notifyMention
       });
     }

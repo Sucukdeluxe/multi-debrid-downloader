@@ -1,4 +1,5 @@
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
+import { isNotifyUrlValid } from "./notify";
 import type { AppSettings, HistoryEntry, UiSnapshot } from "../shared/types";
 
 function hasText(value: unknown): boolean {
@@ -130,6 +131,14 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
     updates: {
       updateRepo: settings.updateRepo,
       autoUpdateCheck: settings.autoUpdateCheck
+    },
+    notifications: {
+      notifyUrlConfigured: Boolean(String(settings.notifyUrl || "").trim()),
+      notifyUrlLooksValid: isNotifyUrlValid(settings.notifyUrl),
+      notifyMentionConfigured: Boolean(String(settings.notifyMention || "").trim()),
+      notifyOnPackageCompleted: settings.notifyOnPackageCompleted,
+      notifyOnPackageFailed: settings.notifyOnPackageFailed,
+      notifyOnRunFinished: settings.notifyOnRunFinished
     },
     statistics: {
       totalDownloadedAllTime: settings.totalDownloadedAllTime,

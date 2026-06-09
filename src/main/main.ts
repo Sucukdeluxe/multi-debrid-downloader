@@ -77,6 +77,35 @@ function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
 }
 
+// Single owner of the scheduled-start timer. startOnPast: a past time entered
+// interactively starts right away; at boot a stale past time is cleared instead
+// (an unattended auto-start at boot would race autoResumeOnStart's conflict gate).
+function armScheduledStart(schedMs: number, opts: { startOnPast: boolean }): void {
+  if (scheduledStartTimer !== null) {
+    clearTimeout(scheduledStartTimer);
+    scheduledStartTimer = null;
+  }
+  if (!schedMs || schedMs <= 0) {
+    return;
+  }
+  const delay = schedMs - Date.now();
+  if (delay <= 0) {
+    if (opts.startOnPast) {
+      void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
+    } else {
+      logger.warn(`Geplanter Start (${new Date(schedMs).toLocaleString()}) lag beim App-Start in der Vergangenheit — verworfen`);
+    }
+    controller.updateSettings({ scheduledStartEpochMs: 0 });
+    return;
+  }
+  scheduledStartTimer = setTimeout(() => {
+    scheduledStartTimer = null;
+    void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
+    controller.updateSettings({ scheduledStartEpochMs: 0 });
+  }, delay);
+  logger.info(`Geplanter Start gearmt: ${new Date(schedMs).toLocaleString()}`);
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1920,
@@ -328,24 +357,7 @@ function registerIpcHandlers(): void {
     const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
-    if (scheduledStartTimer !== null) {
-      clearTimeout(scheduledStartTimer);
-      scheduledStartTimer = null;
-    }
-    const schedMs = result.scheduledStartEpochMs || 0;
-    if (schedMs > 0) {
-      const delay = schedMs - Date.now();
-      if (delay <= 0) {
-        void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
-        controller.updateSettings({ scheduledStartEpochMs: 0 });
-      } else {
-        scheduledStartTimer = setTimeout(() => {
-          scheduledStartTimer = null;
-          void controller.start().catch((err) => logger.warn(`Scheduled-Start Fehler: ${String(err)}`));
-          controller.updateSettings({ scheduledStartEpochMs: 0 });
-        }, delay);
-      }
-    }
+    armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
@@ -807,6 +819,10 @@ app.whenReady().then(() => {
   bindMainWindowLifecycle(mainWindow);
   updateClipboardWatcher();
   updateTray();
+  // A scheduled start persists in the settings but its timer lived only in this
+  // process — without re-arming it here, any restart (auto-update, reboot,
+  // crash) silently swallowed the planned run.
+  armScheduledStart(controller.getSettings().scheduledStartEpochMs || 0, { startOnPast: false });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
