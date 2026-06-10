@@ -4924,6 +4924,14 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
       }
+      if (deferFreshFiles && this.settings.keepGermanAudioOnly) {
+        const baseName = path.basename(sourcePath);
+        if (isRemuxableVideoFile(baseName) && hasDualLangMarker(baseName)) {
+          logger.info(`MKV-Sammelordner: ${baseName} uebersprungen — .DL. noch nicht tonspur-bereinigt (Race-Schutz), wird im finalen Durchlauf gesammelt`);
+          skipped += 1;
+          continue;
+        }
+      }
       if (sourceSize === 0) {
         logger.warn(`MKV-Sammelordner: überspringe 0-Byte-Datei ${path.basename(sourcePath)}`);
         const resolved = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), targetDir);
