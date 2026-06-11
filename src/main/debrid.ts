@@ -298,6 +298,22 @@ export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
 
 let megaDebridRotationCursor = 0;
 
+const MEGA_DEBRID_SLOW_ACCOUNT_FLOOR_MS = 6000;
+const MEGA_DEBRID_SLOW_ACCOUNT_FACTOR = 3;
+const megaDebridAccountLatencyEma = new Map<string, number>();
+
+function recordMegaDebridUnrestrictLatency(cooldownKey: string, elapsedMs: number): void {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+    return;
+  }
+  const prev = megaDebridAccountLatencyEma.get(cooldownKey);
+  megaDebridAccountLatencyEma.set(cooldownKey, prev === undefined ? elapsedMs : prev * 0.7 + elapsedMs * 0.3);
+}
+
+export function primeMegaDebridLatencyForTests(cooldownKey: string, emaMs: number): void {
+  megaDebridAccountLatencyEma.set(cooldownKey, emaMs);
+}
+
 export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
   const streak = (megaDebridEmptyResponseStreaks.get(accountId) || 0) + 1;
   megaDebridEmptyResponseStreaks.set(accountId, streak);
@@ -312,6 +328,7 @@ export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
   megaDebridEmptyResponseStreaks.clear();
   megaDebridRotationCursor = 0;
+  megaDebridAccountLatencyEma.clear();
 }
 
 export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
@@ -1915,9 +1932,48 @@ class MegaDebridClient {
     // wurde nie auch nur angeschaut. Der Cursor laesst jede Aufloesung beim Account
     // NACH dem zuletzt getesteten starten, alle Skip-/Cooldown-Checks bleiben.
     const startOffset = ((megaDebridRotationCursor % accounts.length) + accounts.length) % accounts.length;
+    const rotationOrder: { account: MegaDebridAccountEntry; idx: number }[] = [];
     for (let step = 0; step < accounts.length; step += 1) {
       const idx = (startOffset + step) % accounts.length;
-      const account = accounts[idx];
+      rotationOrder.push({ account: accounts[idx], idx });
+    }
+
+    // Latenz-Schutz fuer die Mega-Web-Single-Flight-Queue: dort laufen ALLE
+    // Umwandlungen seriell, ein nachweislich langsamer Account bremst also
+    // jeden nachfolgenden Link aus. Accounts mit deutlich erhoehtem Erfolgs-EMA
+    // wandern ans Ende der Reihenfolge (= Failover-Reserve) statt in der
+    // gleichmaessigen Rotation mitzulaufen; erholt sich ihr EMA, rotieren sie
+    // automatisch wieder mit. Ungemessene Accounts gelten als gesund.
+    let bestEma = Infinity;
+    let anyUnmeasuredUsable = false;
+    for (const entry of rotationOrder) {
+      if (isMegaDebridAccountDisabled(settings, entry.account.id)) continue;
+      if (isMegaDebridAccountDailyLimitReached(settings, entry.account.id)) continue;
+      if (getMegaDebridAccountCooldownState(`${entry.account.id}:${mode}`)) continue;
+      const ema = megaDebridAccountLatencyEma.get(`${entry.account.id}:${mode}`);
+      if (ema === undefined) {
+        anyUnmeasuredUsable = true;
+        continue;
+      }
+      if (ema < bestEma) bestEma = ema;
+    }
+    const slowThreshold = Math.max(
+      MEGA_DEBRID_SLOW_ACCOUNT_FLOOR_MS,
+      anyUnmeasuredUsable ? 0 : (Number.isFinite(bestEma) ? MEGA_DEBRID_SLOW_ACCOUNT_FACTOR * bestEma : Infinity)
+    );
+    const isSlowEntry = (entry: { account: MegaDebridAccountEntry }): boolean => {
+      const ema = megaDebridAccountLatencyEma.get(`${entry.account.id}:${mode}`);
+      return ema !== undefined && ema > slowThreshold;
+    };
+    const orderedEntries = [
+      ...rotationOrder.filter((entry) => !isSlowEntry(entry)),
+      ...rotationOrder.filter((entry) => isSlowEntry(entry))
+    ];
+
+    for (let orderPos = 0; orderPos < orderedEntries.length; orderPos += 1) {
+      const entry = orderedEntries[orderPos];
+      const account = entry.account;
+      const idx = entry.idx;
       const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
       const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
 
@@ -1955,8 +2011,13 @@ class MegaDebridClient {
         continue;
       }
 
+      const emaForLog = megaDebridAccountLatencyEma.get(cooldownKey);
       logger.info(`Mega-Debrid${accountLabel}: TESTE Account fuer Link-Generierung...`);
-      logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
+      logAccountRotation("INFO", providerName, rotationLabel, "TEST", {
+        link: linkShort,
+        emaMs: emaForLog !== undefined ? Math.round(emaForLog) : undefined,
+        slow: isSlowEntry(entry) ? true : undefined
+      });
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
@@ -1967,6 +2028,7 @@ class MegaDebridClient {
         clearMegaDebridAccountCooldownState(cooldownKey);
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
+        recordMegaDebridUnrestrictLatency(cooldownKey, elapsedMs);
         logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
         logAccountRotation("INFO", providerName, rotationLabel, "OK", {
           elapsedMs,
@@ -2039,8 +2101,8 @@ class MegaDebridClient {
             ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
             : "";
         let nextLabel = "ENDE";
-        for (let nextStep = step + 1; nextStep < accounts.length; nextStep += 1) {
-          const nextAcc = accounts[(startOffset + nextStep) % accounts.length];
+        for (let nextPos = orderPos + 1; nextPos < orderedEntries.length; nextPos += 1) {
+          const nextAcc = orderedEntries[nextPos].account;
           if (!isMegaDebridAccountDisabled(settings, nextAcc.id) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
             nextLabel = `${nextAcc.label}/${totalAccounts} (${nextAcc.maskedLogin})`;
             break;
