@@ -296,6 +296,8 @@ function getMegaDebridAbortMinRunMs(): number {
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
 
+let megaDebridRotationCursor = 0;
+
 export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
   const streak = (megaDebridEmptyResponseStreaks.get(accountId) || 0) + 1;
   megaDebridEmptyResponseStreaks.set(accountId, streak);
@@ -309,6 +311,7 @@ export function clearMegaDebridEmptyResponseStreak(accountId: string): void {
 export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
   megaDebridEmptyResponseStreaks.clear();
+  megaDebridRotationCursor = 0;
 }
 
 export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
@@ -1905,7 +1908,15 @@ class MegaDebridClient {
     const providerName = `Mega-Debrid ${mode === "api" ? "API" : "Web"}`;
     const linkShort = String(link || "").slice(0, 80);
 
-    for (let idx = 0; idx < accounts.length; idx += 1) {
+    // Round-Robin statt First-Wins: ohne den Cursor startete jede Link-Aufloesung
+    // bei Account 1 und endete beim ersten brauchbaren — ein spaeterer Account kam
+    // nur dran, wenn ALLE davor am Limit/Cooldown waren. Live-Folge: Account 1-2
+    // liefen staendig ins Tageslimit, Account 3 trug den Rest allein und Account 4
+    // wurde nie auch nur angeschaut. Der Cursor laesst jede Aufloesung beim Account
+    // NACH dem zuletzt getesteten starten, alle Skip-/Cooldown-Checks bleiben.
+    const startOffset = ((megaDebridRotationCursor % accounts.length) + accounts.length) % accounts.length;
+    for (let step = 0; step < accounts.length; step += 1) {
+      const idx = (startOffset + step) % accounts.length;
       const account = accounts[idx];
       const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
       const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
@@ -1949,6 +1960,7 @@ class MegaDebridClient {
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
+      megaDebridRotationCursor = idx + 1;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
         const result = await client.unrestrictLink(link, signal);
@@ -2027,8 +2039,8 @@ class MegaDebridClient {
             ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
             : "";
         let nextLabel = "ENDE";
-        for (let nextIdx = idx + 1; nextIdx < accounts.length; nextIdx += 1) {
-          const nextAcc = accounts[nextIdx];
+        for (let nextStep = step + 1; nextStep < accounts.length; nextStep += 1) {
+          const nextAcc = accounts[(startOffset + nextStep) % accounts.length];
           if (!isMegaDebridAccountDisabled(settings, nextAcc.id) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
             nextLabel = `${nextAcc.label}/${totalAccounts} (${nextAcc.maskedLogin})`;
             break;

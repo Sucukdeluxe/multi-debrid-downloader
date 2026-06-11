@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { APP_VERSION } from "./constants";
+import { getAccountRotationLogPath } from "./account-rotation-log";
 import { getAuditLogPath } from "./audit-log";
 import { getDebugSetupCheck } from "./debug-setup";
 import { getLogFilePath } from "./logger";
@@ -188,6 +189,8 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string, op
   addFileIfExists(zip, getSessionLogPath(), "logs/session.log");
   addFileIfExists(zip, getTraceLogPath(), "logs/trace.log");
   addFileIfExists(zip, getTraceLogPath() ? `${getTraceLogPath()}.old` : null, "logs/trace.log.old");
+  addFileIfExists(zip, getAccountRotationLogPath(), "logs/account-rotation.log");
+  addFileIfExists(zip, getAccountRotationLogPath() ? `${getAccountRotationLogPath()}.old` : null, "logs/account-rotation.log.old");
 
   const SUPPORT_BUNDLE_LOG_WINDOW_MS = 8 * 60 * 60 * 1000;
   addDirectoryIfExists(zip, path.join(baseDir, "session-logs"), "logs/session-logs");
