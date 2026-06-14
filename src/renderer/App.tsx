@@ -1253,6 +1253,31 @@ function getDebridLinkKeyStatusDisplay(
   };
 }
 
+function splitStatValue(value: string): { num: string; unit: string; idle: boolean } {
+  const v = (value ?? "").trim();
+  if (v === "" || v === "--" || v === "—") return { num: "—", unit: "", idle: true };
+  const match = v.match(/^(-?[\d.,]+)\s*(.*)$/);
+  if (!match) return { num: v, unit: "", idle: false };
+  const num = match[1];
+  const unit = (match[2] || "").trim();
+  const idle = /^0([.,]0+)?$/.test(num);
+  return { num, unit, idle };
+}
+
+function StatValueView({ value, compact, danger }: { value: string; compact?: boolean; danger?: boolean }): ReactElement {
+  const { num, unit, idle } = splitStatValue(value);
+  const cls = `stat-value${compact ? " stat-value-compact" : ""}${danger ? " danger" : ""}${idle ? " stat-idle" : ""}`;
+  if (compact) {
+    return <span className={cls}>{idle ? "—" : value}</span>;
+  }
+  return (
+    <span className={cls}>
+      <span className="stat-num">{num}</span>
+      {unit ? <span className="stat-unit">{unit}</span> : null}
+    </span>
+  );
+}
+
 interface BandwidthChartProps {
   items: Record<string, DownloadItem>;
   running: boolean;
@@ -1442,6 +1467,106 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   return (
     <div ref={containerRef} className="bandwidth-chart-container">
       <canvas ref={canvasRef} />
+    </div>
+  );
+});
+
+interface DownloadSpeedSparklineProps {
+  items: Record<string, DownloadItem>;
+  running: boolean;
+  paused: boolean;
+}
+
+const SPARKLINE_MAX_SAMPLES = 160;
+
+const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, running, paused }: DownloadSpeedSparklineProps): ReactElement {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const histRef = useRef<number[]>([]);
+  const displayRef = useRef<number>(0);
+  const itemsRef = useRef(items);
+  const activeRef = useRef(running && !paused);
+  const [liveSpeed, setLiveSpeed] = useState(0);
+  itemsRef.current = items;
+  activeRef.current = running && !paused;
+
+  useEffect(() => {
+    const draw = (): void => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth;
+      const cssH = canvas.clientHeight;
+      if (cssW <= 0 || cssH <= 0) return;
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      const hist = histRef.current;
+      if (hist.length < 2) return;
+
+      const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+      const accent = isDark ? "#f2942d" : "#c2701a";
+      const fill = isDark ? "rgba(242, 148, 45, 0.16)" : "rgba(194, 112, 26, 0.16)";
+
+      let maxV = 0;
+      for (const v of hist) if (v > maxV) maxV = v;
+      maxV = Math.max(maxV, 1024 * 1024);
+
+      const pad = 2;
+      const h = cssH - pad * 2;
+      const step = cssW / (SPARKLINE_MAX_SAMPLES - 1);
+      const startIdx = SPARKLINE_MAX_SAMPLES - hist.length;
+      const px = (i: number): number => (startIdx + i) * step;
+      const py = (v: number): number => pad + h - (v / maxV) * h;
+
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(hist[0]));
+      for (let i = 1; i < hist.length; i += 1) ctx.lineTo(px(i), py(hist[i]));
+      ctx.lineTo(px(hist.length - 1), pad + h);
+      ctx.lineTo(px(0), pad + h);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(hist[0]));
+      for (let i = 1; i < hist.length; i += 1) ctx.lineTo(px(i), py(hist[i]));
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    };
+
+    const tick = (): void => {
+      let target = 0;
+      if (activeRef.current) {
+        for (const it of Object.values(itemsRef.current)) {
+          if (it.status === "downloading") target += it.speedBps || 0;
+        }
+      }
+      const cur = displayRef.current;
+      const alpha = target > cur ? 0.45 : 0.12;
+      let next = cur + (target - cur) * alpha;
+      if (next < 1) next = 0;
+      displayRef.current = next;
+      const hist = histRef.current;
+      hist.push(next);
+      if (hist.length > SPARKLINE_MAX_SAMPLES) hist.splice(0, hist.length - SPARKLINE_MAX_SAMPLES);
+      setLiveSpeed(target);
+      draw();
+    };
+
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, []);
+
+  return (
+    <div className="speed-sparkline" title="Aktuelle Download-Geschwindigkeit (geglättet)">
+      <canvas ref={canvasRef} className="speed-sparkline-canvas" />
+      <span className="speed-sparkline-value">{liveSpeed > 0 ? formatSpeedMbps(liveSpeed) : "0 B/s"}</span>
     </div>
   );
 });
@@ -4344,37 +4469,52 @@ export function App(): ReactElement {
           </button>
           {openMenu === "hilfe" && (
             <div className="menu-dropdown">
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog().catch(() => {}); }}>
-                <span>Log öffnen</span>
-              </button>
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openAuditLog().catch(() => {}); }}>
-                <span>Audit-Log öffnen</span>
-              </button>
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openRenameLog().catch(() => {}); }}>
-                <span>Rename-Log öffnen</span>
-              </button>
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}>
-                <span>Session-Log öffnen</span>
-              </button>
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openTraceLog().catch(() => {}); }}>
-                <span>Trace-Log öffnen</span>
-              </button>
+              <div
+                className="menu-submenu"
+                onMouseEnter={() => setOpenSubmenu("hilfe-log")}
+                onMouseLeave={() => setOpenSubmenu(null)}
+              >
+                <button className="menu-submenu-trigger">Logs öffnen</button>
+                {openSubmenu === "hilfe-log" && (
+                  <div className="menu-submenu-dropdown">
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog().catch(() => {}); }}><span>Haupt-Log</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openAuditLog().catch(() => {}); }}><span>Audit-Log</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openRenameLog().catch(() => {}); }}><span>Rename-Log</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}><span>Session-Log</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openTraceLog().catch(() => {}); }}><span>Trace-Log</span></button>
+                  </div>
+                )}
+              </div>
+              <div
+                className="menu-submenu"
+                onMouseEnter={() => setOpenSubmenu("hilfe-remote")}
+                onMouseLeave={() => setOpenSubmenu(null)}
+              >
+                <button className="menu-submenu-trigger">Remote-Support</button>
+                {openSubmenu === "hilfe-remote" && (
+                  <div className="menu-submenu-dropdown">
+                    <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}><span>Support-Bundle exportieren</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}><span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span></button>
+                  </div>
+                )}
+              </div>
               <div className="menu-separator" />
-              <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}>
-                <span>Support-Bundle exportieren</span>
-              </button>
-              <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}>
-                <span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span>
-              </button>
               <button className="menu-dropdown-item" onClick={() => { void onShowRecentErrors(); }}>
                 <span>Letzte Fehler anzeigen</span>
               </button>
-              <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}>
-                <span>Debug-Setup prüfen</span>
-              </button>
-              <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}>
-                <span>Debug-Token rotieren</span>
-              </button>
+              <div
+                className="menu-submenu"
+                onMouseEnter={() => setOpenSubmenu("hilfe-diagnose")}
+                onMouseLeave={() => setOpenSubmenu(null)}
+              >
+                <button className="menu-submenu-trigger">Diagnose</button>
+                {openSubmenu === "hilfe-diagnose" && (
+                  <div className="menu-submenu-dropdown">
+                    <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}><span>Debug-Setup prüfen</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}><span>Debug-Token rotieren</span></button>
+                  </div>
+                )}
+              </div>
               <div className="menu-separator" />
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onCheckUpdates(); }}>
                 <span>Suche Aktualisierungen</span>
@@ -4489,6 +4629,13 @@ export function App(): ReactElement {
         <button className={tab === "statistics" ? "tab active" : "tab"} onClick={() => setTab("statistics")}>Statistiken</button>
         <div className="tab-actions">
           {tab === "downloads" && (
+            <DownloadSpeedSparkline
+              items={snapshot.session.items}
+              running={snapshot.session.running}
+              paused={snapshot.session.paused}
+            />
+          )}
+          {tab === "downloads" && (
             <input
               className="search-input tab-search"
               type="search"
@@ -4502,7 +4649,7 @@ export function App(): ReactElement {
 
       <main className="tab-content">
         {tab === "collector" && (
-          <section className="grid-two">
+          <section className="grid-two collector-view">
             <article className="card wide">
               <div className="collector-header">
                 <h3>Linksammler</h3>
@@ -4811,7 +4958,7 @@ export function App(): ReactElement {
                             <span className="stat-eyebrow">{item.eyebrow}</span>
                             <span className="stat-label">{item.label}</span>
                           </span>
-                          <span className={`stat-value${item.danger ? " danger" : ""}${item.compactValue ? " stat-value-compact" : ""}`}>{item.value}</span>
+                          <StatValueView value={item.value} compact={item.compactValue} danger={item.danger} />
                         </button>
                       ) : (
                         <div key={item.key} className="stat-item">
@@ -4819,7 +4966,7 @@ export function App(): ReactElement {
                             <span className="stat-eyebrow">{item.eyebrow}</span>
                             <span className="stat-label">{item.label}</span>
                           </span>
-                          <span className={`stat-value${item.compactValue ? " stat-value-compact" : ""}`}>{item.value}</span>
+                          <StatValueView value={item.value} compact={item.compactValue} />
                         </div>
                       ))}
                     </div>
@@ -5974,14 +6121,6 @@ export function App(): ReactElement {
       )}
 
       <footer className="status-bar">
-        <span>Pakete: {snapshot.stats.totalPackages}</span>
-        <span>Links: {Object.keys(snapshot.session.items).length}</span>
-        <span>Session: {humanSize(snapshot.stats.totalDownloaded)}</span>
-        <span>Gesamt: {humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
-        <span>Hoster: {providerStats.length}</span>
-        <span>{snapshot.speedText}</span>
-        <span>{snapshot.etaText}</span>
-        <span className="footer-spacer" />
         {totalPackageCount > 0 && (
           <button className="btn footer-btn" title={allPackagesCollapsed ? "Alle Pakete in der Liste ausklappen und Details anzeigen" : "Alle Pakete in der Liste einklappen und nur die Kopfzeilen anzeigen"} onClick={() => {
             setCollapsedPackages((prev) => {
@@ -6014,6 +6153,14 @@ export function App(): ReactElement {
             Clipboard: An
           </button>
         )}
+        <span className="footer-spacer" />
+        <span>Pakete: {snapshot.stats.totalPackages}</span>
+        <span>Links: {Object.keys(snapshot.session.items).length}</span>
+        <span>Session: {humanSize(snapshot.stats.totalDownloaded)}</span>
+        <span>Gesamt: {humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
+        <span>Hoster: {providerStats.length}</span>
+        <span>{snapshot.speedText}</span>
+        <span>{snapshot.etaText}</span>
       </footer>
 
       {updateInstallProgress && (
