@@ -3291,9 +3291,18 @@ td {
   font-size: 13px;
 }
 .acct2-row:last-child { border-bottom: 0; }
-.acct2-row:nth-child(even) { background: color-mix(in srgb, var(--card) 28%, transparent); }
 .acct2-row.acct2-problem { background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .acct2-row.acct2-disabled { opacity: 0.55; }
+.acct2-group-head { cursor: pointer; background: color-mix(in srgb, var(--card) 50%, transparent); }
+.acct2-group-head:hover { background: color-mix(in srgb, var(--card) 68%, transparent); }
+.acct2-group-head .acct2-hoster strong { font-size: 13px; }
+.acct2-chevron { display: inline-block; color: var(--muted); font-size: 9px; transition: transform 0.12s ease; }
+.acct2-chevron.open { transform: rotate(90deg); }
+.acct2-grp-sum { display: flex; gap: 6px; flex-wrap: wrap; }
+.acct2-row.acct2-member .acct2-hoster {
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
 .acct2-c-check { display: flex; justify-content: center; }
 .acct2-c-check input { cursor: pointer; }
 .acct2-c-actions { display: flex; gap: 6px; justify-content: flex-end; }

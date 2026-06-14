@@ -2616,6 +2616,99 @@ export function App(): ReactElement {
     }
     return rows;
   }, [configuredAccounts, settingsDraft, snapshot.settings]);
+
+  const groupedAccountRows = useMemo(() => {
+    const groups: { service: string; serviceLabel: string; rows: typeof accountRows }[] = [];
+    const byService = new Map<string, { service: string; serviceLabel: string; rows: typeof accountRows }>();
+    for (const row of accountRows) {
+      const key = row.entry.service;
+      let group = byService.get(key);
+      if (!group) {
+        group = { service: key, serviceLabel: row.hosterLabel, rows: [] };
+        byService.set(key, group);
+        groups.push(group);
+      }
+      group.rows.push(row);
+    }
+    return groups;
+  }, [accountRows]);
+
+  const [collapsedAccountGroups, setCollapsedAccountGroups] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("rd-account-collapsed-groups-v1");
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch { /* ignore */ }
+    return new Set<string>();
+  });
+
+  const toggleAccountGroup = (service: string): void => {
+    setCollapsedAccountGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(service)) next.delete(service); else next.add(service);
+      try { localStorage.setItem("rd-account-collapsed-groups-v1", JSON.stringify([...next])); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
+  const renderAccountRow = (row: (typeof accountRows)[number], isMember: boolean): ReactElement => {
+    const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
+    const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
+    let statusCls = "ok";
+    let statusText = "Konfiguriert";
+    if (row.disabled) { statusCls = "disabled"; statusText = "Deaktiviert"; }
+    else if (!row.checkable) { statusCls = "ok"; statusText = "Konfiguriert"; }
+    else if (checking) { statusCls = "unknown"; statusText = "Prüfe…"; }
+    else if (!st) { statusCls = "unknown"; statusText = "Noch nicht geprüft"; }
+    else if (!st.valid) { statusCls = "invalid"; statusText = st.message || "Login ungültig"; }
+    else if (!st.isPremium) { statusCls = "free"; statusText = "Free Account"; }
+    else { statusCls = "ok"; statusText = st.message || "Premium Account"; }
+    const isProblem = statusCls === "invalid";
+    const username = st && st.email ? st.email : row.username;
+    const expiry = st && st.premiumUntilMs && st.premiumUntilMs > 0 ? new Date(st.premiumUntilMs).toLocaleDateString("de-DE") : "—";
+    const traffic = row.dailyLimitBytes > 0
+      ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
+      : "Unbeschränkt";
+    return (
+      <div key={row.rowKey} className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}${isMember ? " acct2-member" : ""}`}>
+        <span className="acct2-c-check">
+          <input
+            type="checkbox"
+            checked={!row.disabled}
+            disabled={actionBusy}
+            title={row.disabled ? "Account aktivieren" : "Account deaktivieren (bleibt gespeichert)"}
+            onChange={() => {
+              if (row.toggleKind === "mega" && row.megaLogin) { void onToggleMegaAccountEnabled(row.megaLogin, row.disabled); }
+              else if (row.toggleKind === "dl" && row.dlKey) { void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey); }
+              else { void onToggleAccountEnabled(row.entry); }
+            }}
+          />
+        </span>
+        <span className="acct2-hoster">
+          <strong>{row.hosterLabel}</strong>
+          <span className="acct2-mode">{row.modeLabel}</span>
+        </span>
+        <span className="acct2-traffic">{traffic}</span>
+        <span className="acct2-status">
+          <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>
+        </span>
+        <span className="acct2-user" title={username}>{username}</span>
+        <span className="acct2-expiry">{expiry}</span>
+        <span className="acct2-c-actions">
+          {row.toggleKind === "single" && getAccountQuickActionMeta(row.entry.kind) && (
+            <button className="btn btn-sm" disabled={actionBusy} onClick={() => { void onAccountRowQuickAction(row.entry); }}>
+              {getAccountQuickActionMeta(row.entry.kind)?.label}
+            </button>
+          )}
+          <button className="btn btn-sm" disabled={actionBusy} title="Account bearbeiten" onClick={() => openEditAccountDialog(row.entry.kind)}>Bearbeiten</button>
+          <button className="btn btn-sm danger" disabled={actionBusy} title="Account entfernen" onClick={() => {
+            if (row.toggleKind === "mega" && row.megaLogin) { void onRemoveMegaAccount(row.megaLogin); }
+            else if (row.toggleKind === "dl" && row.dlKey) { void onRemoveDebridLinkKey(row.dlKey); }
+            else { void onRemoveAccount(row.entry); }
+          }}>Entfernen</button>
+        </span>
+      </div>
+    );
+  };
   const availableAccountOptions = useMemo(() => (
     ACCOUNT_OPTIONS.filter((option) => !configuredAccountServices.has(option.service))
   ), [configuredAccountServices]);
@@ -5325,64 +5418,41 @@ export function App(): ReactElement {
                             <span>Verfallsdatum</span>
                             <span className="acct2-c-actions">Aktion</span>
                           </div>
-                          {accountRows.map((row) => {
-                            const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
-                            const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
-                            let statusCls = "ok";
-                            let statusText = "Konfiguriert";
-                            if (row.disabled) { statusCls = "disabled"; statusText = "Deaktiviert"; }
-                            else if (!row.checkable) { statusCls = "ok"; statusText = "Konfiguriert"; }
-                            else if (checking) { statusCls = "unknown"; statusText = "Prüfe…"; }
-                            else if (!st) { statusCls = "unknown"; statusText = "Noch nicht geprüft"; }
-                            else if (!st.valid) { statusCls = "invalid"; statusText = st.message || "Login ungültig"; }
-                            else if (!st.isPremium) { statusCls = "free"; statusText = "Free Account"; }
-                            else { statusCls = "ok"; statusText = st.message || "Premium Account"; }
-                            const isProblem = statusCls === "invalid";
-                            const username = st && st.email ? st.email : row.username;
-                            const expiry = st && st.premiumUntilMs && st.premiumUntilMs > 0 ? new Date(st.premiumUntilMs).toLocaleDateString("de-DE") : "—";
-                            const traffic = row.dailyLimitBytes > 0
-                              ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
-                              : "Unbeschränkt";
-                            return (
-                              <div key={row.rowKey} className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}`}>
-                                <span className="acct2-c-check">
-                                  <input
-                                    type="checkbox"
-                                    checked={!row.disabled}
-                                    disabled={actionBusy}
-                                    title={row.disabled ? "Account aktivieren" : "Account deaktivieren (bleibt gespeichert)"}
-                                    onChange={() => {
-                                      if (row.toggleKind === "mega" && row.megaLogin) { void onToggleMegaAccountEnabled(row.megaLogin, row.disabled); }
-                                      else if (row.toggleKind === "dl" && row.dlKey) { void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey); }
-                                      else { void onToggleAccountEnabled(row.entry); }
-                                    }}
-                                  />
-                                </span>
+                          {groupedAccountRows.flatMap((group) => {
+                            if (group.rows.length < 2) {
+                              return group.rows.map((row) => renderAccountRow(row, false));
+                            }
+                            const collapsed = collapsedAccountGroups.has(group.service);
+                            let okCount = 0;
+                            let problemCount = 0;
+                            let offCount = 0;
+                            for (const r of group.rows) {
+                              if (r.disabled) { offCount += 1; continue; }
+                              const s = r.accountId ? (snapshot.settings?.debridAccountStatuses?.[r.accountId] ?? null) : null;
+                              if (r.checkable && s && !s.valid) { problemCount += 1; } else { okCount += 1; }
+                            }
+                            const elements: ReactElement[] = [
+                              <div key={`grp-${group.service}`} className="acct2-row acct2-group-head" title={collapsed ? "Ausklappen" : "Einklappen"} onClick={() => toggleAccountGroup(group.service)}>
+                                <span className="acct2-c-check"><span className={`acct2-chevron${collapsed ? "" : " open"}`}>{"▶"}</span></span>
                                 <span className="acct2-hoster">
-                                  <strong>{row.hosterLabel}</strong>
-                                  <span className="acct2-mode">{row.modeLabel}</span>
+                                  <strong>{group.serviceLabel}</strong>
+                                  <span className="acct2-mode">{group.rows.length} Accounts</span>
                                 </span>
-                                <span className="acct2-traffic">{traffic}</span>
-                                <span className="acct2-status">
-                                  <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>
+                                <span className="acct2-traffic" />
+                                <span className="acct2-status acct2-grp-sum">
+                                  {okCount > 0 && <span className="account-validity-badge ok">{okCount} OK</span>}
+                                  {problemCount > 0 && <span className="account-validity-badge invalid">{problemCount} Problem</span>}
+                                  {offCount > 0 && <span className="account-validity-badge disabled">{offCount} aus</span>}
                                 </span>
-                                <span className="acct2-user" title={username}>{username}</span>
-                                <span className="acct2-expiry">{expiry}</span>
-                                <span className="acct2-c-actions">
-                                  {row.toggleKind === "single" && getAccountQuickActionMeta(row.entry.kind) && (
-                                    <button className="btn btn-sm" disabled={actionBusy} onClick={() => { void onAccountRowQuickAction(row.entry); }}>
-                                      {getAccountQuickActionMeta(row.entry.kind)?.label}
-                                    </button>
-                                  )}
-                                  <button className="btn btn-sm" disabled={actionBusy} title="Account bearbeiten" onClick={() => openEditAccountDialog(row.entry.kind)}>Bearbeiten</button>
-                                  <button className="btn btn-sm danger" disabled={actionBusy} title="Account entfernen" onClick={() => {
-                                    if (row.toggleKind === "mega" && row.megaLogin) { void onRemoveMegaAccount(row.megaLogin); }
-                                    else if (row.toggleKind === "dl" && row.dlKey) { void onRemoveDebridLinkKey(row.dlKey); }
-                                    else { void onRemoveAccount(row.entry); }
-                                  }}>Entfernen</button>
-                                </span>
+                                <span />
+                                <span />
+                                <span />
                               </div>
-                            );
+                            ];
+                            if (!collapsed) {
+                              for (const row of group.rows) elements.push(renderAccountRow(row, true));
+                            }
+                            return elements;
                           })}
                         </div>
                       )}
