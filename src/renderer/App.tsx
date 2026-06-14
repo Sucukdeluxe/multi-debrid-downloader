@@ -26,6 +26,9 @@ import {
   getDebridLinkApiKeyDailyLimitBytes,
   getDebridLinkApiKeyDailyRemainingBytes,
   getDebridLinkApiKeyDailyUsageBytes,
+  getMegaDebridAccountDailyLimitBytes,
+  getMegaDebridAccountDailyUsageBytes,
+  getMegaDebridAccountTotalUsageBytes,
   getProviderDailyLimitBytes,
   getProviderDailyRemainingBytes,
   getProviderTotalUsageBytes,
@@ -2531,6 +2534,88 @@ export function App(): ReactElement {
   }, [settingsDraft, snapshot.settings, allDebridHostInfo, allDebridHostLoading, hasSavedAllDebridAccount, allDebridSettingsDirty]);
 
   const configuredAccountServices = useMemo(() => new Set(configuredAccounts.map((entry) => entry.service)), [configuredAccounts]);
+
+  const accountRows = useMemo(() => {
+    type AccountRow = {
+      rowKey: string;
+      entry: ConfiguredAccountEntry;
+      hosterLabel: string;
+      modeLabel: string;
+      username: string;
+      accountId: string | null;
+      checkable: boolean;
+      disabled: boolean;
+      dailyUsedBytes: number;
+      dailyLimitBytes: number;
+      dailyRemainingBytes: number;
+      totalUsedBytes: number;
+      toggleKind: "mega" | "dl" | "single";
+      megaLogin?: string;
+      dlKey?: DebridLinkAccountKeyEntry;
+    };
+    const rows: AccountRow[] = [];
+    for (const entry of configuredAccounts) {
+      if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
+        const accounts = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "");
+        for (const acc of accounts) {
+          const used = getMegaDebridAccountDailyUsageBytes(snapshot.settings, acc.id);
+          const limit = getMegaDebridAccountDailyLimitBytes(settingsDraft, acc.id);
+          rows.push({
+            rowKey: `mega-${acc.id}`,
+            entry,
+            hosterLabel: entry.serviceLabel,
+            modeLabel: entry.modeLabel,
+            username: acc.maskedLogin,
+            accountId: acc.id,
+            checkable: true,
+            disabled: (settingsDraft.megaDebridDisabledAccountIds || []).includes(acc.id),
+            dailyUsedBytes: used,
+            dailyLimitBytes: limit,
+            dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
+            totalUsedBytes: getMegaDebridAccountTotalUsageBytes(snapshot.settings, acc.id),
+            toggleKind: "mega",
+            megaLogin: acc.login
+          });
+        }
+      } else if (entry.kind === "debridlink-api") {
+        for (const key of entry.debridLinkKeys) {
+          rows.push({
+            rowKey: `dl-${key.id}`,
+            entry,
+            hosterLabel: entry.serviceLabel,
+            modeLabel: entry.modeLabel,
+            username: key.masked,
+            accountId: key.id,
+            checkable: true,
+            disabled: key.disabled,
+            dailyUsedBytes: key.dailyUsedBytes,
+            dailyLimitBytes: key.dailyLimitBytes,
+            dailyRemainingBytes: key.dailyLimitBytes > 0 ? Math.max(0, key.dailyLimitBytes - key.dailyUsedBytes) : 0,
+            totalUsedBytes: key.totalUsedBytes,
+            toggleKind: "dl",
+            dlKey: key
+          });
+        }
+      } else {
+        rows.push({
+          rowKey: `svc-${entry.service}`,
+          entry,
+          hosterLabel: entry.serviceLabel,
+          modeLabel: entry.modeLabel,
+          username: entry.summary,
+          accountId: null,
+          checkable: false,
+          disabled: entry.disabled,
+          dailyUsedBytes: entry.dailyUsedBytes,
+          dailyLimitBytes: entry.dailyLimitBytes,
+          dailyRemainingBytes: entry.dailyLimitBytes > 0 ? Math.max(0, entry.dailyRemainingBytes ?? 0) : 0,
+          totalUsedBytes: entry.totalUsedBytes,
+          toggleKind: "single"
+        });
+      }
+    }
+    return rows;
+  }, [configuredAccounts, settingsDraft, snapshot.settings]);
   const availableAccountOptions = useMemo(() => (
     ACCOUNT_OPTIONS.filter((option) => !configuredAccountServices.has(option.service))
   ), [configuredAccountServices]);
@@ -2851,6 +2936,7 @@ export function App(): ReactElement {
       } else if (selectedOption) {
         showToast(`${selectedOption.title} gespeichert`, 2200);
       }
+      void checkAllAccounts();
     }, (error) => {
       showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
     });
@@ -2930,6 +3016,40 @@ export function App(): ReactElement {
     }, (error) => {
       showToast(`${entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
     });
+  };
+
+  const onToggleMegaAccountEnabled = async (login: string, currentlyDisabled: boolean): Promise<void> => {
+    const accId = getMegaDebridAccountId(login.trim());
+    await performQuickAction(async () => {
+      const current = settingsDraft.megaDebridDisabledAccountIds || [];
+      const next = currentlyDisabled ? current.filter((id) => id !== accId) : [...current, accId];
+      await persistSpecificSettings({ ...settingsDraft, megaDebridDisabledAccountIds: next });
+      showToast(currentlyDisabled ? "Account aktiviert" : "Account deaktiviert", 2000);
+    }, (error) => {
+      showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
+    });
+  };
+
+  const onRemoveMegaAccount = async (login: string): Promise<void> => {
+    const confirmed = await askConfirmPrompt({ title: "Account entfernen", message: `Soll der Mega-Debrid-Account ${maskMegaDebridLogin(login)} wirklich entfernt werden?`, confirmLabel: "Entfernen", danger: true });
+    if (!confirmed) return;
+    await performQuickAction(async () => {
+      const remaining = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "")
+        .filter((a) => a.login.trim().toLowerCase() !== login.trim().toLowerCase());
+      const nextCreds = serializeMegaDebridAccounts(remaining.map((a) => ({ login: a.login, password: a.password })));
+      await persistSpecificSettings({ ...settingsDraft, megaCredentials: nextCreds, megaLogin: remaining[0]?.login ?? "", megaPassword: remaining[0]?.password ?? "" });
+      showToast("Account entfernt", 2000);
+    }, (error) => { showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 3200); });
+  };
+
+  const onRemoveDebridLinkKey = async (key: DebridLinkAccountKeyEntry): Promise<void> => {
+    const confirmed = await askConfirmPrompt({ title: "Key entfernen", message: `Soll der Debrid-Link-Key ${key.masked} wirklich entfernt werden?`, confirmLabel: "Entfernen", danger: true });
+    if (!confirmed) return;
+    await performQuickAction(async () => {
+      const remaining = parseDebridLinkApiKeys(settingsDraft.debridLinkApiKeys || "").filter((k) => k.id !== key.id);
+      await persistSpecificSettings({ ...settingsDraft, debridLinkApiKeys: remaining.map((k) => k.token).join("\n") });
+      showToast("Key entfernt", 2000);
+    }, (error) => { showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 3200); });
   };
 
   const onToggleAccountEnabled = async (entry: ConfiguredAccountEntry): Promise<void> => {
@@ -5183,160 +5303,84 @@ export function App(): ReactElement {
                       </div>
 
                       <div className="account-board-summary">
-                        <span className="account-inline-stat">{configuredAccounts.length} aktiv</span>
+                        <span className="account-inline-stat">{accountRows.length} {accountRows.length === 1 ? "Account" : "Accounts"}</span>
                         <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfügbar</span>
                       </div>
 
-                      <label className="toggle-line account-display-toggle">
-                        <input
-                          type="checkbox"
-                          checked={settingsDraft.accountListShowDetailedDebridLinkKeys}
-                          onChange={(e) => setBool("accountListShowDetailedDebridLinkKeys", e.target.checked)}
-                        />
-                        Debrid-Link-Keys im Feld "Zugang" einzeln untereinander anzeigen
-                      </label>
-                      <div className="account-display-actions">
-                        <button className="btn btn-sm" disabled={actionBusy} onClick={resetAccountColumnWidths}>
-                          Spalten zurücksetzen
-                        </button>
-                      </div>
-
-                      {configuredAccounts.length === 0 && (
+                      {accountRows.length === 0 && (
                         <div className="account-empty-state">
                           <strong>Noch keine Accounts hinterlegt</strong>
                           <span>Füge über "Account hinzufügen" den ersten Dienst hinzu. Danach erscheinen hier Status, Zugang und Aktionen als Liste.</span>
                         </div>
                       )}
 
-                      {configuredAccounts.length > 0 && (
-                        <div className="account-table" style={accountTableStyle}>
-                          <div className="account-table-head">
-                            <div className="account-header-cell">
-                              <span>Account</span>
-                              <button
-                                className="account-resize-handle"
-                                title="Spalte ziehen"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  startAccountColumnResize("service", event.clientX);
-                                }}
-                              />
-                            </div>
-                            <div className="account-header-cell">
-                              <span>Typ</span>
-                              <button
-                                className="account-resize-handle"
-                                title="Spalte ziehen"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  startAccountColumnResize("mode", event.clientX);
-                                }}
-                              />
-                            </div>
-                            <div className="account-header-cell">
-                              <span>Status</span>
-                              <button
-                                className="account-resize-handle"
-                                title="Spalte ziehen"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  startAccountColumnResize("status", event.clientX);
-                                }}
-                              />
-                            </div>
-                            <div className="account-header-cell">
-                              <span>Info</span>
-                            </div>
-                            <div className="account-header-cell">
-                              <span>Zugang</span>
-                              <button
-                                className="account-resize-handle"
-                                title="Spalte ziehen"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  startAccountColumnResize("secret", event.clientX);
-                                }}
-                              />
-                            </div>
-                            <div className="account-header-cell">
-                              <span>Aktionen</span>
-                            </div>
+                      {accountRows.length > 0 && (
+                        <div className="acct2-table">
+                          <div className="acct2-head">
+                            <span className="acct2-c-check" />
+                            <span>Hoster</span>
+                            <span>Download-Traffic</span>
+                            <span>Status</span>
+                            <span>Benutzername</span>
+                            <span>Verfallsdatum</span>
+                            <span className="acct2-c-actions">Aktion</span>
                           </div>
-                          {configuredAccounts.map((entry) => {
-                            const option = findAccountOption(entry.kind);
-                            const quickAction = getAccountQuickActionMeta(entry.kind);
-                            const showStatusButton = entry.service === "alldebrid";
-                            const showQuickActionButton = Boolean(quickAction && !(showStatusButton && quickAction.action === "alldebrid-status"));
-                            const allDebridStateClass = entry.service === "alldebrid" && allDebridHostInfo ? ` account-status-${allDebridHostInfo.state}` : "";
+                          {accountRows.map((row) => {
+                            const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
+                            const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
+                            let statusCls = "ok";
+                            let statusText = "Konfiguriert";
+                            if (row.disabled) { statusCls = "disabled"; statusText = "Deaktiviert"; }
+                            else if (!row.checkable) { statusCls = "ok"; statusText = "Konfiguriert"; }
+                            else if (checking) { statusCls = "unknown"; statusText = "Prüfe…"; }
+                            else if (!st) { statusCls = "unknown"; statusText = "Noch nicht geprüft"; }
+                            else if (!st.valid) { statusCls = "invalid"; statusText = st.message || "Login ungültig"; }
+                            else if (!st.isPremium) { statusCls = "free"; statusText = "Free Account"; }
+                            else { statusCls = "ok"; statusText = st.message || "Premium Account"; }
+                            const isProblem = statusCls === "invalid";
+                            const username = st && st.email ? st.email : row.username;
+                            const expiry = st && st.premiumUntilMs && st.premiumUntilMs > 0 ? new Date(st.premiumUntilMs).toLocaleDateString("de-DE") : "—";
+                            const traffic = row.dailyLimitBytes > 0
+                              ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
+                              : "Unbeschränkt";
                             return (
-                              <div key={entry.service} className={`account-row${entry.disabled ? " account-row-disabled" : ""}`}>
-                                <div className="account-cell account-service-cell">
-                                  <strong>{entry.serviceLabel}</strong>
-                                  <span>{option.title}</span>
-                                </div>
-                                <div className="account-cell">
-                                  <span className="account-mode-pill">{entry.modeLabel}</span>
-                                </div>
-                                <div className="account-cell account-status-cell">
-                                  <span className={`account-status-pill${entry.disabled ? " account-status-disabled" : ""}${allDebridStateClass}`}>{entry.statusLabel}</span>
-                                  {entry.note && <span className="account-note">{entry.note}</span>}
-                                </div>
-                                <div className="account-cell account-info-cell">
-                                  {entry.debridLinkKeys.length > 0 ? (
-                                    <div className="account-usage-stack">
-                                      <button className="btn btn-sm" onClick={() => setKeyStatsPopup(entry.service)}>
-                                        Statistik
-                                      </button>
-                                      <span className="account-usage-total">Insgesamt: {humanSize(entry.totalUsedBytes)}</span>
-                                    </div>
-                                  ) : (
-                                    <div className="account-usage-stack">
-                                      <div className={`account-usage-stats${entry.dailyLimitReached ? " warning" : ""}`}>
-                                        <span>Heute: {humanSize(entry.dailyUsedBytes)}</span>
-                                        <span>{entry.dailyLimitBytes > 0 ? `Limit: ${humanSize(entry.dailyLimitBytes)}` : "Kein Tageslimit"}</span>
-                                        {entry.dailyLimitBytes > 0 && (
-                                          <span>{entry.dailyLimitReached ? "Fallback aktiv" : `Rest: ${humanSize(entry.dailyRemainingBytes || 0)}`}</span>
-                                        )}
-                                      </div>
-                                      <span className="account-usage-total">Insgesamt: {humanSize(entry.totalUsedBytes)}</span>
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="account-cell">
-                                  {entry.summaryLines.length > 1 ? (
-                                    <div className="account-secret account-secret-multiline">
-                                      {entry.summaryLines.map((line) => (
-                                        <span key={line}>{line}</span>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <span className="account-secret">{entry.summary}</span>
-                                  )}
-                                </div>
-                                <div className="account-cell account-row-actions">
-                                  {showStatusButton && (
-                                    <button className="btn" disabled={actionBusy || allDebridHostLoading || !hasSavedAllDebridAccount} onClick={() => { void performQuickAction(async () => { await runAccountQuickAction("alldebrid-status"); }, (error) => { showToast(`AllDebrid Status fehlgeschlagen: ${String(error)}`, 3200); }); }}>
-                                      Status
+                              <div key={row.rowKey} className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}`}>
+                                <span className="acct2-c-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={!row.disabled}
+                                    disabled={actionBusy}
+                                    title={row.disabled ? "Account aktivieren" : "Account deaktivieren (bleibt gespeichert)"}
+                                    onChange={() => {
+                                      if (row.toggleKind === "mega" && row.megaLogin) { void onToggleMegaAccountEnabled(row.megaLogin, row.disabled); }
+                                      else if (row.toggleKind === "dl" && row.dlKey) { void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey); }
+                                      else { void onToggleAccountEnabled(row.entry); }
+                                    }}
+                                  />
+                                </span>
+                                <span className="acct2-hoster">
+                                  <strong>{row.hosterLabel}</strong>
+                                  <span className="acct2-mode">{row.modeLabel}</span>
+                                </span>
+                                <span className="acct2-traffic">{traffic}</span>
+                                <span className="acct2-status">
+                                  <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>
+                                </span>
+                                <span className="acct2-user" title={username}>{username}</span>
+                                <span className="acct2-expiry">{expiry}</span>
+                                <span className="acct2-c-actions">
+                                  {row.toggleKind === "single" && getAccountQuickActionMeta(row.entry.kind) && (
+                                    <button className="btn btn-sm" disabled={actionBusy} onClick={() => { void onAccountRowQuickAction(row.entry); }}>
+                                      {getAccountQuickActionMeta(row.entry.kind)?.label}
                                     </button>
                                   )}
-                                  {showQuickActionButton && quickAction && (
-                                    <button className="btn" disabled={actionBusy} onClick={() => { void onAccountRowQuickAction(entry); }}>
-                                      {quickAction.label}
-                                    </button>
-                                  )}
-                                  <button className="btn" disabled={actionBusy} onClick={() => { void onToggleAccountEnabled(entry); }}>
-                                    {entry.disabled ? "Aktivieren" : "Deaktivieren"}
-                                  </button>
-                                  <button className="btn" disabled={actionBusy || entry.dailyUsedBytes <= 0} onClick={() => { void onResetAccountDailyUsage(entry); }}>
-                                    Reset Heute
-                                  </button>
-                                  <button className="btn" disabled={actionBusy} onClick={() => openEditAccountDialog(entry.kind)}>
-                                    Bearbeiten
-                                  </button>
-                                  <button className="btn danger" disabled={actionBusy} onClick={() => { void onRemoveAccount(entry); }}>
-                                    Entfernen
-                                  </button>
-                                </div>
+                                  <button className="btn btn-sm" disabled={actionBusy} title="Account bearbeiten" onClick={() => openEditAccountDialog(row.entry.kind)}>Bearbeiten</button>
+                                  <button className="btn btn-sm danger" disabled={actionBusy} title="Account entfernen" onClick={() => {
+                                    if (row.toggleKind === "mega" && row.megaLogin) { void onRemoveMegaAccount(row.megaLogin); }
+                                    else if (row.toggleKind === "dl" && row.dlKey) { void onRemoveDebridLinkKey(row.dlKey); }
+                                    else { void onRemoveAccount(row.entry); }
+                                  }}>Entfernen</button>
+                                </span>
                               </div>
                             );
                           })}

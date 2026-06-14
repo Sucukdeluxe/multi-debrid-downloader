@@ -3255,10 +3255,55 @@ td {
   border: 1px solid transparent;
   white-space: nowrap;
 }
-.account-validity-badge.ok { color: #1c1206; background: linear-gradient(90deg, #7bd88f, #4fb96a); border-color: #4fb96a; }
+.account-validity-badge.ok { color: #10240f; background: #4fb96a; border-color: #3f9d57; }
 .account-validity-badge.free { color: #2a2113; background: #f2c14e; border-color: #d9a72f; }
 .account-validity-badge.invalid { color: #fff; background: #d9534f; border-color: #c0392b; }
 .account-validity-badge.unknown { color: var(--muted, #a59c8e); background: transparent; border-color: var(--line, #4a4032); }
+.account-validity-badge.disabled { color: var(--muted, #a59c8e); background: transparent; border-color: var(--border); opacity: 0.8; }
+
+.acct2-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.acct2-head,
+.acct2-row {
+  display: grid;
+  grid-template-columns: 34px minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(120px, 1.4fr) minmax(140px, 1.6fr) minmax(92px, 0.9fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+}
+.acct2-head {
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.acct2-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  font-size: 13px;
+}
+.acct2-row:last-child { border-bottom: 0; }
+.acct2-row:nth-child(even) { background: color-mix(in srgb, var(--card) 28%, transparent); }
+.acct2-row.acct2-problem { background: color-mix(in srgb, var(--danger) 15%, transparent); }
+.acct2-row.acct2-disabled { opacity: 0.55; }
+.acct2-c-check { display: flex; justify-content: center; }
+.acct2-c-check input { cursor: pointer; }
+.acct2-c-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.acct2-hoster { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.acct2-hoster strong { font-size: 13px; }
+.acct2-mode { font-size: 11px; color: var(--muted); }
+.acct2-traffic,
+.acct2-expiry { font-variant-numeric: tabular-nums; color: var(--muted); }
+.acct2-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct2-status .account-validity-badge { margin-top: 0; }
 
 .rotation-panel { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
 .rotation-empty { color: var(--muted, #a59c8e); font-size: 12px; }
