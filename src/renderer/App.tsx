@@ -852,7 +852,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false,
+    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false,
     notifyUrl: "", notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
@@ -5077,34 +5077,66 @@ export function App(): ReactElement {
                 {settingsSubTab === "allgemein" && (
                   <div className="settings-section card">
                     <h3>Allgemein</h3>
+                    <div className="settings-section-intro">Grundeinstellungen für Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.</div>
+
+                    <h4 className="settings-subhead first">Speicherort</h4>
                     <label>Download-Ordner</label>
                     <div className="input-row">
                       <input value={settingsDraft.outputDir} onChange={(e) => setText("outputDir", e.target.value)} />
                       <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("outputDir", s); } }); }}>Wählen</button>
                     </div>
+                    <div className="setting-hint">Zielordner für alle heruntergeladenen Dateien.</div>
                     <label>Paketname (optional)</label>
                     <input value={settingsDraft.packageName} onChange={(e) => setText("packageName", e.target.value)} />
+                    <div className="setting-hint">Voreingestellter Name für neue Pakete; leer = automatisch aus den Links.</div>
+
+                    <h4 className="settings-subhead">Download-Verhalten</h4>
                     <div className="field-grid two">
-                      <div><label>Max. Downloads</label><input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(e) => setNum("maxParallel", Math.max(1, Math.min(50, Number(e.target.value) || 1)))} /></div>
-                      <div><label>Auto-Retry Limit (0 = inf)</label><input type="number" min={0} max={99} value={settingsDraft.retryLimit} onChange={(e) => setNum("retryLimit", Math.max(0, Math.min(99, Number(e.target.value) || 0)))} /></div>
+                      <div><label>Max. gleichzeitige Downloads</label><input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(e) => setNum("maxParallel", Math.max(1, Math.min(50, Number(e.target.value) || 1)))} /><div className="setting-hint">Gleichzeitige Downloads (1-50); höher lastet Leitung und Hoster-Slots stärker aus.</div></div>
+                      <div><label>Automatische Wiederholungen</label><input type="number" min={0} max={99} value={settingsDraft.retryLimit} onChange={(e) => setNum("retryLimit", Math.max(0, Math.min(99, Number(e.target.value) || 0)))} /><div className="setting-hint">Wiederholungen pro Datei bei Fehlern; 0 = unbegrenzt weiterversuchen.</div></div>
                     </div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Auto-Resume beim Start</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collapseNewPackages} onChange={(e) => setBool("collapseNewPackages", e.target.checked)} /> Neue Pakete eingeklappt</label>
-                    <div>
-                      <label>Verlauf speichern</label>
-                      <select value={settingsDraft.historyRetentionMode} onChange={(e) => setText("historyRetentionMode", e.target.value)}>
-                        {Object.entries(historyRetentionLabels).map(([key, label]) => (
-                          <option key={key} value={key}>{label}</option>
-                        ))}
-                      </select>
-                      <div className="hint">Nie = kein Verlauf. Nur aktuelle Session = wird beim Beenden gelöscht. Dauerhaft = bleibt wie bisher gespeichert.</div>
-                    </div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSortPackagesByProgress} onChange={(e) => setBool("autoSortPackagesByProgress", e.target.checked)} /> Automatisches Sortieren laufender Pakete nach Fortschritt</label>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Beim Start automatisch fortsetzen</label>
+                    <div className="setting-hint">Unterbrochene Downloads beim Programmstart automatisch fortsetzen.</div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In System Tray minimieren</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen bestätigen</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste in Sicherung mitsichern (Standard: nur Einstellungen)</label>
-                    <label>Webhook-URL (Discord)</label>
+                    <div className="setting-hint">Kopierte Links werden automatisch erkannt und zur Liste hinzugefügt.</div>
+
+                    <h4 className="settings-subhead">Verlauf</h4>
+                    <label>Verlauf speichern</label>
+                    <select value={settingsDraft.historyRetentionMode} onChange={(e) => setText("historyRetentionMode", e.target.value)}>
+                      {Object.entries(historyRetentionLabels).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                    <div className="setting-hint">Nie / nur Sitzung / dauerhaft; die Grenzen unten wirken nur bei „Dauerhaft".</div>
+                    <div className="field-grid two">
+                      <div><label>Maximale Verlauf-Einträge</label><input type="number" min={50} max={100000} value={settingsDraft.historyMaxEntries} disabled={settingsDraft.historyRetentionMode !== "permanent"} onChange={(e) => setNum("historyMaxEntries", Math.max(50, Math.min(100000, Number(e.target.value) || 500)))} /><div className="setting-hint">Obergrenze (Standard 500); älteste Einträge fallen darüber hinaus weg.</div></div>
+                      <div><label>Einträge löschen älter als (Tage)</label><input type="number" min={0} max={3650} value={settingsDraft.historyMaxAgeDays} disabled={settingsDraft.historyRetentionMode !== "permanent"} onChange={(e) => setNum("historyMaxAgeDays", Math.max(0, Math.min(3650, Number(e.target.value) || 0)))} /><div className="setting-hint">Löscht Einträge älter als X Tage; 0 = aus. Nur bei „Dauerhaft" aktiv.</div></div>
+                    </div>
+
+                    <h4 className="settings-subhead">Oberfläche & Bedienung</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collapseNewPackages} onChange={(e) => setBool("collapseNewPackages", e.target.checked)} /> Neue Pakete eingeklappt zeigen</label>
+                    <div className="setting-hint">Neue Pakete starten zugeklappt; hält lange Listen übersichtlich.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSortPackagesByProgress} onChange={(e) => setBool("autoSortPackagesByProgress", e.target.checked)} /> Nach Fortschritt sortieren</label>
+                    <div className="setting-hint">Laufende Pakete automatisch nach Fortschritt ordnen statt nach Reihenfolge.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In den Infobereich minimieren</label>
+                    <div className="setting-hint">Legt das Fenster in den Tray statt zu beenden; läuft im Hintergrund weiter.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen nachfragen</label>
+                    <div className="setting-hint">Sicherheitsabfrage vor dem Entfernen ausgewählter Einträge.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste mitsichern</label>
+                    <div className="setting-hint">Sicherung enthält auch die Download-Liste; Standard: nur Einstellungen.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
+                      const next = e.target.checked ? "light" : "dark";
+                      settingsDraftRevisionRef.current += 1;
+                      panelDirtyRevisionRef.current += 1;
+                      settingsDirtyRef.current = true;
+                      setSettingsDirty(true);
+                      setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
+                      applyTheme(next as AppTheme);
+                    }} /> Heller Modus</label>
+                    <div className="setting-hint">Schaltet die Oberfläche von Dunkel auf Hell um.</div>
+
+                    <h4 className="settings-subhead">Discord-Benachrichtigungen</h4>
+                    <label>Webhook-Adresse (Discord)</label>
                     <div className="input-row">
                       <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
                       <button className="btn" disabled={actionBusy || !settingsDraft.notifyUrl.trim()} onClick={() => {
@@ -5120,22 +5152,16 @@ export function App(): ReactElement {
                         });
                       }}>Testen</button>
                     </div>
-                    <div className="hint">In Discord: Servereinstellungen → Integrationen → Webhooks → Neuer Webhook → URL kopieren und hier eintragen. Die gewählten Ereignisse landen als Nachricht im Kanal.</div>
-                    <label>Discord-Ping (optional)</label>
+                    <div className="setting-hint">Discord-Webhook für Meldungen; per „Testen"-Button prüfbar. Leer = aus. In Discord: Servereinstellungen → Integrationen → Webhooks → Neuer Webhook → URL kopieren.</div>
+                    <label>Discord-Erwähnung (optional)</label>
                     <input value={settingsDraft.notifyMention} placeholder="Deine User-ID, @everyone oder @here" onChange={(e) => setText("notifyMention", e.target.value)} />
-                    <div className="hint">Wird jeder Nachricht vorangestellt, damit Discord dich pingt. Eigene ID: Discord-Einstellungen → Erweitert → Entwicklermodus an, dann Rechtsklick auf deinen Namen → "User-ID kopieren" und die Zahl hier eintragen.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageCompleted} onChange={(e) => setBool("notifyOnPackageCompleted", e.target.checked)} /> Benachrichtigen wenn ein Paket fertig ist</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageFailed} onChange={(e) => setBool("notifyOnPackageFailed", e.target.checked)} /> Benachrichtigen wenn ein Paket fehlschlägt</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnRunFinished} onChange={(e) => setBool("notifyOnRunFinished", e.target.checked)} /> Benachrichtigen wenn der Durchlauf beendet ist</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
-                      const next = e.target.checked ? "light" : "dark";
-                      settingsDraftRevisionRef.current += 1;
-                      panelDirtyRevisionRef.current += 1;
-                      settingsDirtyRef.current = true;
-                      setSettingsDirty(true);
-                      setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
-                      applyTheme(next as AppTheme);
-                    }} /> Light Mode</label>
+                    <div className="setting-hint">Wird jeder Meldung vorangestellt (User-ID, @everyone, @here), damit Discord pingt.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageCompleted} onChange={(e) => setBool("notifyOnPackageCompleted", e.target.checked)} /> Melden, wenn ein Paket fertig ist</label>
+                    <div className="setting-hint">Sendet eine Meldung, sobald ein Paket vollständig geladen wurde.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageFailed} onChange={(e) => setBool("notifyOnPackageFailed", e.target.checked)} /> Melden, wenn ein Paket fehlschlägt</label>
+                    <div className="setting-hint">Sendet eine Meldung, wenn ein Paket endgültig fehlschlägt.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnRunFinished} onChange={(e) => setBool("notifyOnRunFinished", e.target.checked)} /> Melden, wenn alles fertig ist</label>
+                    <div className="setting-hint">Sendet eine Meldung, wenn die ganze Warteschlange abgearbeitet ist.</div>
                   </div>
                 )}
                 {settingsSubTab === "accounts" && (
@@ -5585,59 +5611,97 @@ export function App(): ReactElement {
                 {settingsSubTab === "entpacken" && (
                   <div className="settings-section card">
                     <h3>Entpacken</h3>
+                    <div className="settings-section-intro">Wann und wie Archive entpackt werden, dazu Tonspur, Ablageform und Leistung.</div>
+
+                    <h4 className="settings-subhead first">Ziel & Ablauf</h4>
                     <label>Entpacken nach</label>
                     <div className="input-row">
                       <input value={settingsDraft.extractDir} onChange={(e) => setText("extractDir", e.target.value)} />
                       <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("extractDir", s); } }); }}>Wählen</button>
                     </div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Auto-Extract</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSkipExtracted} onChange={(e) => setBool("autoSkipExtracted", e.target.checked)} /> Bereits Entpacktes beim Start überspringen</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hideExtractedItems} onChange={(e) => setBool("hideExtractedItems", e.target.checked)} /> Entpackte Items in Paketliste ausblenden</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Auto-Rename (Beta)</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.keepGermanAudioOnly} onChange={(e) => setBool("keepGermanAudioOnly", e.target.checked)} /> Nur deutsche Tonspur behalten (.DL.-Dateien, braucht ffmpeg)</label>
-                    <div><label>Tonspur-Auswahl</label><select value={settingsDraft.germanAudioMode} disabled={!settingsDraft.keepGermanAudioOnly} onChange={(e) => setText("germanAudioMode", e.target.value)}>
+                    <div className="setting-hint">Zielordner für die entpackten Dateien.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Automatisch entpacken</label>
+                    <div className="setting-hint">Entpackt Archive automatisch, sobald das Paket vollständig geladen ist.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSkipExtracted} onChange={(e) => setBool("autoSkipExtracted", e.target.checked)} /> Bereits Entpacktes überspringen</label>
+                    <div className="setting-hint">Überspringt beim Start Archive, deren Inhalt schon vorhanden ist.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hideExtractedItems} onChange={(e) => setBool("hideExtractedItems", e.target.checked)} /> Entpackte Einträge ausblenden</label>
+                    <div className="setting-hint">Blendet fertig entpackte Einträge aus der Paketliste aus.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Sitzung</label>
+                    <div className="setting-hint">Entpackt offene Archive auch bei Stopp oder Programmstart ohne laufende Sitzung.</div>
+
+                    <h4 className="settings-subhead">Deutsche Tonspur</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.keepGermanAudioOnly} onChange={(e) => setBool("keepGermanAudioOnly", e.target.checked)} /> Nur deutsche Tonspur behalten</label>
+                    <div className="setting-hint">Reduziert .DL.-Videos auf die deutsche Spur; benötigt ffmpeg.</div>
+                    <label>Welche Tonspur behalten</label>
+                    <select value={settingsDraft.germanAudioMode} disabled={!settingsDraft.keepGermanAudioOnly} onChange={(e) => setText("germanAudioMode", e.target.value)}>
                       <option value="tag">Deutsche Spur per Sprach-Tag (empfohlen)</option>
                       <option value="first">Immer erste Tonspur (wie Script)</option>
-                    </select></div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> Entpackte Dateien in Paket-Unterordner speichern</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Extract</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Session (bei Stopp / Programmstart)</label>
-                    <div><label>Parallele Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /></div>
-                    <div><label>Extraktions-Priorität</label><select value={settingsDraft.extractCpuPriority} onChange={(e) => setText("extractCpuPriority", e.target.value)}>
-                      <option value="high">Hoch (80% CPU)</option>
-                      <option value="middle">Mittel (50% CPU)</option>
-                      <option value="low">Niedrig (25% CPU)</option>
-                    </select></div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> Videos nach Paketabschluss in Sammelordner verschieben (flach)</label>
+                    </select>
+                    <div className="setting-hint">Deutsche Spur per Sprach-Kennung (empfohlen) oder erste Spur; nur aktiv wenn oben an.</div>
+
+                    <h4 className="settings-subhead">Ablageform</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Automatisch umbenennen (Beta)</label>
+                    <div className="setting-hint">Benennt kryptische 4sf/4sj-Dateinamen automatisch um (experimentell).</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> In Paket-Unterordner ablegen</label>
+                    <div className="setting-hint">Legt entpackte Dateien je Paket in einen eigenen Unterordner.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> Videos in Sammelordner verschieben</label>
+                    <div className="setting-hint">Verschiebt fertige Videos nach Paketabschluss in einen zentralen Ordner.</div>
                     <label>Video-Sammelordner</label>
                     <div className="input-row">
                       <input value={settingsDraft.mkvLibraryDir} onChange={(e) => setText("mkvLibraryDir", e.target.value)} disabled={!settingsDraft.collectMkvToLibrary} />
                       <button className="btn" disabled={!settingsDraft.collectMkvToLibrary} onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("mkvLibraryDir", s); } }); }}>Wählen</button>
                     </div>
-                    <label>Passwortliste (eine Zeile pro Passwort)</label>
+                    <div className="setting-hint">Zielordner für gesammelte Videos; nur aktiv wenn Sammeln eingeschaltet ist.</div>
+
+                    <h4 className="settings-subhead">Leistung</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Entpacken</label>
+                    <div className="setting-hint">Entpackt schon während des Downloads weiter; spart Zeit, kostet mehr I/O.</div>
+                    <div className="field-grid two">
+                      <div><label>Gleichzeitige Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /><div className="setting-hint">Parallele Entpackvorgänge (1-8); höher braucht mehr CPU und Datenträger.</div></div>
+                      <div><label>CPU-Priorität beim Entpacken</label><select value={settingsDraft.extractCpuPriority} onChange={(e) => setText("extractCpuPriority", e.target.value)}>
+                        <option value="high">Hoch (80% CPU)</option>
+                        <option value="middle">Mittel (50% CPU)</option>
+                        <option value="low">Niedrig (25% CPU)</option>
+                      </select><div className="setting-hint">CPU-Anteil beim Entpacken: Hoch 80%, Mittel 50%, Niedrig 25%.</div></div>
+                    </div>
+
+                    <h4 className="settings-subhead">Passwörter</h4>
+                    <label>Passwortliste für Archive</label>
                     <textarea className="password-list" value={settingsDraft.archivePasswordList} onChange={(e) => setText("archivePasswordList", e.target.value)} placeholder={"serienfans.org\nserienjunkies.org\nmein-passwort"} />
+                    <div className="setting-hint">Ein Passwort pro Zeile; wird der Reihe nach an geschützten Archiven probiert.</div>
                   </div>
                 )}
                 {settingsSubTab === "geschwindigkeit" && (
                   <div className="settings-section card">
                     <h3>Geschwindigkeit</h3>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(e) => setBool("speedLimitEnabled", e.target.checked)} /> Speed-Limit aktivieren</label>
+                    <div className="settings-section-intro">Tempo begrenzen, Verhalten bei Abbrüchen und zeitgesteuerte Bandbreitenregeln.</div>
+
+                    <h4 className="settings-subhead first">Tempo-Begrenzung</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(e) => setBool("speedLimitEnabled", e.target.checked)} /> Geschwindigkeit begrenzen</label>
+                    <div className="setting-hint">Schaltet die Drosselung ein; die Felder unten wirken nur dann.</div>
                     <div className="field-grid two">
                       <div>
-                        <label>Limit (MB/s)</label>
+                        <label>Höchstgeschwindigkeit (MB/s)</label>
                         <input type="number" min={0} step={0.1} value={speedLimitInput} onChange={(event) => setSpeedLimitInput(event.target.value)} onBlur={(event) => { const parsed = parseMbpsInput(event.target.value); if (parsed === null) { setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps)); return; } setSpeedLimitMbps(parsed); setSpeedLimitInput(formatMbpsInputFromKbps(Math.floor(parsed * 1024))); }} disabled={!settingsDraft.speedLimitEnabled} />
+                        <div className="setting-hint">Maximales Tempo in MB/s; 0 = unbegrenzt.</div>
                       </div>
                       <div>
-                        <label>Limit-Modus</label>
+                        <label>Limit gilt für</label>
                         <select value={settingsDraft.speedLimitMode} onChange={(e) => setText("speedLimitMode", e.target.value)} disabled={!settingsDraft.speedLimitEnabled}>
                           <option value="global">Global</option>
                           <option value="per_download">Pro Download</option>
                         </select>
+                        <div className="setting-hint">Global = Summe aller Downloads, Pro Download = je Download getrennt.</div>
                       </div>
                     </div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(e) => setBool("autoReconnect", e.target.checked)} /> Automatischer Reconnect</label>
-                    <div><label>Reconnect-Wartezeit (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Math.max(10, Math.min(600, Number(e.target.value) || 45)))} /></div>
-                    <h4>Bandbreitenplanung</h4>
+
+                    <h4 className="settings-subhead">Verbindung</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(e) => setBool("autoReconnect", e.target.checked)} /> Automatisch neu verbinden</label>
+                    <div className="setting-hint">Verbindet bei Abbruch automatisch neu, statt den Download zu beenden.</div>
+                    <div><label>Wartezeit vor neuem Versuch (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Math.max(10, Math.min(600, Number(e.target.value) || 45)))} /><div className="setting-hint">Wartezeit vor dem nächsten Verbindungsversuch (10-600 Sek.).</div></div>
+
+                    <h4 className="settings-subhead">Bandbreitenplanung</h4>
+                    <div className="setting-hint">Pro Zeitfenster (Start-/End-Stunde) ein eigenes Limit, je Regel aktivierbar.</div>
                     {schedules.map((s, i) => {
                       const scheduleKey = s.id || `schedule-${i}`;
                       const speedInput = scheduleSpeedInputs[scheduleKey] ?? formatMbpsInputFromKbps(s.speedLimitKbps);
@@ -5660,34 +5724,52 @@ export function App(): ReactElement {
                 {settingsSubTab === "bereinigung" && (
                   <div className="settings-section card">
                     <h3>Bereinigung</h3>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(e) => setBool("enableIntegrityCheck", e.target.checked)} /> SFV/CRC/MD5/SHA1 prüfen</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeLinkFilesAfterExtract} onChange={(e) => setBool("removeLinkFilesAfterExtract", e.target.checked)} /> Link-Dateien nach Entpacken entfernen</label>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeSamplesAfterExtract} onChange={(e) => setBool("removeSamplesAfterExtract", e.target.checked)} /> Samples nach Entpacken entfernen</label>
-                    <label>Fertiggestellte Downloads entfernen</label>
+                    <div className="settings-section-intro">Integritätsprüfung sowie Aufräumen nach dem Entpacken und bei fertigen Downloads.</div>
+
+                    <h4 className="settings-subhead first">Prüfung</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(e) => setBool("enableIntegrityCheck", e.target.checked)} /> Dateien auf Fehler prüfen</label>
+                    <div className="setting-hint">Prüft Prüfsummen (SFV/CRC/MD5/SHA1), um defekte Dateien zu erkennen.</div>
+
+                    <h4 className="settings-subhead">Nach dem Entpacken</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeLinkFilesAfterExtract} onChange={(e) => setBool("removeLinkFilesAfterExtract", e.target.checked)} /> Link-Dateien danach entfernen</label>
+                    <div className="setting-hint">Löscht übrig gebliebene Link-Dateien nach erfolgreichem Entpacken.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeSamplesAfterExtract} onChange={(e) => setBool("removeSamplesAfterExtract", e.target.checked)} /> Vorschau-Dateien danach entfernen</label>
+                    <div className="setting-hint">Löscht kleine Sample-Videos nach erfolgreichem Entpacken.</div>
+                    <label>Archive nach dem Entpacken</label>
+                    <select value={settingsDraft.cleanupMode} onChange={(e) => setText("cleanupMode", e.target.value)}>
+                      <option value="none">keine Archive löschen</option>
+                      <option value="trash">Archive in Papierkorb</option>
+                      <option value="delete">Archive löschen</option>
+                    </select>
+                    <div className="setting-hint">Mit Archiven nach Erfolg: behalten, in den Papierkorb oder löschen.</div>
+
+                    <h4 className="settings-subhead">Fertige Downloads & Konflikte</h4>
+                    <label>Fertige Downloads aus der Liste</label>
                     <select value={settingsDraft.completedCleanupPolicy} onChange={(e) => setText("completedCleanupPolicy", e.target.value)}>
                       {Object.entries(cleanupLabels).map(([key, label]) => (<option key={key} value={key}>{label}</option>))}
                     </select>
-                    <div className="field-grid two">
-                      <div><label>Cleanup nach Entpacken</label><select value={settingsDraft.cleanupMode} onChange={(e) => setText("cleanupMode", e.target.value)}>
-                        <option value="none">keine Archive löschen</option>
-                        <option value="trash">Archive in Papierkorb</option>
-                        <option value="delete">Archive löschen</option>
-                      </select></div>
-                      <div><label>Konfliktmodus</label><select value={settingsDraft.extractConflictMode} onChange={(e) => setText("extractConflictMode", e.target.value)}>
-                        <option value="overwrite">überschreiben</option>
-                        <option value="skip">überspringen</option>
-                        <option value="rename">umbenennen</option>
-                        <option value="ask">nachfragen</option>
-                      </select></div>
-                    </div>
+                    <div className="setting-hint">Wann erledigte Einträge verschwinden: nie, sofort, beim Start oder nach dem Paket.</div>
+                    <label>Bei gleichnamigen Dateien</label>
+                    <select value={settingsDraft.extractConflictMode} onChange={(e) => setText("extractConflictMode", e.target.value)}>
+                      <option value="overwrite">überschreiben</option>
+                      <option value="skip">überspringen</option>
+                      <option value="rename">umbenennen</option>
+                      <option value="ask">nachfragen</option>
+                    </select>
+                    <div className="setting-hint">Bei vorhandener Zieldatei: überschreiben, überspringen, umbenennen oder nachfragen.</div>
                   </div>
                 )}
                 {settingsSubTab === "updates" && (
                   <div className="settings-section card">
                     <h3>Updates</h3>
-                    <label>Codeberg Repo</label>
+                    <div className="settings-section-intro">Quelle und Zeitpunkt der Update-Prüfung.</div>
+
+                    <h4 className="settings-subhead first">Aktualisierung</h4>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(e) => setBool("autoUpdateCheck", e.target.checked)} /> Beim Start nach Updates suchen</label>
+                    <div className="setting-hint">Prüft beim Programmstart automatisch, ob eine neue Version verfügbar ist.</div>
+                    <label>Update-Quelle</label>
                     <input value={settingsDraft.updateRepo} onChange={(e) => setText("updateRepo", e.target.value)} />
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(e) => setBool("autoUpdateCheck", e.target.checked)} /> Beim Start auf Updates prüfen</label>
+                    <div className="setting-hint">Quelle für die Update-Prüfung (Benutzer/Repo). Im Zweifel unverändert lassen.</div>
                   </div>
                 )}
               </div>

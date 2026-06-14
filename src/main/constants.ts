@@ -101,6 +101,8 @@ export function defaultSettings(): AppSettings {
     theme: "dark" as const,
     collapseNewPackages: true,
     historyRetentionMode: "permanent",
+    historyMaxEntries: 500,
+    historyMaxAgeDays: 0,
     accountListShowDetailedDebridLinkKeys: false,
     autoSortPackagesByProgress: true,
     autoSkipExtracted: false,

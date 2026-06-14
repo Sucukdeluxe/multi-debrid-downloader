@@ -36,7 +36,7 @@ import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
 import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
@@ -120,7 +120,7 @@ export class AppController {
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       onHistoryEntry: (entry: HistoryEntry) => {
-        addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry);
+        addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
       }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
@@ -338,9 +338,13 @@ export class AppController {
 
     this.overlayLiveUsageCounters(nextSettings);
     const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
+    const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
+      || previousSettings.historyMaxAgeDays !== nextSettings.historyMaxAgeDays;
     this.settings = nextSettings;
     if (retentionChanged) {
       resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+    } else if (historyLimitsChanged && this.settings.historyRetentionMode !== "never") {
+      saveHistory(this.storagePaths, loadHistory(this.storagePaths), this.historyLimits());
     }
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
@@ -644,7 +648,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       appVersion: APP_VERSION,
       exportedAt: new Date().toISOString(),
       session: this.manager.getSession(),
-      history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode)
+      history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits())
     });
     this.audit("INFO", "Backup exportiert", {
       kind: payloadObj.kind,
@@ -803,8 +807,12 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     logger.info("App beendet");
   }
 
+  private historyLimits(): { maxEntries: number; maxAgeDays: number } {
+    return { maxEntries: this.settings.historyMaxEntries, maxAgeDays: this.settings.historyMaxAgeDays };
+  }
+
   public getHistory(): HistoryEntry[] {
-    return loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+    return loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits());
   }
 
   public clearHistory(): void {

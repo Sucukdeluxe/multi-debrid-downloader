@@ -126,6 +126,8 @@ export interface AppSettings {
   theme: AppTheme;
   collapseNewPackages: boolean;
   historyRetentionMode: HistoryRetentionMode;
+  historyMaxEntries: number;
+  historyMaxAgeDays: number;
   accountListShowDetailedDebridLinkKeys: boolean;
   autoSortPackagesByProgress: boolean;
   autoSkipExtracted: boolean;

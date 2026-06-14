@@ -451,6 +451,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     historyRetentionMode: VALID_HISTORY_RETENTION_MODES.has(settings.historyRetentionMode)
       ? settings.historyRetentionMode
       : defaults.historyRetentionMode,
+    historyMaxEntries: clampNumber(settings.historyMaxEntries, defaults.historyMaxEntries, 50, 100000),
+    historyMaxAgeDays: clampNumber(settings.historyMaxAgeDays, defaults.historyMaxAgeDays, 0, 3650),
     accountListShowDetailedDebridLinkKeys: settings.accountListShowDetailedDebridLinkKeys !== undefined
       ? Boolean(settings.accountListShowDetailedDebridLinkKeys)
       : defaults.accountListShowDetailedDebridLinkKeys,
@@ -1129,6 +1131,23 @@ export async function saveSessionAsync(paths: StoragePaths, session: SessionStat
 }
 
 const MAX_HISTORY_ENTRIES = 500;
+const HISTORY_HARD_CAP = 100000;
+
+export interface HistoryLimits {
+  maxEntries: number;
+  maxAgeDays: number;
+}
+
+function pruneHistoryEntries(entries: HistoryEntry[], limits?: HistoryLimits, now = Date.now()): HistoryEntry[] {
+  const maxEntries = limits && limits.maxEntries > 0 ? Math.min(limits.maxEntries, HISTORY_HARD_CAP) : MAX_HISTORY_ENTRIES;
+  const maxAgeDays = limits && limits.maxAgeDays > 0 ? limits.maxAgeDays : 0;
+  let result = entries;
+  if (maxAgeDays > 0) {
+    const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
+    result = result.filter((entry) => entry.completedAt >= cutoff);
+  }
+  return result.length > maxEntries ? result.slice(0, maxEntries) : result;
+}
 
 export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry | null {
   const entry = asRecord(raw);
@@ -1153,7 +1172,7 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
   };
 }
 
-export function loadHistory(paths: StoragePaths): HistoryEntry[] {
+export function loadHistory(paths: StoragePaths, limits?: HistoryLimits): HistoryEntry[] {
   ensureBaseDir(paths.baseDir);
   if (!fs.existsSync(paths.historyFile)) {
     return [];
@@ -1164,19 +1183,19 @@ export function loadHistory(paths: StoragePaths): HistoryEntry[] {
     if (!Array.isArray(raw)) return [];
 
     const entries: HistoryEntry[] = [];
-    for (let i = 0; i < raw.length && entries.length < MAX_HISTORY_ENTRIES; i++) {
+    for (let i = 0; i < raw.length && entries.length < HISTORY_HARD_CAP; i++) {
       const normalized = normalizeHistoryEntry(raw[i], i);
       if (normalized) entries.push(normalized);
     }
-    return entries;
+    return pruneHistoryEntries(entries, limits);
   } catch {
     return [];
   }
 }
 
-export function saveHistory(paths: StoragePaths, entries: HistoryEntry[]): void {
+export function saveHistory(paths: StoragePaths, entries: HistoryEntry[], limits?: HistoryLimits): void {
   ensureBaseDir(paths.baseDir);
-  const trimmed = entries.slice(0, MAX_HISTORY_ENTRIES);
+  const trimmed = pruneHistoryEntries(entries, limits);
   const payload = JSON.stringify(trimmed, safeJsonReplacer, 2);
   const tempPath = `${paths.historyFile}.tmp`;
   try {
@@ -1188,22 +1207,22 @@ export function saveHistory(paths: StoragePaths, entries: HistoryEntry[]): void 
   }
 }
 
-export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry): HistoryEntry[] {
-  const existing = loadHistory(paths);
-  const updated = [entry, ...existing].slice(0, MAX_HISTORY_ENTRIES);
-  saveHistory(paths, updated);
+export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry, limits?: HistoryLimits): HistoryEntry[] {
+  const existing = loadHistory(paths, limits);
+  const updated = pruneHistoryEntries([entry, ...existing], limits);
+  saveHistory(paths, updated, limits);
   return updated;
 }
 
-export function loadHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): HistoryEntry[] {
-  return retentionMode === "never" ? [] : loadHistory(paths);
+export function loadHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode, limits?: HistoryLimits): HistoryEntry[] {
+  return retentionMode === "never" ? [] : loadHistory(paths, limits);
 }
 
-export function addHistoryEntryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode, entry: HistoryEntry): HistoryEntry[] {
+export function addHistoryEntryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode, entry: HistoryEntry, limits?: HistoryLimits): HistoryEntry[] {
   if (retentionMode === "never") {
     return [];
   }
-  return addHistoryEntry(paths, entry);
+  return addHistoryEntry(paths, entry, limits);
 }
 
 export function resetHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): void {

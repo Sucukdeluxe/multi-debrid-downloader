@@ -332,6 +332,59 @@ describe("settings storage", () => {
     expect(loadHistory(paths)).toEqual([]);
   });
 
+  it("caps persisted history to the configured maxEntries", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const now = Date.now();
+    const entries = Array.from({ length: 10 }, (_unused, i) => ({
+      id: `h-${i}`,
+      name: `e${i}`,
+      totalBytes: 1,
+      downloadedBytes: 1,
+      fileCount: 1,
+      provider: "realdebrid" as const,
+      completedAt: now - i * 1000,
+      durationSeconds: 1,
+      status: "completed" as const,
+      outputDir: path.join(dir, "out"),
+      urls: []
+    }));
+
+    saveHistory(paths, entries, { maxEntries: 3, maxAgeDays: 0 });
+
+    const loaded = loadHistory(paths, { maxEntries: 3, maxAgeDays: 0 });
+    expect(loaded).toHaveLength(3);
+    expect(loaded.map((e) => e.id)).toEqual(["h-0", "h-1", "h-2"]);
+  });
+
+  it("drops history entries older than maxAgeDays", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    const fresh = {
+      id: "fresh",
+      name: "fresh",
+      totalBytes: 1,
+      downloadedBytes: 1,
+      fileCount: 1,
+      provider: "realdebrid" as const,
+      completedAt: now - 2 * day,
+      durationSeconds: 1,
+      status: "completed" as const,
+      outputDir: path.join(dir, "out"),
+      urls: []
+    };
+    const old = { ...fresh, id: "old", name: "old", completedAt: now - 40 * day };
+
+    saveHistory(paths, [fresh, old], { maxEntries: 500, maxAgeDays: 30 });
+
+    const loaded = loadHistory(paths, { maxEntries: 500, maxAgeDays: 30 });
+    expect(loaded.map((e) => e.id)).toEqual(["fresh"]);
+  });
+
   it("assigns and preserves bandwidth schedule ids", () => {
     const normalized = normalizeSettings({
       ...defaultSettings(),

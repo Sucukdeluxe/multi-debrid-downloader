@@ -1015,6 +1015,42 @@ body,
   min-height: 0;
 }
 
+.settings-section-intro {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: -2px 0 2px;
+}
+
+.settings-subhead {
+  margin: 16px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settings-subhead.first {
+  margin-top: 6px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.setting-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: -1px 0 7px;
+}
+
+.toggle-line + .setting-hint {
+  margin-top: -4px;
+  margin-left: 26px;
+}
+
 .settings-shell {
   display: grid;
   grid-template-rows: auto 1fr;
