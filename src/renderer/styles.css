@@ -3313,6 +3313,7 @@ td {
 .acct2-expiry { font-variant-numeric: tabular-nums; color: var(--muted); }
 .acct2-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct2-status .account-validity-badge { margin-top: 0; }
+.acct2-nostatus { color: var(--muted); opacity: 0.6; font-variant-numeric: tabular-nums; }
 
 .rotation-panel { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
 .rotation-empty { color: var(--muted, #a59c8e); font-size: 12px; }

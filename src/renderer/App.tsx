@@ -2653,10 +2653,10 @@ export function App(): ReactElement {
   const renderAccountRow = (row: (typeof accountRows)[number], isMember: boolean): ReactElement => {
     const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
     const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
-    let statusCls = "ok";
-    let statusText = "Konfiguriert";
+    let statusCls = "none";
+    let statusText = "—";
     if (row.disabled) { statusCls = "disabled"; statusText = "Deaktiviert"; }
-    else if (!row.checkable) { statusCls = "ok"; statusText = "Konfiguriert"; }
+    else if (!row.checkable) { statusCls = "none"; statusText = "—"; }
     else if (checking) { statusCls = "unknown"; statusText = "Prüfe…"; }
     else if (!st) { statusCls = "unknown"; statusText = "Noch nicht geprüft"; }
     else if (!st.valid) { statusCls = "invalid"; statusText = st.message || "Login ungültig"; }
@@ -2689,7 +2689,9 @@ export function App(): ReactElement {
         </span>
         <span className="acct2-traffic">{traffic}</span>
         <span className="acct2-status">
-          <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>
+          {statusCls === "none"
+            ? <span className="acct2-nostatus" title="Für diesen Anbieter gibt es keine Status-Prüfung">—</span>
+            : <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>}
         </span>
         <span className="acct2-user" title={username}>{username}</span>
         <span className="acct2-expiry">{expiry}</span>
