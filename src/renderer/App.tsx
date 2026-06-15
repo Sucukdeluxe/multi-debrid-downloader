@@ -2617,6 +2617,9 @@ export function App(): ReactElement {
     return rows;
   }, [configuredAccounts, settingsDraft, snapshot.settings]);
 
+  const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
+  const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
+
   const groupedAccountRows = useMemo(() => {
     const groups: { service: string; serviceLabel: string; rows: typeof accountRows }[] = [];
     const byService = new Map<string, { service: string; serviceLabel: string; rows: typeof accountRows }>();
@@ -2630,8 +2633,26 @@ export function App(): ReactElement {
       }
       group.rows.push(row);
     }
+    if (accountStatusSort !== "none") {
+      const statuses = snapshot.settings?.debridAccountStatuses || {};
+      const now = Date.now();
+      const remainingMs = (row: (typeof accountRows)[number]): number => {
+        const st = row.accountId ? statuses[row.accountId] : null;
+        return st && st.premiumUntilMs && st.premiumUntilMs > now ? st.premiumUntilMs - now : -1;
+      };
+      for (const group of groups) {
+        group.rows = [...group.rows].sort((a, b) => {
+          const ra = remainingMs(a);
+          const rb = remainingMs(b);
+          if (ra > 0 && rb > 0) return accountStatusSort === "desc" ? rb - ra : ra - rb;
+          if (ra > 0) return -1;
+          if (rb > 0) return 1;
+          return 0;
+        });
+      }
+    }
     return groups;
-  }, [accountRows]);
+  }, [accountRows, accountStatusSort, snapshot.settings]);
 
   const [collapsedAccountGroups, setCollapsedAccountGroups] = useState<Set<string>>(() => {
     try {
@@ -5403,7 +5424,7 @@ export function App(): ReactElement {
                             <span className="acct2-c-check" />
                             <span>Hoster</span>
                             <span>Download-Traffic</span>
-                            <span>Status</span>
+                            <span className="acct2-sortable" title="Nach Premium-Restlaufzeit sortieren (längste/kürzeste)" onClick={cycleAccountStatusSort}>Status{accountStatusSort === "desc" ? " ▼" : accountStatusSort === "asc" ? " ▲" : ""}</span>
                             <span>Benutzername</span>
                             <span>Verfallsdatum</span>
                             <span className="acct2-c-actions">Aktion</span>

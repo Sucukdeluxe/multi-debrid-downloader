@@ -3321,6 +3321,8 @@ td {
 .acct2-expiry { font-variant-numeric: tabular-nums; color: var(--muted); }
 .acct2-head > span:nth-child(3),
 .acct2-traffic { text-align: center; }
+.acct2-sortable { cursor: pointer; user-select: none; }
+.acct2-sortable:hover { color: var(--text); }
 .acct2-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct2-status .account-validity-badge { margin-top: 0; }
 .acct2-nostatus { color: var(--muted); opacity: 0.6; font-variant-numeric: tabular-nums; }
