@@ -297,22 +297,14 @@ const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
 
 let megaDebridRotationCursor = 0;
-
-const MEGA_DEBRID_SLOW_ACCOUNT_FLOOR_MS = 6000;
-const MEGA_DEBRID_SLOW_ACCOUNT_FACTOR = 3;
-const megaDebridAccountLatencyEma = new Map<string, number>();
-
-function recordMegaDebridUnrestrictLatency(cooldownKey: string, elapsedMs: number): void {
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
-    return;
-  }
-  const prev = megaDebridAccountLatencyEma.get(cooldownKey);
-  megaDebridAccountLatencyEma.set(cooldownKey, prev === undefined ? elapsedMs : prev * 0.7 + elapsedMs * 0.3);
-}
-
-export function primeMegaDebridLatencyForTests(cooldownKey: string, emaMs: number): void {
-  megaDebridAccountLatencyEma.set(cooldownKey, emaMs);
-}
+let megaDebridStickyCount = 0;
+// Mega-Web cacht Sessions pro Account (~20 Min). Wuerde jede Link-Aufloesung den
+// Account wechseln (reines Round-Robin), zahlte JEDER Link einen kalten Login in
+// die serielle Single-Flight-Queue → minutenlanger Vorlauf. Stattdessen bleibt die
+// Rotation "klebrig": ein funktionierender Account wird fuer einen Schwung Links
+// behalten (warm/schnell), erst danach (oder bei Limit/Cooldown/Fehler) auf den
+// naechsten gewechselt. So bleibt es schnell UND ueber die Zeit kommen alle dran.
+export const MEGA_DEBRID_STICKY_LINKS = 25;
 
 export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
   const streak = (megaDebridEmptyResponseStreaks.get(accountId) || 0) + 1;
@@ -328,7 +320,7 @@ export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
   megaDebridEmptyResponseStreaks.clear();
   megaDebridRotationCursor = 0;
-  megaDebridAccountLatencyEma.clear();
+  megaDebridStickyCount = 0;
 }
 
 export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
@@ -1925,50 +1917,17 @@ class MegaDebridClient {
     const providerName = `Mega-Debrid ${mode === "api" ? "API" : "Web"}`;
     const linkShort = String(link || "").slice(0, 80);
 
-    // Round-Robin statt First-Wins: ohne den Cursor startete jede Link-Aufloesung
-    // bei Account 1 und endete beim ersten brauchbaren — ein spaeterer Account kam
-    // nur dran, wenn ALLE davor am Limit/Cooldown waren. Live-Folge: Account 1-2
-    // liefen staendig ins Tageslimit, Account 3 trug den Rest allein und Account 4
-    // wurde nie auch nur angeschaut. Der Cursor laesst jede Aufloesung beim Account
-    // NACH dem zuletzt getesteten starten, alle Skip-/Cooldown-Checks bleiben.
+    // Klebrige Rotation: gestartet wird beim Cursor (zuletzt erfolgreich genutzter,
+    // also warmer Account), danach der Reihe nach als Failover. Alle Skip-/Cooldown-
+    // Checks bleiben. Der Cursor wird erst im Erfolgszweig weitergesetzt — nach einem
+    // Schwung erfolgreicher Umwandlungen (MEGA_DEBRID_STICKY_LINKS) — sodass aufeinander
+    // folgende Links auf demselben warmen Account laufen statt jeweils neu einzuloggen.
     const startOffset = ((megaDebridRotationCursor % accounts.length) + accounts.length) % accounts.length;
-    const rotationOrder: { account: MegaDebridAccountEntry; idx: number }[] = [];
+    const orderedEntries: { account: MegaDebridAccountEntry; idx: number }[] = [];
     for (let step = 0; step < accounts.length; step += 1) {
       const idx = (startOffset + step) % accounts.length;
-      rotationOrder.push({ account: accounts[idx], idx });
+      orderedEntries.push({ account: accounts[idx], idx });
     }
-
-    // Latenz-Schutz fuer die Mega-Web-Single-Flight-Queue: dort laufen ALLE
-    // Umwandlungen seriell, ein nachweislich langsamer Account bremst also
-    // jeden nachfolgenden Link aus. Accounts mit deutlich erhoehtem Erfolgs-EMA
-    // wandern ans Ende der Reihenfolge (= Failover-Reserve) statt in der
-    // gleichmaessigen Rotation mitzulaufen; erholt sich ihr EMA, rotieren sie
-    // automatisch wieder mit. Ungemessene Accounts gelten als gesund.
-    let bestEma = Infinity;
-    let anyUnmeasuredUsable = false;
-    for (const entry of rotationOrder) {
-      if (isMegaDebridAccountDisabled(settings, entry.account.id)) continue;
-      if (isMegaDebridAccountDailyLimitReached(settings, entry.account.id)) continue;
-      if (getMegaDebridAccountCooldownState(`${entry.account.id}:${mode}`)) continue;
-      const ema = megaDebridAccountLatencyEma.get(`${entry.account.id}:${mode}`);
-      if (ema === undefined) {
-        anyUnmeasuredUsable = true;
-        continue;
-      }
-      if (ema < bestEma) bestEma = ema;
-    }
-    const slowThreshold = Math.max(
-      MEGA_DEBRID_SLOW_ACCOUNT_FLOOR_MS,
-      anyUnmeasuredUsable ? 0 : (Number.isFinite(bestEma) ? MEGA_DEBRID_SLOW_ACCOUNT_FACTOR * bestEma : Infinity)
-    );
-    const isSlowEntry = (entry: { account: MegaDebridAccountEntry }): boolean => {
-      const ema = megaDebridAccountLatencyEma.get(`${entry.account.id}:${mode}`);
-      return ema !== undefined && ema > slowThreshold;
-    };
-    const orderedEntries = [
-      ...rotationOrder.filter((entry) => !isSlowEntry(entry)),
-      ...rotationOrder.filter((entry) => isSlowEntry(entry))
-    ];
 
     for (let orderPos = 0; orderPos < orderedEntries.length; orderPos += 1) {
       const entry = orderedEntries[orderPos];
@@ -2011,24 +1970,26 @@ class MegaDebridClient {
         continue;
       }
 
-      const emaForLog = megaDebridAccountLatencyEma.get(cooldownKey);
       logger.info(`Mega-Debrid${accountLabel}: TESTE Account fuer Link-Generierung...`);
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", {
-        link: linkShort,
-        emaMs: emaForLog !== undefined ? Math.round(emaForLog) : undefined,
-        slow: isSlowEntry(entry) ? true : undefined
+        link: linkShort
       });
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
-      megaDebridRotationCursor = idx + 1;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
         const result = await client.unrestrictLink(link, signal);
         clearMegaDebridAccountCooldownState(cooldownKey);
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
-        recordMegaDebridUnrestrictLatency(cooldownKey, elapsedMs);
+        megaDebridStickyCount += 1;
+        if (megaDebridStickyCount >= MEGA_DEBRID_STICKY_LINKS) {
+          megaDebridRotationCursor = idx + 1;
+          megaDebridStickyCount = 0;
+        } else {
+          megaDebridRotationCursor = idx;
+        }
         logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
         logAccountRotation("INFO", providerName, rotationLabel, "OK", {
           elapsedMs,

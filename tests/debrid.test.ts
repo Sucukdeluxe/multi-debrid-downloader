@@ -3,7 +3,7 @@ import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, normalizeResolvedFilename, primeMegaDebridLatencyForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -1379,166 +1379,85 @@ describe("debrid service", () => {
     }
   });
 
-  it("verteilt Links per Round-Robin ueber ALLE Mega-Debrid-Accounts statt immer beim ersten zu starten", async () => {
+  it("bleibt klebrig bei einem funktionierenden Account (kein Account-Wechsel pro Link)", async () => {
     const settings = {
       ...defaultSettings(),
-      token: "",
-      bestToken: "",
-      allDebridToken: "",
-      megaLogin: "user1",
-      megaPassword: "pass1",
+      token: "", bestToken: "", allDebridToken: "",
+      megaLogin: "user1", megaPassword: "pass1",
       megaCredentials: "user1:pass1\nuser2:pass2\nuser3:pass3\nuser4:pass4",
       megaDebridPreferApi: false,
-      providerOrder: [] as const,
-      providerPrimary: "megadebrid" as const,
-      providerSecondary: "none" as const,
-      providerTertiary: "none" as const,
+      providerOrder: [] as const, providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
       autoProviderFallback: false
     };
 
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
-    const megaWeb = vi.fn(async () => ({
-      fileName: "ok.rar",
-      directUrl: "https://mega-web.example/ok.rar",
-      fileSize: null,
-      retriesUsed: 0
-    }));
+    const megaWeb = vi.fn(async () => ({ fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 }));
 
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const usedIds: (string | undefined)[] = [];
     for (let i = 0; i < 5; i += 1) {
-      const result = await service.unrestrictLink(`https://rapidgator.net/file/rr-${i}`);
+      const result = await service.unrestrictLink(`https://rapidgator.net/file/sticky-${i}`);
       usedIds.push((result as { sourceAccountId?: string }).sourceAccountId);
     }
 
-    expect(usedIds).toEqual([
-      getMegaDebridAccountId("user1"),
-      getMegaDebridAccountId("user2"),
-      getMegaDebridAccountId("user3"),
-      getMegaDebridAccountId("user4"),
-      getMegaDebridAccountId("user1")
-    ]);
+    expect(usedIds).toEqual(new Array(5).fill(getMegaDebridAccountId("user1")));
   }, 30000);
 
-  it("Round-Robin respektiert Cooldowns: gesperrter Account wird in der Reihe uebersprungen", async () => {
+  it("wechselt erst nach einem Schwung Links auf den naechsten Account", async () => {
     const settings = {
       ...defaultSettings(),
-      token: "",
-      bestToken: "",
-      allDebridToken: "",
-      megaLogin: "user1",
-      megaPassword: "pass1",
-      megaCredentials: "user1:pass1\nuser2:pass2\nuser3:pass3",
+      token: "", bestToken: "", allDebridToken: "",
+      megaLogin: "user1", megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
       megaDebridPreferApi: false,
-      providerOrder: [] as const,
-      providerPrimary: "megadebrid" as const,
-      providerSecondary: "none" as const,
-      providerTertiary: "none" as const,
+      providerOrder: [] as const, providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
       autoProviderFallback: false
     };
 
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
-    const megaWeb = vi.fn(async () => ({
-      fileName: "ok.rar",
-      directUrl: "https://mega-web.example/ok.rar",
-      fileSize: null,
-      retriesUsed: 0
-    }));
+    const megaWeb = vi.fn(async () => ({ fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 }));
 
-    primeMegaDebridUntilRestartForTests(`${getMegaDebridAccountId("user2")}:web`);
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const usedIds: (string | undefined)[] = [];
+    for (let i = 0; i < MEGA_DEBRID_STICKY_LINKS + 1; i += 1) {
+      const result = await service.unrestrictLink(`https://rapidgator.net/file/chunk-${i}`);
+      usedIds.push((result as { sourceAccountId?: string }).sourceAccountId);
+    }
+
+    expect(usedIds.slice(0, MEGA_DEBRID_STICKY_LINKS)).toEqual(new Array(MEGA_DEBRID_STICKY_LINKS).fill(getMegaDebridAccountId("user1")));
+    expect(usedIds[MEGA_DEBRID_STICKY_LINKS]).toBe(getMegaDebridAccountId("user2"));
+  }, 30000);
+
+  it("ueberspringt einen gesperrten Account und bleibt dann klebrig beim naechsten", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaLogin: "user1", megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2\nuser3:pass3",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const, providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const megaWeb = vi.fn(async () => ({ fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 }));
+
+    primeMegaDebridUntilRestartForTests(`${getMegaDebridAccountId("user1")}:web`);
 
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const usedIds: (string | undefined)[] = [];
     for (let i = 0; i < 3; i += 1) {
-      const result = await service.unrestrictLink(`https://rapidgator.net/file/rr-skip-${i}`);
+      const result = await service.unrestrictLink(`https://rapidgator.net/file/skip-${i}`);
       usedIds.push((result as { sourceAccountId?: string }).sourceAccountId);
     }
 
-    expect(usedIds).toEqual([
-      getMegaDebridAccountId("user1"),
-      getMegaDebridAccountId("user3"),
-      getMegaDebridAccountId("user1")
-    ]);
-  }, 30000);
-
-  it("depriorisiert einen nachweislich langsamen Account in der Rotation (Single-Flight-Schutz)", async () => {
-    const settings = {
-      ...defaultSettings(),
-      token: "",
-      bestToken: "",
-      allDebridToken: "",
-      megaLogin: "user1",
-      megaPassword: "pass1",
-      megaCredentials: "user1:pass1\nuser2:pass2",
-      megaDebridPreferApi: false,
-      providerOrder: [] as const,
-      providerPrimary: "megadebrid" as const,
-      providerSecondary: "none" as const,
-      providerTertiary: "none" as const,
-      autoProviderFallback: false
-    };
-
-    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
-
-    const megaWeb = vi.fn(async () => ({
-      fileName: "ok.rar",
-      directUrl: "https://mega-web.example/ok.rar",
-      fileSize: null,
-      retriesUsed: 0
-    }));
-
-    primeMegaDebridLatencyForTests(`${getMegaDebridAccountId("user1")}:web`, 15000);
-    primeMegaDebridLatencyForTests(`${getMegaDebridAccountId("user2")}:web`, 800);
-
-    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
-    const usedIds: (string | undefined)[] = [];
-    for (let i = 0; i < 2; i += 1) {
-      const result = await service.unrestrictLink(`https://rapidgator.net/file/slow-${i}`);
-      usedIds.push((result as { sourceAccountId?: string }).sourceAccountId);
-    }
-
-    expect(usedIds).toEqual([
-      getMegaDebridAccountId("user2"),
-      getMegaDebridAccountId("user2")
-    ]);
-  }, 30000);
-
-  it("nutzt den langsamen Account weiterhin, wenn die schnellen gesperrt sind (Failover-Reserve)", async () => {
-    const settings = {
-      ...defaultSettings(),
-      token: "",
-      bestToken: "",
-      allDebridToken: "",
-      megaLogin: "user1",
-      megaPassword: "pass1",
-      megaCredentials: "user1:pass1\nuser2:pass2",
-      megaDebridPreferApi: false,
-      providerOrder: [] as const,
-      providerPrimary: "megadebrid" as const,
-      providerSecondary: "none" as const,
-      providerTertiary: "none" as const,
-      autoProviderFallback: false
-    };
-
-    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
-
-    const megaWeb = vi.fn(async () => ({
-      fileName: "ok.rar",
-      directUrl: "https://mega-web.example/ok.rar",
-      fileSize: null,
-      retriesUsed: 0
-    }));
-
-    primeMegaDebridLatencyForTests(`${getMegaDebridAccountId("user1")}:web`, 15000);
-    primeMegaDebridLatencyForTests(`${getMegaDebridAccountId("user2")}:web`, 800);
-    primeMegaDebridUntilRestartForTests(`${getMegaDebridAccountId("user2")}:web`);
-
-    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
-    const result = await service.unrestrictLink("https://rapidgator.net/file/slow-fallback");
-
-    expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user1"));
+    expect(usedIds).toEqual(new Array(3).fill(getMegaDebridAccountId("user2")));
   }, 30000);
 
   it("rotates to the next Mega-Debrid account when one hits its daily limit (error-based)", async () => {
