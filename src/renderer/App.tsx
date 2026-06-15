@@ -2765,28 +2765,16 @@ export function App(): ReactElement {
     }
     let changelogText = "";
     if (result.releaseNotes) {
-      const lines = result.releaseNotes.split("\n");
-      const compactLines: string[] = [];
-      for (const line of lines) {
-        if (/^\s{2,}[-*]/.test(line)) continue;
-        if (/^#{1,6}\s/.test(line)) continue;
-        if (!line.trim()) continue;
-        let clean = line
+      changelogText = result.releaseNotes
+        .split("\n")
+        .filter((line) => !/^#{1,6}\s/.test(line))
+        .map((line) => line
           .replace(/\*\*([^*]+)\*\*/g, "$1")
           .replace(/\*([^*]+)\*/g, "$1")
-          .replace(/`([^`]+)`/g, "$1")
-          .replace(/^\s*[-*]\s+/, "- ")
-          .trim();
-        const colonIdx = clean.indexOf(":");
-        if (colonIdx > 0 && colonIdx < clean.length - 1) {
-          const afterColon = clean.slice(colonIdx + 1).trim();
-          if (afterColon.length > 60) {
-            clean = clean.slice(0, colonIdx + 1).trim();
-          }
-        }
-        if (clean) compactLines.push(clean);
-      }
-      changelogText = compactLines.join("\n");
+          .replace(/`([^`]+)`/g, "$1"))
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
     }
     const approved = await askConfirmPrompt({
       title: "Update verfügbar",
