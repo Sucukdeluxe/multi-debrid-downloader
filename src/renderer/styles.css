@@ -3272,11 +3272,19 @@ td {
 .acct2-head,
 .acct2-row {
   display: grid;
-  grid-template-columns: 34px minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(120px, 1.4fr) minmax(140px, 1.6fr) minmax(92px, 0.9fr) auto;
+  grid-template-columns: 32px minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, 1.3fr) minmax(0, 1.7fr) minmax(0, 1fr) 196px;
   align-items: center;
   gap: 10px;
   padding: 7px 12px;
 }
+.acct2-head > span,
+.acct2-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acct2-head > .acct2-c-actions,
+.acct2-row > .acct2-c-actions { overflow: visible; }
 .acct2-head {
   background: color-mix(in srgb, var(--card) 60%, transparent);
   border-bottom: 1px solid var(--border);
