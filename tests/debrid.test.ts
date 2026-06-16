@@ -1303,6 +1303,42 @@ describe("debrid service", () => {
     expect(megaWeb).toHaveBeenCalledTimes(0);
   });
 
+  it("treats a Mega-Debrid 'Fichier supprimé' as transient: no account cooldown, German message, retryable", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "tok", vip_end: Math.floor(Date.now() / 1000) + 999999 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "error", response_text: "Fichier supprimé chez l'hébergeur" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const err = await service.unrestrictLink("https://rapidgator.net/file/maybe-dead.rar.html").then(() => null, (e: unknown) => e);
+    expect(err).toBeTruthy();
+    expect(String(err)).toMatch(/nicht abrufbar/i);
+    expect(String(err)).not.toMatch(/supprim/i);
+    expect(getMegaDebridAccountCooldownState(`${getMegaDebridAccountId("user")}:api`)).toBeNull();
+  });
+
   it("uses Mega Web only when it is configured as a separate fallback provider", async () => {
     const settings = {
       ...defaultSettings(),
@@ -1529,6 +1565,45 @@ describe("debrid service", () => {
     // 8 gleichzeitige Aufloesungen auf 2 Accounts → 4 je Account (statt 7/1 beim alten belegt/frei-Set).
     expect(callsPerAccount.get("user1")).toBe(4);
     expect(callsPerAccount.get("user2")).toBe(4);
+  }, 15000);
+
+  it("faellt ein Account in der Mitte aus (1,2,4 ok, 3 nicht): parallel nur ueber die funktionierenden, alle Links loesen auf", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaLogin: "user1", megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2\nuser3:pass3\nuser4:pass4",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const, providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    let active = 0;
+    const used = new Set<string>();
+    const threeInFlight = new Promise<void>((resolve) => {
+      const check = setInterval(() => { if (active >= 3) { clearInterval(check); resolve(); } }, 5);
+    });
+    const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
+      active += 1;
+      if (account) used.add(account.login);
+      await threeInFlight;
+      return { fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 };
+    });
+
+    // Account 3 ist ausgefallen (z.B. zuvor fehlgeschlagen -> gesperrt) und faellt aus der Rotation.
+    primeMegaDebridUntilRestartForTests(`${getMegaDebridAccountId("user3")}:web`);
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const results = await Promise.all([0, 1, 2].map((i) => service.unrestrictLink(`https://rapidgator.net/file/dead3-${i}`)));
+
+    expect(results.every((r) => Boolean((r as { directUrl?: string }).directUrl))).toBe(true);
+    expect(used.has("user3")).toBe(false);
+    expect(used.has("user1")).toBe(true);
+    expect(used.has("user2")).toBe(true);
+    expect(used.has("user4")).toBe(true);
   }, 15000);
 
   it("rotates to the next Mega-Debrid account when one hits its daily limit (error-based)", async () => {

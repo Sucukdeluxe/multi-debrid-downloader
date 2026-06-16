@@ -2,6 +2,7 @@ import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostLimitInfo, DebridProvider } from "../shared/types";
 import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
+import { isMegaDebridResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
@@ -2137,6 +2138,10 @@ class MegaDebridClient {
         message: `ungueltiger Account (${errorText})`,
         category: "invalid"
       };
+    }
+
+    if (isMegaDebridResolveFailure(errorText)) {
+      return { fatal: false, cooldownMs: 0, message: germanMegaDebridResolveReason(errorText), category: "temporary" };
     }
 
     if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(errorText)) {

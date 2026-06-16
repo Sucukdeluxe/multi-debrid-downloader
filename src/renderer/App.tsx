@@ -5411,6 +5411,12 @@ export function App(): ReactElement {
                         <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfügbar</span>
                       </div>
 
+                      {configuredAccountServices.has("megadebrid-api") && configuredAccountServices.has("megadebrid-web") && (
+                        <div className="account-mode-note">
+                          <strong>Mega-Debrid API + Web sind derselbe Account</strong>, nur zwei Zugriffsarten: API (schnell) wird zuerst versucht, Web dient als Fallback. Gleicher Login, kein zweites Konto — beide Zeilen teilen sich dasselbe Tageslimit und denselben Premium-Status.
+                        </div>
+                      )}
+
                       {accountRows.length === 0 && (
                         <div className="account-empty-state">
                           <strong>Noch keine Accounts hinterlegt</strong>
