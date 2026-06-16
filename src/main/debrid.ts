@@ -306,6 +306,13 @@ let megaDebridStickyCount = 0;
 // naechsten gewechselt. So bleibt es schnell UND ueber die Zeit kommen alle dran.
 export const MEGA_DEBRID_STICKY_LINKS = 25;
 
+// Wie viele Umwandlungen pro Account (key `${id}:${mode}`) GERADE laufen/anstehen. Gleichzeitige
+// Aufloesungen waehlen den am WENIGSTEN belegten Account → verschiedene Accounts wandeln parallel
+// um (je eigene Queue in MegaWebFallback), und auch bei mehr gleichzeitigen Links als Accounts
+// verteilt es sich gleichmaessig statt sich hinter einem Account zu stauen. Tiefe (nicht nur
+// belegt/frei), damit ein frueh fertiger Erst-Job einen noch laufenden Folge-Job nicht "frei" meldet.
+const megaDebridInFlight = new Map<string, number>();
+
 export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
   const streak = (megaDebridEmptyResponseStreaks.get(accountId) || 0) + 1;
   megaDebridEmptyResponseStreaks.set(accountId, streak);
@@ -321,6 +328,7 @@ export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridEmptyResponseStreaks.clear();
   megaDebridRotationCursor = 0;
   megaDebridStickyCount = 0;
+  megaDebridInFlight.clear();
 }
 
 export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
@@ -1923,11 +1931,22 @@ class MegaDebridClient {
     // Schwung erfolgreicher Umwandlungen (MEGA_DEBRID_STICKY_LINKS) — sodass aufeinander
     // folgende Links auf demselben warmen Account laufen statt jeweils neu einzuloggen.
     const startOffset = ((megaDebridRotationCursor % accounts.length) + accounts.length) % accounts.length;
-    const orderedEntries: { account: MegaDebridAccountEntry; idx: number }[] = [];
+    const cursorOrder: { account: MegaDebridAccountEntry; idx: number }[] = [];
     for (let step = 0; step < accounts.length; step += 1) {
       const idx = (startOffset + step) % accounts.length;
-      orderedEntries.push({ account: accounts[idx], idx });
+      cursorOrder.push({ account: accounts[idx], idx });
     }
+    // Parallel ueber mehrere Accounts: nach AKTUELLER Auslastung (in-flight-Tiefe) sortieren —
+    // am wenigsten belegter Account zuerst, cursorOrder als stabiler Gleichstand-Tiebreak. So
+    // verteilen sich auch MEHR gleichzeitige Aufloesungen als Accounts gleichmaessig (statt sich
+    // alle hinter dem Cursor-Account zu stauen). Nichts in-flight (sequenziell) => alle Tiefe 0 =>
+    // Reihenfolge == cursorOrder => bleibt klebrig beim warmen Account.
+    const inFlightDepth = (entry: { account: MegaDebridAccountEntry }): number =>
+      megaDebridInFlight.get(`${entry.account.id}:${mode}`) ?? 0;
+    const orderedEntries = cursorOrder
+      .map((entry, position) => ({ entry, position }))
+      .sort((a, b) => (inFlightDepth(a.entry) - inFlightDepth(b.entry)) || (a.position - b.position))
+      .map((wrapped) => wrapped.entry);
 
     for (let orderPos = 0; orderPos < orderedEntries.length; orderPos += 1) {
       const entry = orderedEntries[orderPos];
@@ -1977,6 +1996,7 @@ class MegaDebridClient {
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
+      megaDebridInFlight.set(cooldownKey, (megaDebridInFlight.get(cooldownKey) ?? 0) + 1);
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
         const result = await client.unrestrictLink(link, signal);
@@ -2078,6 +2098,13 @@ class MegaDebridClient {
           next: nextLabel,
           link: linkShort
         });
+      } finally {
+        const remainingInFlight = (megaDebridInFlight.get(cooldownKey) ?? 1) - 1;
+        if (remainingInFlight <= 0) {
+          megaDebridInFlight.delete(cooldownKey);
+        } else {
+          megaDebridInFlight.set(cooldownKey, remainingInFlight);
+        }
       }
     }
 
@@ -2152,6 +2179,13 @@ class MegaDebridClient {
         category: "temporary",
         limitSignal: true
       };
+    }
+
+    if (/queue.?timeout/i.test(errorText)) {
+      // Lokaler Stau (die Queue dieses Accounts war zu lange belegt) — KEIN Signal fuer einen
+      // ungesunden Account. Kein Cooldown, sonst wuerde der warme Account fuer Eigen-Stau bestraft;
+      // der Link wird einfach erneut versucht und rotiert dann natuerlich weiter.
+      return { fatal: false, cooldownMs: 0, message: errorText, category: "temporary" };
     }
 
     if (isRetryableErrorText(errorText) || /timeout|network|fetch|socket/i.test(errorText)) {

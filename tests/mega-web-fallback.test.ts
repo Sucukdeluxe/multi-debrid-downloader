@@ -202,6 +202,68 @@ describe("mega-web-fallback", () => {
       expect(result).toBeNull();
     });
 
+    it("serialisiert gleichzeitige Umwandlungen auf DEMSELBEN Account (kein Doppel-Login)", async () => {
+      let loginCount = 0;
+      globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.includes("form=login")) {
+          loginCount += 1;
+          await new Promise((r) => setTimeout(r, 15));
+          const headers = new Headers();
+          headers.append("set-cookie", "session=c; path=/");
+          return new Response("", { headers, status: 200 });
+        }
+        if (u.includes("page=debrideur")) return new Response('<form id="debridForm"></form>', { status: 200 });
+        if (u.includes("form=debrid")) return new Response(`<div class="acp-box"><h3>Link: https://mega.debrid/l</h3><a href="javascript:processDebrid(1,'code',0)">d</a></div>`, { status: 200 });
+        if (u.includes("ajax=debrid")) return new Response(JSON.stringify({ link: "https://mega.direct/ok" }), { status: 200 });
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const fallback = new MegaWebFallback(() => ({ login: "same", password: "pw" }));
+      const [r1, r2] = await Promise.all([
+        fallback.unrestrict("https://mega.debrid/a", undefined, { login: "same", password: "pw" }),
+        fallback.unrestrict("https://mega.debrid/b", undefined, { login: "same", password: "pw" })
+      ]);
+      expect(r1?.directUrl).toBe("https://mega.direct/ok");
+      expect(r2?.directUrl).toBe("https://mega.direct/ok");
+      // Serialisiert auf demselben Account → der zweite nutzt die gecachte Session, kein zweiter Login.
+      expect(loginCount).toBe(1);
+    });
+
+    it("wandelt auf VERSCHIEDENEN Accounts parallel um (Logins laufen gleichzeitig)", async () => {
+      let activeLogins = 0;
+      let maxActiveLogins = 0;
+      const bothInFlight = new Promise<void>((resolve) => {
+        const check = setInterval(() => { if (activeLogins >= 2) { clearInterval(check); resolve(); } }, 5);
+      });
+      globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.includes("form=login")) {
+          activeLogins += 1;
+          maxActiveLogins = Math.max(maxActiveLogins, activeLogins);
+          await bothInFlight;
+          activeLogins -= 1;
+          const headers = new Headers();
+          headers.append("set-cookie", "session=c; path=/");
+          return new Response("", { headers, status: 200 });
+        }
+        if (u.includes("page=debrideur")) return new Response('<form id="debridForm"></form>', { status: 200 });
+        if (u.includes("form=debrid")) return new Response(`<div class="acp-box"><h3>Link: https://mega.debrid/l</h3><a href="javascript:processDebrid(1,'code',0)">d</a></div>`, { status: 200 });
+        if (u.includes("ajax=debrid")) return new Response(JSON.stringify({ link: "https://mega.direct/ok" }), { status: 200 });
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const fallback = new MegaWebFallback(() => ({ login: "d", password: "p" }));
+      const [r1, r2] = await Promise.all([
+        fallback.unrestrict("https://mega.debrid/a", undefined, { login: "acc1", password: "p" }),
+        fallback.unrestrict("https://mega.debrid/b", undefined, { login: "acc2", password: "p" })
+      ]);
+      expect(r1?.directUrl).toBe("https://mega.direct/ok");
+      expect(r2?.directUrl).toBe("https://mega.direct/ok");
+      // Verschiedene Accounts → beide Logins gleichzeitig in-flight (sonst haengt es am bothInFlight-Barrier).
+      expect(maxActiveLogins).toBe(2);
+    }, 10000);
+
     it("aborts pending Mega-Web polling when signal is cancelled", async () => {
       globalThis.fetch = vi.fn((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
         const urlStr = String(url);

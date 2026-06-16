@@ -1460,6 +1460,77 @@ describe("debrid service", () => {
     expect(usedIds).toEqual(new Array(3).fill(getMegaDebridAccountId("user2")));
   }, 30000);
 
+  it("verteilt gleichzeitige Umwandlungen auf verschiedene Accounts (parallel, in-flight-Routing)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaLogin: "user1", megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2\nuser3:pass3\nuser4:pass4",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const, providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    let active = 0;
+    let maxActive = 0;
+    const accountsSeen = new Set<string>();
+    const allInFlight = new Promise<void>((resolve) => {
+      const check = setInterval(() => { if (active >= 4) { clearInterval(check); resolve(); } }, 5);
+    });
+    const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (account) accountsSeen.add(account.login);
+      await allInFlight;
+      active -= 1;
+      return { fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 };
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const results = await Promise.all([0, 1, 2, 3].map((i) => service.unrestrictLink(`https://rapidgator.net/file/conc-${i}`)));
+
+    expect(results.every((r) => Boolean((r as { directUrl?: string }).directUrl))).toBe(true);
+    expect(accountsSeen.size).toBe(4);
+    expect(maxActive).toBe(4);
+  }, 15000);
+
+  it("verteilt Ueberzahl-Umwandlungen (mehr gleichzeitig als Accounts) gleichmaessig statt sie zu stapeln", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaLogin: "user1", megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const, providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    let active = 0;
+    const callsPerAccount = new Map<string, number>();
+    const allInFlight = new Promise<void>((resolve) => {
+      const check = setInterval(() => { if (active >= 8) { clearInterval(check); resolve(); } }, 5);
+    });
+    const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
+      active += 1;
+      if (account) callsPerAccount.set(account.login, (callsPerAccount.get(account.login) ?? 0) + 1);
+      await allInFlight;
+      return { fileName: "ok.rar", directUrl: "https://mega-web.example/ok.rar", fileSize: null, retriesUsed: 0 };
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    await Promise.all(Array.from({ length: 8 }, (_unused, i) => service.unrestrictLink(`https://rapidgator.net/file/ov-${i}`)));
+
+    // 8 gleichzeitige Aufloesungen auf 2 Accounts → 4 je Account (statt 7/1 beim alten belegt/frei-Set).
+    expect(callsPerAccount.get("user1")).toBe(4);
+    expect(callsPerAccount.get("user2")).toBe(4);
+  }, 15000);
+
   it("rotates to the next Mega-Debrid account when one hits its daily limit (error-based)", async () => {
     const settings = {
       ...defaultSettings(),

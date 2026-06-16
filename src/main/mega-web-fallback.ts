@@ -217,7 +217,11 @@ async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Prom
 }
 
 export class MegaWebFallback {
-  private queue: Promise<unknown> = Promise.resolve();
+  // Pro Account eine eigene Warteschlange: Umwandlungen auf DEMSELBEN Account laufen
+  // seriell (kein Doppel-Login, kein Hammern eines einzelnen Accounts), verschiedene
+  // Accounts laufen parallel. So koennen die Links eines Pakets ueber mehrere Accounts
+  // gleichzeitig umgewandelt werden statt global eine nach der anderen.
+  private queues = new Map<string, Promise<unknown>>();
 
   private getCredentials: () => MegaCredentials;
 
@@ -233,15 +237,15 @@ export class MegaWebFallback {
     account?: { login: string; password: string }
   ): Promise<UnrestrictedLink | null> {
     const overallSignal = withTimeoutSignal(signal, 180000);
+    const creds = (account && account.login.trim() && account.password.trim())
+      ? account
+      : this.getCredentials();
+    if (!creds.login.trim() || !creds.password.trim()) {
+      return null;
+    }
+    const key = creds.login.trim().toLowerCase();
     return this.runExclusive(async () => {
       throwIfAborted(overallSignal);
-      const creds = (account && account.login.trim() && account.password.trim())
-        ? account
-        : this.getCredentials();
-      if (!creds.login.trim() || !creds.password.trim()) {
-        return null;
-      }
-      const key = creds.login.trim().toLowerCase();
       let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal);
 
       let generated = await this.generate(link, cookie, overallSignal);
@@ -259,7 +263,7 @@ export class MegaWebFallback {
         fileSize: null,
         retriesUsed: 0
       };
-    }, overallSignal);
+    }, key, overallSignal);
   }
 
   private async ensureSession(key: string, login: string, password: string, signal?: AbortSignal): Promise<string> {
@@ -276,7 +280,7 @@ export class MegaWebFallback {
     this.sessions.clear();
   }
 
-  private async runExclusive<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private async runExclusive<T>(job: () => Promise<T>, key: string, signal?: AbortSignal): Promise<T> {
     const queuedAt = Date.now();
     const QUEUE_WAIT_TIMEOUT_MS = 90000;
     const guardedJob = async (): Promise<T> => {
@@ -287,8 +291,9 @@ export class MegaWebFallback {
       }
       return job();
     };
-    const run = this.queue.then(guardedJob, guardedJob);
-    this.queue = run.then(() => undefined, () => undefined);
+    const prev = this.queues.get(key) ?? Promise.resolve();
+    const run = prev.then(guardedJob, guardedJob);
+    this.queues.set(key, run.then(() => undefined, () => undefined));
     return raceWithAbort(run, signal);
   }
 
