@@ -38,6 +38,7 @@ import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session
 import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
+import { runInstallWithResume } from "./update-install-flow";
 import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { buildBackupPayload, planBackupImport } from "./backup-payload";
@@ -459,16 +460,14 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
-    if (this.manager.isSessionRunning()) {
-      this.manager.stop({ parkForRestart: true });
-    }
-    this.manager.persistNowSync();
-
     const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
     const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000
       ? this.lastUpdateCheck
       : undefined;
-    const result = await installLatestUpdate(this.settings.updateRepo, cached, onProgress);
+    const result = await runInstallWithResume(
+      this.manager,
+      () => installLatestUpdate(this.settings.updateRepo, cached, onProgress)
+    );
     if (result.started) {
       this.lastUpdateCheck = null;
       this.lastUpdateCheckAt = 0;

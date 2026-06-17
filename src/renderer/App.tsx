@@ -109,7 +109,7 @@ interface MegaDialogAccount {
   password: string;
 }
 
-interface AccountDialogState {
+export interface AccountDialogState {
   mode: "create" | "edit";
   kind: AccountKind | null;
   token: string;
@@ -647,7 +647,7 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
   }
 }
 
-function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDialogState): AppSettings {
+export function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDialogState): AppSettings {
   if (!dialog.kind) {
     return settings;
   }
@@ -682,7 +682,7 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
       const firstPassword = megaParsed.length > 0 ? megaParsed[0].password : "";
       const validIds = new Set(megaParsed.map((a) => a.id));
       const megaDebridDisabledAccountIds = (dialog.megaDisabledIds || []).filter((id) => validIds.has(id));
-      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridApiEnabled: true, megaDebridPreferApi: true, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridApiEnabled: true, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     }
     case "megadebrid-web": {
       const megaSerialized = serializeMegaDebridAccounts(dialog.megaAccounts);
@@ -691,7 +691,7 @@ function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDial
       const firstPassword = megaParsed.length > 0 ? megaParsed[0].password : "";
       const validIds = new Set(megaParsed.map((a) => a.id));
       const megaDebridDisabledAccountIds = (dialog.megaDisabledIds || []).filter((id) => validIds.has(id));
-      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridWebEnabled: true, megaDebridPreferApi: false, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridWebEnabled: true, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     }
     case "bestdebrid-api":
       return { ...settings, bestToken: token, bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
@@ -1159,13 +1159,13 @@ function formatCheckedAgo(checkedAt: number): string {
 }
 
 function rotationEventText(ev: { event: string; cooldownSec?: number; next?: string; reason?: string }): string {
-  const untilRestart = /bis Neustart gesperrt/i.test(ev.reason || "");
+  const untilRestart = /bis zum Tagesreset gesperrt/i.test(ev.reason || "");
   switch (ev.event) {
     case "OK": return "erfolgreich";
     case "FAILED": {
       if (untilRestart) {
         const nx = ev.next && ev.next !== "ENDE" ? ` → ${ev.next}` : "";
-        return `Tageslimit erreicht, bis Neustart gesperrt${nx}`;
+        return `Tageslimit erreicht, bis zum Tagesreset gesperrt${nx}`;
       }
       const cd = ev.cooldownSec ? `, Cooldown ${ev.cooldownSec}s` : "";
       const nx = ev.next && ev.next !== "ENDE" ? ` → ${ev.next}` : "";
@@ -1176,7 +1176,7 @@ function rotationEventText(ev: { event: string; cooldownSec?: number; next?: str
       const cd = ev.cooldownSec ? `, Cooldown ${ev.cooldownSec}s` : "";
       return `Timeout/Abbruch${cd} → nächster Account beim Retry`;
     }
-    case "SKIP_COOLDOWN": return untilRestart ? "übersprungen (bis Neustart gesperrt)" : "übersprungen (Cooldown aktiv)";
+    case "SKIP_COOLDOWN": return untilRestart ? "übersprungen (bis zum Tagesreset gesperrt)" : "übersprungen (Cooldown aktiv)";
     case "SKIP_DISABLED": return "übersprungen (deaktiviert)";
     case "SKIP_DAILY_LIMIT": return "übersprungen (Tageslimit erreicht)";
     case "SKIP_HOST_COOLDOWN": return "übersprungen (Host-Cooldown)";

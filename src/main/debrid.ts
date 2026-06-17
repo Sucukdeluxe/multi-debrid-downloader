@@ -349,12 +349,24 @@ export function primeMegaDebridRuntimeCooldownForTests(accountId: string, cooldo
   setMegaDebridAccountCooldownState(accountId, cooldownMs, message, "temporary");
 }
 
-export function primeMegaDebridUntilRestartForTests(accountId: string, message = "Tageslimit (Test) — bis Neustart gesperrt"): void {
+export function primeMegaDebridUntilRestartForTests(accountId: string, message = "Tageslimit (Test) — bis zum Tagesreset gesperrt"): void {
   setMegaDebridAccountCooldownState(accountId, 0, message, "quota", true);
+}
+
+export function classifyMegaDebridAccountFailureForTests(
+  error: unknown
+): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory; limitSignal?: boolean } {
+  return MegaDebridClient.classifyAccountFailure(error);
 }
 
 function clearMegaDebridAccountCooldownState(accountId: string): void {
   megaDebridAccountCooldowns.delete(accountId);
+}
+
+function megaDebridDailyParkExpiry(now: number): number {
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  return Math.max(midnight.getTime(), now + MEGA_DEBRID_ACCOUNT_COOLDOWN_MS);
 }
 
 function setMegaDebridAccountCooldownState(
@@ -366,7 +378,7 @@ function setMegaDebridAccountCooldownState(
 ): void {
   if (untilRestart) {
     megaDebridAccountCooldowns.set(accountId, {
-      until: Number.MAX_SAFE_INTEGER,
+      until: megaDebridDailyParkExpiry(Date.now()),
       message,
       category,
       untilRestart: true
@@ -1987,7 +1999,7 @@ class MegaDebridClient {
           ? "Neustart"
           : new Date(accountCooldownState.until).toLocaleTimeString();
         const reasonText = accountCooldownState.untilRestart
-          ? "Tageslimit erreicht — bis Neustart gesperrt"
+          ? "Tageslimit erreicht — bis zum Tagesreset gesperrt"
           : `Cooldown bis ${untilStr}`;
         logger.info(`Mega-Debrid${accountLabel}: uebersprungen (${reasonText}), pruefe naechsten Account`);
         logAccountRotation("INFO", providerName, rotationLabel, "SKIP_COOLDOWN", {
@@ -2086,7 +2098,7 @@ class MegaDebridClient {
           const streak = recordMegaDebridEmptyResponseStreak(cooldownKey);
           if (streak >= MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART) {
             parkUntilRestart = true;
-            parkMessage = `Tageslimit erreicht (${streak}x kein Server/leere Antwort) — bis Neustart gesperrt`;
+            parkMessage = `Tageslimit erreicht (${streak}x kein Server/leere Antwort) — bis zum Tagesreset gesperrt`;
           }
         } else {
           clearMegaDebridEmptyResponseStreak(cooldownKey);
@@ -2109,7 +2121,7 @@ class MegaDebridClient {
           throw new Error(`Mega-Debrid${accountLabel}: ${failure.message}`);
         }
         const cooldownInfo = parkUntilRestart
-          ? ", bis Neustart gesperrt"
+          ? ", bis zum Tagesreset gesperrt"
           : failure.cooldownMs > 0
             ? `, Cooldown ${Math.ceil(failure.cooldownMs / 1000)}s`
             : "";
@@ -2146,14 +2158,14 @@ class MegaDebridClient {
         throw new Error(`mega_debrid_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
       }
       if (parkedUntilRestartSeen) {
-        throw new Error(`Mega-Debrid: Alle Accounts am Tageslimit (bis Neustart gesperrt)${cooldownFailures.length > 0 ? ` | ${cooldownFailures.join(" | ")}` : ""}`);
+        throw new Error(`Mega-Debrid: Alle Accounts am Tageslimit (bis zum Tagesreset gesperrt)${cooldownFailures.length > 0 ? ` | ${cooldownFailures.join(" | ")}` : ""}`);
       }
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar");
     }
     throw new Error(failures.join(" | ") || "Mega-Debrid: Kein aktiver Account verfuegbar");
   }
 
-  private static classifyAccountFailure(
+  static classifyAccountFailure(
     error: unknown
   ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory; limitSignal?: boolean } {
     const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
@@ -2206,8 +2218,7 @@ class MegaDebridClient {
         fatal: false,
         cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
         message: "Kein Server fuer diesen Hoster (Tageslimit/Hoster nicht verfuegbar)",
-        category: "quota",
-        limitSignal: true
+        category: "quota"
       };
     }
 

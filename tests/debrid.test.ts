@@ -3,7 +3,7 @@ import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -1918,13 +1918,24 @@ describe("debrid service", () => {
     expect(recordMegaDebridEmptyResponseStreak(key)).toBe(1);
   });
 
-  it("keeps an 'until restart' park active forever (never expires until process restart)", () => {
+  it("self-heals a daily-limit park after the daily reset instead of staying locked until process restart", () => {
     const key = `${getMegaDebridAccountId("user1")}:api`;
     primeMegaDebridUntilRestartForTests(key);
-    const now = getMegaDebridAccountCooldownState(key);
-    expect(now?.untilRestart).toBe(true);
-    const farFuture = Date.now() + 100 * 24 * 60 * 60 * 1000;
-    expect(getMegaDebridAccountCooldownState(key, farFuture)?.untilRestart).toBe(true);
+    const active = getMegaDebridAccountCooldownState(key);
+    expect(active?.untilRestart).toBe(true);
+    expect(getMegaDebridAccountCooldownState(key, Date.now() + 60_000)?.untilRestart).toBe(true);
+    const afterReset = Date.now() + 25 * 60 * 60 * 1000;
+    expect(getMegaDebridAccountCooldownState(key, afterReset)).toBeNull();
+  });
+
+  it("does NOT treat a per-hoster 'no server' failure as an account daily-limit signal (no until-restart park)", () => {
+    const noServer = classifyMegaDebridAccountFailureForTests(new Error("no server available for this host"));
+    expect(noServer.limitSignal).toBeFalsy();
+    expect(noServer.category).toBe("quota");
+    expect(noServer.cooldownMs).toBeGreaterThan(0);
+
+    const genuineEmpty = classifyMegaDebridAccountFailureForTests(new Error("Antwort leer"));
+    expect(genuineEmpty.limitSignal).toBe(true);
   });
 
   it("skips a Mega-Debrid account parked until restart and rotates to the next, without re-testing it", async () => {
@@ -1990,7 +2001,7 @@ describe("debrid service", () => {
     const megaWeb = vi.fn(async () => ({ fileName: "x.rar", directUrl: "https://mega-web.example/x.rar", fileSize: null, retriesUsed: 0 }));
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
 
-    await expect(service.unrestrictLink("https://rapidgator.net/file/all-parked-test")).rejects.toThrow(/bis Neustart gesperrt/i);
+    await expect(service.unrestrictLink("https://rapidgator.net/file/all-parked-test")).rejects.toThrow(/bis zum Tagesreset gesperrt/i);
     expect(megaWeb).not.toHaveBeenCalled();
   }, 20000);
 
