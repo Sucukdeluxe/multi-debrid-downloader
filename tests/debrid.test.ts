@@ -1453,6 +1453,48 @@ describe("debrid service", () => {
     expect(cooldown!.category).toBe("rate_limit");
   });
 
+  it("does not fall through a failed 1fichier link to the provider chain when autoProviderFallback is off", async () => {
+    let megaGetLinkCalled = false;
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      oneFichierApiKey: "1f-key",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      megaDebridPreferApi: true,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.1fichier.com")) {
+        return new Response(JSON.stringify({ status: "KO", message: "not available" }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "tok", vip_end: Math.floor(Date.now() / 1000) + 999999 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        megaGetLinkCalled = true;
+        return new Response(JSON.stringify({ response_code: "ok", debridLink: "https://mega-cdn.example/file.rar", filename: "file.rar" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://1fichier.com/?abc12345xyz").then((r) => ({ ok: true, r }), (e: unknown) => ({ ok: false, e }));
+
+    expect(result.ok).toBe(false);
+    expect(megaGetLinkCalled).toBe(false);
+  });
+
   it("uses Mega Web only when it is configured as a separate fallback provider", async () => {
     const settings = {
       ...defaultSettings(),

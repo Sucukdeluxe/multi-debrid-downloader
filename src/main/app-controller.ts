@@ -789,6 +789,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     }
     stopDebugServer();
     abortActiveUpdateDownload();
+    cancelPendingAsyncSaves();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
     this.realDebridWebFallback.dispose();

@@ -66,6 +66,21 @@ describe("integrity", () => {
     expect(parseHashLine("   ")).toBeNull();
   });
 
+  it("trusts the per-line algorithm over the file extension for a mislabeled manifest (.sfv holding md5 lines)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-int-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "movie.bin");
+    fs.writeFileSync(filePath, Buffer.from("hello"));
+    fs.writeFileSync(path.join(dir, "checksums.sfv"), "5d41402abc4b2a76b9719d911017c592  movie.bin\n", "utf8");
+
+    const manifest = readHashManifest(dir);
+    expect(manifest.get("movie.bin")?.algorithm).toBe("md5");
+
+    const result = await validateFileAgainstManifest(filePath, dir);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("MD5");
+  });
+
   it("keeps first hash entry when duplicate filename appears across manifests", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-int-"));
     tempDirs.push(dir);

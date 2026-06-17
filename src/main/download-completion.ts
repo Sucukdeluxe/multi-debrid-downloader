@@ -72,6 +72,22 @@ export function planDownloadCompletion(args: {
   };
 }
 
+export function reconcileFinalizedSize(
+  streamedBytes: number,
+  statSize: number,
+  preAllocated: boolean
+): number {
+  const streamed = Math.max(0, Math.floor(Number(streamedBytes) || 0));
+  if (!Number.isFinite(statSize) || statSize < 0) {
+    return streamed;
+  }
+  const onDisk = Math.floor(statSize);
+  if (preAllocated && onDisk > streamed) {
+    return streamed;
+  }
+  return onDisk;
+}
+
 export function validateDownloadedFileCompletion(args: {
   actualBytes: number;
   plan: DownloadCompletionPlan;

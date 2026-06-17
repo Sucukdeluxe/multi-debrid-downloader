@@ -2907,9 +2907,16 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let learnedPassword = cachedPackagePassword;
   let packageNeedsFlatMode = false;
   const extractedArchives = new Set<string>();
+  const skippedNonArchives = new Set<string>();
   const failedArchiveCategories = new Map<string, ExtractErrorCategory>();
   for (const archivePath of candidates) {
     if (resumeCompleted.has(archiveNameKey(path.basename(archivePath)))) {
+      const resumedName = path.basename(archivePath);
+      const resumedIsGenericSplit = /\.\d{3}$/i.test(resumedName) && !/\.(zip|7z)\.\d{3}$/i.test(resumedName);
+      if (resumedIsGenericSplit && !(await detectArchiveSignature(archivePath))) {
+        skippedNonArchives.add(pathSetKey(archivePath));
+        continue;
+      }
       extractedArchives.add(archivePath);
     }
   }
@@ -3026,7 +3033,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         logger.info(`Generische Split-Datei übersprungen (keine Archiv-Signatur): ${archiveName}`);
         extracted += 1;
         resumeCompleted.add(archiveResumeKey);
-        extractedArchives.add(archivePath);
+        skippedNonArchives.add(pathSetKey(archivePath));
         await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
         clearInterval(pulseTimer);
         archiveOutcome = "skipped";
@@ -3370,7 +3377,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
       logger.error(`Entpacken ohne neue Ausgabe erkannt: ${options.targetDir}. Cleanup wird NICHT ausgeführt.`);
     } else {
       if (!options.skipPostCleanup) {
-        const cleanupSources = failed === 0 ? candidates : Array.from(extractedArchives.values());
+        const cleanupSources = (failed === 0 ? candidates : Array.from(extractedArchives.values()))
+          .filter((archivePath) => !skippedNonArchives.has(pathSetKey(archivePath)));
         const sourceAndTargetEqual = pathSetKey(path.resolve(options.packageDir)) === pathSetKey(path.resolve(options.targetDir));
         const removedArchives = sourceAndTargetEqual
           ? 0

@@ -858,6 +858,40 @@ describe("extractor", () => {
       expect(targets.has(p003)).toBe(true);
       expect(targets.has(other)).toBe(false);
     });
+
+    it("does NOT delete a non-archive .00x family that sits beside a real archive (no-signature data-loss guard)", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-split-noarch-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+
+      const realZip = new AdmZip();
+      realZip.addFile("release.txt", Buffer.from("ok"));
+      realZip.writeZip(path.join(packageDir, "movie.zip"));
+
+      const d001 = path.join(packageDir, "mydata.001");
+      const d002 = path.join(packageDir, "mydata.002");
+      const d003 = path.join(packageDir, "mydata.003");
+      fs.writeFileSync(d001, "raw user split data, not an archive at all 0123456789", "utf8");
+      fs.writeFileSync(d002, "second raw chunk, also no archive magic bytes here", "utf8");
+      fs.writeFileSync(d003, "third raw chunk likewise plain content payload", "utf8");
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "delete",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result.failed).toBe(0);
+      expect(fs.existsSync(path.join(targetDir, "release.txt"))).toBe(true);
+      expect(fs.existsSync(d001)).toBe(true);
+      expect(fs.existsSync(d002)).toBe(true);
+      expect(fs.existsSync(d003)).toBe(true);
+    });
   });
 
   describe("detectArchiveSignature", () => {

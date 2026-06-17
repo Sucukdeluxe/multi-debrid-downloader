@@ -93,15 +93,11 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
       if (!parsed) {
         continue;
       }
-      const normalized: ParsedHashEntry = {
-        ...parsed,
-        algorithm: hit[1]
-      };
       const key = normalizeManifestKey(parsed.fileName);
       if (map.has(key)) {
         continue;
       }
-      map.set(key, normalized);
+      map.set(key, parsed);
     }
   }
   manifestCache.set(cacheKey, { at: Date.now(), entries: new Map(map) });

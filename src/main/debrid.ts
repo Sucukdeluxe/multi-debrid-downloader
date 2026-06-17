@@ -3741,6 +3741,9 @@ export class DebridService {
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
           throw error;
         }
+        if (!settings.autoProviderFallback) {
+          throw error;
+        }
       }
     }
 
@@ -3755,6 +3758,9 @@ export class DebridService {
       } catch (error) {
         const errorText = compactErrorText(error);
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        if (!settings.autoProviderFallback) {
           throw error;
         }
       }

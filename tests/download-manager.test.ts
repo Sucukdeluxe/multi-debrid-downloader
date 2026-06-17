@@ -536,6 +536,96 @@ describe("download manager", () => {
     expect(fs.existsSync(duplicatePath)).toBe(false);
   });
 
+  it("does not replace a larger good canonical file with a smaller duplicate on startup dedup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-dup-size-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "dup-size-pkg";
+    const originalItemId = "dup-size-original";
+    const duplicateItemId = "dup-size-copy";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "Dup Size");
+    const extractDir = path.join(root, "extract", "Dup Size");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const canonicalPath = path.join(outputDir, "movie.mkv");
+    const duplicatePath = path.join(outputDir, "movie (1).mkv");
+    fs.writeFileSync(canonicalPath, Buffer.alloc(1024, 5));
+    fs.writeFileSync(duplicatePath, Buffer.alloc(256, 9));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Dup Size",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [originalItemId, duplicateItemId],
+      cancelled: false,
+      enabled: true,
+      priority: "normal",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[originalItemId] = {
+      id: originalItemId,
+      packageId,
+      url: "https://example.com/movie.mkv",
+      provider: "realdebrid",
+      status: "failed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: 1024,
+      progressPercent: 0,
+      fileName: "movie.mkv",
+      targetPath: canonicalPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "Fehlgeschlagen",
+      fullStatus: "",
+      createdAt,
+      updatedAt: createdAt + 10_000
+    };
+    session.items[duplicateItemId] = {
+      id: duplicateItemId,
+      packageId,
+      url: "https://example.com/movie.mkv",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 256,
+      totalBytes: 256,
+      progressPercent: 100,
+      fileName: "movie.mkv",
+      targetPath: duplicatePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt,
+      updatedAt: createdAt + 5_000
+    };
+
+    new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    expect(fs.existsSync(canonicalPath)).toBe(true);
+    expect(fs.statSync(canonicalPath).size).toBe(1024);
+  });
+
   it("keeps a stronger extracted canonical startup state when removing stale duplicate copies", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-dup-keep-"));
     tempDirs.push(root);
@@ -860,6 +950,89 @@ describe("download manager", () => {
       expect(fs.existsSync(item.targetPath)).toBe(true);
       expect(fs.statSync(item.targetPath).size).toBe(binary.length);
     } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("deletes the orphaned partial file when a downloading item is removed mid-stream", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(512 * 1024, 7);
+
+    let destroyHeld: () => void = () => {};
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/direct") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.write(binary.subarray(0, 64 * 1024));
+      destroyHeld = () => {
+        try { res.socket?.destroy(); } catch {  }
+      };
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/direct`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({ download: directUrl, filename: "held.mkv", filesize: binary.length }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          retryLimit: 0
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "held", links: ["https://dummy/held"] }]);
+      await manager.start();
+
+      let targetPath = "";
+      await waitFor(() => {
+        const it = Object.values(manager.getSnapshot().session.items)[0];
+        if (it && it.status === "downloading" && it.targetPath && fs.existsSync(it.targetPath)) {
+          targetPath = it.targetPath;
+          return true;
+        }
+        return false;
+      }, 20000);
+
+      const itemId = Object.values(manager.getSnapshot().session.items)[0].id;
+      expect(fs.existsSync(targetPath)).toBe(true);
+
+      manager.removeItem(itemId);
+      destroyHeld();
+
+      await waitFor(() => !fs.existsSync(targetPath), 20000);
+      expect(fs.existsSync(targetPath)).toBe(false);
+    } finally {
+      destroyHeld();
       server.close();
       await once(server, "close");
     }

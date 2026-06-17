@@ -8,9 +8,13 @@ import {
   createStoragePaths,
   emptySession,
   loadSession,
+  loadSettings,
   saveSession,
-  saveSessionAsync
+  saveSessionAsync,
+  saveSettings,
+  saveSettingsAsync
 } from "../src/main/storage";
+import { defaultSettings } from "../src/main/constants";
 
 const tempDirs: string[] = [];
 
@@ -128,5 +132,27 @@ describe("session restart loss", () => {
 
     const loaded = loadSession(paths);
     expect(Object.keys(loaded.packages).sort()).toEqual(["A", "B"]);
+  });
+
+  it("does not let an in-flight/queued async settings save clobber a newer synchronous saveSettings", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-settings-race-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    cancelPendingAsyncSaves();
+    await settle(50);
+
+    const withName = (name: string) => ({ ...defaultSettings(), packageName: name });
+
+    saveSettings(paths, withName("OLD"));
+    const inflight = saveSettingsAsync(paths, withName("OLD"));
+    const queued = saveSettingsAsync(paths, withName("OLD"));
+    saveSettings(paths, withName("NEW"));
+
+    await inflight;
+    await queued;
+    await settle();
+
+    expect(loadSettings(paths).packageName).toBe("NEW");
   });
 });

@@ -51,7 +51,7 @@ function releaseTlsSkip(): void {
   }
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
-import { planDownloadCompletion, validateDownloadedFileCompletion } from "./download-completion";
+import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountCooldownState, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
@@ -6392,19 +6392,38 @@ export class DownloadManager extends EventEmitter {
           } catch {
           }
         } else if (duplicateExists && canonicalExists && !primaryWins && primaryItem.status !== "completed") {
-          try {
-            fs.rmSync(canonicalPath, { force: true });
-            fs.renameSync(duplicateTargetPath, canonicalPath);
-            canonicalExists = true;
-            this.logVerifiedRenameSync("startup-dedup (Austausch)", duplicateTargetPath, canonicalPath);
-            logger.info(`startupDuplicateMerge: ersetze verwaisten Originalpfad ${canonicalBaseName} durch ${path.basename(duplicateTargetPath)}`);
-          } catch (err) {
-            logDesktopRename("ERROR", "startup-dedup (Austausch): Rename fehlgeschlagen", {
-              source: path.basename(duplicateTargetPath),
-              target: canonicalBaseName,
-              error: compactErrorText(err)
-            });
-            logger.warn(`startupDuplicateMerge: Austausch fehlgeschlagen ${canonicalPath}: ${compactErrorText(err)}`);
+          let canonicalSize = -1;
+          let duplicateSize = -1;
+          try { canonicalSize = fs.statSync(canonicalPath).size; } catch {  }
+          try { duplicateSize = fs.statSync(duplicateTargetPath).size; } catch {  }
+          if (canonicalSize >= 0 && duplicateSize >= 0 && canonicalSize >= duplicateSize) {
+            try {
+              fs.rmSync(duplicateTargetPath, { force: true });
+            } catch {
+            }
+            logger.info(`startupDuplicateMerge: kanonische Datei behalten (${canonicalSize}B >= Duplikat ${duplicateSize}B), Duplikat verworfen: ${canonicalBaseName}`);
+          } else {
+            const dedupBackupPath = `${canonicalPath}.dedupbak`;
+            try {
+              fs.renameSync(canonicalPath, dedupBackupPath);
+              try {
+                fs.renameSync(duplicateTargetPath, canonicalPath);
+                try { fs.rmSync(dedupBackupPath, { force: true }); } catch {  }
+                canonicalExists = true;
+                this.logVerifiedRenameSync("startup-dedup (Austausch)", duplicateTargetPath, canonicalPath);
+                logger.info(`startupDuplicateMerge: ersetze verwaisten Originalpfad ${canonicalBaseName} durch ${path.basename(duplicateTargetPath)}`);
+              } catch (swapErr) {
+                try { fs.renameSync(dedupBackupPath, canonicalPath); } catch {  }
+                throw swapErr;
+              }
+            } catch (err) {
+              logDesktopRename("ERROR", "startup-dedup (Austausch): Rename fehlgeschlagen", {
+                source: path.basename(duplicateTargetPath),
+                target: canonicalBaseName,
+                error: compactErrorText(err)
+              });
+              logger.warn(`startupDuplicateMerge: Austausch fehlgeschlagen ${canonicalPath}: ${compactErrorText(err)}`);
+            }
           }
         }
 
@@ -9032,6 +9051,15 @@ export class DownloadManager extends EventEmitter {
         return;
       } catch (error) {
         if (this.session.items[item.id] !== item) {
+          if (active.abortReason === "cancel") {
+            const orphanClaimedPath = this.claimedTargetPathByItem.get(item.id) || item.targetPath || "";
+            if (orphanClaimedPath) {
+              try {
+                fs.rmSync(orphanClaimedPath, { force: true });
+              } catch {
+              }
+            }
+          }
           return;
         }
         const reason = active.abortReason;
@@ -10357,13 +10385,15 @@ export class DownloadManager extends EventEmitter {
 
         try {
           const finalizedStat = await fs.promises.stat(effectiveTargetPath);
-          if (Number.isFinite(finalizedStat.size) && finalizedStat.size >= 0 && finalizedStat.size !== written) {
+          const reconciledSize = reconcileFinalizedSize(written, finalizedStat.size, preAllocated);
+          if (reconciledSize !== written) {
             logAttemptEvent("WARN", "Dateigroesse nach Stream-Abschluss korrigiert", {
               attempt,
               previousWritten: written,
-              statSize: finalizedStat.size
+              statSize: finalizedStat.size,
+              reconciledSize
             });
-            written = finalizedStat.size;
+            written = reconciledSize;
           }
         } catch {
         }

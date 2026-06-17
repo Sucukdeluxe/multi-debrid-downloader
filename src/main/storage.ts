@@ -897,6 +897,7 @@ function readSessionFile(filePath: string): SessionState | null {
 }
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
+  syncSettingsSaveGeneration += 1;
   ensureBaseDir(paths.baseDir);
   if (fs.existsSync(paths.configFile)) {
     try {
@@ -917,17 +918,26 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
 }
 
 let asyncSettingsSaveRunning = false;
-let asyncSettingsSaveQueued: { paths: StoragePaths; settings: AppSettings } | null = null;
+let asyncSettingsSaveQueued: { paths: StoragePaths; payload: string; generation: number } | null = null;
+let syncSettingsSaveGeneration = 0;
 
-async function writeSettingsPayload(paths: StoragePaths, payload: string): Promise<void> {
+async function writeSettingsPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
   await fsp.copyFile(paths.configFile, `${paths.configFile}.bak`).catch(() => {});
   const tempPath = `${paths.configFile}.settings.tmp`;
   await fsp.writeFile(tempPath, payload, "utf8");
+  if (generation < syncSettingsSaveGeneration) {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
+    return;
+  }
   try {
     await fsp.rename(tempPath, paths.configFile);
   } catch (renameError: unknown) {
     if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      if (generation < syncSettingsSaveGeneration) {
+        await fsp.rm(tempPath, { force: true }).catch(() => {});
+        return;
+      }
       await fsp.copyFile(tempPath, paths.configFile);
       await fsp.rm(tempPath, { force: true }).catch(() => {});
     } else {
@@ -937,16 +947,14 @@ async function writeSettingsPayload(paths: StoragePaths, payload: string): Promi
   }
 }
 
-export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
-  const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
-  const payload = JSON.stringify(persisted, safeJsonReplacer, 2);
+async function saveSettingsPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   if (asyncSettingsSaveRunning) {
-    asyncSettingsSaveQueued = { paths, settings };
+    asyncSettingsSaveQueued = { paths, payload, generation };
     return;
   }
   asyncSettingsSaveRunning = true;
   try {
-    await writeSettingsPayload(paths, payload);
+    await writeSettingsPayload(paths, payload, generation);
   } catch (error) {
     logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
   } finally {
@@ -954,9 +962,16 @@ export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettin
     if (asyncSettingsSaveQueued) {
       const queued = asyncSettingsSaveQueued;
       asyncSettingsSaveQueued = null;
-      void saveSettingsAsync(queued.paths, queued.settings);
+      void saveSettingsPayloadAsync(queued.paths, queued.payload, queued.generation);
     }
   }
+}
+
+export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
+  const generation = syncSettingsSaveGeneration;
+  const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
+  const payload = JSON.stringify(persisted, safeJsonReplacer, 2);
+  await saveSettingsPayloadAsync(paths, payload, generation);
 }
 
 export function emptySession(): SessionState {
@@ -1122,6 +1137,7 @@ export function cancelPendingAsyncSaves(): void {
   asyncSaveQueued = null;
   asyncSettingsSaveQueued = null;
   syncSaveGeneration += 1;
+  syncSettingsSaveGeneration += 1;
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
+import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "../src/main/download-completion";
 
 describe("download-completion", () => {
   describe("planDownloadCompletion", () => {
@@ -56,6 +56,35 @@ describe("download-completion", () => {
     it("accepts provider-metadata download and flags size mismatch", () => {
       const result = validateDownloadedFileCompletion({ actualBytes: 1900, plan: providerMeta(2000), toleranceBytes: 0 });
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("reconcileFinalizedSize", () => {
+    it("keeps the streamed count for a pre-allocated file whose on-disk size is the zero-padding (corruption guard)", () => {
+      expect(reconcileFinalizedSize(300_000_000, 1_000_000_000, true)).toBe(300_000_000);
+    });
+
+    it("shrinks to the on-disk size when a pre-allocated file is genuinely short (real partial write)", () => {
+      expect(reconcileFinalizedSize(500, 300, true)).toBe(300);
+    });
+
+    it("reconciles in both directions for a non-pre-allocated file (stat is authoritative)", () => {
+      expect(reconcileFinalizedSize(300, 1000, false)).toBe(1000);
+      expect(reconcileFinalizedSize(1000, 300, false)).toBe(300);
+    });
+
+    it("returns the streamed count unchanged when the stat is invalid", () => {
+      expect(reconcileFinalizedSize(1234, Number.NaN, true)).toBe(1234);
+      expect(reconcileFinalizedSize(1234, -1, false)).toBe(1234);
+    });
+
+    it("is a no-op when on-disk size already equals the streamed count", () => {
+      expect(reconcileFinalizedSize(777, 777, true)).toBe(777);
+      expect(reconcileFinalizedSize(777, 777, false)).toBe(777);
+    });
+
+    it("does not block legitimate overshoot on a pre-allocated file (server sent more than pre-alloc)", () => {
+      expect(reconcileFinalizedSize(900, 900, true)).toBe(900);
     });
   });
 });
