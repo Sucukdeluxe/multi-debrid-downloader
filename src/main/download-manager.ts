@@ -22,6 +22,7 @@ import {
   StartConflictResolutionResult,
   UiSnapshot, DebridAccountStatus } from "../shared/types";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { isMegaDebridTransientResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
 import {
   addDebridLinkApiKeyDailyUsageBytes,
   addDebridLinkApiKeyTotalUsageBytes,
@@ -51,7 +52,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountCooldownState, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -699,6 +700,12 @@ function isTemporaryUnrestrictError(errorText: string): boolean {
     || text.includes("gateway timeout")
     || text.includes("cloudflare")
     || text.includes("worker error");
+}
+
+export function transientResolveRetryDelayMs(retryCount: number): number {
+  const steps = [3000, 6000, 10000];
+  const n = Math.max(1, Math.floor(Number(retryCount) || 1));
+  return steps[Math.min(n - 1, steps.length - 1)];
 }
 
 function isFinishedStatus(status: DownloadStatus): boolean {
@@ -7974,7 +7981,10 @@ export class DownloadManager extends EventEmitter {
 
   private getSerializedValidatingLimit(provider: DebridProvider | null): number {
     if (provider === "megadebrid-web") {
-      return 1;
+      const usableAccounts = getAvailableMegaDebridAccounts(this.settings)
+        .filter((account) => !getMegaDebridAccountCooldownState(`${account.id}:web`))
+        .length;
+      return Math.max(1, usableAccounts);
     }
     return Number.MAX_SAFE_INTEGER;
   }
@@ -9292,6 +9302,35 @@ export class DownloadManager extends EventEmitter {
             this.retryStateByItem.delete(item.id);
             const failPkgDl = this.session.packages[item.packageId];
             if (failPkgDl) this.refreshPackageStatus(failPkgDl);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          if (isMegaDebridTransientResolveFailure(errorText) && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            const transientDelayMs = transientResolveRetryDelayMs(active.unrestrictRetries);
+            const transientReason = germanMegaDebridResolveReason(errorText);
+            logger.warn(`Transienter Mega-Debrid-Resolve-Fehler: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${transientDelayMs}ms, error=${errorText}, link=${item.url.slice(0, 80)}`);
+            if (item.downloadedBytes > 0) {
+              const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
+              if (targetFile) {
+                try { fs.rmSync(targetFile, { force: true }); } catch {  }
+              }
+              this.releaseTargetPath(item.id);
+              item.downloadedBytes = 0;
+              item.progressPercent = 0;
+              item.totalBytes = null;
+              this.dropItemContribution(item.id);
+            }
+            this.queueRetry(
+              item,
+              active,
+              transientDelayMs,
+              `${transientReason} — neuer Versuch ${active.unrestrictRetries}/${retryDisplayLimit} (${Math.ceil(transientDelayMs / 1000)}s)`
+            );
+            item.lastError = transientReason;
             this.persistSoon();
             this.emitState();
             return;

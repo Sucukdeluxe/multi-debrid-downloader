@@ -2561,7 +2561,7 @@ export function App(): ReactElement {
           const used = getMegaDebridAccountDailyUsageBytes(snapshot.settings, acc.id);
           const limit = getMegaDebridAccountDailyLimitBytes(settingsDraft, acc.id);
           rows.push({
-            rowKey: `mega-${acc.id}`,
+            rowKey: `mega-${entry.kind}-${acc.id}`,
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
@@ -2684,7 +2684,8 @@ export function App(): ReactElement {
     else if (!st.isPremium) { statusCls = "free"; statusText = "Free Account"; }
     else { statusCls = "ok"; statusText = st.message || "Premium Account"; }
     const isProblem = statusCls === "invalid";
-    const username = st && st.email ? st.email : row.username;
+    const username = row.username;
+    const usernameTitle = st && st.email && st.email.toLowerCase() !== row.username.toLowerCase() ? `${row.username} (Mail: ${st.email})` : row.username;
     const expiry = st && st.premiumUntilMs && st.premiumUntilMs > 0 ? new Date(st.premiumUntilMs).toLocaleDateString("de-DE") : "—";
     const traffic = row.dailyLimitBytes > 0
       ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
@@ -2714,7 +2715,7 @@ export function App(): ReactElement {
             ? <span className="acct2-nostatus" title="Für diesen Anbieter gibt es keine Status-Prüfung">—</span>
             : <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>}
         </span>
-        <span className="acct2-user" title={username}>{username}</span>
+        <span className="acct2-user" title={usernameTitle}>{username}</span>
         <span className="acct2-expiry">{expiry}</span>
         <span className="acct2-c-actions">
           {row.toggleKind === "single" && getAccountQuickActionMeta(row.entry.kind) && (
@@ -6784,7 +6785,13 @@ const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunn
   }, [packageId, item.id, onContextMenu]);
   const formattedCreatedAt = useMemo(() => formatDateTime(item.createdAt), [item.createdAt]);
   const displayStatus = useMemo(() => computeDisplayedItemStatus(item, sessionRunning), [item, sessionRunning]);
-  const statusTitle = displayStatus ? (item.retries > 0 ? `${displayStatus} ? R${item.retries}` : displayStatus) : "";
+  const retrySuffix = item.retries > 0 ? ` (R${item.retries})` : "";
+  const lastErrorText = String(item.lastError || "").trim();
+  const statusTitle = displayStatus
+    ? (lastErrorText && lastErrorText !== displayStatus && !displayStatus.includes(lastErrorText)
+        ? `${displayStatus}${retrySuffix}\n${lastErrorText}`
+        : `${displayStatus}${retrySuffix}`)
+    : lastErrorText;
 
   return (
     <div

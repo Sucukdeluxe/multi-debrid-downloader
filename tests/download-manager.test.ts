@@ -14,7 +14,8 @@ import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { createStoragePaths, emptySession } from "../src/main/storage";
-import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests } from "../src/main/debrid";
+import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 
@@ -155,6 +156,7 @@ async function removeDirWithRetries(dir: string): Promise<void> {
 afterEach(async () => {
   globalThis.fetch = originalFetch;
   resetDebridLinkRuntimeStateForTests();
+  resetMegaDebridRuntimeStateForTests();
   shutdownItemLogs();
   shutdownPackageLogs();
   shutdownRenameLog();
@@ -6429,6 +6431,67 @@ describe("download manager", () => {
     }
   }, 20000);
 
+  it("retries a transient Mega-Debrid resolve failure fast (no long cooldown) with a German reason", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let unrestrictCalls = 0;
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user:mega-pass",
+        megaDebridWebEnabled: true,
+        megaDebridApiEnabled: false,
+        megaDebridPreferApi: false,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        megaWebUnrestrict: vi.fn(async (_link: string, _signal?: AbortSignal) => {
+          unrestrictCalls += 1;
+          throw new Error("Fichier supprimé chez l'hébergeur");
+        })
+      }
+    );
+
+    manager.addPackages([{
+      name: "mega-transient",
+      links: ["https://rapidgator.net/file/mega-transient.part1.rar.html"]
+    }]);
+
+    await manager.start();
+    await waitFor(
+      () => String(Object.values(manager.getSnapshot().session.items)[0]?.fullStatus || "").includes("neuer Versuch"),
+      12000
+    );
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    expect(item.status).not.toBe("failed");
+    expect(unrestrictCalls).toBeGreaterThanOrEqual(1);
+    expect(item.lastError).toBe("Datei beim Hoster gerade nicht abrufbar");
+    expect(String(item.fullStatus || "")).toContain("Datei beim Hoster gerade nicht abrufbar");
+    expect(String(item.fullStatus || "")).toContain("neuer Versuch");
+    const countdownMatch = String(item.fullStatus || "").match(/\((\d+)s\)/);
+    expect(countdownMatch).not.toBeNull();
+    expect(Number(countdownMatch![1])).toBeLessThanOrEqual(10);
+
+    await waitFor(() => unrestrictCalls >= 2, 12000);
+
+    manager.stop();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }, 20000);
+
   it("limits Mega-Debrid Web validating starts to one item at a time", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -6483,6 +6546,158 @@ describe("download manager", () => {
 
     manager.addPackages([{
       name: "mega-web-serialized",
+      links: [
+        "https://rapidgator.net/file/mega-web-1.part1.rar.html",
+        "https://rapidgator.net/file/mega-web-2.part2.rar.html",
+        "https://rapidgator.net/file/mega-web-3.part3.rar.html"
+      ]
+    }]);
+
+    await manager.start();
+    await waitFor(() => unrestrictCalls === 1, 10000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const items = Object.values(manager.getSnapshot().session.items);
+    expect(items.filter((item) => item.status === "validating")).toHaveLength(1);
+    expect(items.filter((item) => item.status === "queued")).toHaveLength(2);
+    expect(unrestrictCalls).toBe(1);
+
+    manager.stop();
+    for (const reject of Array.from(pendingRejectors)) {
+      reject(new Error("aborted:test-mega-web"));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+
+  it("runs one Mega-Debrid Web validation per available account in parallel", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let unrestrictCalls = 0;
+    const pendingRejectors = new Set<(error: Error) => void>();
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user-a:pass-a\nmega-user-b:pass-b",
+        megaDebridWebEnabled: true,
+        megaDebridApiEnabled: false,
+        megaDebridPreferApi: false,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 4
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        megaWebUnrestrict: vi.fn(async (_link: string, signal?: AbortSignal) => {
+          unrestrictCalls += 1;
+          return await new Promise<UnrestrictedLink | null>((resolve, reject) => {
+            const rejector = (error: Error): void => {
+              signal?.removeEventListener("abort", onAbort);
+              pendingRejectors.delete(rejector);
+              reject(error);
+            };
+            const onAbort = (): void => {
+              rejector(new Error("aborted:test-mega-web"));
+            };
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            signal?.addEventListener("abort", onAbort, { once: true });
+            pendingRejectors.add(rejector);
+          });
+        })
+      }
+    );
+
+    manager.addPackages([{
+      name: "mega-web-parallel",
+      links: [
+        "https://rapidgator.net/file/mega-web-1.part1.rar.html",
+        "https://rapidgator.net/file/mega-web-2.part2.rar.html",
+        "https://rapidgator.net/file/mega-web-3.part3.rar.html"
+      ]
+    }]);
+
+    await manager.start();
+    await waitFor(() => unrestrictCalls === 2, 10000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const items = Object.values(manager.getSnapshot().session.items);
+    expect(items.filter((item) => item.status === "validating")).toHaveLength(2);
+    expect(items.filter((item) => item.status === "queued")).toHaveLength(1);
+    expect(unrestrictCalls).toBe(2);
+
+    manager.stop();
+    for (const reject of Array.from(pendingRejectors)) {
+      reject(new Error("aborted:test-mega-web"));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+
+  it("does not over-admit Mega-Debrid Web validations when an account is in cooldown", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let unrestrictCalls = 0;
+    const pendingRejectors = new Set<(error: Error) => void>();
+
+    primeMegaDebridRuntimeCooldownForTests(`${getMegaDebridAccountId("mega-user-b")}:web`, 120000);
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user-a:pass-a\nmega-user-b:pass-b",
+        megaDebridWebEnabled: true,
+        megaDebridApiEnabled: false,
+        megaDebridPreferApi: false,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 4
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        megaWebUnrestrict: vi.fn(async (_link: string, signal?: AbortSignal) => {
+          unrestrictCalls += 1;
+          return await new Promise<UnrestrictedLink | null>((resolve, reject) => {
+            const rejector = (error: Error): void => {
+              signal?.removeEventListener("abort", onAbort);
+              pendingRejectors.delete(rejector);
+              reject(error);
+            };
+            const onAbort = (): void => {
+              rejector(new Error("aborted:test-mega-web"));
+            };
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            signal?.addEventListener("abort", onAbort, { once: true });
+            pendingRejectors.add(rejector);
+          });
+        })
+      }
+    );
+
+    manager.addPackages([{
+      name: "mega-web-cooldown",
       links: [
         "https://rapidgator.net/file/mega-web-1.part1.rar.html",
         "https://rapidgator.net/file/mega-web-2.part2.rar.html",
