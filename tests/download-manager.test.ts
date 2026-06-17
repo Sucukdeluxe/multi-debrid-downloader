@@ -1373,6 +1373,100 @@ describe("download manager", () => {
     }
   });
 
+  it("counts a file once in session and all-time totals across an integrity-fail retry (no telemetry double-count)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-byteacct-"));
+    tempDirs.push(root);
+    const size = 512 * 1024;
+    const correct = Buffer.alloc(size, 0);
+    for (let i = 0; i < size; i += 1) {
+      correct[i] = (i * 17 + 3) & 0xff;
+    }
+    const wrong = Buffer.alloc(size, 0);
+    for (let i = 0; i < size; i += 1) {
+      wrong[i] = (i * 17 + 99) & 0xff;
+    }
+    const md5 = crypto.createHash("md5").update(correct).digest("hex");
+
+    const pkgDir = path.join(root, "downloads", "byteacct");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, "byteacct.md5"), `${md5} *movie.mkv\n`, "utf8");
+
+    let fullServes = 0;
+    const server = http.createServer((req, res) => {
+      const range = String(req.headers.range || "");
+      const m = range.match(/bytes=(\d+)-/i);
+      const start = m ? Number(m[1]) : 0;
+      if (start === 0) {
+        fullServes += 1;
+      }
+      const body = fullServes <= 1 ? wrong : correct;
+      const chunk = body.subarray(start);
+      if (start > 0) {
+        res.statusCode = 206;
+        res.setHeader("Content-Range", `bytes ${start}-${body.length - 1}/${body.length}`);
+      } else {
+        res.statusCode = 200;
+      }
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      res.end(chunk);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const base = `http://127.0.0.1:${address.port}`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(
+          JSON.stringify({ download: `${base}/file`, filename: "movie.mkv", filesize: size }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: true,
+          totalDownloadedAllTime: 0
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "byteacct", links: ["https://dummy/byteacct"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(fullServes).toBeGreaterThanOrEqual(2);
+
+      const internal = manager as unknown as {
+        session: { totalDownloadedBytes: number };
+        settings: { totalDownloadedAllTime: number };
+      };
+      expect(internal.session.totalDownloadedBytes).toBe(size);
+      expect(internal.settings.totalDownloadedAllTime).toBe(size);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 40000);
+
   it("requests a fresh direct link after repeated same-link download failures", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

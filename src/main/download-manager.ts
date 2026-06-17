@@ -8976,7 +8976,6 @@ export class DownloadManager extends EventEmitter {
               if (item.attempts < maxAttempts) {
                 item.status = "integrity_check";
                 item.progressPercent = 0;
-                this.dropItemContribution(item.id);
                 item.downloadedBytes = 0;
                 item.totalBytes = unrestricted.fileSize;
                 this.emitState();
@@ -9017,7 +9016,6 @@ export class DownloadManager extends EventEmitter {
             } catch {
             }
             this.releaseTargetPath(item.id);
-            this.dropItemContribution(item.id);
             item.downloadedBytes = 0;
             item.progressPercent = 0;
             item.totalBytes = (item.totalBytes || 0) > 0 ? item.totalBytes : null;
@@ -9993,6 +9991,7 @@ export class DownloadManager extends EventEmitter {
           if (previouslyContributed > 0) {
             this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - previouslyContributed);
             this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes - previouslyContributed);
+            this.settings.totalDownloadedAllTime = Math.max(0, Number(this.settings.totalDownloadedAllTime || 0) - previouslyContributed);
             this.itemContributedBytes.set(active.itemId, 0);
           }
           if (existingBytes > 0) {
@@ -10483,7 +10482,6 @@ export class DownloadManager extends EventEmitter {
                 await fs.promises.rm(effectiveTargetPath, { force: true });
               } catch {  }
               this.releaseTargetPath(active.itemId);
-              this.dropItemContribution(active.itemId);
               item.downloadedBytes = 0;
               item.progressPercent = 0;
               throw new Error(`Download zu klein (${written} B) – Hoster-Fehlerseite?${snippet ? ` Inhalt: "${snippet}"` : ""}`);

@@ -3,7 +3,7 @@ import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -570,6 +570,78 @@ describe("debrid service", () => {
 
     expect(getDebridLinkKeyRuntimeStateForTests(key1Id)).not.toBe("error");
     expect(getDebridLinkKeyRuntimeStateForTests(key2Id)).toBe("ready");
+  });
+
+  it("does NOT cool down a Debrid-Link key on a quick user-cancel abort (below the min-run threshold)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "",
+      megaPassword: "",
+      megaCredentials: "",
+      debridLinkApiKeys: "dl-key-one",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const controller = new AbortController();
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/downloader/add")) {
+        controller.abort();
+        throw new Error("aborted");
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const keyId = parseDebridLinkApiKeys("dl-key-one")[0].id;
+    const service = new DebridService(settings);
+    await expect(
+      service.unrestrictLink("https://rapidgator.net/file/dl-quick-cancel", controller.signal)
+    ).rejects.toThrow();
+
+    expect(getDebridLinkKeyCooldownStateForTests(keyId)).toBeNull();
+  });
+
+  it("cools down a Debrid-Link key on an abort that ran long enough (retry rotates to the next key)", async () => {
+    process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "",
+      megaPassword: "",
+      megaCredentials: "",
+      debridLinkApiKeys: "dl-key-one",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const controller = new AbortController();
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/downloader/add")) {
+        controller.abort();
+        throw new Error("aborted");
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const keyId = parseDebridLinkApiKeys("dl-key-one")[0].id;
+    const service = new DebridService(settings);
+    await expect(
+      service.unrestrictLink("https://rapidgator.net/file/dl-long-abort", controller.signal)
+    ).rejects.toThrow();
+
+    const cooldown = getDebridLinkKeyCooldownStateForTests(keyId);
+    expect(cooldown?.remainingMs ?? 0).toBeGreaterThan(60_000);
   });
 
   it("treats bad Debrid-Link file passwords as fatal and does not rotate keys", async () => {

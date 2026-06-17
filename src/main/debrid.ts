@@ -123,6 +123,11 @@ export function getDebridLinkKeyRuntimeStateForTests(keyId: string): DebridLinkR
   return status ? status.state : null;
 }
 
+export function getDebridLinkKeyCooldownStateForTests(keyId: string, now = Date.now()): { remainingMs: number; message: string } | null {
+  const state = getDebridLinkKeyCooldownState(keyId, now);
+  return state ? { remainingMs: state.remainingMs, message: state.message } : null;
+}
+
 function clearDebridLinkKeyCooldownState(keyId: string): void {
   debridLinkKeyCooldowns.delete(keyId);
   debridLinkKeyCooldownDetails.delete(keyId);
@@ -2787,6 +2792,23 @@ class DebridLinkClient {
       } catch (error) {
         const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         const elapsedMs = Date.now() - testStartedAt;
+        const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
+        if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
+          const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
+          if (ranLongEnough) {
+            setDebridLinkKeyCooldownState(apiKey.id, DEBRID_LINK_KEY_COOLDOWN_MS, `Abbruch/Timeout nach ${Math.ceil(elapsedMs / 1000)}s`, "temporary");
+          } else {
+            clearDebridLinkKeyCooldownState(apiKey.id);
+          }
+          failures.push(`Debrid-Link${keyLabel}: ${abortText}`);
+          logAccountRotation("WARN", providerName, rotationLabel, "TIMEOUT_COOLDOWN", {
+            elapsedMs,
+            reason: abortText,
+            cooldownSec: ranLongEnough ? Math.ceil(DEBRID_LINK_KEY_COOLDOWN_MS / 1000) : 0,
+            next: "naechster Key beim Retry"
+          });
+          throw new Error(`Debrid-Link${keyLabel}: ${abortText}`);
+        }
         attemptedKeyFailures.push({
           message: `Debrid-Link${keyLabel}: ${failure.message}`,
           cooldownMs: failure.cooldownMs,
