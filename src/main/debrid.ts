@@ -6,6 +6,7 @@ import { isMegaDebridResolveFailure, germanMegaDebridResolveReason } from "../sh
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
+import { traceConversionPhase } from "./conversion-trace";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { MEGA_DEBRID_NO_SERVER_RE } from "./mega-web-fallback";
 import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
@@ -1742,11 +1743,13 @@ class MegaDebridClient {
     const key = this.cacheKey;
     const cached = MegaDebridClient.cachedApiTokens.get(key);
     if (cached && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: `cached(${Math.floor((Date.now() - cached.at) / 1000)}s)`, outcome: "ok" });
       return cached.token;
     }
 
     const pending = MegaDebridClient.pendingConnects.get(key);
     if (pending) {
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "pending-join", outcome: "ok" });
       return pending;
     }
 
@@ -1762,6 +1765,7 @@ class MegaDebridClient {
   }
 
   private async doConnectApi(signal?: AbortSignal): Promise<string | null> {
+    const connectStartedAt = Date.now();
     const url = `${MEGA_DEBRID_API_BASE}?action=connectUser&login=${encodeURIComponent(this.login)}&password=${encodeURIComponent(this.password)}`;
     const response = await fetch(url, {
       headers: { "User-Agent": DEBRID_USER_AGENT },
@@ -1772,6 +1776,7 @@ class MegaDebridClient {
       if (response.status === 401 || response.status === 403) {
         this.clearTokenCache();
       }
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `HTTP ${response.status}` });
       return null;
     }
     const payload = parseJsonSafe(text);
@@ -1779,13 +1784,16 @@ class MegaDebridClient {
       if (payload && String(payload.response_code || "").toLowerCase().includes("token")) {
         this.clearTokenCache();
       }
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"} ${String(payload?.response_text || "").slice(0, 80)}`.trim() });
       return null;
     }
     const token = String(payload.token || "").trim();
     if (!token) {
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: "leeres Token" });
       return null;
     }
     MegaDebridClient.cachedApiTokens.set(this.cacheKey, { token, at: Date.now() });
+    traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "ok" });
     return token;
   }
 
@@ -1795,6 +1803,7 @@ class MegaDebridClient {
       return null;
     }
 
+    const getLinkStartedAt = Date.now();
     const url = `${MEGA_DEBRID_API_BASE}?action=getLink&token=${encodeURIComponent(token)}`;
     const response = await fetch(url, {
       method: "POST",
@@ -1810,14 +1819,17 @@ class MegaDebridClient {
       if (response.status === 401 || response.status === 403) {
         this.clearTokenCache();
       }
+      traceConversionPhase({ phase: "api-getlink", provider: "megadebrid-api", workMs: Date.now() - getLinkStartedAt, outcome: "error", detail: `HTTP ${response.status}` });
       return null;
     }
     const payload = parseJsonSafe(text);
     if (!payload || payload.response_code !== "ok") {
-      if (payload && String(payload.response_code || "").includes("token")) {
+      const tokenInvalidated = Boolean(payload && String(payload.response_code || "").includes("token"));
+      if (tokenInvalidated) {
         this.clearTokenCache();
       }
       const errorText = String(payload?.response_text || "").trim();
+      traceConversionPhase({ phase: "api-getlink", provider: "megadebrid-api", workMs: Date.now() - getLinkStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"}${tokenInvalidated ? " (token-cache-geleert)" : ""} ${errorText}`.trim() });
       if (errorText) {
         throw new Error(`Mega-Debrid API: ${errorText}`);
       }
@@ -1826,8 +1838,10 @@ class MegaDebridClient {
 
     const directUrl = String(payload.debridLink || "").trim();
     if (!directUrl) {
+      traceConversionPhase({ phase: "api-getlink", provider: "megadebrid-api", workMs: Date.now() - getLinkStartedAt, outcome: "error", detail: "kein debridLink" });
       return null;
     }
+    traceConversionPhase({ phase: "api-getlink", provider: "megadebrid-api", workMs: Date.now() - getLinkStartedAt, outcome: "ok" });
     const fileName = String(payload.filename || "").trim() || filenameFromUrl(directUrl) || filenameFromUrl(link);
     return {
       directUrl,
@@ -2004,6 +2018,7 @@ class MegaDebridClient {
         clearMegaDebridAccountCooldownState(cooldownKey);
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
+        traceConversionPhase({ phase: "mega-account", provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web", account: rotationLabel, workMs: elapsedMs, outcome: "ok" });
         megaDebridStickyCount += 1;
         if (megaDebridStickyCount >= MEGA_DEBRID_STICKY_LINKS) {
           megaDebridRotationCursor = idx + 1;
@@ -2037,6 +2052,14 @@ class MegaDebridClient {
           if (ranLongEnough) {
             setMegaDebridAccountCooldownState(cooldownKey, MEGA_DEBRID_ACCOUNT_COOLDOWN_MS, `Abbruch/Timeout nach ${Math.ceil(elapsedMs / 1000)}s`, "temporary");
           }
+          traceConversionPhase({
+            phase: "mega-account",
+            provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
+            account: rotationLabel,
+            workMs: elapsedMs,
+            outcome: "aborted",
+            detail: `${abortText}${ranLongEnough ? ` cd=${Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000)}s` : ""}`
+          });
           failures.push(`Mega-Debrid${accountLabel}: ${abortText}`);
           logAccountRotation("WARN", providerName, rotationLabel, "TIMEOUT_COOLDOWN", {
             elapsedMs,
@@ -2047,6 +2070,14 @@ class MegaDebridClient {
           throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
         }
         const failure = MegaDebridClient.classifyAccountFailure(error);
+        traceConversionPhase({
+          phase: "mega-account",
+          provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
+          account: rotationLabel,
+          workMs: Date.now() - testStartedAt,
+          outcome: failure.fatal ? "fatal" : "failed",
+          detail: `${failure.message}${failure.cooldownMs > 0 ? ` cd=${Math.ceil(failure.cooldownMs / 1000)}s` : ""}`
+        });
         failures.push(`Mega-Debrid${accountLabel}: ${failure.message}`);
 
         let parkUntilRestart = false;
@@ -3780,9 +3811,12 @@ export class DebridService {
         continue;
       }
 
+      const providerStartedAt = Date.now();
       try {
         logger.info(`Provider-Kette: versuche ${PROVIDER_LABELS[provider]}`);
+        traceConversionPhase({ phase: "chain-try", provider });
         const result = await this.unrestrictViaProvider(settings, provider, link, signal);
+        traceConversionPhase({ phase: "chain-ok", provider, workMs: Date.now() - providerStartedAt, outcome: "ok" });
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
           const fromPage = await resolveRapidgatorFilename(link, signal);
@@ -3799,9 +3833,17 @@ export class DebridService {
       } catch (error) {
         const errorText = compactErrorText(error);
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          traceConversionPhase({ phase: "chain-aborted", provider, workMs: Date.now() - providerStartedAt, outcome: "aborted", detail: errorText.slice(0, 120) });
           throw error;
         }
         const nextProvider = order.slice(order.indexOf(provider) + 1).find((candidate) => this.isProviderSelectableFor(settings, candidate));
+        traceConversionPhase({
+          phase: "chain-failed",
+          provider,
+          workMs: Date.now() - providerStartedAt,
+          outcome: nextProvider ? "failover" : "exhausted",
+          detail: `${errorText.slice(0, 120)}${nextProvider ? ` → ${nextProvider}` : ""}`
+        });
         if (nextProvider) {
           logger.warn(`Provider-Kette: ${PROVIDER_LABELS[provider]} fehlgeschlagen (${errorText}), Fallback auf ${PROVIDER_LABELS[nextProvider]}`);
         } else {

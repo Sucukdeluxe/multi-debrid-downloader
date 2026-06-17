@@ -1,5 +1,6 @@
 import { UnrestrictedLink } from "./realdebrid";
 import { compactErrorText, filenameFromUrl, sleep } from "./utils";
+import { traceConversionPhase } from "./conversion-trace";
 
 type MegaCredentials = {
   login: string;
@@ -287,9 +288,18 @@ export class MegaWebFallback {
       throwIfAborted(signal);
       const waited = Date.now() - queuedAt;
       if (waited > QUEUE_WAIT_TIMEOUT_MS) {
+        traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, outcome: "queue-timeout", detail: `${Math.floor(waited / 1000)}s in Web-Queue gewartet` });
         throw new Error(`Mega-Web Queue-Timeout (${Math.floor(waited / 1000)}s gewartet)`);
       }
-      return job();
+      const workStartedAt = Date.now();
+      try {
+        const result = await job();
+        traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, workMs: Date.now() - workStartedAt, outcome: "ok" });
+        return result;
+      } catch (jobError) {
+        traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, workMs: Date.now() - workStartedAt, outcome: "error", detail: compactErrorText(jobError).slice(0, 100) });
+        throw jobError;
+      }
     };
     const prev = this.queues.get(key) ?? Promise.resolve();
     const run = prev.then(guardedJob, guardedJob);

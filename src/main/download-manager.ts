@@ -60,6 +60,7 @@ import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLang
 import { sendNotification } from "./notify";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
+import { runWithConversionTrace, traceConversionPhase, traceConversionNote } from "./conversion-trace";
 import type { RotationEvent } from "../shared/types";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
 import { ensurePackageLog, getPackageLogPath as getPersistedPackageLogPath, logPackageEvent as writePackageLogEvent } from "./package-log";
@@ -7979,6 +7980,23 @@ export class DownloadManager extends EventEmitter {
     return count;
   }
 
+  private describeSlotOccupancy(): string {
+    let converting = 0;
+    let downloading = 0;
+    for (const active of this.activeTasks.values()) {
+      const activeItem = this.session.items[active.itemId];
+      if (!activeItem) {
+        continue;
+      }
+      if (activeItem.status === "validating") {
+        converting += 1;
+      } else if (activeItem.status === "downloading") {
+        downloading += 1;
+      }
+    }
+    return `conv${converting}/dl${downloading}/active${this.activeTasks.size}/max${this.settings.maxParallel}`;
+  }
+
   private getSerializedValidatingLimit(provider: DebridProvider | null): number {
     if (provider === "megadebrid-web") {
       const usableAccounts = getAvailableMegaDebridAccounts(this.settings)
@@ -8760,7 +8778,30 @@ export class DownloadManager extends EventEmitter {
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
         try {
-          unrestricted = await this.debridService.unrestrictLink(item.url, unrestrictedSignal);
+          unrestricted = await runWithConversionTrace(
+            {
+              itemId: item.id,
+              itemName: item.fileName || item.id,
+              link: item.url,
+              providerOrder: (this.settings.providerOrder || []).join(",") || String(this.getExpectedProviderForItem(item) || "?")
+            },
+            async () => {
+              traceConversionNote("slots", this.describeSlotOccupancy());
+              traceConversionNote("retry", Number(active.unrestrictRetries || 0));
+              try {
+                return await this.debridService.unrestrictLink(item.url, unrestrictedSignal);
+              } catch (innerError) {
+                if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
+                  traceConversionPhase({
+                    phase: "caller-timeout",
+                    outcome: "timeout",
+                    detail: `Caller-Budget ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
+                  });
+                }
+                throw innerError;
+              }
+            }
+          );
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
             this.recordProviderFailure(cooldownProvider);

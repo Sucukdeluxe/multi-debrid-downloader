@@ -43,6 +43,7 @@ import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { buildBackupPayload, planBackupImport } from "./backup-payload";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { initAccountRotationLog, shutdownAccountRotationLog } from "./account-rotation-log";
+import { initConversionLog, shutdownConversionLog } from "./conversion-trace";
 import { runStartupHealthCheck } from "./startup-health-check";
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
@@ -94,6 +95,7 @@ export class AppController {
     initItemLogs(this.storagePaths.baseDir);
     initAuditLog(this.storagePaths.baseDir);
     initAccountRotationLog(this.storagePaths.baseDir);
+    initConversionLog(this.storagePaths.baseDir);
     initRenameLog(this.storagePaths.baseDir);
     let desktopDir: string | null = null;
     try {
@@ -800,6 +802,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAccountRotationLog();
+    shutdownConversionLog();
     shutdownAuditLog();
     if (this.settings.historyRetentionMode === "session") {
       clearHistory(this.storagePaths);
