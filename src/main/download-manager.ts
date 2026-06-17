@@ -9436,24 +9436,8 @@ export class DownloadManager extends EventEmitter {
             return;
           }
 
-          const megaResetPark = parseMegaDebridResetPark(errorText);
-          if (megaResetPark && active.unrestrictRetries < maxUnrestrictRetries) {
-            active.unrestrictRetries += 1;
-            item.retries += 1;
-            logger.warn(`Mega-Debrid bis Tagesreset gesperrt: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${megaResetPark.delayMs}ms, link=${item.url.slice(0, 80)}`);
-            this.queueRetry(
-              item,
-              active,
-              megaResetPark.delayMs,
-              `Mega-Debrid bis Tagesreset gesperrt, Pause ${Math.ceil(megaResetPark.delayMs / 1000)}s`
-            );
-            item.lastError = megaResetPark.detail || errorText;
-            this.persistSoon();
-            this.emitState();
-            return;
-          }
-
-          const megaCooldownRetry = parseMegaDebridCooldownRetry(errorText);
+          const megaRawError = error instanceof Error ? String(error.message || "") : String(error || "");
+          const megaCooldownRetry = parseMegaDebridCooldownRetry(megaRawError);
           if (megaCooldownRetry && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
             item.retries += 1;
@@ -9465,6 +9449,23 @@ export class DownloadManager extends EventEmitter {
               `Mega-Debrid Cooldown, neuer Versuch in ${Math.ceil(megaCooldownRetry.delayMs / 1000)}s`
             );
             item.lastError = megaCooldownRetry.detail || errorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          const megaResetPark = parseMegaDebridResetPark(megaRawError);
+          if (megaResetPark && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            logger.warn(`Mega-Debrid bis Tagesreset gesperrt: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${megaResetPark.delayMs}ms, link=${item.url.slice(0, 80)}`);
+            this.queueRetry(
+              item,
+              active,
+              megaResetPark.delayMs,
+              `Mega-Debrid bis Tagesreset gesperrt, Pause ${Math.ceil(megaResetPark.delayMs / 1000)}s`
+            );
+            item.lastError = megaResetPark.detail || errorText;
             this.persistSoon();
             this.emitState();
             return;
@@ -10607,7 +10608,12 @@ export class DownloadManager extends EventEmitter {
               rewindTarget
             });
           } catch (rewindError) {
-            logAttemptEvent("WARN", "Resume-Schutz: finales Rueckspulen fehlgeschlagen", {
+            try {
+              fs.rmSync(effectiveTargetPath, { force: true });
+              item.downloadedBytes = 0;
+            } catch {
+            }
+            logAttemptEvent("WARN", "Resume-Schutz: finales Rueckspulen fehlgeschlagen, Teil-Datei verworfen", {
               attempt,
               written,
               rewindTarget,

@@ -180,6 +180,67 @@ describe("settings storage", () => {
     expect(webNormalized.hosterRouting.rapidgator).toBe("megadebrid-web");
   });
 
+  it("migriert eine pre-v1.6.90-Config (Mega-Creds, beide Enable-Flags fehlen) zu aktiviertem Mega-Debrid statt es still auf false zu setzen", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const legacyApi = {
+      megaLogin: "mega-user",
+      megaPassword: "mega-pass",
+      megaDebridPreferApi: true,
+      providerPrimary: "realdebrid",
+      providerSecondary: "megadebrid"
+    };
+    fs.writeFileSync(paths.configFile, JSON.stringify(legacyApi), "utf8");
+    const loadedApi = loadSettings(paths);
+    expect(loadedApi.megaDebridApiEnabled).toBe(true);
+    expect(loadedApi.megaDebridWebEnabled).toBe(false);
+
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir2);
+    const paths2 = createStoragePaths(dir2);
+    const legacyWeb = {
+      megaLogin: "mega-user",
+      megaPassword: "mega-pass",
+      megaDebridPreferApi: false,
+      providerPrimary: "realdebrid",
+      providerSecondary: "megadebrid"
+    };
+    fs.writeFileSync(paths2.configFile, JSON.stringify(legacyWeb), "utf8");
+    const loadedWeb = loadSettings(paths2);
+    expect(loadedWeb.megaDebridApiEnabled).toBe(false);
+    expect(loadedWeb.megaDebridWebEnabled).toBe(true);
+  });
+
+  it("re-aktiviert KEINE bewusst deaktivierten Mega-Flags und migriert nicht ohne Mega-Creds", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const deliberatelyDisabled = {
+      megaLogin: "mega-user",
+      megaPassword: "mega-pass",
+      megaDebridPreferApi: true,
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: false
+    };
+    fs.writeFileSync(paths.configFile, JSON.stringify(deliberatelyDisabled), "utf8");
+    const loaded = loadSettings(paths);
+    expect(loaded.megaDebridApiEnabled).toBe(false);
+    expect(loaded.megaDebridWebEnabled).toBe(false);
+
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir2);
+    const paths2 = createStoragePaths(dir2);
+    const noCreds = {
+      megaDebridPreferApi: true,
+      providerPrimary: "realdebrid"
+    };
+    fs.writeFileSync(paths2.configFile, JSON.stringify(noCreds), "utf8");
+    const loadedNoCreds = loadSettings(paths2);
+    expect(loadedNoCreds.megaDebridApiEnabled).toBe(false);
+    expect(loadedNoCreds.megaDebridWebEnabled).toBe(false);
+  });
+
   it("normalizes provider daily limits and resets stale daily usage", () => {
     const [debridLinkKey] = parseDebridLinkApiKeys("dl-key-one");
     const normalized = normalizeSettings({

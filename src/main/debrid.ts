@@ -1885,6 +1885,9 @@ class MegaDebridClient {
         return null;
       });
       if (signal?.aborted) {
+        if (/queue.?timeout/i.test(lastError)) {
+          throw new Error(lastError.replace(/^Error:\s*/i, ""));
+        }
         throw new Error("aborted:debrid");
       }
       if (web?.directUrl) {

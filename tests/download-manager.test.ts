@@ -301,6 +301,57 @@ describe("download manager", () => {
     expect(session.items[itemId].retries).toBeLessThan(20);
   });
 
+  it("prefers the short Mega cooldown over the until-reset park when an aggregate error carries both tokens", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-both-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+
+    const session = emptySession();
+    const packageId = "mega-both-pkg";
+    const itemId = "mega-both-item";
+    const outputDir = path.join(root, "downloads", "MegaBoth");
+    const extractDir = path.join(root, "extract", "MegaBoth");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId, name: "MegaBoth", outputDir, extractDir,
+      status: "downloading", itemIds: [itemId], cancelled: false, enabled: true,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.items[itemId] = {
+      id: itemId, packageId, url: "https://rapidgator.net/file/mega-both.rar", provider: "megadebrid-api",
+      status: "downloading", retries: 0, speedBps: 0, downloadedBytes: 0, totalBytes: null,
+      progressPercent: 0, fileName: "mega-both.rar", targetPath: "", resumable: true,
+      attempts: 0, lastError: "", fullStatus: "", createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), megaLogin: "u", megaPassword: "p", megaCredentials: "u:p", megaDebridApiEnabled: true, megaDebridWebEnabled: true, outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session,
+      storagePaths
+    );
+    (manager as any).retryStateByItem.set(itemId, { freshRetryUsed: true, resumeHardResetUsed: true, stallRetries: 0, genericErrorRetries: 0, unrestrictRetries: 0 });
+    (manager as any).debridService.unrestrictLink = async () => {
+      throw new Error("Unrestrict fehlgeschlagen: Mega-Debrid API: mega_debrid_reset_park:86400000:Alle Accounts bis zum Tagesreset gesperrt | Mega-Debrid Web: mega_debrid_cooldown:30000:rate limit");
+    };
+
+    const active = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, active);
+
+    const before = Date.now();
+    await (manager as any).processItem(active);
+
+    const retryAfter = (manager as any).retryAfterByItem.get(itemId) as number;
+    expect(retryAfter).toBeGreaterThan(0);
+    const delayMs = retryAfter - before;
+    expect(delayMs).toBeLessThan(60000);
+    expect(session.items[itemId].fullStatus).toMatch(/Cooldown/i);
+    expect(session.items[itemId].fullStatus).not.toMatch(/Tagesreset/i);
+  });
+
   it("keeps the quick post-process requeue once the final package items are finished", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-final-"));
     tempDirs.push(root);

@@ -1961,6 +1961,43 @@ describe("debrid service", () => {
     expect(result.directUrl).toBe("https://mega-web.example/ok.rar");
   }, 20000);
 
+  it("setzt KEINEN Account-Cooldown, wenn der Mega-Web-Abbruch nur ein Queue-Timeout war (Account war belegt, nicht ungesund)", async () => {
+    process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const controller = new AbortController();
+    let calls = 0;
+    const megaWeb = vi.fn(async () => {
+      calls += 1;
+      controller.abort("caller-timeout");
+      throw new Error("Mega-Web Queue-Timeout (abgebrochen nach 60s Wartezeit, Account war belegt)");
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    await expect(
+      service.unrestrictLink("https://rapidgator.net/file/queue-timeout-no-cooldown", controller.signal)
+    ).rejects.toThrow();
+
+    const key = `${getMegaDebridAccountId("user")}:web`;
+    expect(getMegaDebridAccountCooldownState(key)).toBeNull();
+    expect(calls).toBeGreaterThanOrEqual(1);
+  }, 20000);
+
   it("escalates a Mega-Debrid account to 'until restart' after the empty-response streak threshold", () => {
     const key = `${getMegaDebridAccountId("user1")}:web`;
     expect(MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART).toBe(3);

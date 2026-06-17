@@ -314,5 +314,41 @@ describe("mega-web-fallback", () => {
         clearTimeout(timer);
       }
     });
+
+    it("klassifiziert einen Abbruch WAEHREND in der Queue als Queue-Timeout (nicht harter Abbruch), damit der belegte Account nicht bestraft wird", async () => {
+      let releaseLogin: () => void = () => {};
+      const loginGate = new Promise<void>((resolve) => { releaseLogin = resolve; });
+      globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.includes("form=login")) {
+          await loginGate;
+          const headers = new Headers();
+          headers.append("set-cookie", "session=c; path=/");
+          return new Response("", { headers, status: 200 });
+        }
+        if (u.includes("page=debrideur")) return new Response('<form id="debridForm"></form>', { status: 200 });
+        if (u.includes("form=debrid")) return new Response(`<div class="acp-box"><h3>Link: https://mega.debrid/l</h3><a href="javascript:processDebrid(1,'code',0)">d</a></div>`, { status: 200 });
+        if (u.includes("ajax=debrid")) return new Response(JSON.stringify({ link: "https://mega.direct/ok" }), { status: 200 });
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const fallback = new MegaWebFallback(() => ({ login: "same", password: "pw" }));
+      const firstCtrl = new AbortController();
+      const first = fallback.unrestrict("https://mega.debrid/a", firstCtrl.signal, { login: "same", password: "pw" });
+
+      await new Promise((r) => setTimeout(r, 25));
+
+      const secondCtrl = new AbortController();
+      const second = fallback.unrestrict("https://mega.debrid/b", secondCtrl.signal, { login: "same", password: "pw" });
+
+      await new Promise((r) => setTimeout(r, 25));
+      secondCtrl.abort("caller-timeout");
+
+      await expect(second).rejects.toThrow(/queue.?timeout/i);
+
+      releaseLogin();
+      await first.catch(() => null);
+      await new Promise((r) => setTimeout(r, 20));
+    }, 10000);
   });
 });

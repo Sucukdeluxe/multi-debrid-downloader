@@ -177,12 +177,12 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
-async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal, abortErrorFactory: () => Error = abortError): Promise<T> {
   if (!signal) {
     return promise;
   }
   if (signal.aborted) {
-    throw abortError();
+    throw abortErrorFactory();
   }
 
   return new Promise<T>((resolve, reject) => {
@@ -194,7 +194,7 @@ async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Prom
       }
       settled = true;
       signal.removeEventListener("abort", onAbort);
-      reject(abortError());
+      reject(abortErrorFactory());
     };
 
     signal.addEventListener("abort", onAbort, { once: true });
@@ -284,6 +284,7 @@ export class MegaWebFallback {
   private async runExclusive<T>(job: () => Promise<T>, key: string, signal?: AbortSignal): Promise<T> {
     const queuedAt = Date.now();
     const QUEUE_WAIT_TIMEOUT_MS = 90000;
+    let workStarted = false;
     const guardedJob = async (): Promise<T> => {
       throwIfAborted(signal);
       const waited = Date.now() - queuedAt;
@@ -291,6 +292,7 @@ export class MegaWebFallback {
         traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, outcome: "queue-timeout", detail: `${Math.floor(waited / 1000)}s in Web-Queue gewartet` });
         throw new Error(`Mega-Web Queue-Timeout (${Math.floor(waited / 1000)}s gewartet)`);
       }
+      workStarted = true;
       const workStartedAt = Date.now();
       try {
         const result = await job();
@@ -304,7 +306,11 @@ export class MegaWebFallback {
     const prev = this.queues.get(key) ?? Promise.resolve();
     const run = prev.then(guardedJob, guardedJob);
     this.queues.set(key, run.then(() => undefined, () => undefined));
-    return raceWithAbort(run, signal);
+    return raceWithAbort(run, signal, () =>
+      workStarted
+        ? abortError()
+        : new Error(`Mega-Web Queue-Timeout (abgebrochen nach ${Math.floor((Date.now() - queuedAt) / 1000)}s Wartezeit, Account war belegt)`)
+    );
   }
 
   private async login(login: string, password: string, signal?: AbortSignal): Promise<string> {

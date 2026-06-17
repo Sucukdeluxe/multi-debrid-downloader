@@ -627,12 +627,24 @@ function normalizeAudioStripSummary(raw: unknown): AudioStripSummary | undefined
   };
 }
 
+function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
+  if (parsed.megaDebridApiEnabled !== undefined || parsed.megaDebridWebEnabled !== undefined) {
+    return parsed;
+  }
+  const hasMegaCreds = Boolean(asText(parsed.megaLogin) && asText(parsed.megaPassword));
+  if (!hasMegaCreds) {
+    return parsed;
+  }
+  const preferApi = parsed.megaDebridPreferApi !== undefined ? Boolean(parsed.megaDebridPreferApi) : true;
+  return { ...parsed, megaDebridApiEnabled: preferApi, megaDebridWebEnabled: !preferApi };
+}
+
 function readSettingsFile(filePath: string): AppSettings | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
     const merged = normalizeSettings({
       ...defaultSettings(),
-      ...parsed
+      ...migrateLegacyMegaEnableFlags(parsed)
     });
     return sanitizeCredentialPersistence(merged);
   } catch (error) {
