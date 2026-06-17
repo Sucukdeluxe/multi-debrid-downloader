@@ -2207,6 +2207,10 @@ class MegaDebridClient {
       return { fatal: false, cooldownMs: 0, message: germanMegaDebridResolveReason(errorText), category: "temporary" };
     }
 
+    if (/lieferte kein ergebnis|linkgenerierung[^.]*kein ergebnis/i.test(errorText)) {
+      return { fatal: false, cooldownMs: 0, message: germanMegaDebridResolveReason(errorText), category: "temporary" };
+    }
+
     if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(errorText)) {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "skip" };
     }

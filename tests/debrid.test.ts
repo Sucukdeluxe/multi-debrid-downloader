@@ -3,6 +3,7 @@ import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
+import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
 import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
@@ -2098,6 +2099,14 @@ describe("debrid service", () => {
 
     const genuineEmpty = classifyMegaDebridAccountFailureForTests(new Error("Antwort leer"));
     expect(genuineEmpty.limitSignal).toBe(true);
+  });
+
+  it("classifies an empty Mega-Debrid API result ('Linkgenerierung lieferte kein Ergebnis') as a fast transient, not a 30s cooldown", () => {
+    const result = classifyMegaDebridAccountFailureForTests(new Error("Mega-Debrid API: Linkgenerierung lieferte kein Ergebnis"));
+    expect(result.fatal).toBe(false);
+    expect(result.cooldownMs).toBe(0);
+    expect(result.limitSignal).toBeFalsy();
+    expect(isMegaDebridTransientResolveFailure(result.message)).toBe(true);
   });
 
   it("skips a Mega-Debrid account parked until restart and rotates to the next, without re-testing it", async () => {
