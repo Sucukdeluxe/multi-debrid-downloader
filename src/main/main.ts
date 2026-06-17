@@ -592,7 +592,7 @@ function registerIpcHandlers(): void {
     if (result.canceled || !result.filePath) {
       return { saved: false };
     }
-    const exported = controller.exportSupportBundle();
+    const exported = await controller.exportSupportBundle();
     await fs.promises.writeFile(result.filePath, exported.buffer);
     return { saved: true, filePath: result.filePath };
   });

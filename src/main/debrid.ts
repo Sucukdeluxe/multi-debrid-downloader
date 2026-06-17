@@ -1897,7 +1897,7 @@ class MegaDebridClient {
           logger.info(`Mega-Debrid (API) unrestrict OK: ${apiResult.fileName}`);
           return apiResult;
         }
-        throw new Error("Mega-Debrid API: Login oder Unrestrict fehlgeschlagen");
+        throw new Error("Mega-Debrid API: Linkgenerierung lieferte kein Ergebnis");
       } catch (error) {
         const errorText = compactErrorText(error);
         if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
@@ -2162,7 +2162,11 @@ class MegaDebridClient {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "temporary" };
     }
 
-    if (/login|password|auth|credentials|unauthorized|forbidden/i.test(errorText) || /connectUser/i.test(errorText)) {
+    if (/token.?error|please log.?in/i.test(errorText)) {
+      return { fatal: false, cooldownMs: 15_000, message: errorText, category: "temporary" };
+    }
+
+    if (/bad.?login|incorrect.?(login|password)|invalid.?(login|password|credentials)|wrong.?password|unauthorized|forbidden|connectUser/i.test(errorText)) {
       return {
         fatal: false,
         cooldownMs: MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS,

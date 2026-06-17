@@ -6721,6 +6721,160 @@ describe("download manager", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
   });
 
+  it("serializes Mega-Debrid API conversions to one per account (no single-token hammering)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let getLinkCalls = 0;
+    const pendingRejectors = new Set<(error: Error) => void>();
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: `tok-${getLinkCalls}-${url.length}` }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        getLinkCalls += 1;
+        const signal = init?.signal;
+        return await new Promise<Response>((_resolve, reject) => {
+          const rejector = (error: Error): void => {
+            signal?.removeEventListener("abort", onAbort);
+            pendingRejectors.delete(rejector);
+            reject(error);
+          };
+          const onAbort = (): void => { rejector(new Error("aborted:test-api")); };
+          if (signal?.aborted) { onAbort(); return; }
+          signal?.addEventListener("abort", onAbort, { once: true });
+          pendingRejectors.add(rejector);
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user-a:pass-a\nmega-user-b:pass-b",
+        megaDebridApiEnabled: true,
+        megaDebridWebEnabled: false,
+        megaDebridPreferApi: true,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 6
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {}
+    );
+
+    manager.addPackages([{
+      name: "mega-api-serialized",
+      links: [
+        "https://rapidgator.net/file/api-1.part1.rar.html",
+        "https://rapidgator.net/file/api-2.part2.rar.html",
+        "https://rapidgator.net/file/api-3.part3.rar.html"
+      ]
+    }]);
+
+    await manager.start();
+    await waitFor(() => getLinkCalls === 2, 10000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const items = Object.values(manager.getSnapshot().session.items);
+    expect(items.filter((item) => item.status === "validating")).toHaveLength(2);
+    expect(items.filter((item) => item.status === "queued")).toHaveLength(1);
+    expect(getLinkCalls).toBe(2);
+
+    manager.stop();
+    for (const reject of Array.from(pendingRejectors)) {
+      reject(new Error("aborted:test-api"));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+
+  it("limits Mega-Debrid API conversions to one at a time with a single account", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let getLinkCalls = 0;
+    const pendingRejectors = new Set<(error: Error) => void>();
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "tok-single" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        getLinkCalls += 1;
+        const signal = init?.signal;
+        return await new Promise<Response>((_resolve, reject) => {
+          const rejector = (error: Error): void => {
+            signal?.removeEventListener("abort", onAbort);
+            pendingRejectors.delete(rejector);
+            reject(error);
+          };
+          const onAbort = (): void => { rejector(new Error("aborted:test-api")); };
+          if (signal?.aborted) { onAbort(); return; }
+          signal?.addEventListener("abort", onAbort, { once: true });
+          pendingRejectors.add(rejector);
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user:mega-pass",
+        megaDebridApiEnabled: true,
+        megaDebridWebEnabled: false,
+        megaDebridPreferApi: true,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 6
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {}
+    );
+
+    manager.addPackages([{
+      name: "mega-api-single",
+      links: [
+        "https://rapidgator.net/file/single-1.part1.rar.html",
+        "https://rapidgator.net/file/single-2.part2.rar.html",
+        "https://rapidgator.net/file/single-3.part3.rar.html"
+      ]
+    }]);
+
+    await manager.start();
+    await waitFor(() => getLinkCalls === 1, 10000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const items = Object.values(manager.getSnapshot().session.items);
+    expect(items.filter((item) => item.status === "validating")).toHaveLength(1);
+    expect(items.filter((item) => item.status === "queued")).toHaveLength(2);
+    expect(getLinkCalls).toBe(1);
+
+    manager.stop();
+    for (const reject of Array.from(pendingRejectors)) {
+      reject(new Error("aborted:test-api"));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+
   it("shows the same AllDebrid countdown for all immediately free slots", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { APP_VERSION } from "./constants";
@@ -20,9 +20,9 @@ import type { DownloadManager } from "./download-manager";
 
 const AI_MANIFEST_FILE = "debug_ai_manifest.json";
 
-function safeReadJson(filePath: string): unknown {
+async function safeReadJson(filePath: string): Promise<unknown> {
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    return JSON.parse(await fsp.readFile(filePath, "utf8")) as unknown;
   } catch {
     return null;
   }
@@ -32,42 +32,50 @@ function addJson(zip: AdmZip, zipPath: string, value: unknown): void {
   zip.addFile(zipPath, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"));
 }
 
-function addFileIfExists(zip: AdmZip, sourcePath: string | null, zipPath: string): void {
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
+async function addFileIfExists(zip: AdmZip, sourcePath: string | null, zipPath: string): Promise<void> {
+  if (!sourcePath) {
     return;
   }
-  zip.addLocalFile(sourcePath, path.posix.dirname(zipPath), path.posix.basename(zipPath));
+  try {
+    const buffer = await fsp.readFile(sourcePath);
+    zip.addFile(zipPath, buffer);
+  } catch {
+  }
 }
 
-function addDirectoryIfExists(zip: AdmZip, dirPath: string, zipRoot: string): void {
-  if (!fs.existsSync(dirPath)) {
+async function addDirectoryIfExists(zip: AdmZip, dirPath: string, zipRoot: string): Promise<void> {
+  let entries;
+  try {
+    entries = await fsp.readdir(dirPath, { withFileTypes: true });
+  } catch {
     return;
   }
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dirPath, entry.name);
     const zipPath = path.posix.join(zipRoot, entry.name);
     if (entry.isDirectory()) {
-      addDirectoryIfExists(zip, fullPath, zipPath);
+      await addDirectoryIfExists(zip, fullPath, zipPath);
       continue;
     }
-    zip.addLocalFile(fullPath, path.posix.dirname(zipPath), path.posix.basename(zipPath));
+    await addFileIfExists(zip, fullPath, zipPath);
   }
 }
 
-function addRecentDirectoryFiles(zip: AdmZip, dirPath: string, zipRoot: string, maxAgeMs: number): number {
-  if (!fs.existsSync(dirPath)) {
+async function addRecentDirectoryFiles(zip: AdmZip, dirPath: string, zipRoot: string, maxAgeMs: number): Promise<number> {
+  let entries;
+  try {
+    entries = await fsp.readdir(dirPath, { withFileTypes: true });
+  } catch {
     return 0;
   }
   const cutoff = Date.now() - maxAgeMs;
   let added = 0;
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     const fullPath = path.join(dirPath, entry.name);
     try {
-      if (fs.statSync(fullPath).mtimeMs >= cutoff) {
-        zip.addLocalFile(fullPath, zipRoot, entry.name);
+      if ((await fsp.stat(fullPath)).mtimeMs >= cutoff) {
+        await addFileIfExists(zip, fullPath, path.posix.join(zipRoot, entry.name));
         added += 1;
       }
     } catch {  }
@@ -127,7 +135,7 @@ function resolveHostDiagnostics(mode: HostDiagnosticsMode): unknown {
   return getWindowsHostDiagnostics();
 }
 
-export function buildSupportBundle(manager: DownloadManager, baseDir: string, options: BuildSupportBundleOptions = {}): Buffer {
+export async function buildSupportBundle(manager: DownloadManager, baseDir: string, options: BuildSupportBundleOptions = {}): Promise<Buffer> {
   const zip = new AdmZip();
   const hostDiagnosticsMode = options.hostDiagnosticsMode || "full";
   const storagePaths = createStoragePaths(baseDir);
@@ -175,39 +183,39 @@ export function buildSupportBundle(manager: DownloadManager, baseDir: string, op
   const recentErrors = getRecentErrors();
   addJson(zip, "overview/recent-errors.json", { count: recentErrors.length, entries: recentErrors });
 
-  addFileIfExists(zip, path.join(baseDir, AI_MANIFEST_FILE), `runtime/${AI_MANIFEST_FILE}`);
-  addFileIfExists(zip, path.join(baseDir, "debug_host.txt"), "runtime/debug_host.txt");
-  addFileIfExists(zip, path.join(baseDir, "debug_port.txt"), "runtime/debug_port.txt");
-  addFileIfExists(zip, getTraceConfigPath(), "runtime/trace_config.json");
+  await addFileIfExists(zip, path.join(baseDir, AI_MANIFEST_FILE), `runtime/${AI_MANIFEST_FILE}`);
+  await addFileIfExists(zip, path.join(baseDir, "debug_host.txt"), "runtime/debug_host.txt");
+  await addFileIfExists(zip, path.join(baseDir, "debug_port.txt"), "runtime/debug_port.txt");
+  await addFileIfExists(zip, getTraceConfigPath(), "runtime/trace_config.json");
 
-  addFileIfExists(zip, getLogFilePath(), "logs/rd_downloader.log");
-  addFileIfExists(zip, `${getLogFilePath()}.old`, "logs/rd_downloader.log.old");
-  addFileIfExists(zip, getAuditLogPath(), "logs/audit.log");
-  addFileIfExists(zip, getAuditLogPath() ? `${getAuditLogPath()}.old` : null, "logs/audit.log.old");
-  addFileIfExists(zip, getRenameLogPath(), "logs/rename.log");
-  addFileIfExists(zip, getRenameLogPath() ? `${getRenameLogPath()}.old` : null, "logs/rename.log.old");
-  addFileIfExists(zip, getDesktopRenameLogPath(), "logs/rename-session-desktop.txt");
-  addFileIfExists(zip, getSessionLogPath(), "logs/session.log");
-  addFileIfExists(zip, getTraceLogPath(), "logs/trace.log");
-  addFileIfExists(zip, getTraceLogPath() ? `${getTraceLogPath()}.old` : null, "logs/trace.log.old");
-  addFileIfExists(zip, getAccountRotationLogPath(), "logs/account-rotation.log");
-  addFileIfExists(zip, getAccountRotationLogPath() ? `${getAccountRotationLogPath()}.old` : null, "logs/account-rotation.log.old");
-  addFileIfExists(zip, getConversionLogPath(), "logs/conversion.log");
-  addFileIfExists(zip, getConversionLogPath() ? `${getConversionLogPath()}.old` : null, "logs/conversion.log.old");
+  await addFileIfExists(zip, getLogFilePath(), "logs/rd_downloader.log");
+  await addFileIfExists(zip, `${getLogFilePath()}.old`, "logs/rd_downloader.log.old");
+  await addFileIfExists(zip, getAuditLogPath(), "logs/audit.log");
+  await addFileIfExists(zip, getAuditLogPath() ? `${getAuditLogPath()}.old` : null, "logs/audit.log.old");
+  await addFileIfExists(zip, getRenameLogPath(), "logs/rename.log");
+  await addFileIfExists(zip, getRenameLogPath() ? `${getRenameLogPath()}.old` : null, "logs/rename.log.old");
+  await addFileIfExists(zip, getDesktopRenameLogPath(), "logs/rename-session-desktop.txt");
+  await addFileIfExists(zip, getSessionLogPath(), "logs/session.log");
+  await addFileIfExists(zip, getTraceLogPath(), "logs/trace.log");
+  await addFileIfExists(zip, getTraceLogPath() ? `${getTraceLogPath()}.old` : null, "logs/trace.log.old");
+  await addFileIfExists(zip, getAccountRotationLogPath(), "logs/account-rotation.log");
+  await addFileIfExists(zip, getAccountRotationLogPath() ? `${getAccountRotationLogPath()}.old` : null, "logs/account-rotation.log.old");
+  await addFileIfExists(zip, getConversionLogPath(), "logs/conversion.log");
+  await addFileIfExists(zip, getConversionLogPath() ? `${getConversionLogPath()}.old` : null, "logs/conversion.log.old");
 
   const SUPPORT_BUNDLE_LOG_WINDOW_MS = 8 * 60 * 60 * 1000;
-  addDirectoryIfExists(zip, path.join(baseDir, "session-logs"), "logs/session-logs");
-  addRecentDirectoryFiles(zip, path.join(baseDir, "package-logs"), "logs/package-logs", SUPPORT_BUNDLE_LOG_WINDOW_MS);
-  addRecentDirectoryFiles(zip, path.join(baseDir, "item-logs"), "logs/item-logs", SUPPORT_BUNDLE_LOG_WINDOW_MS);
+  await addDirectoryIfExists(zip, path.join(baseDir, "session-logs"), "logs/session-logs");
+  await addRecentDirectoryFiles(zip, path.join(baseDir, "package-logs"), "logs/package-logs", SUPPORT_BUNDLE_LOG_WINDOW_MS);
+  await addRecentDirectoryFiles(zip, path.join(baseDir, "item-logs"), "logs/item-logs", SUPPORT_BUNDLE_LOG_WINDOW_MS);
 
   for (const packageId of packageIds) {
-    addFileIfExists(zip, manager.getPackageLogPath(packageId) || getPackageLogPath(packageId), `logs/live/package-${packageId}.txt`);
+    await addFileIfExists(zip, manager.getPackageLogPath(packageId) || getPackageLogPath(packageId), `logs/live/package-${packageId}.txt`);
   }
   for (const itemId of itemIds) {
-    addFileIfExists(zip, manager.getItemLogPath(itemId), `logs/live/item-${itemId}.txt`);
+    await addFileIfExists(zip, manager.getItemLogPath(itemId), `logs/live/item-${itemId}.txt`);
   }
 
-  const aiManifest = safeReadJson(path.join(baseDir, AI_MANIFEST_FILE));
+  const aiManifest = await safeReadJson(path.join(baseDir, AI_MANIFEST_FILE));
   if (aiManifest) {
     addJson(zip, "overview/ai-manifest.json", aiManifest);
   }

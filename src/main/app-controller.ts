@@ -661,14 +661,14 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return encryptBackup(JSON.stringify(payloadObj));
   }
 
-  public exportSupportBundle(): { buffer: Buffer; defaultFileName: string } {
+  public async exportSupportBundle(): Promise<{ buffer: Buffer; defaultFileName: string }> {
     this.audit("INFO", "Support-Bundle exportiert");
     logTraceEvent("INFO", "support", "Support-Bundle erstellt", {
       packageCount: Object.keys(this.manager.getSnapshot().session.packages).length,
       itemCount: Object.keys(this.manager.getSnapshot().session.items).length
     });
     return {
-      buffer: buildSupportBundle(this.manager, this.storagePaths.baseDir, { hostDiagnosticsMode: "cached" }),
+      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, { hostDiagnosticsMode: "cached" }),
       defaultFileName: getSupportBundleDefaultFileName()
     };
   }

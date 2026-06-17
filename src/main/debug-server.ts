@@ -837,12 +837,17 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       return;
     }
     const fileName = getSupportBundleDefaultFileName();
-    const body = buildSupportBundle(manager, runtimeBaseDir);
-    logTraceEvent("INFO", "support", "Support-Bundle über Debug-Server heruntergeladen", {
-      fileName,
-      sizeBytes: body.length
-    });
-    binaryResponse(res, 200, body, "application/zip", fileName);
+    buildSupportBundle(manager, runtimeBaseDir)
+      .then((body) => {
+        logTraceEvent("INFO", "support", "Support-Bundle über Debug-Server heruntergeladen", {
+          fileName,
+          sizeBytes: body.length
+        });
+        binaryResponse(res, 200, body, "application/zip", fileName);
+      })
+      .catch((error) => {
+        jsonResponse(res, 500, { error: String((error as { message?: string })?.message || error) });
+      });
     return;
   }
 

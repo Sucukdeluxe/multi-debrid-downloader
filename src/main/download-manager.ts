@@ -7998,9 +7998,10 @@ export class DownloadManager extends EventEmitter {
   }
 
   private getSerializedValidatingLimit(provider: DebridProvider | null): number {
-    if (provider === "megadebrid-web") {
+    if (provider === "megadebrid-web" || provider === "megadebrid-api") {
+      const mode = provider === "megadebrid-web" ? "web" : "api";
       const usableAccounts = getAvailableMegaDebridAccounts(this.settings)
-        .filter((account) => !getMegaDebridAccountCooldownState(`${account.id}:web`))
+        .filter((account) => !getMegaDebridAccountCooldownState(`${account.id}:${mode}`))
         .length;
       return Math.max(1, usableAccounts);
     }

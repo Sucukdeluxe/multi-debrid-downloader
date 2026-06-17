@@ -1339,6 +1339,84 @@ describe("debrid service", () => {
     expect(getMegaDebridAccountCooldownState(`${getMegaDebridAccountId("user")}:api`)).toBeNull();
   });
 
+  it("does NOT slap a 60-minute 'invalid' cooldown on a working account when the API returns no result (transient)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "tok", vip_end: Math.floor(Date.now() / 1000) + 999999 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "ok" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const err = await service.unrestrictLink("https://rapidgator.net/file/no-result.rar.html").then(() => null, (e: unknown) => e);
+    expect(err).toBeTruthy();
+    expect(String(err)).not.toMatch(/Login oder Unrestrict/i);
+
+    const cooldown = getMegaDebridAccountCooldownState(`${getMegaDebridAccountId("user")}:api`);
+    if (cooldown) {
+      expect(cooldown.category).not.toBe("invalid");
+      expect(cooldown.remainingMs).toBeLessThan(5 * 60 * 1000);
+    }
+  });
+
+  it("treats a Mega-Debrid API 'Token error, please log-in' as a short transient cooldown, not invalid", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "tok", vip_end: Math.floor(Date.now() / 1000) + 999999 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "error_token", response_text: "Token error, please log-in" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await service.unrestrictLink("https://rapidgator.net/file/token-collision.rar.html").then(() => null, (e: unknown) => e);
+
+    const cooldown = getMegaDebridAccountCooldownState(`${getMegaDebridAccountId("user")}:api`);
+    if (cooldown) {
+      expect(cooldown.category).not.toBe("invalid");
+      expect(cooldown.remainingMs).toBeLessThan(60 * 1000);
+    }
+  });
+
   it("uses Mega Web only when it is configured as a separate fallback provider", async () => {
     const settings = {
       ...defaultSettings(),
