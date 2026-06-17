@@ -1321,6 +1321,13 @@ function toProviderOrder(primary: DebridProvider, secondary: DebridFallbackProvi
   return uniqueProviderOrder(order);
 }
 
+export function leadProviderChainWith(order: readonly DebridProvider[], preferred: DebridProvider | null | undefined): DebridProvider[] {
+  if (!preferred || !order.includes(preferred)) {
+    return [...order];
+  }
+  return [preferred, ...order.filter((provider) => provider !== preferred)];
+}
+
 function isRapidgatorLink(link: string): boolean {
   try {
     const hostname = new URL(link).hostname.toLowerCase();
@@ -2158,7 +2165,8 @@ class MegaDebridClient {
         throw new Error(`mega_debrid_cooldown:${retryMs}:${cooldownFailures.join(" | ")}`);
       }
       if (parkedUntilRestartSeen) {
-        throw new Error(`Mega-Debrid: Alle Accounts am Tageslimit (bis zum Tagesreset gesperrt)${cooldownFailures.length > 0 ? ` | ${cooldownFailures.join(" | ")}` : ""}`);
+        const resetParkMs = Math.max(1000, megaDebridDailyParkExpiry(Date.now()) - Date.now() + 1000);
+        throw new Error(`mega_debrid_reset_park:${resetParkMs}:Mega-Debrid: Alle Accounts am Tageslimit (bis zum Tagesreset gesperrt)${cooldownFailures.length > 0 ? ` | ${cooldownFailures.join(" | ")}` : ""}`);
       }
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar");
     }
@@ -3700,7 +3708,7 @@ export class DebridService {
     return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
   }
 
-  public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings): Promise<ProviderUnrestrictedLink> {
+  public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings, preferredLeadProvider?: DebridProvider | null): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
     const routing = settings.hosterRouting || {};
@@ -3777,9 +3785,10 @@ export class DebridService {
       }
     }
 
-    const order: DebridProvider[] = (settings.providerOrder && settings.providerOrder.length > 0)
+    const baseOrder: DebridProvider[] = (settings.providerOrder && settings.providerOrder.length > 0)
       ? uniqueProviderOrder(settings.providerOrder)
       : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);
+    const order = leadProviderChainWith(baseOrder, preferredLeadProvider);
 
     const primary = order[0];
     if (!settings.autoProviderFallback) {

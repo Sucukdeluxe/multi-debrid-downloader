@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transientResolveRetryDelayMs, parseMegaDebridCooldownRetry } from "../src/main/download-manager";
+import { transientResolveRetryDelayMs, parseMegaDebridCooldownRetry, parseMegaDebridResetPark } from "../src/main/download-manager";
 
 describe("transientResolveRetryDelayMs (fast, bounded retry for transient resolve failures)", () => {
   it("starts fast (<= 3s) instead of the 5s..120s exponential", () => {
@@ -56,5 +56,34 @@ describe("parseMegaDebridCooldownRetry (honor the encoded account-cooldown delay
   it("returns null when there is no mega cooldown marker", () => {
     expect(parseMegaDebridCooldownRetry("Datei beim Hoster gerade nicht abrufbar")).toBeNull();
     expect(parseMegaDebridCooldownRetry("debrid_link_cooldown:5000:x")).toBeNull();
+  });
+
+  it("does NOT swallow the until-Tagesreset park token", () => {
+    expect(parseMegaDebridCooldownRetry("mega_debrid_reset_park:43200000:Alle Accounts bis zum Tagesreset gesperrt")).toBeNull();
+  });
+});
+
+describe("parseMegaDebridResetPark (park the item until the Tagesreset, not a ~2min generic retry)", () => {
+  it("parses the encoded until-reset delay from the park token", () => {
+    const r = parseMegaDebridResetPark("mega_debrid_reset_park:43200000:Mega-Debrid: Alle Accounts am Tageslimit (bis zum Tagesreset gesperrt)");
+    expect(r).not.toBeNull();
+    expect(r!.delayMs).toBe(43200000);
+    expect(r!.detail).toContain("bis zum Tagesreset gesperrt");
+  });
+
+  it("parses it when embedded in the aggregated provider-chain error", () => {
+    const aggregated = "Unrestrict fehlgeschlagen: Mega-Debrid API: mega_debrid_reset_park:7200000:Alle Accounts bis zum Tagesreset gesperrt";
+    expect(parseMegaDebridResetPark(aggregated)!.delayMs).toBe(7200000);
+  });
+
+  it("is NOT clamped to the 15min cooldown ceiling (can park multiple hours)", () => {
+    expect(parseMegaDebridResetPark("mega_debrid_reset_park:21600000:x")!.delayMs).toBe(21600000);
+  });
+
+  it("clamps to a sane [1s, 26h] window and rejects junk", () => {
+    expect(parseMegaDebridResetPark("mega_debrid_reset_park:1:x")!.delayMs).toBe(1000);
+    expect(parseMegaDebridResetPark("mega_debrid_reset_park:999999999999:x")!.delayMs).toBe(26 * 60 * 60 * 1000);
+    expect(parseMegaDebridResetPark("mega_debrid_cooldown:20330:x")).toBeNull();
+    expect(parseMegaDebridResetPark("kein Token hier")).toBeNull();
   });
 });

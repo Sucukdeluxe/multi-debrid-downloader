@@ -3,7 +3,7 @@ import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -13,6 +13,21 @@ afterEach(() => {
   resetMegaDebridRuntimeStateForTests();
   delete process.env.RD_MEGA_ABORT_MIN_RUN_MS;
   vi.restoreAllMocks();
+});
+
+describe("leadProviderChainWith", () => {
+  it("leaves the order unchanged when no preferred provider is given", () => {
+    expect(leadProviderChainWith(["realdebrid", "debridlink", "alldebrid"], null)).toEqual(["realdebrid", "debridlink", "alldebrid"]);
+    expect(leadProviderChainWith(["realdebrid", "debridlink"], undefined)).toEqual(["realdebrid", "debridlink"]);
+  });
+
+  it("leads with the preferred provider but keeps every other provider as a later fallback", () => {
+    expect(leadProviderChainWith(["realdebrid", "debridlink", "alldebrid"], "alldebrid")).toEqual(["alldebrid", "realdebrid", "debridlink"]);
+  });
+
+  it("does not drop or strand any provider when the preferred one is not in the order", () => {
+    expect(leadProviderChainWith(["realdebrid", "debridlink"], "alldebrid")).toEqual(["realdebrid", "debridlink"]);
+  });
 });
 
 describe("debrid service", () => {
@@ -132,6 +147,44 @@ describe("debrid service", () => {
     expect(result.provider).toBe("debridlink");
     expect(result.directUrl).toBe("https://debrid-link.example/file.bin");
     expect(calledUrls.some((url) => url.includes("api.real-debrid.com/rest/1.0/unrestrict/link"))).toBe(false);
+  });
+
+  it("leads the provider chain with the preferred (non-cooled) provider when one is hinted", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      debridLinkApiKeys: "dl-token",
+      providerOrder: ["realdebrid", "debridlink"] as const,
+      providerPrimary: "realdebrid" as const,
+      providerSecondary: "debridlink" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("debrid-link.com/api/v2/downloader/add")) {
+        return new Response(JSON.stringify({
+          success: true,
+          value: { downloadUrl: "https://debrid-link.example/file.bin", name: "file.bin", size: 1234 }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({
+          download: "https://rd.example/file.bin",
+          filename: "file.bin",
+          filesize: 1234
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const control = await service.unrestrictLink("https://hoster.example/lead-control.bin");
+    expect(control.provider).toBe("realdebrid");
+
+    const preferred = await service.unrestrictLink("https://hoster.example/lead-pref.bin", undefined, undefined, "debridlink");
+    expect(preferred.provider).toBe("debridlink");
   });
 
   it("uses the next Debrid-Link key when the first key hit its local daily limit", async () => {
@@ -1974,7 +2027,7 @@ describe("debrid service", () => {
     expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
   }, 20000);
 
-  it("fails terminally (no retry timer) when ALL Mega-Debrid accounts are parked until restart", async () => {
+  it("emits an until-Tagesreset park token (so the manager parks, not 2min-retries) when ALL Mega-Debrid accounts are parked until restart", async () => {
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -2001,7 +2054,10 @@ describe("debrid service", () => {
     const megaWeb = vi.fn(async () => ({ fileName: "x.rar", directUrl: "https://mega-web.example/x.rar", fileSize: null, retriesUsed: 0 }));
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
 
-    await expect(service.unrestrictLink("https://rapidgator.net/file/all-parked-test")).rejects.toThrow(/bis zum Tagesreset gesperrt/i);
+    const err = await service.unrestrictLink("https://rapidgator.net/file/all-parked-test").then(() => null, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/bis zum Tagesreset gesperrt/i);
+    expect(err!.message).toMatch(/mega_debrid_reset_park:\d+:/);
     expect(megaWeb).not.toHaveBeenCalled();
   }, 20000);
 

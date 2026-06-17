@@ -659,6 +659,19 @@ export function parseMegaDebridCooldownRetry(errorText: string): { delayMs: numb
   return { delayMs, detail: text.replace(/mega_debrid_cooldown:\d+:/i, "").trim() };
 }
 
+export function parseMegaDebridResetPark(errorText: string): { delayMs: number; detail: string } | null {
+  const match = String(errorText || "").match(/mega_debrid_reset_park:(\d+):(.*)$/is);
+  if (!match) {
+    return null;
+  }
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  const delayMs = Math.max(1000, Math.min(26 * 60 * 60 * 1000, raw));
+  return { delayMs, detail: String(match[2] || "").trim() };
+}
+
 function parseDebridLinkTerminalFailure(errorText: string): { kind: "invalid_all" | "no_active_key"; detail: string } | null {
   const raw = String(errorText || "");
   const match = raw.match(/debrid_link_(invalid_all|no_active_key):(.*)$/i);
@@ -8771,6 +8784,7 @@ export class DownloadManager extends EventEmitter {
         }
         const cooldownProvider = this.getProviderFailureKeyForItem(item);
         const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
+        let preferredLeadProvider: DebridProvider | null = null;
         if (cooldownMs > 0) {
           if (this.settings.autoProviderFallback) {
             const fallback = this.findFallbackProviderNotInCooldown(item);
@@ -8782,6 +8796,7 @@ export class DownloadManager extends EventEmitter {
                 fallback
               });
               item.provider = null;
+              preferredLeadProvider = fallback;
             } else {
               this.logPackageForItem(item, "WARN", "Provider-Cooldown blockiert Unrestrict", {
                 provider: cooldownProvider,
@@ -8825,7 +8840,7 @@ export class DownloadManager extends EventEmitter {
               traceConversionNote("slots", this.describeSlotOccupancy());
               traceConversionNote("retry", Number(active.unrestrictRetries || 0));
               try {
-                return await this.debridService.unrestrictLink(item.url, unrestrictedSignal);
+                return await this.debridService.unrestrictLink(item.url, unrestrictedSignal, undefined, preferredLeadProvider);
               } catch (innerError) {
                 if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
                   traceConversionPhase({
@@ -9150,6 +9165,20 @@ export class DownloadManager extends EventEmitter {
           const totalFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
           if (totalFailures >= 15) {
             item.retries += 1;
+            if (configuredRetryLimit > 0 && item.retries >= configuredRetryLimit) {
+              item.status = "failed";
+              item.lastError = stallErrorText || "Wiederholt fehlgeschlagen";
+              item.fullStatus = `Fehler: ${item.lastError}`;
+              item.speedBps = 0;
+              item.updatedAt = nowMs();
+              this.recordRunOutcome(item.id, "failed");
+              this.retryStateByItem.delete(item.id);
+              const shelveFailPkgStall = this.session.packages[item.packageId];
+              if (shelveFailPkgStall) this.refreshPackageStatus(shelveFailPkgStall);
+              this.persistSoon();
+              this.emitState();
+              return;
+            }
             active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
             active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
@@ -9336,6 +9365,20 @@ export class DownloadManager extends EventEmitter {
           const totalNonStallFailures = (active.stallRetries || 0) + (active.unrestrictRetries || 0) + (active.genericErrorRetries || 0);
           if (totalNonStallFailures >= 15) {
             item.retries += 1;
+            if (configuredRetryLimit > 0 && item.retries >= configuredRetryLimit) {
+              item.status = "failed";
+              item.lastError = errorText || "Wiederholt fehlgeschlagen";
+              item.fullStatus = `Fehler: ${item.lastError}`;
+              item.speedBps = 0;
+              item.updatedAt = nowMs();
+              this.recordRunOutcome(item.id, "failed");
+              this.retryStateByItem.delete(item.id);
+              const shelveFailPkgErr = this.session.packages[item.packageId];
+              if (shelveFailPkgErr) this.refreshPackageStatus(shelveFailPkgErr);
+              this.persistSoon();
+              this.emitState();
+              return;
+            }
             active.stallRetries = Math.floor((active.stallRetries || 0) / 2);
             active.unrestrictRetries = Math.floor((active.unrestrictRetries || 0) / 2);
             active.genericErrorRetries = Math.floor((active.genericErrorRetries || 0) / 2);
@@ -9388,6 +9431,23 @@ export class DownloadManager extends EventEmitter {
             this.retryStateByItem.delete(item.id);
             const failPkgDl = this.session.packages[item.packageId];
             if (failPkgDl) this.refreshPackageStatus(failPkgDl);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          const megaResetPark = parseMegaDebridResetPark(errorText);
+          if (megaResetPark && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            logger.warn(`Mega-Debrid bis Tagesreset gesperrt: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${megaResetPark.delayMs}ms, link=${item.url.slice(0, 80)}`);
+            this.queueRetry(
+              item,
+              active,
+              megaResetPark.delayMs,
+              `Mega-Debrid bis Tagesreset gesperrt, Pause ${Math.ceil(megaResetPark.delayMs / 1000)}s`
+            );
+            item.lastError = megaResetPark.detail || errorText;
             this.persistSoon();
             this.emitState();
             return;

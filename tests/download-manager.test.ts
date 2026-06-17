@@ -229,6 +229,78 @@ describe("download manager", () => {
     expect(historyEntries[0]?.downloadedBytes).toBe(90 * 1024 * 1024);
   });
 
+  it("findFallbackProviderNotInCooldown routes around cooled providers and returns null only when all are cooled", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-fallback-route-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        debridLinkApiKeys: "dl-token",
+        providerOrder: ["realdebrid", "debridlink"],
+        providerPrimary: "realdebrid",
+        providerSecondary: "debridlink",
+        providerTertiary: "none",
+        autoProviderFallback: true
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const item = { id: "fb-item", url: "https://hoster.example/file.bin", provider: "realdebrid" } as any;
+
+    expect((manager as any).findFallbackProviderNotInCooldown(item)).toBe("realdebrid");
+
+    (manager as any).applyProviderBusyBackoff("realdebrid", 60000);
+    expect((manager as any).findFallbackProviderNotInCooldown(item)).toBe("debridlink");
+
+    (manager as any).applyProviderBusyBackoff("debridlink", 60000);
+    expect((manager as any).findFallbackProviderNotInCooldown(item)).toBeNull();
+  });
+
+  it("fails an item terminally instead of looping forever when the shelve fires under a finite retryLimit", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-shelve-loop-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+
+    const session = emptySession();
+    const packageId = "shelve-pkg";
+    const itemId = "shelve-item";
+    const outputDir = path.join(root, "downloads", "Shelve");
+    const extractDir = path.join(root, "extract", "Shelve");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId, name: "Shelve", outputDir, extractDir,
+      status: "downloading", itemIds: [itemId], cancelled: false, enabled: true,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.items[itemId] = {
+      id: itemId, packageId, url: "https://hoster.example/flaky.bin", provider: "realdebrid",
+      status: "downloading", retries: 5, speedBps: 0, downloadedBytes: 0, totalBytes: null,
+      progressPercent: 0, fileName: "flaky.bin", targetPath: "", resumable: true,
+      attempts: 0, lastError: "", fullStatus: "", createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", retryLimit: 5, outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session,
+      storagePaths
+    );
+    (manager as any).retryStateByItem.set(itemId, { freshRetryUsed: true, resumeHardResetUsed: true, stallRetries: 0, genericErrorRetries: 15, unrestrictRetries: 0 });
+    (manager as any).debridService.unrestrictLink = async () => { throw new Error("Download-Backend Fehler xyz"); };
+
+    const active = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, active);
+
+    await (manager as any).processItem(active);
+
+    expect(session.items[itemId].status).toBe("failed");
+    expect(session.items[itemId].retries).toBeLessThan(20);
+  });
+
   it("keeps the quick post-process requeue once the final package items are finished", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-final-"));
     tempDirs.push(root);
