@@ -92,6 +92,17 @@ describe("pickAudioTrack", () => {
     expect(d).toMatchObject({ action: "remux", audioRelIndex: 0, reason: "fallback-first-untagged" });
   });
 
+  it("tag mode does NOT let an eng track titled 'German' beat a correctly-tagged German track", () => {
+    const engTitledGerman = { language: "eng", title: "German Commentary" };
+    const d = pickAudioTrack([engTitledGerman, ger], "tag");
+    expect(d).toMatchObject({ action: "remux", audioRelIndex: 1, reason: "german-tag" });
+  });
+
+  it("tag mode does NOT pick a non-German-tagged track just because its title contains 'Deutsch'", () => {
+    const d = pickAudioTrack([{ language: "eng", title: "Deutsch entfernt" }, { language: "fre", title: "" }], "tag");
+    expect(d).toMatchObject({ action: "skip", reason: "no-german-track" });
+  });
+
   it("tag mode with single German -> single (no remux)", () => {
     expect(pickAudioTrack([ger], "tag")).toMatchObject({ action: "single" });
   });

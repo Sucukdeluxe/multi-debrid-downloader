@@ -9633,6 +9633,7 @@ export class DownloadManager extends EventEmitter {
           await fs.promises.truncate(effectiveTargetPath, resumeStart);
           existingBytes = resumeStart;
           item.downloadedBytes = Math.min(item.downloadedBytes, existingBytes);
+          resumeRewindBytesNextAttempt = 0;
           logAttemptEvent("WARN", "Resume-Schutz aktiv: Teil-Datei vor Retry zurueckgespult", {
             attempt,
             previousBytes,
@@ -9646,8 +9647,6 @@ export class DownloadManager extends EventEmitter {
             rewindBytes,
             error: compactErrorText(rewindError)
           });
-        } finally {
-          resumeRewindBytesNextAttempt = 0;
         }
       } else if (resumeRewindBytesNextAttempt > 0) {
         resumeRewindBytesNextAttempt = 0;
@@ -10592,6 +10591,29 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
           await sleep(retryDelayWithJitter(attempt, 250));
           continue;
+        }
+        if (
+          item.totalBytes != null && item.totalBytes > 0
+          && written > existingBytes
+          && shouldRewindResumeTail(normalizedLastError)
+        ) {
+          const rewindTarget = Math.max(0, written - RESUME_REWIND_BYTES);
+          item.downloadedBytes = Math.min(item.downloadedBytes, rewindTarget);
+          try {
+            await fs.promises.truncate(effectiveTargetPath, rewindTarget);
+            logAttemptEvent("WARN", "Resume-Schutz: letzter Versuch vor Linkerneuerung zurueckgespult", {
+              attempt,
+              written,
+              rewindTarget
+            });
+          } catch (rewindError) {
+            logAttemptEvent("WARN", "Resume-Schutz: finales Rueckspulen fehlgeschlagen", {
+              attempt,
+              written,
+              rewindTarget,
+              error: compactErrorText(rewindError)
+            });
+          }
         }
         if (maxAttemptsBySetting > maxAttempts) {
           const exhaustedError = existingBytes > 0 && normalizedLastError.startsWith("download_underflow:")

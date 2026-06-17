@@ -1218,6 +1218,110 @@ describe("download manager", () => {
     }
   });
 
+  it("does not embed a final-attempt garbage tail across a fresh-link resume (known-total content integrity)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-range1-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(1024 * 1024, 0);
+    for (let i = 0; i < binary.length; i += 1) {
+      binary[i] = (i * 31 + 7) & 0xff;
+    }
+    const firstChunkBytes = 128 * 1024;
+    const injectedErrorChunk = Buffer.from("{\"error\":\"Missed session after 2000 ms\",\"success\":false}", "utf8");
+    let unrestrictCalls = 0;
+
+    const serveRange = (req: http.IncomingMessage): { start: number } => {
+      const range = String(req.headers.range || "");
+      const m = range.match(/bytes=(\d+)-/i);
+      return { start: m ? Number(m[1]) : 0 };
+    };
+
+    const server = http.createServer((req, res) => {
+      const route = req.url || "";
+      const { start } = serveRange(req);
+      if (route.startsWith("/corrupt")) {
+        if (start > 0) {
+          res.statusCode = 206;
+          res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+        } else {
+          res.statusCode = 200;
+        }
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(binary.length - start));
+        res.write(binary.subarray(start, Math.min(binary.length, start + firstChunkBytes)));
+        res.write(injectedErrorChunk);
+        setTimeout(() => {
+          try { res.socket?.destroy(); } catch {  }
+        }, 60);
+        return;
+      }
+      if (route.startsWith("/clean")) {
+        const chunk = binary.subarray(start);
+        if (start > 0) {
+          res.statusCode = 206;
+          res.setHeader("Content-Range", `bytes ${start}-${binary.length - 1}/${binary.length}`);
+        } else {
+          res.statusCode = 200;
+        }
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(chunk.length));
+        res.end(chunk);
+        return;
+      }
+      res.statusCode = 404;
+      res.end("not-found");
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const base = `http://127.0.0.1:${address.port}`;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        unrestrictCalls += 1;
+        const target = unrestrictCalls === 1 ? `${base}/corrupt` : `${base}/clean`;
+        return new Response(
+          JSON.stringify({ download: target, filename: "range1.mkv", filesize: binary.length }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      manager.addPackages([{ name: "range1", links: ["https://dummy/range1"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(unrestrictCalls).toBeGreaterThanOrEqual(2);
+      const finalBytes = fs.readFileSync(item.targetPath);
+      expect(finalBytes.length).toBe(binary.length);
+      expect(finalBytes.equals(binary)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("requests a fresh direct link after repeated same-link download failures", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

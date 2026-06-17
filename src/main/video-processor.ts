@@ -104,6 +104,9 @@ function isGermanStream(stream: ProbedAudioStream): boolean {
   // Free-text title fallback (used when the language tag is missing). Full words
   // only — the 2-3 letter codes ger/deu are too ambiguous in a title and would
   // pick the wrong track to keep (which then deletes the real German one).
+  if (lang) {
+    return false;
+  }
   const title = (stream.title || "").toLowerCase();
   return /\b(german|deutsch)\b/.test(title);
 }
