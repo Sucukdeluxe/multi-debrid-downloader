@@ -2183,6 +2183,15 @@ class MegaDebridClient {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "skip" };
     }
 
+    if (/rate.?limit|too.?many|429/i.test(errorText)) {
+      return {
+        fatal: false,
+        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
+        message: `Rate-Limit (${errorText})`,
+        category: "rate_limit"
+      };
+    }
+
     if (/quota|limit|exceeded|bandwidth/i.test(errorText)) {
       return {
         fatal: false,
@@ -2199,15 +2208,6 @@ class MegaDebridClient {
         message: "Kein Server fuer diesen Hoster (Tageslimit/Hoster nicht verfuegbar)",
         category: "quota",
         limitSignal: true
-      };
-    }
-
-    if (/rate.?limit|too.?many|429/i.test(errorText)) {
-      return {
-        fatal: false,
-        cooldownMs: MEGA_DEBRID_ACCOUNT_COOLDOWN_MS,
-        message: `Rate-Limit (${errorText})`,
-        category: "rate_limit"
       };
     }
 

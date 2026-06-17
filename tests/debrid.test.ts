@@ -1417,6 +1417,42 @@ describe("debrid service", () => {
     }
   });
 
+  it("categorizes a Mega-Debrid 'rate limit' error as rate_limit, not quota (regex ordering)", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "tok", vip_end: Math.floor(Date.now() / 1000) + 999999 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "error", response_text: "Rate limit exceeded, too many requests" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    await service.unrestrictLink("https://rapidgator.net/file/rl.rar.html").then(() => null, (e: unknown) => e);
+
+    const cooldown = getMegaDebridAccountCooldownState(`${getMegaDebridAccountId("user")}:api`);
+    expect(cooldown).not.toBeNull();
+    expect(cooldown!.category).toBe("rate_limit");
+  });
+
   it("uses Mega Web only when it is configured as a separate fallback provider", async () => {
     const settings = {
       ...defaultSettings(),

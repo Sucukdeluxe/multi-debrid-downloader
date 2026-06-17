@@ -645,6 +645,20 @@ function parseDebridLinkCooldownRetry(errorText: string): { delayMs: number; det
   return { delayMs, detail };
 }
 
+export function parseMegaDebridCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
+  const text = String(errorText || "");
+  const matches = [...text.matchAll(/mega_debrid_cooldown:(\d+)/gi)];
+  if (matches.length === 0) {
+    return null;
+  }
+  const delays = matches.map((m) => Number(m[1])).filter((n) => Number.isFinite(n) && n > 0);
+  if (delays.length === 0) {
+    return null;
+  }
+  const delayMs = Math.max(1000, Math.min(15 * 60 * 1000, Math.min(...delays)));
+  return { delayMs, detail: text.replace(/mega_debrid_cooldown:\d+:/i, "").trim() };
+}
+
 function parseDebridLinkTerminalFailure(errorText: string): { kind: "invalid_all" | "no_active_key"; detail: string } | null {
   const raw = String(errorText || "");
   const match = raw.match(/debrid_link_(invalid_all|no_active_key):(.*)$/i);
@@ -7764,6 +7778,7 @@ export class DownloadManager extends EventEmitter {
     this.settings.providerDailyUsageDay = currentDay;
     this.settings.providerDailyUsageBytes = {};
     this.settings.debridLinkApiKeyDailyUsageBytes = {};
+    this.settings.megaDebridAccountDailyUsageBytes = {};
     this.statsCache = null;
     this.statsCacheAt = 0;
     if (persist) {
@@ -8474,6 +8489,7 @@ export class DownloadManager extends EventEmitter {
         const retryAfter = this.retryAfterByItem.get(itemId) || 0;
         if (retryAfter > now) continue;
         if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
+        if (this.activeTasks.has(itemId)) continue;
         if (this.delayPacedStartForItem(item, now)) continue;
         if (this.shouldDelayStartForItem(item)) continue;
 
@@ -9344,6 +9360,23 @@ export class DownloadManager extends EventEmitter {
             this.retryStateByItem.delete(item.id);
             const failPkgDl = this.session.packages[item.packageId];
             if (failPkgDl) this.refreshPackageStatus(failPkgDl);
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          const megaCooldownRetry = parseMegaDebridCooldownRetry(errorText);
+          if (megaCooldownRetry && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            logger.warn(`Mega-Debrid Account-Cooldown: item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${megaCooldownRetry.delayMs}ms, link=${item.url.slice(0, 80)}`);
+            this.queueRetry(
+              item,
+              active,
+              megaCooldownRetry.delayMs,
+              `Mega-Debrid Cooldown, neuer Versuch in ${Math.ceil(megaCooldownRetry.delayMs / 1000)}s`
+            );
+            item.lastError = megaCooldownRetry.detail || errorText;
             this.persistSoon();
             this.emitState();
             return;

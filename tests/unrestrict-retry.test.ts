@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transientResolveRetryDelayMs } from "../src/main/download-manager";
+import { transientResolveRetryDelayMs, parseMegaDebridCooldownRetry } from "../src/main/download-manager";
 
 describe("transientResolveRetryDelayMs (fast, bounded retry for transient resolve failures)", () => {
   it("starts fast (<= 3s) instead of the 5s..120s exponential", () => {
@@ -27,5 +27,34 @@ describe("transientResolveRetryDelayMs (fast, bounded retry for transient resolv
       expect(d).toBeGreaterThanOrEqual(prev);
       prev = d;
     }
+  });
+});
+
+describe("parseMegaDebridCooldownRetry (honor the encoded account-cooldown delay)", () => {
+  it("parses the encoded delay from a bare mega_debrid_cooldown error", () => {
+    const r = parseMegaDebridCooldownRetry("mega_debrid_cooldown:20330:Mega-Debrid (Account 2/2, Da******el): Token error");
+    expect(r).not.toBeNull();
+    expect(r!.delayMs).toBe(20330);
+    expect(r!.detail).toContain("Mega-Debrid");
+  });
+
+  it("parses it when embedded in the aggregated provider-chain error", () => {
+    const aggregated = "Unrestrict fehlgeschlagen: Mega-Debrid API: mega_debrid_cooldown:20330:Mega-Debrid (Account 2/2): Token error";
+    expect(parseMegaDebridCooldownRetry(aggregated)!.delayMs).toBe(20330);
+  });
+
+  it("takes the SOONEST (min) cooldown when several accounts are cooled", () => {
+    const both = "Mega-Debrid API: mega_debrid_cooldown:116285:web | Mega-Debrid API: mega_debrid_cooldown:20330:api";
+    expect(parseMegaDebridCooldownRetry(both)!.delayMs).toBe(20330);
+  });
+
+  it("clamps to [1s, 15min]", () => {
+    expect(parseMegaDebridCooldownRetry("mega_debrid_cooldown:1:x")!.delayMs).toBe(1000);
+    expect(parseMegaDebridCooldownRetry("mega_debrid_cooldown:99999999:x")!.delayMs).toBe(15 * 60 * 1000);
+  });
+
+  it("returns null when there is no mega cooldown marker", () => {
+    expect(parseMegaDebridCooldownRetry("Datei beim Hoster gerade nicht abrufbar")).toBeNull();
+    expect(parseMegaDebridCooldownRetry("debrid_link_cooldown:5000:x")).toBeNull();
   });
 });

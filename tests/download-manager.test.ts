@@ -6721,6 +6721,88 @@ describe("download manager", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
   });
 
+  it("resets Mega-Debrid per-account daily usage at the day boundary (not just provider/debrid-link)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const acctId = getMegaDebridAccountId("mega-user");
+
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user:mega-pass",
+        providerDailyUsageDay: "2000-01-01",
+        providerDailyUsageBytes: { megadebrid: 9_000_000_000 } as Record<string, number>,
+        megaDebridAccountDailyUsageBytes: { [acctId]: 9_000_000_000 } as Record<string, number>,
+        megaDebridAccountDailyLimitBytes: { [acctId]: 1_000_000_000 } as Record<string, number>
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {}
+    );
+
+    const snap = manager.getSnapshot();
+    expect(snap.settings.providerDailyUsageDay).not.toBe("2000-01-01");
+    expect(snap.settings.megaDebridAccountDailyUsageBytes || {}).toEqual({});
+    expect(snap.settings.providerDailyUsageBytes || {}).toEqual({});
+  });
+
+  it("does not freeze the scheduler when a reset item's old task is parked in a non-abort-observing await", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    let convCalls = 0;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaCredentials: "mega-user:mega-pass",
+        megaDebridWebEnabled: true,
+        megaDebridApiEnabled: false,
+        megaDebridPreferApi: false,
+        providerOrder: [],
+        providerPrimary: "megadebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 4
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        megaWebUnrestrict: vi.fn(async (): Promise<UnrestrictedLink | null> => {
+          convCalls += 1;
+          return await new Promise<UnrestrictedLink | null>(() => { /* never settles, ignores abort */ });
+        })
+      }
+    );
+
+    manager.addPackages([{
+      name: "freeze-repro",
+      links: [
+        "https://rapidgator.net/file/freeze-1.part1.rar.html",
+        "https://rapidgator.net/file/freeze-2.part2.rar.html",
+        "https://rapidgator.net/file/freeze-3.part3.rar.html"
+      ]
+    }]);
+
+    await manager.start();
+    await waitFor(() => convCalls === 1, 10000);
+
+    const validatingItem = Object.values(manager.getSnapshot().session.items).find((i) => i.status === "validating");
+    expect(validatingItem).toBeTruthy();
+
+    manager.resetItems([validatingItem!.id]);
+
+    await waitFor(() => convCalls === 2, 5000);
+    expect(convCalls).toBe(2);
+
+    manager.stop();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }, 20000);
+
   it("serializes Mega-Debrid API conversions to one per account (no single-token hammering)", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
