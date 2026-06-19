@@ -2,6 +2,12 @@ import type { AppSettings, SessionState, HistoryEntry } from "../shared/types";
 
 export type BackupKind = "full" | "settings-only";
 
+export interface BackupMcpRemote {
+  allowlist: string[];
+  port: number;
+  hostMode: "local" | "network";
+}
+
 export interface BackupPayload {
   version: 2;
   kind: BackupKind;
@@ -10,6 +16,7 @@ export interface BackupPayload {
   settings: AppSettings;
   session?: SessionState;
   history?: HistoryEntry[];
+  mcpRemote?: BackupMcpRemote;
 }
 
 export interface BuildBackupInput {
@@ -19,6 +26,7 @@ export interface BuildBackupInput {
   /** Only bundled when includeDownloads is true. */
   session: SessionState;
   history: HistoryEntry[];
+  mcpRemote?: BackupMcpRemote;
 }
 
 /**
@@ -40,7 +48,37 @@ export function buildBackupPayload(input: BuildBackupInput): BackupPayload {
     base.session = input.session;
     base.history = input.history;
   }
+  if (Boolean(input.settings.backupIncludeMcp) && input.mcpRemote) {
+    base.mcpRemote = input.mcpRemote;
+  }
   return base;
+}
+
+export interface McpRemoteRestore {
+  host?: "127.0.0.1" | "0.0.0.0";
+  port?: number;
+  allowlist?: string[];
+}
+
+export function resolveMcpRemoteRestore(section: unknown): McpRemoteRestore | null {
+  if (!section || typeof section !== "object") {
+    return null;
+  }
+  const s = section as { allowlist?: unknown; port?: unknown; hostMode?: unknown };
+  const allowlist = Array.isArray(s.allowlist)
+    ? s.allowlist.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
+    : undefined;
+  const port = (typeof s.port === "number" && Number.isInteger(s.port) && s.port >= 1024 && s.port <= 65535) ? s.port : undefined;
+  let host: "127.0.0.1" | "0.0.0.0" | undefined;
+  if (s.hostMode === "network") {
+    host = allowlist && allowlist.length > 0 ? "0.0.0.0" : "127.0.0.1";
+  } else if (s.hostMode === "local") {
+    host = "127.0.0.1";
+  }
+  if (host === undefined && port === undefined && allowlist === undefined) {
+    return null;
+  }
+  return { host, port, allowlist };
 }
 
 export interface ImportPlan {

@@ -856,7 +856,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false,
+    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeMcp: false,
     notifyUrl: "", notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
@@ -5442,6 +5442,8 @@ export function App(): ReactElement {
                     <div className="setting-hint">Sicherheitsabfrage vor dem Entfernen ausgewählter Einträge.</div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste mitsichern</label>
                     <div className="setting-hint">Sicherung enthält auch die Download-Liste; Standard: nur Einstellungen.</div>
+                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeMcp} onChange={(e) => setBool("backupIncludeMcp", e.target.checked)} /> Ferndiagnose-Einstellungen mitsichern</label>
+                    <div className="setting-hint">Allowlist, Port und Freigabemodus (lokal/Netzwerk) reisen mit. Verbindungs-Token und eigene Adresse bleiben pro Server – nach dem Import einmal „Aktivieren" drücken.</div>
                     <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
                       const next = e.target.checked ? "light" : "dark";
                       settingsDraftRevisionRef.current += 1;

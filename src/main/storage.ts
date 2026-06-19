@@ -461,6 +461,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     hideExtractedItems: settings.hideExtractedItems !== undefined ? Boolean(settings.hideExtractedItems) : defaults.hideExtractedItems,
     confirmDeleteSelection: settings.confirmDeleteSelection !== undefined ? Boolean(settings.confirmDeleteSelection) : defaults.confirmDeleteSelection,
     backupIncludeDownloads: settings.backupIncludeDownloads !== undefined ? Boolean(settings.backupIncludeDownloads) : defaults.backupIncludeDownloads,
+    backupIncludeMcp: settings.backupIncludeMcp !== undefined ? Boolean(settings.backupIncludeMcp) : defaults.backupIncludeMcp,
     notifyUrl: asText(settings.notifyUrl) || defaults.notifyUrl,
     notifyMention: asText(settings.notifyMention) || defaults.notifyMention,
     notifyOnPackageCompleted: settings.notifyOnPackageCompleted !== undefined ? Boolean(settings.notifyOnPackageCompleted) : defaults.notifyOnPackageCompleted,

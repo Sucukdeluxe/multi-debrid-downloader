@@ -45,7 +45,7 @@ import { runInstallWithResume } from "./update-install-flow";
 import { rotateDebugToken, startDebugServer, stopDebugServer, restartDebugServer, getDebugServerRuntimeStatus, getActiveDebugToken, getDebugAllowlist, writeDebugServerConfig, clearDebugToken } from "./debug-server";
 import { encodeConnectionCode, loadRemoteMeta, saveRemoteMeta } from "./connection-code";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
-import { buildBackupPayload, planBackupImport } from "./backup-payload";
+import { buildBackupPayload, planBackupImport, resolveMcpRemoteRestore, BackupMcpRemote } from "./backup-payload";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
 import { initAccountRotationLog, shutdownAccountRotationLog } from "./account-rotation-log";
 import { initConversionLog, shutdownConversionLog } from "./conversion-trace";
@@ -370,6 +370,23 @@ export class AppController {
     await restartDebugServer();
     this.audit("WARN", "Ferndiagnose-Token rotiert");
     return this.getRemoteDiagnostics();
+  }
+
+  private restoreMcpRemoteFromBackup(section: unknown, restartNow: boolean): void {
+    const restore = resolveMcpRemoteRestore(section);
+    if (!restore) {
+      return;
+    }
+    writeDebugServerConfig({ host: restore.host, port: restore.port, allowlist: restore.allowlist });
+    if (restartNow) {
+      void restartDebugServer().catch(() => {});
+    }
+    this.audit("INFO", "Ferndiagnose-Einstellungen aus Backup wiederhergestellt", {
+      port: restore.port ?? null,
+      allowlistCount: restore.allowlist?.length ?? 0,
+      host: restore.host ?? "unveraendert",
+      restartNow
+    });
   }
 
   public getDebugSetupCheck(): DebugSetupCheckResult {
@@ -724,13 +741,22 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public exportBackup(): Buffer {
-    const includeDownloads = Boolean(this.settings.backupIncludeDownloads);
+    let mcpRemote: BackupMcpRemote | undefined;
+    if (Boolean(this.settings.backupIncludeMcp)) {
+      const status = getDebugServerRuntimeStatus();
+      mcpRemote = {
+        allowlist: getDebugAllowlist(),
+        port: status.port,
+        hostMode: status.host === "0.0.0.0" ? "network" : "local"
+      };
+    }
     const payloadObj = buildBackupPayload({
       settings: { ...this.settings },
       appVersion: APP_VERSION,
       exportedAt: new Date().toISOString(),
       session: this.manager.getSession(),
-      history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits())
+      history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits()),
+      mcpRemote
     });
     this.audit("INFO", "Backup exportiert", {
       kind: payloadObj.kind,
@@ -804,6 +830,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       this.settings = restoredSettings;
       saveSettings(this.storagePaths, this.settings);
       this.manager.setSettings(this.settings, { suppressRetroactiveCleanup: true });
+      this.restoreMcpRemoteFromBackup(parsed.mcpRemote, true);
       this.audit("INFO", "Backup importiert (nur Einstellungen)", {
         accountSummary: buildAccountSummary(this.settings)
       });
@@ -839,6 +866,8 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     }
 
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+
+    this.restoreMcpRemoteFromBackup(parsed.mcpRemote, false);
 
     this.manager.skipShutdownPersist = true;
     this.manager.blockAllPersistence = true;

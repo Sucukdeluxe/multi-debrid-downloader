@@ -134,6 +134,7 @@ export interface AppSettings {
   hideExtractedItems: boolean;
   confirmDeleteSelection: boolean;
   backupIncludeDownloads: boolean;
+  backupIncludeMcp: boolean;
   notifyUrl: string;
   notifyMention: string;
   notifyOnPackageCompleted: boolean;

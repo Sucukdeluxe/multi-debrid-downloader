@@ -109,6 +109,7 @@ export function defaultSettings(): AppSettings {
     hideExtractedItems: true,
     confirmDeleteSelection: true,
     backupIncludeDownloads: false,
+    backupIncludeMcp: false,
     notifyUrl: "",
     notifyMention: "",
     notifyOnPackageCompleted: false,
