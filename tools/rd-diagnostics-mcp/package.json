@@ -1,0 +1,18 @@
+{
+  "name": "rd-diagnostics-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone stdio MCP bridge to the Real-Debrid-Downloader debug-server. Connects via connection code, proxies the read-only HTTP diagnostics API as MCP tools.",
+  "type": "module",
+  "bin": {
+    "rd-diagnostics-mcp": "src/bridge.mjs"
+  },
+  "scripts": {
+    "start": "node src/bridge.mjs",
+    "test": "node test/harness.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  }
+}

@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import v8 from "node:v8";
 import { app } from "electron";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
@@ -9,9 +10,11 @@ import {
   DebridAccountStatus,
   DebridProvider,
   DuplicatePolicy,
+  EnableRemoteDiagnosticsInput,
   HistoryEntry,
   PackagePriority,
   ParsedPackageInput,
+  RemoteDiagnosticsInfo,
   SessionStats,
   StartConflictEntry,
   StartConflictResolutionResult,
@@ -39,7 +42,8 @@ import { MegaWebFallback } from "./mega-web-fallback";
 import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { runInstallWithResume } from "./update-install-flow";
-import { rotateDebugToken, startDebugServer, stopDebugServer } from "./debug-server";
+import { rotateDebugToken, startDebugServer, stopDebugServer, restartDebugServer, getDebugServerRuntimeStatus, getActiveDebugToken, getDebugAllowlist, writeDebugServerConfig, clearDebugToken } from "./debug-server";
+import { encodeConnectionCode, loadRemoteMeta, saveRemoteMeta } from "./connection-code";
 import { encryptBackup, decryptBackup } from "./backup-crypto";
 import { buildBackupPayload, planBackupImport } from "./backup-payload";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "./audit-log";
@@ -289,6 +293,83 @@ export class AppController {
     const rotated = rotateDebugToken(this.storagePaths.baseDir);
     this.audit("WARN", "Debug-Token rotiert", { path: rotated.path });
     return rotated;
+  }
+
+  private getSuggestedRemoteHosts(): string[] {
+    const hosts: string[] = [];
+    try {
+      const interfaces = os.networkInterfaces();
+      for (const entry of Object.values(interfaces)) {
+        for (const net of entry || []) {
+          if (net.family === "IPv4" && !net.internal && net.address) {
+            hosts.push(net.address);
+          }
+        }
+      }
+    } catch {
+    }
+    return [...new Set(hosts)];
+  }
+
+  public getRemoteDiagnostics(): RemoteDiagnosticsInfo {
+    const status = getDebugServerRuntimeStatus();
+    const meta = loadRemoteMeta(this.storagePaths.baseDir);
+    const token = getActiveDebugToken();
+    const allowlist = getDebugAllowlist();
+    const suggestedHosts = this.getSuggestedRemoteHosts();
+    const host = meta.publicHost
+      || (status.localOnly ? "127.0.0.1" : (suggestedHosts[0] || status.host));
+    const code = (status.hasToken && token && host)
+      ? encodeConnectionCode({ host, port: status.port, token, name: meta.name || undefined })
+      : null;
+    return {
+      status,
+      code,
+      publicHost: meta.publicHost,
+      name: meta.name,
+      allowlist,
+      suggestedHosts
+    };
+  }
+
+  public async enableRemoteDiagnostics(input: EnableRemoteDiagnosticsInput): Promise<RemoteDiagnosticsInfo> {
+    const baseDir = this.storagePaths.baseDir;
+    const port = input.port && Number.isInteger(input.port) && input.port >= 1024 && input.port <= 65535
+      ? input.port
+      : 9868;
+    const bindHost = input.hostMode === "network" ? "0.0.0.0" : "127.0.0.1";
+    const allowlist = (input.allowlist || []).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+    if (input.hostMode === "network" && allowlist.length === 0) {
+      throw new Error("Netzwerk-Freigabe erfordert mindestens eine erlaubte IP oder CIDR in der Allowlist.");
+    }
+    let token = getActiveDebugToken();
+    if (!token || input.rotateToken) {
+      token = rotateDebugToken(baseDir).token;
+    }
+    writeDebugServerConfig({ host: bindHost, port, allowlist });
+    saveRemoteMeta(baseDir, { publicHost: (input.publicHost || "").trim(), name: (input.name || "").trim() });
+    await restartDebugServer();
+    this.audit("WARN", "Ferndiagnose aktiviert", {
+      host: bindHost,
+      port,
+      allowlistCount: allowlist.length,
+      localOnly: input.hostMode === "local"
+    });
+    return this.getRemoteDiagnostics();
+  }
+
+  public async disableRemoteDiagnostics(): Promise<RemoteDiagnosticsInfo> {
+    clearDebugToken();
+    await restartDebugServer();
+    this.audit("WARN", "Ferndiagnose deaktiviert (Token entfernt)");
+    return this.getRemoteDiagnostics();
+  }
+
+  public async rotateRemoteDiagnosticsToken(): Promise<RemoteDiagnosticsInfo> {
+    rotateDebugToken(this.storagePaths.baseDir);
+    await restartDebugServer();
+    this.audit("WARN", "Ferndiagnose-Token rotiert");
+    return this.getRemoteDiagnostics();
   }
 
   public getDebugSetupCheck(): DebugSetupCheckResult {

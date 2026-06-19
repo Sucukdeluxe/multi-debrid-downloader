@@ -7,8 +7,10 @@ import type {
   DebridLinkHostLimitInfo,
   DebridProvider,
   DuplicatePolicy,
+  EnableRemoteDiagnosticsInput,
   HistoryEntry,
   PackagePriority,
+  RemoteDiagnosticsInfo,
   RendererErrorReport,
   SessionStats,
   StartConflictEntry,
@@ -71,6 +73,10 @@ export interface ElectronApi {
   getTraceConfig: () => Promise<SupportTraceConfig>;
   setTraceEnabled: (enabled: boolean, note?: string, durationMinutes?: number) => Promise<SupportTraceConfig>;
   rotateDebugToken: () => Promise<{ path: string }>;
+  getRemoteDiagnostics: () => Promise<RemoteDiagnosticsInfo>;
+  enableRemoteDiagnostics: (input: EnableRemoteDiagnosticsInput) => Promise<RemoteDiagnosticsInfo>;
+  disableRemoteDiagnostics: () => Promise<RemoteDiagnosticsInfo>;
+  rotateRemoteDiagnosticsToken: () => Promise<RemoteDiagnosticsInfo>;
   openRealDebridLogin: () => Promise<void>;
   openAllDebridLogin: () => Promise<void>;
   importBestDebridCookies: () => Promise<number>;

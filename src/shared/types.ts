@@ -537,3 +537,30 @@ export interface RendererErrorReport {
   column?: number;
   componentStack?: string;
 }
+
+export interface RemoteDiagnosticsStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  hasToken: boolean;
+  localOnly: boolean;
+  allowlistCount: number;
+}
+
+export interface RemoteDiagnosticsInfo {
+  status: RemoteDiagnosticsStatus;
+  code: string | null;
+  publicHost: string;
+  name: string;
+  allowlist: string[];
+  suggestedHosts: string[];
+}
+
+export interface EnableRemoteDiagnosticsInput {
+  hostMode: "local" | "network";
+  publicHost: string;
+  port?: number;
+  allowlist: string[];
+  name?: string;
+  rotateToken?: boolean;
+}

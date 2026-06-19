@@ -65,6 +65,16 @@ let authToken = "";
 let bindHost = DEFAULT_HOST;
 let bindPort = DEFAULT_PORT;
 let runtimeBaseDir = "";
+let allowlist: string[] = [];
+
+export interface DebugServerRuntimeStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  hasToken: boolean;
+  localOnly: boolean;
+  allowlistCount: number;
+}
 
 function getStoragePaths() {
   return createStoragePaths(runtimeBaseDir);
@@ -138,6 +148,94 @@ function getHost(baseDir: string): string {
   } catch {
   }
   return DEFAULT_HOST;
+}
+
+function getAllowlistPath(baseDir: string = runtimeBaseDir): string {
+  return path.join(baseDir, "debug_allowlist.txt");
+}
+
+function loadAllowlist(baseDir: string): string[] {
+  try {
+    return fs.readFileSync(getAllowlistPath(baseDir), "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeIp(ip: string): string {
+  return String(ip || "").trim().replace(/^::ffff:/i, "").toLowerCase();
+}
+
+function isLoopbackIp(ip: string): boolean {
+  const x = normalizeIp(ip);
+  return x === "::1" || x === "localhost" || x.startsWith("127.");
+}
+
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) {
+    return null;
+  }
+  let result = 0;
+  for (const part of parts) {
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255) {
+      return null;
+    }
+    result = (result * 256) + value;
+  }
+  return result >>> 0;
+}
+
+function matchIpRule(clientIp: string, rule: string): boolean {
+  const client = normalizeIp(clientIp);
+  const r = rule.trim().toLowerCase();
+  if (!r) {
+    return false;
+  }
+  if (r === "*" || r === "0.0.0.0/0") {
+    return true;
+  }
+  if (r === client) {
+    return true;
+  }
+  const slash = r.indexOf("/");
+  if (slash > 0) {
+    const baseInt = ipv4ToInt(r.slice(0, slash));
+    const clientInt = ipv4ToInt(client);
+    const bits = Number(r.slice(slash + 1));
+    if (baseInt === null || clientInt === null || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+      return false;
+    }
+    if (bits === 0) {
+      return true;
+    }
+    const mask = bits === 32 ? 0xffffffff : (~((1 << (32 - bits)) - 1)) >>> 0;
+    return (clientInt & mask) === (baseInt & mask);
+  }
+  return false;
+}
+
+export function evaluateClientAllowed(clientIp: string, rules: string[]): boolean {
+  const client = normalizeIp(clientIp);
+  if (isLoopbackIp(client) || client === "") {
+    return true;
+  }
+  if (rules.length === 0) {
+    return false;
+  }
+  return rules.some((rule) => matchIpRule(client, rule));
+}
+
+export function getPeerIp(req: http.IncomingMessage): string {
+  return normalizeIp(req.socket?.remoteAddress || "");
+}
+
+function isClientAllowed(clientIp: string): boolean {
+  return evaluateClientAllowed(clientIp, allowlist);
 }
 
 function checkAuth(req: http.IncomingMessage): boolean {
@@ -458,6 +556,19 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       "Access-Control-Allow-Methods": "GET,OPTIONS"
     });
     res.end();
+    return;
+  }
+
+  const peerIp = getPeerIp(req);
+  if (!isClientAllowed(peerIp)) {
+    if (traceConfig.enabled && traceConfig.logDebugRequests) {
+      logTraceEvent("WARN", "debug-http", "Durch Allowlist blockiert", {
+        peerIp,
+        forwardedFor: extractDebugClientIp(req),
+        url: sanitizeRequestUrlForTrace(req.url || "/")
+      });
+    }
+    jsonResponse(res, 403, { error: "Forbidden", reason: "Client-IP nicht in Allowlist", clientIp: peerIp });
     return;
   }
 
@@ -927,32 +1038,126 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   });
 }
 
+function openServerSocket(): Promise<void> {
+  return new Promise((resolve) => {
+    authToken = loadToken(runtimeBaseDir);
+    bindPort = getPort(runtimeBaseDir);
+    bindHost = getHost(runtimeBaseDir);
+    allowlist = loadAllowlist(runtimeBaseDir);
+    writeAiManifest(runtimeBaseDir);
+    if (!authToken) {
+      logger.info("Debug-Server: Kein Token in debug_token.txt, Server wird nicht gestartet");
+      resolve();
+      return;
+    }
+    if (bindHost === "0.0.0.0" && allowlist.length === 0) {
+      logger.warn("Debug-Server: Netzwerk-Bind ohne Allowlist - nur Loopback-Clients werden akzeptiert (fail-closed)");
+    }
+    const srv = http.createServer(handleRequest);
+    let settled = false;
+    const settle = (): void => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    srv.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        logger.warn(`Debug-Server: Port ${bindPort} belegt (EADDRINUSE) - Server nicht gestartet`);
+      } else {
+        logger.warn(`Debug-Server Fehler: ${String(err)}`);
+      }
+      if (server === srv) {
+        server = null;
+      }
+      settle();
+    });
+    srv.listen(bindPort, bindHost, () => {
+      logger.info(`Debug-Server gestartet auf ${bindHost}:${bindPort} (Allowlist: ${allowlist.length})`);
+      settle();
+    });
+    server = srv;
+  });
+}
+
 export function startDebugServer(mgr: DownloadManager, baseDir: string): void {
   runtimeBaseDir = baseDir;
-  authToken = loadToken(baseDir);
-  bindPort = getPort(baseDir);
-  bindHost = getHost(baseDir);
-  writeAiManifest(baseDir);
-  if (!authToken) {
-    logger.info("Debug-Server: Kein Token in debug_token.txt, Server wird nicht gestartet");
-    return;
-  }
-
   manager = mgr;
+  void openServerSocket();
+}
 
-  server = http.createServer(handleRequest);
-  server.listen(bindPort, bindHost, () => {
-    logger.info(`Debug-Server gestartet auf ${bindHost}:${bindPort}`);
-  });
-  server.on("error", (err) => {
-    logger.warn(`Debug-Server Fehler: ${String(err)}`);
+export async function restartDebugServer(): Promise<DebugServerRuntimeStatus> {
+  const old = server;
+  if (old) {
     server = null;
-  });
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const done = (): void => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      old.close(() => done());
+      try {
+        old.closeAllConnections?.();
+      } catch {
+      }
+      setTimeout(done, 1500);
+    });
+  }
+  await openServerSocket();
+  return getDebugServerRuntimeStatus();
+}
+
+export function getDebugServerRuntimeStatus(): DebugServerRuntimeStatus {
+  return {
+    running: Boolean(server && server.listening),
+    host: bindHost,
+    port: bindPort,
+    hasToken: Boolean(authToken),
+    localOnly: isLoopbackIp(bindHost) || bindHost === "127.0.0.1",
+    allowlistCount: allowlist.length
+  };
+}
+
+export function getActiveDebugToken(): string {
+  return authToken || loadToken(runtimeBaseDir);
+}
+
+export function getDebugAllowlist(): string[] {
+  return [...allowlist];
+}
+
+export function writeDebugServerConfig(opts: { host?: string; port?: number; allowlist?: string[] }): void {
+  if (opts.host !== undefined) {
+    fs.writeFileSync(path.join(runtimeBaseDir, "debug_host.txt"), `${opts.host}\n`, "utf8");
+  }
+  if (opts.port !== undefined) {
+    fs.writeFileSync(path.join(runtimeBaseDir, "debug_port.txt"), `${opts.port}\n`, "utf8");
+  }
+  if (opts.allowlist !== undefined) {
+    const body = opts.allowlist.length > 0 ? opts.allowlist.join("\n") + "\n" : "";
+    fs.writeFileSync(getAllowlistPath(), body, "utf8");
+  }
+}
+
+export function clearDebugToken(): void {
+  try {
+    fs.unlinkSync(getDebugTokenPath());
+  } catch {
+  }
+  authToken = "";
+  writeAiManifest(runtimeBaseDir);
 }
 
 export function stopDebugServer(): void {
   if (server) {
     server.close();
+    try {
+      server.closeAllConnections?.();
+    } catch {
+    }
     server = null;
     logger.info("Debug-Server gestoppt");
   }

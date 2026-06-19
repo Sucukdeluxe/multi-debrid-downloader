@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, shell, Tray } from "electron";
-import { AddLinksPayload, AppSettings, DebridProvider, UpdateInstallProgress } from "../shared/types";
+import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { getLogFilePath, logger } from "./logger";
@@ -669,6 +669,33 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ROTATE_DEBUG_TOKEN, async () => {
     const rotated = controller.rotateDebugToken();
     return { path: rotated.path };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_REMOTE_DIAGNOSTICS, async () => {
+    return controller.getRemoteDiagnostics();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ENABLE_REMOTE_DIAGNOSTICS, async (_event: IpcMainInvokeEvent, input: EnableRemoteDiagnosticsInput) => {
+    if (!input || (input.hostMode !== "local" && input.hostMode !== "network")) {
+      throw new Error("hostMode muss 'local' oder 'network' sein");
+    }
+    const allowlist = Array.isArray(input.allowlist) ? input.allowlist.map((entry) => String(entry)) : [];
+    return controller.enableRemoteDiagnostics({
+      hostMode: input.hostMode,
+      publicHost: String(input.publicHost || ""),
+      port: input.port ? Number(input.port) : undefined,
+      allowlist,
+      name: input.name ? String(input.name) : undefined,
+      rotateToken: Boolean(input.rotateToken)
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DISABLE_REMOTE_DIAGNOSTICS, async () => {
+    return controller.disableRemoteDiagnostics();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ROTATE_REMOTE_DIAGNOSTICS_TOKEN, async () => {
+    return controller.rotateRemoteDiagnosticsToken();
   });
 
   ipcMain.handle(IPC_CHANNELS.OPEN_ITEM_LOG, async (_event: IpcMainInvokeEvent, itemId: string) => {

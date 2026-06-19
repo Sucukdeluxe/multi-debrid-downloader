@@ -16,6 +16,7 @@ import type {
   DuplicatePolicy,
   HistoryEntry,
   PackageEntry,
+  RemoteDiagnosticsInfo,
   StartConflictEntry,
   UiSnapshot,
   UpdateCheckResult,
@@ -1761,6 +1762,14 @@ export function App(): ReactElement {
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
+  const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
+  const [remoteDiagOpen, setRemoteDiagOpen] = useState(false);
+  const [remoteDiagBusy, setRemoteDiagBusy] = useState(false);
+  const [rdHostMode, setRdHostMode] = useState<"local" | "network">("local");
+  const [rdPublicHost, setRdPublicHost] = useState("");
+  const [rdPort, setRdPort] = useState("9868");
+  const [rdAllowlist, setRdAllowlist] = useState("");
+  const [rdName, setRdName] = useState("");
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const confirmQueueRef = useRef<Array<{ prompt: ConfirmPromptState; resolve: (confirmed: boolean) => void }>>([]);
   const importQueueFocusHandlerRef = useRef<(() => void) | null>(null);
@@ -4328,6 +4337,89 @@ export function App(): ReactElement {
     });
   };
 
+  const applyRemoteDiagInfo = (info: RemoteDiagnosticsInfo): void => {
+    setRemoteDiag(info);
+    setRdHostMode(info.status.localOnly ? "local" : "network");
+    setRdPublicHost(info.publicHost || (info.status.localOnly ? "" : (info.suggestedHosts[0] || "")));
+    setRdPort(String(info.status.port || 9868));
+    setRdAllowlist(info.allowlist.join("\n"));
+    setRdName(info.name || "");
+  };
+
+  const onOpenRemoteDiagnostics = async (): Promise<void> => {
+    closeMenus();
+    try {
+      const info = await window.rd.getRemoteDiagnostics();
+      applyRemoteDiagInfo(info);
+      setRemoteDiagOpen(true);
+    } catch (error) {
+      showToast(`Ferndiagnose-Status fehlgeschlagen: ${String(error)}`, 3000);
+    }
+  };
+
+  const onSubmitRemoteDiagnostics = async (): Promise<void> => {
+    const port = Number(rdPort) || 9868;
+    const allowlist = rdAllowlist.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+    if (rdHostMode === "network" && allowlist.length === 0) {
+      showToast("Netzwerkmodus braucht mindestens eine IP oder CIDR in der Allowlist", 3600);
+      return;
+    }
+    setRemoteDiagBusy(true);
+    try {
+      const info = await window.rd.enableRemoteDiagnostics({
+        hostMode: rdHostMode,
+        publicHost: rdPublicHost,
+        port,
+        allowlist,
+        name: rdName
+      });
+      applyRemoteDiagInfo(info);
+      showToast(info.status.running ? "Ferndiagnose aktiv" : "Ferndiagnose konfiguriert", 2600);
+    } catch (error) {
+      showToast(`Aktivieren fehlgeschlagen: ${String(error)}`, 3600);
+    } finally {
+      setRemoteDiagBusy(false);
+    }
+  };
+
+  const onDisableRemoteDiagnostics = async (): Promise<void> => {
+    setRemoteDiagBusy(true);
+    try {
+      const info = await window.rd.disableRemoteDiagnostics();
+      applyRemoteDiagInfo(info);
+      showToast("Ferndiagnose deaktiviert", 2400);
+    } catch (error) {
+      showToast(`Deaktivieren fehlgeschlagen: ${String(error)}`, 3000);
+    } finally {
+      setRemoteDiagBusy(false);
+    }
+  };
+
+  const onRotateRemoteDiagnosticsToken = async (): Promise<void> => {
+    setRemoteDiagBusy(true);
+    try {
+      const info = await window.rd.rotateRemoteDiagnosticsToken();
+      applyRemoteDiagInfo(info);
+      showToast("Neues Token - alter Verbindungscode ist ungueltig", 3000);
+    } catch (error) {
+      showToast(`Token-Rotation fehlgeschlagen: ${String(error)}`, 3000);
+    } finally {
+      setRemoteDiagBusy(false);
+    }
+  };
+
+  const onCopyRemoteDiagnosticsCode = async (): Promise<void> => {
+    if (!remoteDiag?.code) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(remoteDiag.code);
+      showToast("Verbindungscode kopiert", 2200);
+    } catch {
+      showToast("Kopieren fehlgeschlagen", 2200);
+    }
+  };
+
   const onMenuRestart = (): void => {
     closeMenus();
     void window.rd.restart();
@@ -4718,6 +4810,7 @@ export function App(): ReactElement {
                 <button className="menu-submenu-trigger">Remote-Support</button>
                 {openSubmenu === "hilfe-remote" && (
                   <div className="menu-submenu-dropdown">
+                    <button className="menu-dropdown-item" onClick={() => { void onOpenRemoteDiagnostics(); }}><span>Ferndiagnose (MCP) …</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}><span>Support-Bundle exportieren</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}><span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span></button>
                   </div>
@@ -5928,6 +6021,97 @@ export function App(): ReactElement {
                 onClick={() => closeConfirmPrompt(true)}
               >
                 {confirmPrompt.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {remoteDiagOpen && (
+        <div className="modal-backdrop" onClick={() => setRemoteDiagOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Ferndiagnose (MCP)</h3>
+            <p>Aktiviert einen abgesicherten Lesezugriff auf Status, Logs und Fehler dieses Servers. Den Verbindungscode dem Assistenten geben - er verbindet sich, sieht alles und behebt Probleme.</p>
+            <div className="rd-status-line">
+              <span className={`rd-dot${remoteDiag?.status.running ? " on" : ""}`} />
+              <span>
+                {remoteDiag?.status.running
+                  ? `Aktiv auf ${remoteDiag.status.host}:${remoteDiag.status.port}${remoteDiag.status.localOnly ? " (nur lokal)" : ` (Allowlist: ${remoteDiag.status.allowlistCount})`}`
+                  : "Inaktiv"}
+              </span>
+            </div>
+
+            <div className="rd-field">
+              <label>Sichtbarkeit</label>
+              <div className="rd-seg">
+                <button className={rdHostMode === "local" ? "active" : ""} onClick={() => setRdHostMode("local")}>Nur lokal</button>
+                <button className={rdHostMode === "network" ? "active" : ""} onClick={() => setRdHostMode("network")}>Im Netzwerk</button>
+              </div>
+              <span className="rd-hint">
+                {rdHostMode === "local"
+                  ? "Bindet nur an 127.0.0.1. Fernzugriff nur ueber einen Tunnel (z.B. Tailscale/SSH) - die sicherste Variante."
+                  : "Bindet an 0.0.0.0. Erreichbar im Netzwerk, erfordert eine Allowlist. Nur in vertrauenswuerdigen Netzen/VPN nutzen."}
+              </span>
+            </div>
+
+            <div className="rd-field">
+              <label>Oeffentliche Adresse (fuer den Verbindungscode)</label>
+              <input
+                value={rdPublicHost}
+                placeholder={rdHostMode === "local" ? "127.0.0.1 oder Tunnel-Adresse" : "Server-IP oder DNS-Name"}
+                onChange={(event) => setRdPublicHost(event.target.value)}
+              />
+              {remoteDiag && remoteDiag.suggestedHosts.length > 0 && (
+                <div className="rd-chips">
+                  {remoteDiag.suggestedHosts.map((host) => (
+                    <button key={host} className="rd-chip" onClick={() => setRdPublicHost(host)}>{host}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rd-field rd-field-inline">
+              <div className="rd-field">
+                <label>Port</label>
+                <input value={rdPort} onChange={(event) => setRdPort(event.target.value.replace(/[^0-9]/g, ""))} />
+              </div>
+              <div className="rd-field">
+                <label>Name (optional)</label>
+                <input value={rdName} placeholder="z.B. Server-Berlin" onChange={(event) => setRdName(event.target.value)} />
+              </div>
+            </div>
+
+            {rdHostMode === "network" && (
+              <div className="rd-field">
+                <label>Allowlist - erlaubte IPs/CIDR (eine pro Zeile)</label>
+                <textarea
+                  value={rdAllowlist}
+                  placeholder={"203.0.113.5\n10.0.0.0/24"}
+                  onChange={(event) => setRdAllowlist(event.target.value)}
+                />
+                <span className="rd-hint">Pflicht im Netzwerkmodus. Nur diese Quell-IPs duerfen verbinden (zusaetzlich zum Token). Loopback ist immer erlaubt.</span>
+              </div>
+            )}
+
+            {remoteDiag?.status.running && remoteDiag.code && (
+              <div className="rd-field">
+                <label>Verbindungscode</label>
+                <div className="rd-code">{remoteDiag.code}</div>
+                <div className="rd-chips">
+                  <button className="btn" onClick={() => { void onCopyRemoteDiagnosticsCode(); }}>Kopieren</button>
+                  <button className="btn" onClick={() => { void onRotateRemoteDiagnosticsToken(); }} disabled={remoteDiagBusy}>Token neu (Code ungueltig machen)</button>
+                </div>
+                <span className="rd-hint">Enthaelt das Zugriffstoken - wie ein Passwort behandeln. Token neu = alter Code wird sofort ungueltig.</span>
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setRemoteDiagOpen(false)}>Schliessen</button>
+              {remoteDiag?.status.running && (
+                <button className="btn danger" onClick={() => { void onDisableRemoteDiagnostics(); }} disabled={remoteDiagBusy}>Deaktivieren</button>
+              )}
+              <button className="btn accent" onClick={() => { void onSubmitRemoteDiagnostics(); }} disabled={remoteDiagBusy}>
+                {remoteDiag?.status.running ? "Aktualisieren" : "Aktivieren"}
               </button>
             </div>
           </div>
