@@ -890,21 +890,50 @@ export function normalizeLoadedSessionTransientFields(session: SessionState): Se
   return session;
 }
 
+const TRANSIENT_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+
+function sleepSyncMs(ms: number): void {
+  if (ms <= 0) {
+    return;
+  }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function readSessionFile(filePath: string): SessionState | null {
+  let raw: string | null = null;
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      raw = fs.readFileSync(filePath, "utf8");
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code || "";
+      if (TRANSIENT_READ_CODES.has(code) && attempt < maxAttempts) {
+        const backoffMs = 100 * 2 ** (attempt - 1);
+        logger.warn(`Session-Datei vorübergehend gesperrt (${code}), Versuch ${attempt}/${maxAttempts}, warte ${backoffMs}ms: ${filePath}`);
+        sleepSyncMs(backoffMs);
+        continue;
+      }
+      if (code === "EACCES" || code === "EPERM") {
+        logger.error(`Session-Datei nicht zugreifbar (${code}): ${filePath} - pruefe Datei-/Ordner-Berechtigungen fuer Benutzer ${process.env.USERNAME || process.env.USER || "?"}`);
+      } else {
+        logger.error(`Session-Datei nicht lesbar (${code || "?"}): ${filePath}: ${String(error)}`);
+      }
+      return null;
+    }
+  }
+  if (raw === null) {
+    return null;
+  }
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    const parsed = JSON.parse(raw) as unknown;
     const session = normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
     const pkgCount = Object.keys(session.packages).length;
     const itemCount = Object.keys(session.items).length;
     logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items)`);
     return session;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException)?.code || "";
-    if (code === "EACCES" || code === "EPERM") {
-      logger.error(`Session-Datei nicht zugreifbar (${code}): ${filePath} - pruefe Datei-/Ordner-Berechtigungen fuer Benutzer ${process.env.USERNAME || process.env.USER || "?"}`);
-    } else {
-      logger.error(`Session-Datei nicht lesbar: ${filePath}: ${String(error)}`);
-    }
+    logger.error(`Session-Datei beschädigt (JSON ungültig): ${filePath}: ${String(error)}`);
     return null;
   }
 }
@@ -1004,17 +1033,31 @@ export function emptySession(): SessionState {
   };
 }
 
-export function loadSession(paths: StoragePaths): SessionState {
+export type SessionLoadStatus =
+  | "ok"
+  | "recovered-backup"
+  | "recovered-temp"
+  | "empty-fresh"
+  | "empty-unreadable";
+
+export interface SessionLoadResult {
+  session: SessionState;
+  status: SessionLoadStatus;
+}
+
+export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
   ensureBaseDir(paths.baseDir);
   const backupFile = sessionBackupPath(paths.sessionFile);
+  const syncTempFile = sessionTempPath(paths.sessionFile, "sync");
+  const asyncTempFile = sessionTempPath(paths.sessionFile, "async");
   const primaryExists = fs.existsSync(paths.sessionFile);
+  const backupExists = fs.existsSync(backupFile);
+  const anyTempExists = fs.existsSync(syncTempFile) || fs.existsSync(asyncTempFile);
+
   if (!primaryExists) {
-    const hasRecoverable = fs.existsSync(backupFile)
-      || fs.existsSync(sessionTempPath(paths.sessionFile, "sync"))
-      || fs.existsSync(sessionTempPath(paths.sessionFile, "async"));
-    if (!hasRecoverable) {
+    if (!backupExists && !anyTempExists) {
       logger.info("Keine Session-Datei vorhanden, starte mit leerer Session");
-      return emptySession();
+      return { session: emptySession(), status: "empty-fresh" };
     }
     logger.warn("Session-Primaerdatei fehlt, aber Backup/Temp vorhanden — Wiederherstellung wird versucht");
   }
@@ -1023,7 +1066,7 @@ export function loadSession(paths: StoragePaths): SessionState {
 
   if (primary) {
     const primaryPkgCount = Object.keys(primary.packages).length;
-    if (primaryPkgCount === 0 && fs.existsSync(backupFile)) {
+    if (primaryPkgCount === 0 && backupExists) {
       const backup = readSessionFile(backupFile);
       if (backup) {
         const backupPkgCount = Object.keys(backup.packages).length;
@@ -1031,29 +1074,27 @@ export function loadSession(paths: StoragePaths): SessionState {
           logger.warn(`Session-Datei ist leer (0 Pakete), aber Backup hat ${backupPkgCount} Pakete — verwende Backup`);
           try {
             const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
-            const tempPath = sessionTempPath(paths.sessionFile, "sync");
-            fs.writeFileSync(tempPath, payload, "utf8");
-            syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+            fs.writeFileSync(syncTempFile, payload, "utf8");
+            syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
           } catch {
           }
-          return backup;
+          return { session: backup, status: "recovered-backup" };
         }
       }
     }
-    return primary;
+    return { session: primary, status: "ok" };
   }
 
-  const backup = fs.existsSync(backupFile) ? readSessionFile(backupFile) : null;
+  const backup = backupExists ? readSessionFile(backupFile) : null;
   if (backup) {
     logger.warn("Session defekt, Backup-Datei wird verwendet");
     try {
       const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
-      const tempPath = sessionTempPath(paths.sessionFile, "sync");
-      fs.writeFileSync(tempPath, payload, "utf8");
-      syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+      fs.writeFileSync(syncTempFile, payload, "utf8");
+      syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
     } catch {
     }
-    return backup;
+    return { session: backup, status: "recovered-backup" };
   }
 
   for (const kind of ["sync", "async"] as const) {
@@ -1067,13 +1108,21 @@ export function loadSession(paths: StoragePaths): SessionState {
           fs.writeFileSync(paths.sessionFile, payload, "utf8");
         } catch {
         }
-        return tmpSession;
+        return { session: tmpSession, status: "recovered-temp" };
       }
     }
   }
 
-  logger.error("Session konnte nicht geladen werden (Primary, Backup und Temp-Dateien fehlgeschlagen)");
-  return emptySession();
+  if (primaryExists || backupExists || anyTempExists) {
+    logger.error("Session konnte nicht geladen werden (Primary, Backup und Temp-Dateien fehlgeschlagen) — Schutz gegen leeres Ueberschreiben aktiv");
+    return { session: emptySession(), status: "empty-unreadable" };
+  }
+
+  return { session: emptySession(), status: "empty-fresh" };
+}
+
+export function loadSession(paths: StoragePaths): SessionState {
+  return loadSessionWithStatus(paths).session;
 }
 
 export function saveSession(paths: StoragePaths, session: SessionState): void {
@@ -1088,7 +1137,13 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
   const tempPath = sessionTempPath(paths.sessionFile, "sync");
   try {
-    fs.writeFileSync(tempPath, payload, "utf8");
+    const fd = fs.openSync(tempPath, "w");
+    try {
+      fs.writeSync(fd, payload);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     syncRenameWithExdevFallback(tempPath, paths.sessionFile);
   } catch (error) {
     try { fs.rmSync(tempPath, { force: true }); } catch {  }
@@ -1104,7 +1159,13 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
   await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
   const tempPath = sessionTempPath(paths.sessionFile, "async");
-  await fsp.writeFile(tempPath, payload, "utf8");
+  const handle = await fsp.open(tempPath, "w");
+  try {
+    await handle.writeFile(payload, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   if (generation < syncSaveGeneration) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;

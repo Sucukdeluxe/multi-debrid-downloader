@@ -363,6 +363,7 @@ type DownloadManagerOptions = {
   bestDebridWebUnrestrict?: BestDebridWebUnrestrictor;
   invalidateMegaSession?: () => void;
   onHistoryEntry?: HistoryEntryCallback;
+  protectEmptyClobber?: boolean;
 };
 
 function generateHistoryId(): string {
@@ -1688,6 +1689,10 @@ export class DownloadManager extends EventEmitter {
 
   public blockAllPersistence = false;
 
+  private protectAgainstEmptyClobber = false;
+
+  private emptyClobberProtectionLogged = false;
+
   private debridService: DebridService;
 
   private invalidateMegaSessionFn?: () => void;
@@ -1831,6 +1836,10 @@ export class DownloadManager extends EventEmitter {
     this.session = session;
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
+    this.protectAgainstEmptyClobber = Boolean(options.protectEmptyClobber);
+    if (this.protectAgainstEmptyClobber) {
+      logger.warn("Session-Schutz aktiv: Start mit unlesbarer Session — leere Speicherungen blockiert, bis echte Daten vorliegen");
+    }
     this.debridService = new DebridService(settings, {
       megaWebUnrestrict: options.megaWebUnrestrict,
       allDebridWebUnrestrict: options.allDebridWebUnrestrict,
@@ -5821,7 +5830,9 @@ export class DownloadManager extends EventEmitter {
       const itemCount = Object.keys(this.session.items).length;
       logger.info(`Shutdown-Save: ${pkgCount} Pakete, ${itemCount} Items`);
       this.foldRuntimeIntoSettings(nowMs());
-      saveSession(this.storagePaths, this.session);
+      if (!this.guardBlocksSessionSave()) {
+        saveSession(this.storagePaths, this.session);
+      }
       saveSettings(this.storagePaths, this.settings);
     } else {
       logger.info(`Shutdown-Save übersprungen: skipShutdownPersist=${this.skipShutdownPersist}, blockAllPersistence=${this.blockAllPersistence}`);
@@ -6124,10 +6135,29 @@ export class DownloadManager extends EventEmitter {
     }, delay);
   }
 
+  private guardBlocksSessionSave(): boolean {
+    if (!this.protectAgainstEmptyClobber) {
+      return false;
+    }
+    const isEmpty = Object.keys(this.session.packages).length === 0 && Object.keys(this.session.items).length === 0;
+    if (isEmpty) {
+      if (!this.emptyClobberProtectionLogged) {
+        logger.warn("Leere Session-Speicherung uebersprungen (Schutz nach unlesbarem Start) — vorhandene Datei bleibt unangetastet");
+        this.emptyClobberProtectionLogged = true;
+      }
+      return true;
+    }
+    this.protectAgainstEmptyClobber = false;
+    logger.info("Session-Schutz aufgehoben: nicht-leere Session wird wieder normal gespeichert");
+    return false;
+  }
+
   private persistNow(): void {
     const now = nowMs();
     this.lastPersistAt = now;
-    void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
+    if (!this.guardBlocksSessionSave()) {
+      void saveSessionAsync(this.storagePaths, this.session).catch((err) => logger.warn(`saveSessionAsync Fehler: ${compactErrorText(err)}`));
+    }
     if (now - this.lastSettingsPersistAt >= 30000) {
       this.foldRuntimeIntoSettings(now);
       this.lastSettingsPersistAt = now;
@@ -6141,7 +6171,9 @@ export class DownloadManager extends EventEmitter {
     const itemCount = Object.keys(this.session.items).length;
     logger.info(`Pre-Update Sync-Save: ${pkgCount} Pakete, ${itemCount} Items`);
     this.foldRuntimeIntoSettings(nowMs());
-    saveSession(this.storagePaths, this.session);
+    if (!this.guardBlocksSessionSave()) {
+      saveSession(this.storagePaths, this.session);
+    }
     saveSettings(this.storagePaths, this.settings);
   }
 
