@@ -2071,6 +2071,55 @@ describe("debrid service", () => {
     expect(calls).toBeGreaterThanOrEqual(1);
   }, 20000);
 
+  it("single Mega-Debrid account: a long Web abort parks only the slow link and does NOT freeze the sole account", async () => {
+    process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+
+    const controller = new AbortController();
+    let calls = 0;
+    const megaWeb = vi.fn((): Promise<{ fileName: string; directUrl: string; fileSize: number | null; retriesUsed: number }> => {
+      calls += 1;
+      if (calls === 1) {
+        controller.abort("simulated-60s-timeout");
+        return Promise.reject(new Error("aborted"));
+      }
+      return Promise.resolve({
+        fileName: "healthy.rar",
+        directUrl: "https://www11.unrestrict.link/download/file/ok/healthy.rar",
+        fileSize: null,
+        retriesUsed: 0
+      });
+    });
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+
+    const err = await service.unrestrictLink("https://rapidgator.net/file/slow-link.rar.html", controller.signal).then(() => null, (e: unknown) => e);
+    expect(err).toBeTruthy();
+    expect(String(err)).toMatch(/mega_debrid_slow_link:\d+:/i);
+
+    const key = `${getMegaDebridAccountId("user")}:web`;
+    expect(getMegaDebridAccountCooldownState(key)).toBeNull();
+
+    const second = await service.unrestrictLink("https://rapidgator.net/file/healthy.rar.html");
+    expect(second.provider).toBe("megadebrid");
+    expect(calls).toBeGreaterThanOrEqual(2);
+  }, 20000);
+
   it("escalates a Mega-Debrid account to 'until restart' after the empty-response streak threshold", () => {
     const key = `${getMegaDebridAccountId("user1")}:web`;
     expect(MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART).toBe(3);

@@ -288,6 +288,7 @@ type MegaDebridCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporar
 type MegaDebridCooldownDetail = { until: number; message: string; category: MegaDebridCooldownCategory; untilRestart?: boolean };
 const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
 const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000;
+const MEGA_DEBRID_SLOW_LINK_RETRY_MS = 120_000;
 const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
 
 // A Mega-Web account abort (the shared unrestrict timeout firing while this
@@ -2068,15 +2069,33 @@ class MegaDebridClient {
       } catch (error) {
         const elapsedMs = Date.now() - testStartedAt;
         const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
-        // Timeout/abort on THIS account (the shared unrestrict signal fired). Cool
-        // the account down — if it actually ran, not a quick user-cancel — so the
-        // download-manager's retry rotates to the NEXT account instead of hammering
-        // this one. The shared signal is now aborted, so we stop this pass; the
-        // retry runs the rotation fresh with this account skipped. A genuine cancel
-        // is not retried by the caller, so the cooldown is harmless there.
+        // Timeout/abort on THIS account (the shared unrestrict timeout fired). The
+        // account-wide cooldown exists ONLY to make the retry rotate to another
+        // account — so it is set only when another usable account actually exists.
+        // With no rotation target (single account / all others busy), cooling the
+        // sole account would freeze EVERY queued item while the account is healthy;
+        // a >60s timeout is a slow-LINK signal, not an unhealthy-account signal, so
+        // we park just this link (mega_debrid_slow_link) and leave the account free
+        // for other items. A quick user-cancel (below the min run) parks nothing.
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
           const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
-          if (ranLongEnough) {
+          const otherUsableAccounts = orderedEntries.reduce((count, candidate) => {
+            if (candidate.account.id === account.id) {
+              return count;
+            }
+            if (isMegaDebridAccountDisabled(settings, candidate.account.id)) {
+              return count;
+            }
+            if (isMegaDebridAccountDailyLimitReached(settings, candidate.account.id)) {
+              return count;
+            }
+            if (getMegaDebridAccountCooldownState(`${candidate.account.id}:${mode}`)) {
+              return count;
+            }
+            return count + 1;
+          }, 0);
+          const rotateToAnotherAccount = ranLongEnough && otherUsableAccounts > 0;
+          if (rotateToAnotherAccount) {
             setMegaDebridAccountCooldownState(cooldownKey, MEGA_DEBRID_ACCOUNT_COOLDOWN_MS, `Abbruch/Timeout nach ${Math.ceil(elapsedMs / 1000)}s`, "temporary");
           }
           traceConversionPhase({
@@ -2085,15 +2104,18 @@ class MegaDebridClient {
             account: rotationLabel,
             workMs: elapsedMs,
             outcome: "aborted",
-            detail: `${abortText}${ranLongEnough ? ` cd=${Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000)}s` : ""}`
+            detail: `${abortText}${rotateToAnotherAccount ? ` cd=${Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000)}s` : ranLongEnough ? ` slowlink=${Math.ceil(MEGA_DEBRID_SLOW_LINK_RETRY_MS / 1000)}s` : ""}`
           });
           failures.push(`Mega-Debrid${accountLabel}: ${abortText}`);
           logAccountRotation("WARN", providerName, rotationLabel, "TIMEOUT_COOLDOWN", {
             elapsedMs,
             reason: abortText,
-            cooldownSec: ranLongEnough ? Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000) : 0,
-            next: "naechster Account beim Retry"
+            cooldownSec: rotateToAnotherAccount ? Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000) : 0,
+            next: rotateToAnotherAccount ? "naechster Account beim Retry" : "Einzel-Retry (Account bleibt fuer andere Items frei)"
           });
+          if (ranLongEnough && !rotateToAnotherAccount) {
+            throw new Error(`mega_debrid_slow_link:${MEGA_DEBRID_SLOW_LINK_RETRY_MS}:Mega-Debrid${accountLabel}: ${abortText}`);
+          }
           throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
         }
         const failure = MegaDebridClient.classifyAccountFailure(error);

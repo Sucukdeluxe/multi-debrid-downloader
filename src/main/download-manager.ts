@@ -660,6 +660,20 @@ export function parseMegaDebridCooldownRetry(errorText: string): { delayMs: numb
   return { delayMs, detail: text.replace(/mega_debrid_cooldown:\d+:/i, "").trim() };
 }
 
+export function parseMegaDebridSlowLinkRetry(errorText: string): { delayMs: number; detail: string } | null {
+  const text = String(errorText || "");
+  const match = text.match(/mega_debrid_slow_link:(\d+)/i);
+  if (!match) {
+    return null;
+  }
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  const delayMs = Math.max(1000, Math.min(15 * 60 * 1000, raw));
+  return { delayMs, detail: text.replace(/mega_debrid_slow_link:\d+:/i, "").trim() };
+}
+
 export function parseMegaDebridResetPark(errorText: string): { delayMs: number; detail: string } | null {
   const match = String(errorText || "").match(/mega_debrid_reset_park:(\d+):(.*)$/is);
   if (!match) {
@@ -9467,6 +9481,24 @@ export class DownloadManager extends EventEmitter {
           }
 
           const megaRawError = error instanceof Error ? String(error.message || "") : String(error || "");
+          const megaSlowLinkRetry = parseMegaDebridSlowLinkRetry(megaRawError);
+          if (megaSlowLinkRetry && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            item.provider = null;
+            logger.warn(`Mega-Debrid Link langsam (Timeout): item=${item.fileName || item.id}, retry=${active.unrestrictRetries}/${retryDisplayLimit}, delay=${megaSlowLinkRetry.delayMs}ms, link=${item.url.slice(0, 80)}`);
+            this.queueRetry(
+              item,
+              active,
+              megaSlowLinkRetry.delayMs,
+              `Mega-Debrid: Link zu langsam, Einzel-Retry in ${Math.ceil(megaSlowLinkRetry.delayMs / 1000)}s`
+            );
+            item.lastError = megaSlowLinkRetry.detail || errorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
           const megaCooldownRetry = parseMegaDebridCooldownRetry(megaRawError);
           if (megaCooldownRetry && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;

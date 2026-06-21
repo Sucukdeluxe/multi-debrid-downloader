@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transientResolveRetryDelayMs, parseMegaDebridCooldownRetry, parseMegaDebridResetPark } from "../src/main/download-manager";
+import { transientResolveRetryDelayMs, parseMegaDebridCooldownRetry, parseMegaDebridResetPark, parseMegaDebridSlowLinkRetry } from "../src/main/download-manager";
 
 describe("transientResolveRetryDelayMs (fast, bounded retry for transient resolve failures)", () => {
   it("starts fast (<= 3s) instead of the 5s..120s exponential", () => {
@@ -60,6 +60,31 @@ describe("parseMegaDebridCooldownRetry (honor the encoded account-cooldown delay
 
   it("does NOT swallow the until-Tagesreset park token", () => {
     expect(parseMegaDebridCooldownRetry("mega_debrid_reset_park:43200000:Alle Accounts bis zum Tagesreset gesperrt")).toBeNull();
+  });
+});
+
+describe("parseMegaDebridSlowLinkRetry (park only the slow link, never the account)", () => {
+  it("parses the encoded delay from a slow-link error", () => {
+    const r = parseMegaDebridSlowLinkRetry("mega_debrid_slow_link:120000:Mega-Debrid (Account 1/1, Su******e3): aborted");
+    expect(r).not.toBeNull();
+    expect(r!.delayMs).toBe(120000);
+    expect(r!.detail).toContain("Mega-Debrid");
+  });
+
+  it("parses it when embedded in the aggregated provider-chain error", () => {
+    const aggregated = "Provider-Kette: Mega-Debrid Web fehlgeschlagen (Error: mega_debrid_slow_link:90000:Mega-Debrid (Account 1/1): aborted)";
+    expect(parseMegaDebridSlowLinkRetry(aggregated)!.delayMs).toBe(90000);
+  });
+
+  it("clamps to [1s, 15min]", () => {
+    expect(parseMegaDebridSlowLinkRetry("mega_debrid_slow_link:1:x")!.delayMs).toBe(1000);
+    expect(parseMegaDebridSlowLinkRetry("mega_debrid_slow_link:99999999:x")!.delayMs).toBe(15 * 60 * 1000);
+  });
+
+  it("does not collide with the account-cooldown or reset-park tokens", () => {
+    expect(parseMegaDebridSlowLinkRetry("mega_debrid_cooldown:20330:x")).toBeNull();
+    expect(parseMegaDebridSlowLinkRetry("mega_debrid_reset_park:43200000:x")).toBeNull();
+    expect(parseMegaDebridCooldownRetry("mega_debrid_slow_link:120000:x")).toBeNull();
   });
 });
 
