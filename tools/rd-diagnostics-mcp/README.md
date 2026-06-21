@@ -29,8 +29,10 @@ Without env config, every tool simply takes a `code` argument.
 
 ## Tools
 
-`rd_servers`, `rd_ping`, `rd_diagnostics`, `rd_status`, `rd_items`, `rd_packages`, `rd_errors`, `rd_logs`,
-`rd_history`, `rd_accounts`, `rd_host`, `rd_self_check`, `rd_get` (raw escape-hatch, any read-only path).
+`rd_servers`, `rd_ping`, `rd_diagnostics`, `rd_status`, `rd_items`, `rd_packages`, `rd_errors`, `rd_logs`
+(`main|audit|rename|trace|session|conversion|package|item`), `rd_history`, `rd_accounts`, `rd_providers`
+(live per-account/key cooldown + in-flight + rotation state), `rd_host`, `rd_self_check`,
+`rd_get` (raw escape-hatch, any read-only path).
 
 Each tool accepts `code` or `server` to pick the target.
 

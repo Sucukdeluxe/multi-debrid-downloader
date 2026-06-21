@@ -219,6 +219,7 @@ const LOG_PATHS = {
   rename: "/logs/rename",
   trace: "/logs/trace",
   session: "/logs/session",
+  conversion: "/logs/conversion",
   package: "/logs/package",
   item: "/logs/item"
 };
@@ -227,10 +228,10 @@ server.registerTool(
   "rd_logs",
   {
     title: "Log lesen",
-    description: "Liest das Ende eines Logs (GET /logs/<name>). name: main|audit|rename|trace|session|package|item. Fuer package/item zusaetzlich package/item angeben.",
+    description: "Liest das Ende eines Logs (GET /logs/<name>). name: main|audit|rename|trace|session|conversion|package|item. conversion = Pro-Item Link-Aufloesungs-Lebenszyklus (Token, API, Web, Rotation, Abbrueche mit Zeiten). Fuer package/item zusaetzlich package/item angeben.",
     inputSchema: {
       ...CODE_FIELD,
-      name: z.enum(["main", "audit", "rename", "trace", "session", "package", "item"]).describe("Welches Log."),
+      name: z.enum(["main", "audit", "rename", "trace", "session", "conversion", "package", "item"]).describe("Welches Log."),
       lines: z.number().int().positive().optional().describe("Anzahl Zeilen vom Ende (Default 100)."),
       grep: z.string().optional().describe("Filter."),
       package: z.string().optional().describe("Nur fuer name=package."),
@@ -266,6 +267,16 @@ server.registerTool(
     inputSchema: { ...CODE_FIELD }
   },
   async (args) => requestTool(args, "/accounts", {})
+);
+
+server.registerTool(
+  "rd_providers",
+  {
+    title: "Provider-Laufzeitzustand",
+    description: "Live Provider-Runtime (GET /providers): pro Mega-Account/Debrid-Link-Key der AKTIVE Cooldown (until/remainingMs/Grund/Kategorie), in-flight-Tiefe, Mega-Rotationscursor, Empty-Response-Streaks. Die 'warum kuehlt es JETZT ab'-Ansicht — beantwortet Cooldown-Fragen direkt statt aus Log-Arithmetik.",
+    inputSchema: { ...CODE_FIELD }
+  },
+  async (args) => requestTool(args, "/providers", {})
 );
 
 server.registerTool(

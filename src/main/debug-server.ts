@@ -15,6 +15,8 @@ import { createStoragePaths, loadHistory, loadSettings } from "./storage";
 import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceConfigPath, getTraceLogPath, logTraceEvent, setTraceEnabled, updateTraceConfig } from "./trace-log";
+import { getConversionLogPath } from "./conversion-trace";
+import { getProviderRuntimeSnapshot } from "./debrid";
 import { getWindowsHostDiagnostics } from "./windows-host-diagnostics";
 import type { DownloadManager } from "./download-manager";
 import type { DownloadItem, PackageEntry, UiSnapshot } from "../shared/types";
@@ -43,12 +45,14 @@ const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/logs/rename", queryExample: "lines=100&grep=keyword", description: "Reads the dedicated rename and MKV move log." },
   { method: "GET", path: "/logs/trace", queryExample: "lines=100&grep=keyword", description: "Reads the optional support trace log." },
   { method: "GET", path: "/logs/session", queryExample: "lines=100&grep=keyword", description: "Reads the session log tail." },
+  { method: "GET", path: "/logs/conversion", queryExample: "lines=100&grep=keyword", description: "Reads the per-item link conversion/unrestrict lifecycle log (token, API getLink, web, account rotation, aborts with timings)." },
   { method: "GET", path: "/logs/package", queryExample: "package=Release&lines=100&grep=keyword", description: "Reads the package log for a specific package name or id." },
   { method: "GET", path: "/logs/item", queryExample: "item=episode.part2.rar&lines=100&grep=keyword", description: "Reads the item log for a specific file name or item id." },
   { method: "GET", path: "/errors", queryExample: "level=ERROR&limit=100", description: "Returns the in-memory ring of the most recent WARN/ERROR log lines." },
   { method: "GET", path: "/trace/config", queryExample: "enable=1&note=support&durationMinutes=120", description: "Reads or updates the support trace configuration." },
   { method: "GET", path: "/settings", description: "Returns a redacted settings snapshot without raw secrets." },
   { method: "GET", path: "/accounts", description: "Returns a redacted account/provider configuration summary." },
+  { method: "GET", path: "/providers", description: "Live provider runtime state: per-account/key cooldowns (until/remaining/reason/category), in-flight depth, Mega rotation cursor, empty-response streaks. The 'why is it cooling down right now' view." },
   { method: "GET", path: "/stats", description: "Returns live session stats plus persisted all-time totals." },
   { method: "GET", path: "/history", queryExample: "limit=50&status=completed", description: "Returns history entries with optional filters." },
   { method: "GET", path: "/status", description: "Returns a live high-level status overview." },
@@ -356,6 +360,7 @@ function buildAiManifest(baseDir: string): Record<string, unknown> {
       "Call /meta first to confirm the server is reachable and to re-read the endpoint list.",
       "Use /self-check or /debug/setup to quickly verify whether token, host, manifest, trace, disk space, and log sizes are in a good support state.",
       "Use /diagnostics for an overview, then drill into /logs/item, /logs/package, /logs/rename, /status, /packages, /items, /settings, /accounts, /stats, /history, or /logs/trace.",
+      "For provider stalls/cooldowns, call /providers for the live cooldown state (until/remaining/reason per account/key) and /logs/conversion for the per-item resolve lifecycle (token, API, web, rotation, aborts with timings).",
       "If a full handoff is needed, download /support/bundle as a ZIP."
     ],
     auth: {
@@ -707,6 +712,25 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     return;
   }
 
+  if (pathname === "/logs/conversion") {
+    const count = normalizeLinesParam(url.searchParams.get("lines"), 100);
+    const grep = url.searchParams.get("grep") || "";
+    const logPath = getConversionLogPath();
+    const lines = logPath ? filterLines(readLogTailFromFile(logPath, count), grep) : [];
+    jsonResponse(res, 200, {
+      path: logPath,
+      available: Boolean(logPath),
+      lines,
+      count: lines.length
+    });
+    return;
+  }
+
+  if (pathname === "/providers") {
+    jsonResponse(res, 200, getProviderRuntimeSnapshot());
+    return;
+  }
+
   if (pathname === "/trace/config") {
     const patch: Record<string, unknown> = {};
     const enabled = toBooleanQuery(url.searchParams.get("enable"));
@@ -992,6 +1016,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       settings: buildRedactedSettingsPayload(readSupportSettings()),
       stats: buildStatsPayload(snapshot),
       accounts: buildAccountSummary(readSupportSettings()),
+      providers: getProviderRuntimeSnapshot(),
       history: {
         total: readSupportHistory().length,
         recent: readSupportHistory()
@@ -1022,6 +1047,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         session: {
           path: sessionLogPath,
           lines: filterLines(readLogTailFromFile(sessionLogPath, lineCount), grep)
+        },
+        conversion: {
+          path: getConversionLogPath(),
+          lines: getConversionLogPath() ? filterLines(readLogTailFromFile(getConversionLogPath() as string, lineCount), grep) : []
         },
         package: selectedPackage ? {
           path: packageLogPath,

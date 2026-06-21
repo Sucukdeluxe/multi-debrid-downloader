@@ -423,6 +423,106 @@ export function getMegaDebridAccountCooldownState(
   };
 }
 
+export interface ProviderRuntimeCooldown {
+  untilMs: number;
+  remainingMs: number;
+  message: string;
+  category: string;
+  untilRestart?: boolean;
+}
+
+export interface ProviderRuntimeSnapshot {
+  capturedAtMs: number;
+  megaDebrid: {
+    rotationCursor: number;
+    stickyCount: number;
+    accounts: Array<{
+      key: string;
+      cooldown: ProviderRuntimeCooldown | null;
+      inFlight: number;
+      emptyResponseStreak: number;
+    }>;
+  };
+  debridLink: {
+    keys: Array<{
+      keyId: string;
+      cooldown: ProviderRuntimeCooldown | null;
+      runtimeStatus: { state: string; detail: string; updatedAt: number } | null;
+    }>;
+    hostCooldowns: Array<{ key: string; cooldown: ProviderRuntimeCooldown }>;
+  };
+}
+
+export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSnapshot {
+  const megaKeys = new Set<string>([
+    ...megaDebridAccountCooldowns.keys(),
+    ...megaDebridInFlight.keys(),
+    ...megaDebridEmptyResponseStreaks.keys()
+  ]);
+  const megaAccounts = [...megaKeys].sort().map((key) => {
+    const detail = megaDebridAccountCooldowns.get(key);
+    return {
+      key,
+      cooldown: detail
+        ? {
+            untilMs: detail.until,
+            remainingMs: Math.max(0, detail.until - now),
+            message: detail.message,
+            category: detail.category,
+            untilRestart: detail.untilRestart === true
+          }
+        : null,
+      inFlight: megaDebridInFlight.get(key) ?? 0,
+      emptyResponseStreak: megaDebridEmptyResponseStreaks.get(key) ?? 0
+    };
+  });
+
+  const dlKeyIds = new Set<string>([
+    ...debridLinkKeyCooldowns.keys(),
+    ...debridLinkKeyRuntimeStatuses.keys()
+  ]);
+  const dlKeys = [...dlKeyIds].sort().map((keyId) => {
+    const until = Number(debridLinkKeyCooldowns.get(keyId) || 0);
+    const detail = debridLinkKeyCooldownDetails.get(keyId);
+    const status = debridLinkKeyRuntimeStatuses.get(keyId) || null;
+    return {
+      keyId,
+      cooldown: until > 0
+        ? {
+            untilMs: until,
+            remainingMs: Math.max(0, until - now),
+            message: detail?.message ?? "",
+            category: detail?.category ?? "temporary"
+          }
+        : null,
+      runtimeStatus: status ? { state: status.state, detail: status.detail, updatedAt: status.updatedAt } : null
+    };
+  });
+
+  const dlHostCooldowns = [...debridLinkKeyHostCooldowns].map(([key, until]) => {
+    const detail = debridLinkKeyHostCooldownDetails.get(key);
+    return {
+      key,
+      cooldown: {
+        untilMs: until,
+        remainingMs: Math.max(0, until - now),
+        message: detail?.message ?? "",
+        category: detail?.category ?? "temporary"
+      }
+    };
+  });
+
+  return {
+    capturedAtMs: now,
+    megaDebrid: {
+      rotationCursor: megaDebridRotationCursor,
+      stickyCount: megaDebridStickyCount,
+      accounts: megaAccounts
+    },
+    debridLink: { keys: dlKeys, hostCooldowns: dlHostCooldowns }
+  };
+}
+
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 
 const PROVIDER_LABELS: Record<DebridProvider, string> = {

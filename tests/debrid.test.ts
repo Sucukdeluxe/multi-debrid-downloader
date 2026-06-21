@@ -4,7 +4,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
-import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -2070,6 +2070,24 @@ describe("debrid service", () => {
     expect(getMegaDebridAccountCooldownState(key)).toBeNull();
     expect(calls).toBeGreaterThanOrEqual(1);
   }, 20000);
+
+  it("getProviderRuntimeSnapshot surfaces a live Mega-Debrid account cooldown (until/remaining/reason) for the diagnostics endpoint", () => {
+    const accId = getMegaDebridAccountId("user");
+    const key = `${accId}:web`;
+    expect(getProviderRuntimeSnapshot().megaDebrid.accounts.find((a) => a.key === key)?.cooldown ?? null).toBeNull();
+
+    primeMegaDebridRuntimeCooldownForTests(key, 90_000, "Abbruch/Timeout nach 60s");
+
+    const snap = getProviderRuntimeSnapshot();
+    expect(typeof snap.capturedAtMs).toBe("number");
+    const acc = snap.megaDebrid.accounts.find((a) => a.key === key);
+    expect(acc).toBeTruthy();
+    expect(acc!.cooldown).not.toBeNull();
+    expect(acc!.cooldown!.remainingMs).toBeGreaterThan(0);
+    expect(acc!.cooldown!.remainingMs).toBeLessThanOrEqual(90_000);
+    expect(acc!.cooldown!.untilMs).toBeGreaterThan(snap.capturedAtMs);
+    expect(acc!.cooldown!.message).toContain("Abbruch");
+  });
 
   it("single Mega-Debrid account: a long Web abort parks only the slow link and does NOT freeze the sole account", async () => {
     process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0";

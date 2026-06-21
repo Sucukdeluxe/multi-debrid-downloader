@@ -197,3 +197,36 @@ describe("backup mcpRemote live restore round-trip", () => {
     expect(getDebugServerRuntimeStatus().port).toBe(startPort);
   });
 });
+
+describe("debug-server live diagnostics endpoints", () => {
+  it("serves /providers (live cooldown/runtime snapshot) and /logs/conversion over authenticated HTTP", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-prov-"));
+    tempDirs.push(baseDir);
+    const port = await getFreePort();
+    fs.writeFileSync(path.join(baseDir, "debug_token.txt"), "prov-secret", "utf8");
+    fs.writeFileSync(path.join(baseDir, "debug_port.txt"), String(port), "utf8");
+    fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "127.0.0.1", "utf8");
+    fs.writeFileSync(path.join(baseDir, "debug_allowlist.txt"), "", "utf8");
+    startDebugServer({} as unknown as DownloadManager, baseDir);
+    await waitForReady(`http://127.0.0.1:${port}/health?token=prov-secret`);
+
+    const provRes = await fetch(`http://127.0.0.1:${port}/providers?token=prov-secret`);
+    expect(provRes.status).toBe(200);
+    const prov = await provRes.json();
+    expect(typeof prov.capturedAtMs).toBe("number");
+    expect(prov.megaDebrid).toBeTruthy();
+    expect(Array.isArray(prov.megaDebrid.accounts)).toBe(true);
+    expect(typeof prov.megaDebrid.rotationCursor).toBe("number");
+    expect(prov.debridLink).toBeTruthy();
+    expect(Array.isArray(prov.debridLink.keys)).toBe(true);
+
+    const unauth = await fetch(`http://127.0.0.1:${port}/providers`);
+    expect(unauth.status).toBe(401);
+
+    const convRes = await fetch(`http://127.0.0.1:${port}/logs/conversion?token=prov-secret`);
+    expect(convRes.status).toBe(200);
+    const conv = await convRes.json();
+    expect(Array.isArray(conv.lines)).toBe(true);
+    expect(conv).toHaveProperty("available");
+  });
+});
