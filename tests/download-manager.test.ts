@@ -12244,3 +12244,121 @@ describe("download manager", () => {
     }
   });
 });
+
+describe("start conflict guard + selective resume", () => {
+  function makeItem(id: string, packageId: string, status: string, fileName: string): any {
+    return {
+      id, packageId, url: `https://hoster.example/${id}`, provider: "realdebrid",
+      status, retries: 0, speedBps: 0, downloadedBytes: status === "completed" ? 100 : 0,
+      totalBytes: status === "completed" ? 100 : null, progressPercent: status === "completed" ? 100 : 0,
+      fileName, targetPath: "", resumable: true, attempts: 0, lastError: "", fullStatus: "",
+      createdAt: Date.now(), updatedAt: Date.now()
+    };
+  }
+
+  it("does not flag a partially-downloaded package whose extract dir holds its own completed output", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startconflict-own-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+
+    const session = emptySession();
+    const packageId = "pkg-own-output";
+    const extractDir = path.join(root, "extract", "OwnOutput");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "episode01.mkv"), Buffer.alloc(64, 7));
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId, name: "OwnOutput",
+      outputDir: path.join(root, "downloads", "OwnOutput"), extractDir,
+      status: "queued", itemIds: ["own-done", "own-pending"], cancelled: false, enabled: true,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.items["own-done"] = makeItem("own-done", packageId, "completed", "done.rar");
+    session.items["own-pending"] = makeItem("own-pending", packageId, "queued", "pending.rar");
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session, storagePaths
+    );
+
+    const conflicts = await manager.getStartConflicts();
+    expect(conflicts.map((c) => c.packageId)).not.toContain(packageId);
+  });
+
+  it("flags a fresh package when its package-specific extract dir already holds files and it has no completed items", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startconflict-fresh-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+
+    const session = emptySession();
+    const packageId = "pkg-fresh-conflict";
+    const extractDir = path.join(root, "extract", "FreshConflict");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "old-from-previous-run.mkv"), Buffer.alloc(64, 9));
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId, name: "FreshConflict",
+      outputDir: path.join(root, "downloads", "FreshConflict"), extractDir,
+      status: "queued", itemIds: ["fresh-pending"], cancelled: false, enabled: true,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.items["fresh-pending"] = makeItem("fresh-pending", packageId, "queued", "fresh.rar");
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session, storagePaths
+    );
+
+    const conflicts = await manager.getStartConflicts();
+    expect(conflicts.map((c) => c.packageId)).toContain(packageId);
+  });
+
+  it("start() holds excluded packages out of the run set and runs the rest", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selective-resume-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+
+    const session = emptySession();
+    const runId = "pkg-run";
+    const holdId = "pkg-hold";
+    fs.mkdirSync(path.join(root, "downloads", "RunMe"), { recursive: true });
+    fs.mkdirSync(path.join(root, "downloads", "HoldMe"), { recursive: true });
+    session.packageOrder = [runId, holdId];
+    session.packages[runId] = {
+      id: runId, name: "RunMe",
+      outputDir: path.join(root, "downloads", "RunMe"), extractDir: path.join(root, "extract", "RunMe"),
+      status: "queued", itemIds: ["run-item"], cancelled: false, enabled: true,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.packages[holdId] = {
+      id: holdId, name: "HoldMe",
+      outputDir: path.join(root, "downloads", "HoldMe"), extractDir: path.join(root, "extract", "HoldMe"),
+      status: "queued", itemIds: ["hold-item"], cancelled: false, enabled: true,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.items["run-item"] = makeItem("run-item", runId, "queued", "run.rar");
+    session.items["hold-item"] = makeItem("hold-item", holdId, "queued", "hold.rar");
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", maxParallel: 2, outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session, storagePaths
+    );
+    (manager as any).debridService.unrestrictLink = () => new Promise(() => {});
+
+    await manager.start({ excludePackageIds: new Set([holdId]) });
+
+    expect((manager as any).runPackageIds.has(runId)).toBe(true);
+    expect((manager as any).runPackageIds.has(holdId)).toBe(false);
+    expect((manager as any).runItemIds.has("run-item")).toBe(true);
+    expect((manager as any).runItemIds.has("hold-item")).toBe(false);
+    expect(session.items["hold-item"].status).toBe("queued");
+
+    manager.stop();
+  });
+});

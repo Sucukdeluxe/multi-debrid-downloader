@@ -3011,6 +3011,14 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
+      const hasOwnCompletedOutput = pkg.itemIds.some((itemId) => {
+        const item = this.session.items[itemId];
+        return Boolean(item && item.status === "completed");
+      });
+      if (hasOwnCompletedOutput) {
+        continue;
+      }
+
       if (!this.isPackageSpecificExtractDir(pkg)) {
         continue;
       }
@@ -5562,7 +5570,7 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  public async start(): Promise<void> {
+  public async start(options?: { excludePackageIds?: ReadonlySet<string> }): Promise<void> {
     if (this.session.running) {
       return;
     }
@@ -5601,6 +5609,9 @@ export class DownloadManager extends EventEmitter {
     const runItems = Object.values(this.session.items)
       .filter((item) => {
         if (item.status !== "queued" && item.status !== "reconnect_wait") {
+          return false;
+        }
+        if (options?.excludePackageIds?.has(item.packageId)) {
           return false;
         }
         const pkg = this.session.packages[item.packageId];
@@ -5670,6 +5681,11 @@ export class DownloadManager extends EventEmitter {
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
+    if (options?.excludePackageIds) {
+      for (const excluded of options.excludePackageIds) {
+        this.runPackageIds.delete(excluded);
+      }
+    }
 
     this.session.running = true;
     this.session.paused = false;

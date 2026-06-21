@@ -180,21 +180,13 @@ export class AppController {
     if (this.settings.autoResumeOnStart) {
       const snapshot = this.manager.getSnapshot();
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
-      if (hasPending) {
-        void this.manager.getStartConflicts().then((conflicts) => {
-          const hasConflicts = conflicts.length > 0;
-          if (this.hasAnyProviderToken(this.settings) && !hasConflicts) {
-            if (this.onStateHandler) {
-              logger.info("Auto-Resume beim Start aktiviert (nach Konflikt-Check)");
-              void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
-            } else {
-              this.autoResumePending = true;
-              logger.info("Auto-Resume beim Start vorgemerkt");
-            }
-          } else if (hasConflicts) {
-            logger.info("Auto-Resume übersprungen: Start-Konflikte erkannt");
-          }
-        }).catch((err) => logger.warn(`getStartConflicts Fehler (constructor): ${String(err)}`));
+      if (hasPending && this.hasAnyProviderToken(this.settings)) {
+        if (this.onStateHandler) {
+          this.beginAutoResume();
+        } else {
+          this.autoResumePending = true;
+          logger.info("Auto-Resume beim Start vorgemerkt");
+        }
       }
     }
   }
@@ -251,12 +243,25 @@ export class AppController {
       handler(this.manager.getSnapshot());
       if (this.autoResumePending) {
         this.autoResumePending = false;
-        void this.manager.start().catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
-        logger.info("Auto-Resume beim Start aktiviert");
+        this.beginAutoResume();
       } else {
         this.manager.triggerIdleExtractions();
       }
     }
+  }
+
+  private beginAutoResume(): void {
+    void this.manager.getStartConflicts().then((conflicts) => {
+      const excludePackageIds = new Set(conflicts.map((conflict) => conflict.packageId));
+      if (excludePackageIds.size > 0) {
+        const names = conflicts.map((conflict) => conflict.packageName).join(", ");
+        logger.info(`Auto-Resume: ${excludePackageIds.size} Paket(e) mit Start-Konflikt zurückgehalten (${names}); übrige Pakete starten`);
+      } else {
+        logger.info("Auto-Resume beim Start aktiviert (keine Start-Konflikte)");
+      }
+      void this.manager.start(excludePackageIds.size > 0 ? { excludePackageIds } : undefined)
+        .catch((err) => logger.warn(`Auto-Resume Start Fehler: ${String(err)}`));
+    }).catch((err) => logger.warn(`Auto-Resume Konflikt-Check Fehler: ${String(err)}`));
   }
 
   public getSnapshot(): UiSnapshot {
