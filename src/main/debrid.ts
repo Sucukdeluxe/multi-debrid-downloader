@@ -339,6 +339,25 @@ export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridInFlight.clear();
 }
 
+export function getMegaDebridInFlightCountForMode(mode: "api" | "web"): number {
+  const suffix = `:${mode}`;
+  let total = 0;
+  for (const [key, count] of megaDebridInFlight) {
+    if (key.endsWith(suffix)) {
+      total += count;
+    }
+  }
+  return total;
+}
+
+export function primeMegaDebridInFlightForTests(key: string, count: number): void {
+  if (count <= 0) {
+    megaDebridInFlight.delete(key);
+    return;
+  }
+  megaDebridInFlight.set(key, count);
+}
+
 export function pruneExpiredMegaDebridRuntimeState(now = Date.now()): number {
   let removed = 0;
   const grace = 60 * 60 * 1000;

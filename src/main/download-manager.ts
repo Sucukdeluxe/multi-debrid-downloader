@@ -52,7 +52,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountCooldownState, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -8212,7 +8212,13 @@ export class DownloadManager extends EventEmitter {
     const provider = resolveMegaDebridProvider(this.settings, this.getExpectedProviderForItem(item));
     const serializedValidatingLimit = this.getSerializedValidatingLimit(provider);
     if (provider && Number.isFinite(serializedValidatingLimit) && serializedValidatingLimit < Number.MAX_SAFE_INTEGER) {
-      return this.getProviderValidatingTaskCount(provider, item.id) >= serializedValidatingLimit;
+      const validating = this.getProviderValidatingTaskCount(provider, item.id);
+      if (provider === "megadebrid-api") {
+        const webInFlight = getMegaDebridInFlightCountForMode("web");
+        const overlapAllowance = Math.min(serializedValidatingLimit, webInFlight);
+        return validating >= serializedValidatingLimit + overlapAllowance;
+      }
+      return validating >= serializedValidatingLimit;
     }
     if (provider !== "alldebrid") {
       return false;

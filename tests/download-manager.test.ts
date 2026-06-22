@@ -14,7 +14,7 @@ import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { createStoragePaths, emptySession } from "../src/main/storage";
-import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
@@ -12360,5 +12360,84 @@ describe("start conflict guard + selective resume", () => {
     expect(session.items["hold-item"].status).toBe("queued");
 
     manager.stop();
+  });
+});
+
+describe("mega-debrid api/web resolution overlap gate", () => {
+  function megaApiSettings(root: string): any {
+    return {
+      ...defaultSettings(),
+      megaLogin: "u", megaPassword: "p", megaCredentials: "u:p",
+      megaDebridApiEnabled: true, megaDebridWebEnabled: true, megaDebridPreferApi: true,
+      outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract")
+    };
+  }
+
+  function megaItem(id: string, status: string): any {
+    return {
+      id, packageId: "pkg", url: `https://rapidgator.net/file/${id}`, provider: "megadebrid-api",
+      status, retries: 0, speedBps: 0, downloadedBytes: 0, totalBytes: null, progressPercent: 0,
+      fileName: `${id}.rar`, targetPath: "", resumable: true, attempts: 0, lastError: "", fullStatus: "",
+      createdAt: Date.now(), updatedAt: Date.now()
+    };
+  }
+
+  function addValidating(manager: DownloadManager, session: any, ids: string[]): void {
+    for (const id of ids) {
+      session.items[id] = megaItem(id, "validating");
+      (manager as any).activeTasks.set(id, {
+        itemId: id, packageId: "pkg", abortController: new AbortController(), abortReason: "none",
+        resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0
+      });
+    }
+  }
+
+  function buildManager(root: string, session: any): DownloadManager {
+    return new DownloadManager(megaApiSettings(root), session, createStoragePaths(path.join(root, "state")));
+  }
+
+  it("lets the first mega resolve start when nothing is in flight", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-overlap-0-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const candidate = megaItem("cand", "queued");
+    session.items["cand"] = candidate;
+    const manager = buildManager(root, session);
+    expect((manager as any).shouldDelayStartForItem(candidate)).toBe(false);
+  });
+
+  it("serializes a second API resolve while the first is still in its API phase (no concurrent API)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-overlap-1-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const candidate = megaItem("cand", "queued");
+    session.items["cand"] = candidate;
+    const manager = buildManager(root, session);
+    addValidating(manager, session, ["a"]);
+    expect((manager as any).shouldDelayStartForItem(candidate)).toBe(true);
+  });
+
+  it("allows one API resolve to overlap once the first has moved to its web phase", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-overlap-2-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const candidate = megaItem("cand", "queued");
+    session.items["cand"] = candidate;
+    const manager = buildManager(root, session);
+    addValidating(manager, session, ["a"]);
+    primeMegaDebridInFlightForTests("acc:web", 1);
+    expect((manager as any).shouldDelayStartForItem(candidate)).toBe(false);
+  });
+
+  it("caps the overlap at one API plus one web (no third concurrent resolve)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-overlap-3-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const candidate = megaItem("cand", "queued");
+    session.items["cand"] = candidate;
+    const manager = buildManager(root, session);
+    addValidating(manager, session, ["a", "b"]);
+    primeMegaDebridInFlightForTests("acc:web", 1);
+    expect((manager as any).shouldDelayStartForItem(candidate)).toBe(true);
   });
 });
