@@ -2140,7 +2140,7 @@ describe("debrid service", () => {
 
   it("escalates a Mega-Debrid account to 'until restart' after the empty-response streak threshold", () => {
     const key = `${getMegaDebridAccountId("user1")}:web`;
-    expect(MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART).toBe(3);
+    expect(MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART).toBe(10);
     expect(recordMegaDebridEmptyResponseStreak(key)).toBe(1);
     expect(recordMegaDebridEmptyResponseStreak(key)).toBe(2);
     expect(recordMegaDebridEmptyResponseStreak(key)).toBe(3);
@@ -2265,8 +2265,9 @@ describe("debrid service", () => {
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
     const key = `${getMegaDebridAccountId("user1")}:web`;
-    recordMegaDebridEmptyResponseStreak(key);
-    recordMegaDebridEmptyResponseStreak(key);
+    for (let i = 0; i < MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART - 1; i += 1) {
+      recordMegaDebridEmptyResponseStreak(key);
+    }
     expect(getMegaDebridAccountCooldownState(key)?.untilRestart ?? false).toBe(false);
 
     const megaWeb = vi.fn(async () => null);

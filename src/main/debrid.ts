@@ -302,7 +302,7 @@ function getMegaDebridAbortMinRunMs(): number {
 }
 
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
-export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 3;
+export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 10;
 
 let megaDebridRotationCursor = 0;
 let megaDebridStickyCount = 0;
@@ -2254,7 +2254,7 @@ class MegaDebridClient {
           const streak = recordMegaDebridEmptyResponseStreak(cooldownKey);
           if (streak >= MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART) {
             parkUntilRestart = true;
-            parkMessage = `Tageslimit erreicht (${streak}x kein Server/leere Antwort) — bis zum Tagesreset gesperrt`;
+            parkMessage = `Tageslimit erreicht (${streak}x leere Antwort in Folge) — bis zum Tagesreset gesperrt`;
           }
         } else {
           clearMegaDebridEmptyResponseStreak(cooldownKey);
