@@ -2209,6 +2209,98 @@ describe("download manager", () => {
     expect(fs.statSync(item.targetPath).size).toBe(binary.length);
   });
 
+  it("recovers an HTTP 416 item with a clean fresh restart after the in-budget retries are exhausted", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-416-fresh-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(160 * 1024, 19);
+    const prevDelay = process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS;
+    process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS = "0";
+    let downloadCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(JSON.stringify({ download: "https://dummy/direct-416-recover", filename: "fresh-416.mkv", filesize: binary.length }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), retryLimit: 2, autoExtract: false, autoReconnect: false },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      (manager as any).downloadToFile = async (_active: unknown, _directUrl: string, targetPath: string) => {
+        downloadCalls += 1;
+        if (downloadCalls <= 3) {
+          throw new Error("HTTP 416");
+        }
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.writeFileSync(targetPath, binary);
+        const item = Object.values((manager as any).session.items)[0] as { downloadedBytes: number; totalBytes: number; progressPercent: number } | undefined;
+        if (item) {
+          item.downloadedBytes = binary.length;
+          item.totalBytes = binary.length;
+          item.progressPercent = 100;
+        }
+        return { resumable: true };
+      };
+
+      manager.addPackages([{ name: "fresh-416", links: ["https://dummy/fresh-416"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 20000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(downloadCalls).toBeGreaterThan(3);
+    } finally {
+      if (prevDelay === undefined) { delete process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS; } else { process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS = prevDelay; }
+    }
+  }, 25000);
+
+  it("bounds HTTP 416 clean restarts and finally fails instead of looping forever or stalling permanently", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-416-cap-"));
+    tempDirs.push(root);
+    const prevDelay = process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS;
+    process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS = "0";
+    let downloadCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(JSON.stringify({ download: "https://dummy/direct-416-forever", filename: "always-416.mkv", filesize: 1024 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    try {
+      const manager = new DownloadManager(
+        { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), retryLimit: 0, autoExtract: false, autoReconnect: false },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      (manager as any).downloadToFile = async () => {
+        downloadCalls += 1;
+        throw new Error("direct_link_retry_exhausted:HTTP 416");
+      };
+
+      manager.addPackages([{ name: "always-416", links: ["https://dummy/always-416"] }]);
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 20000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("failed");
+      expect(downloadCalls).toBeGreaterThan(4);
+      expect(downloadCalls).toBeLessThan(30);
+      expect((manager as any).http416FreshRestartByItem.get(item.id)).toBeUndefined();
+    } finally {
+      if (prevDelay === undefined) { delete process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS; } else { process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS = prevDelay; }
+    }
+  }, 25000);
+
   it("retries HTTP 416 in-session when using Debrid-Link API and then completes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

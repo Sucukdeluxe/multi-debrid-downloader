@@ -131,6 +131,17 @@ const ARCHIVE_SETTLE_MAX_WAIT_MS = 5000;
 
 const MAX_SAME_DIRECT_URL_ATTEMPTS = 3;
 
+const MAX_HTTP416_FRESH_RESTARTS = 2;
+const HTTP416_FRESH_RESTART_DELAY_MS = 8000;
+
+function getHttp416FreshRestartDelayMs(): number {
+  const fromEnv = Number(process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS ?? NaN);
+  if (Number.isFinite(fromEnv) && fromEnv >= 0 && fromEnv <= 600000) {
+    return Math.floor(fromEnv);
+  }
+  return HTTP416_FRESH_RESTART_DELAY_MS;
+}
+
 const RESUME_REWIND_BYTES = 256 * 1024;
 
 const REALDEBRID_TOTAL_MISMATCH_TOLERANCE_BYTES = 64 * 1024;
@@ -1828,6 +1839,8 @@ export class DownloadManager extends EventEmitter {
     genericErrorRetries: number;
     unrestrictRetries: number;
   }>();
+
+  private http416FreshRestartByItem = new Map<string, number>();
 
   private providerFailures = new Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>();
 
@@ -5678,6 +5691,7 @@ export class DownloadManager extends EventEmitter {
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
+    this.http416FreshRestartByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
@@ -8727,6 +8741,53 @@ export class DownloadManager extends EventEmitter {
     this.queueRetry(item, active, delayMs, `HTTP 416 erkannt, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
   }
 
+  private escalateHttp416OrFail(item: DownloadItem, active: ActiveTask, claimedTargetPath: string, errorText: string): void {
+    const freshRestarts = this.http416FreshRestartByItem.get(item.id) || 0;
+    if (freshRestarts < MAX_HTTP416_FRESH_RESTARTS) {
+      this.http416FreshRestartByItem.set(item.id, freshRestarts + 1);
+      const resetTargetPath = claimedTargetPath || String(item.targetPath || "").trim();
+      if (resetTargetPath) {
+        try {
+          fs.rmSync(resetTargetPath, { force: true });
+        } catch {
+        }
+      }
+      this.releaseTargetPath(item.id);
+      this.dropItemContribution(item.id);
+      item.retries += 1;
+      item.downloadedBytes = 0;
+      item.totalBytes = null;
+      item.progressPercent = 0;
+      item.speedBps = 0;
+      item.lastError = "";
+      active.genericErrorRetries = 0;
+      active.freshRetryUsed = false;
+      active.resumeHardResetUsed = false;
+      logger.warn(
+        `HTTP 416 Budget erschöpft: item=${item.fileName || item.id}, ` +
+        `kompletter Neu-Download ${freshRestarts + 1}/${MAX_HTTP416_FRESH_RESTARTS} (Partial verworfen, kein Resume), provider=${item.provider || "?"}`
+      );
+      this.queueRetry(item, active, getHttp416FreshRestartDelayMs(), `Range-Konflikt (HTTP 416): Neu-Download ${freshRestarts + 1}/${MAX_HTTP416_FRESH_RESTARTS}`);
+      this.persistSoon();
+      this.emitState();
+      return;
+    }
+    this.http416FreshRestartByItem.delete(item.id);
+    item.status = "failed";
+    this.recordRunOutcome(item.id, "failed");
+    item.lastError = errorText;
+    item.fullStatus = `Fehler: ${item.lastError}`;
+    item.speedBps = 0;
+    item.updatedAt = nowMs();
+    const failPkg = this.session.packages[item.packageId];
+    if (failPkg) {
+      this.refreshPackageStatus(failPkg);
+    }
+    this.persistSoon();
+    this.emitState();
+    this.retryStateByItem.delete(item.id);
+  }
+
   private startItem(packageId: string, itemId: string): void {
     const item = this.session.items[itemId];
     const pkg = this.session.packages[packageId];
@@ -9317,10 +9378,14 @@ export class DownloadManager extends EventEmitter {
                 return;
               }
             }
-            if (isHttp416Text(exhaustedReason) && active.genericErrorRetries < maxHttp416Retries) {
-              this.scheduleHttp416Retry(item, active, retryDisplayLimit, exhaustedReason, claimedTargetPath);
-              this.persistSoon();
-              this.emitState();
+            if (isHttp416Text(exhaustedReason)) {
+              if (active.genericErrorRetries < maxHttp416Retries) {
+                this.scheduleHttp416Retry(item, active, retryDisplayLimit, exhaustedReason, claimedTargetPath);
+                this.persistSoon();
+                this.emitState();
+                return;
+              }
+              this.escalateHttp416OrFail(item, active, claimedTargetPath, exhaustedReason);
               return;
             }
             if (isResumeHardResetReason(exhaustedReason) && !active.resumeHardResetUsed) {
@@ -9377,17 +9442,7 @@ export class DownloadManager extends EventEmitter {
               this.emitState();
               return;
             }
-            item.status = "failed";
-            this.recordRunOutcome(item.id, "failed");
-            item.lastError = errorText;
-            item.fullStatus = `Fehler: ${item.lastError}`;
-            item.speedBps = 0;
-            item.updatedAt = nowMs();
-            const failPkg416 = this.session.packages[item.packageId];
-            if (failPkg416) this.refreshPackageStatus(failPkg416);
-            this.persistSoon();
-            this.emitState();
-            this.retryStateByItem.delete(item.id);
+            this.escalateHttp416OrFail(item, active, claimedTargetPath, errorText);
             return;
           }
           if (shouldFreshRetry) {
