@@ -571,7 +571,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.EXPORT_BACKUP, async () => {
     const options = {
-      defaultPath: `mdd-backup-${new Date().toISOString().slice(0, 10)}.mdd`,
+      defaultPath: `${new Date().toISOString().slice(0, 10).split("-").reverse().join("-")}-mdd-backup.mdd`,
       filters: [{ name: "MDD Backup", extensions: ["mdd"] }]
     };
     const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
